@@ -76,6 +76,21 @@ pub async fn next_batch(server: &ProjectServer) -> Result<Option<Batch>, RosenEr
     batch(&client, work).await
 }
 
+/// The newest landed commit on the base that Rosen's `post_land_green` has not covered
+/// yet, even if a past non-reverting test failure suppressed `post_land_next` (#567).
+pub async fn unverified_tip_batch(server: &ProjectServer) -> Result<Option<Batch>, RosenError> {
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let job = integration::tip_test_job(server, &client).await?;
+    batch(
+        &client,
+        PostLandWork {
+            job,
+            last_green: None,
+        },
+    )
+    .await
+}
+
 /// The independent build prefix, including merge-mode checks after a before-land gate.
 pub async fn next_build_batch(server: &ProjectServer) -> Result<Option<Batch>, RosenError> {
     let client = crate::connection::requests(server.endpoint()).await?;
@@ -344,11 +359,18 @@ async fn batch(client: &Client, work: PostLandWork) -> Result<Option<Batch>, Ros
         {
             commands.splice(..0, pre_land.commands.iter().cloned());
         }
-        if policy.config.recheck == RecheckMode::Merge {
+        // The integration pass runs the pre-land build/lint suite alongside post-land tests,
+        // so advancing both prefixes keeps `post_land_build_green` (`built`) in sync (#567).
+        if !pre_land.commands.is_empty() || policy.config.recheck == RecheckMode::Merge {
+            let priority = if policy.config.recheck == RecheckMode::Merge {
+                CheckPriority::Landing
+            } else {
+                CheckPriority::Verify
+            };
             merge_build = Some(PostLandJob {
                 commit: job.commit,
                 kind: CheckKind::Build,
-                priority: CheckPriority::Landing,
+                priority,
                 check_set: pre_land,
                 submitter: None,
             });

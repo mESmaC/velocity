@@ -6,10 +6,18 @@ use velocity_rosen::{ProjectServer, build_repairs::BuildFailure};
 
 use super::{LandingHost, RosenLanding};
 
-/// A fresh server observation. A passing test never closes a build culprit.
+/// A fresh server observation. A green build or test pass at or after the fix closes
+/// the build repair (#567).
 pub struct BuildRepairs {
     pub pending: Vec<BuildFailure>,
     pub settled: Vec<String>,
+}
+
+/// An open build repair's culprit commit and, when known, its repair thread's fix commit/change.
+struct OpenRepair {
+    culprit: String,
+    fix_commit: Option<String>,
+    fix_change: Option<String>,
 }
 
 impl RosenLanding {
@@ -22,10 +30,11 @@ impl RosenLanding {
             }
             state.repairing_projects.insert(project, false);
         }
+        let open_repairs = open_repairs_for_project(host, project);
         let (runner, host) = (self.clone(), host.clone());
         tokio::spawn(async move {
             let server = ProjectServer::new(&runner.app_data, project);
-            let result = observe(&server).await;
+            let result = observe(&server, open_repairs).await;
             let result = match result {
                 Ok((observation, deadline)) => {
                     if let Some(deadline) = deadline {
@@ -80,23 +89,104 @@ impl RosenLanding {
     }
 }
 
-async fn observe(server: &ProjectServer) -> Result<(BuildRepairs, Option<u64>), String> {
+fn open_repairs_for_project<Host: LandingHost>(host: &Host, project: u32) -> Vec<OpenRepair> {
+    let Some(project) = host
+        .projects()
+        .into_iter()
+        .find(|item| item.project.id == project)
+        .map(|item| item.project)
+    else {
+        return Vec::new();
+    };
+    project
+        .build_repairs
+        .iter()
+        .filter(|repair| !repair.closed)
+        .map(|repair| {
+            let thread = project
+                .threads
+                .iter()
+                .find(|thread| thread.id == repair.thread);
+            let fix_commit = thread.and_then(|thread| {
+                thread
+                    .rosen_issue
+                    .landed_commit()
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        thread
+                            .rosen_change_view
+                            .as_ref()?
+                            .lands
+                            .last()
+                            .filter(|land| land.revert.is_none())
+                            .map(|land| land.commit.clone())
+                    })
+            });
+            let fix_change = thread.and_then(|thread| thread.rosen_change.clone());
+            OpenRepair {
+                culprit: repair.commit.clone(),
+                fix_commit,
+                fix_change,
+            }
+        })
+        .collect()
+}
+
+async fn resolve_repair_targets(
+    server: &ProjectServer,
+    open_repairs: Vec<OpenRepair>,
+) -> Vec<(String, String)> {
+    let mut targets = Vec::with_capacity(open_repairs.len());
+    for repair in open_repairs {
+        let fix = match (repair.fix_commit, repair.fix_change.as_deref()) {
+            (Some(commit), _) => Some(commit),
+            (None, Some(change)) => {
+                velocity_rosen::build_repairs::change_landed_commit(server, change)
+                    .await
+                    .ok()
+                    .flatten()
+            }
+            (None, None) => None,
+        };
+        let target = fix.unwrap_or_else(|| repair.culprit.clone());
+        targets.push((repair.culprit, target));
+    }
+    targets
+}
+
+async fn observe(
+    server: &ProjectServer,
+    open_repairs: Vec<OpenRepair>,
+) -> Result<(BuildRepairs, Option<u64>), String> {
     let failures = velocity_rosen::build_repairs::build_failures(server)
         .await
         .map_err(|error| error.to_string())?;
-    let commits: Vec<_> = failures
+    let repair_targets = resolve_repair_targets(server, open_repairs).await;
+    let mut commits: Vec<String> = failures
         .iter()
         .map(|failure| failure.commit.clone())
         .collect();
-    let mut settled = velocity_rosen::issue_build_coverage(server, &commits)
+    commits.extend(repair_targets.iter().map(|(_, target)| target.clone()));
+    commits.sort_unstable();
+    commits.dedup();
+    let covered = velocity_rosen::build_repairs::repair_coverage(server, &commits)
         .await
         .map_err(|error| error.to_string())?;
-    settled.extend(
-        failures
-            .iter()
-            .filter(|failure| failure.reverted)
-            .map(|failure| failure.commit.clone()),
-    );
+    let mut settled: Vec<String> = failures
+        .iter()
+        .filter(|failure| failure.reverted || covered.contains(&failure.commit))
+        .map(|failure| failure.commit.clone())
+        .collect();
+    for (culprit, target) in &repair_targets {
+        if covered.contains(target) {
+            if !settled.contains(culprit) {
+                settled.push(culprit.clone());
+            }
+        } else if target != culprit {
+            // Keep an open repair whose fix landed until a green pass covers the fix commit.
+            settled.retain(|commit| commit != culprit);
+        }
+    }
     let now = now();
     let deadline = failures
         .iter()

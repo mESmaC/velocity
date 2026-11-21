@@ -14,6 +14,10 @@ pub const INTEGRATION_UNCOVERED_LANDS: u32 = 10;
 /// How long an uncovered base triggers an integration build health check (#509).
 pub const INTEGRATION_UNCOVERED_SECONDS: u64 = 2 * 60 * 60;
 
+/// How long landed changes may wait with no post-land verification result before
+/// project health surfaces a stall (#567).
+pub const POST_LAND_STALL_LIMIT_SECONDS: u64 = 60 * 60;
+
 /// How long a named thread may sit in Review without landing before asking Rosen (#509).
 pub const REVIEW_STUCK_LIMIT_SECONDS: u64 = 20 * 60;
 
@@ -40,6 +44,7 @@ pub enum HealthSignalKind {
     ReviewStalled,
     DispatchIdle,
     PostLandStopped,
+    PostLandStalled,
     UpdaterManifestBehind,
     ReleaseGateRefused,
 }

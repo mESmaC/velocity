@@ -5,6 +5,7 @@ Velocity monitors each Rosen project in the background, performs safe automatic 
 | Signal | Automatic action |
 |---|---|
 | Mirror behind the base for more than 10 min | Retry the push via Rosen catch-up; if diverged or refused, show the mirror notice with both tips, and apply #501 catch-up where the mirror is ahead. |
+| Landed changes with no post-land result for more than 1 hour | Report "Landed N changes with no post-land result for > 1 h" with the oldest unverified commit, and start or explain why verification cannot run (#567). |
 | Integration build has not covered the base for 10 lands or 2 hours | Start an integration build; if it cannot start (running, paused, low memory, another project holding the slot, or last build failed on the base), say why on the project. |
 | Integration or GitHub CI red on the base | Start or track the fix-forward thread (#507); for GitHub CI, report which commit the repair covers and whether the latest failure is at or newer than its land (#558). |
 | Landed issue still open more than 6 hours with no green integration | Show "N landed issues wait for a green integration build" with the last build's outcome (#504). |

@@ -17,9 +17,9 @@ use velocity_core::base_ci::{
 };
 use velocity_core::project_health::{
     DISPATCH_IDLE_LIMIT_SECONDS, HealthSeverity, HealthSignalKind, INTEGRATION_UNCOVERED_LANDS,
-    INTEGRATION_UNCOVERED_SECONDS, MIRROR_BEHIND_LIMIT_SECONDS, ProjectHealthItem,
-    ProjectHealthView, REVIEW_STUCK_LIMIT_SECONDS, format_duration, format_stopped_check_detail,
-    short_commit,
+    INTEGRATION_UNCOVERED_SECONDS, MIRROR_BEHIND_LIMIT_SECONDS, POST_LAND_STALL_LIMIT_SECONDS,
+    ProjectHealthItem, ProjectHealthView, REVIEW_STUCK_LIMIT_SECONDS, format_duration,
+    format_stopped_check_detail, short_commit,
 };
 use velocity_core::release::{
     ManifestLag, RefusedGateRecovery, is_beta_release_tag, plan_refused_gate_recovery,
@@ -426,6 +426,18 @@ async fn check_project(application: &AppHandle, app_data: &Path, project: &Proje
         items.push(item);
     }
     let last_outcome = read_last_outcome(&server).await;
+    if let Some(item) = check_post_land_stalled(
+        application,
+        project,
+        &server,
+        last_outcome.as_deref(),
+        now,
+        now_ms,
+    )
+    .await
+    {
+        items.push(item);
+    }
     if let Some(item) = check_integration_uncovered(
         application,
         project,
@@ -625,6 +637,57 @@ async fn retry_mirror_if_due(
     Some(attempt)
 }
 
+/// Signal 2a: Landed changes have had no post-land verification result for > 1 h (#567).
+async fn check_post_land_stalled(
+    application: &AppHandle,
+    project: &ProjectItem,
+    server: &ProjectServer,
+    last_outcome: Option<&str>,
+    now: u64,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    let reading = server.clone();
+    let stall =
+        tauri::async_runtime::spawn_blocking(move || integration::post_land_stall(&reading))
+            .await
+            .ok()?
+            .ok()??;
+    let waited = now.saturating_sub(stall.since);
+    if stall.lands == 0 || waited < POST_LAND_STALL_LIMIT_SECONDS {
+        return None;
+    }
+    let noun = if stall.lands == 1 {
+        "change"
+    } else {
+        "changes"
+    };
+    let signal = format!(
+        "Landed {} {noun} with no post-land result for > 1 h ({})",
+        stall.lands,
+        format_duration(waited)
+    );
+    let (action, severity) = start_or_explain_integration(application, project.id, server).await;
+    let oldest = format!(
+        "Oldest unverified commit: {}",
+        short_commit(&stall.oldest_commit)
+    );
+    let detail = match last_outcome {
+        Some(outcome) => format!("{oldest} · Last build: {outcome}"),
+        None => oldest,
+    };
+    Some(
+        ProjectHealthItem::new(
+            "post-land-stalled",
+            HealthSignalKind::PostLandStalled,
+            severity,
+            signal,
+            action,
+            now_ms,
+        )
+        .with_detail(Some(detail)),
+    )
+}
+
 /// Signal 2: Integration build hasn't covered the base for N lands or H hours (#509).
 async fn check_integration_uncovered(
     application: &AppHandle,
@@ -784,38 +847,71 @@ async fn check_base_red(
             .with_thread(repair_thread),
         );
     }
+    if let Some(item) = check_integration_red(application, project, server, now_ms).await {
+        items.push(item);
+    }
+    items
+}
+
+async fn check_integration_red(
+    application: &AppHandle,
+    project: &ProjectItem,
+    server: &ProjectServer,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
     let failures = velocity_rosen::build_repairs::build_failures(server)
         .await
         .unwrap_or_default();
-    if !failures.is_empty() || !project.build_repairs.is_empty() {
-        let repair_thread = project.build_repairs.first().map(|repair| repair.thread);
-        let action = match repair_thread {
-            Some(thread) => format!("Fix-forward thread #{thread} active"),
-            None if !project.spec_locked => {
-                "Cannot start fix-forward thread: project spec is not locked".into()
-            }
-            None => {
-                crate::rosen_landing::wake(application);
-                "Triggered fix-forward thread for red integration build".into()
-            }
-        };
-        let detail = failures
-            .first()
-            .map(|failure| format!("Culprit {}", short_commit(&failure.commit)));
-        items.push(
-            ProjectHealthItem::new(
-                "base-red:integration",
-                HealthSignalKind::BaseRed,
-                HealthSeverity::Error,
-                "Integration build red on base",
-                action,
-                now_ms,
-            )
-            .with_detail(detail)
-            .with_thread(repair_thread),
-        );
+    let failure_commits: Vec<String> = failures
+        .iter()
+        .map(|failure| failure.commit.clone())
+        .collect();
+    let covered = velocity_rosen::build_repairs::repair_coverage(server, &failure_commits)
+        .await
+        .unwrap_or_default();
+    let active_failures: Vec<_> = failures
+        .into_iter()
+        .filter(|failure| !failure.reverted && !covered.contains(&failure.commit))
+        .collect();
+    let open_repairs: Vec<_> = project
+        .build_repairs
+        .iter()
+        .filter(|repair| !repair.closed)
+        .collect();
+    if active_failures.is_empty() && open_repairs.is_empty() {
+        return None;
     }
-    items
+    let repair_thread = open_repairs.first().map(|repair| repair.thread);
+    let action = match repair_thread {
+        Some(thread) => format!("Fix-forward thread #{thread} active"),
+        None if !project.spec_locked => {
+            "Cannot start fix-forward thread: project spec is not locked".into()
+        }
+        None => {
+            crate::rosen_landing::wake(application);
+            "Triggered fix-forward thread for red integration build".into()
+        }
+    };
+    let detail = active_failures
+        .first()
+        .map(|failure| format!("Culprit {}", short_commit(&failure.commit)))
+        .or_else(|| {
+            open_repairs
+                .first()
+                .map(|repair| format!("Culprit {}", short_commit(&repair.commit)))
+        });
+    Some(
+        ProjectHealthItem::new(
+            "base-red:integration",
+            HealthSignalKind::BaseRed,
+            HealthSeverity::Error,
+            "Integration build red on base",
+            action,
+            now_ms,
+        )
+        .with_detail(detail)
+        .with_thread(repair_thread),
+    )
 }
 
 async fn selected_ci_repair(

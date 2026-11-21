@@ -19,6 +19,9 @@ Rosen R12 owns the queue of verification jobs, bisection, confirmed failures and
 Velocity runs Rosen's commands on the requested commit in a reusable build folder and reports their results.
 The worker runs independently of Scouts and the review swarm.
 Velocity's batched integration build runs compilation, lint and full tests, and a confirmed broken build can start a fix-forward thread.
+When a repair's fix lands or the base moves past a failed batch, Velocity immediately offers and runs a new verification batch for the current base tip so it goes green or names a fresh culprit (#567).
+On startup, if the base has landed commits newer than Rosen's last `green` checkpoint, Velocity resumes post-land verification for them (#567).
+Passing an after-land integration batch advances both the build (`built`) and test (`green`) checkpoints in Rosen, and any green build or test pass at or after a repair's fix commit closes the build repair (#567).
 Velocity stops an integration command and its child processes after 10 minutes without new log output and reports the failure with the log tail (#486).
 A revert returns the change and failing output to its author.
 

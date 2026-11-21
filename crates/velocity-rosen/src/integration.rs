@@ -36,29 +36,26 @@ pub fn due(server: &ProjectServer, commit: &str, idle: bool) -> Result<bool, Ros
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    if let Some((last, passed)) = &checkpoint
-        && last == commit
-    {
-        // Re-send a successful result if Velocity stopped before Rosen recorded it.
-        return Ok(*passed);
+    if let Some((last, passed)) = &checkpoint {
+        if last == commit {
+            // Re-send a successful result if Velocity stopped before Rosen recorded it.
+            return Ok(*passed);
+        }
+        // The base moved past a failed batch (for example a fix-forward landed):
+        // verify the new tip immediately so it goes green or names a fresh culprit (#567).
+        if !*passed {
+            return Ok(true);
+        }
     }
     if idle {
         return Ok(true);
     }
+    let metadata = ledger(server)?;
+    if has_uncovered_failure_before(&metadata, commit)? {
+        return Ok(true);
+    }
     let last = checkpoint.as_ref().map(|(last, _)| last.as_str());
-    let (count, started): (u32, Option<u64>) = ledger(server)?.query_row(
-        "WITH target AS (SELECT ref_name,seq FROM base_history WHERE commit_id=?1),
-         pending AS (
-             SELECT h.commit_id FROM base_history h JOIN target t ON h.ref_name=t.ref_name
-             WHERE h.change_id IS NOT NULL AND h.seq<=t.seq AND h.seq>COALESCE(
-                 (SELECT seq FROM base_history WHERE ref_name=t.ref_name AND commit_id=?2),
-                 (SELECT seq FROM post_land_green WHERE ref_name=t.ref_name), 0))
-         SELECT (SELECT COUNT(*) FROM pending),
-                (SELECT MIN(created_at) FROM events WHERE kind IN ('landed','reverted')
-                 AND json_extract(detail,'$.commit') IN (SELECT commit_id FROM pending))",
-        params![commit, last],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
+    let (count, started) = pending_window(&metadata, commit, last)?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
@@ -67,12 +64,128 @@ pub fn due(server: &ProjectServer, commit: &str, idle: bool) -> Result<bool, Ros
             .is_some_and(|started| now.saturating_sub(Duration::from_millis(started)) >= AGE_LIMIT))
 }
 
-pub fn result(server: &ProjectServer, commit: &str, passed: bool) -> Result<(), RosenError> {
-    progress(server)?.execute(
-        "INSERT INTO attempts(commit_id,passed) VALUES (?1,?2)
-         ON CONFLICT(commit_id) DO UPDATE SET passed=excluded.passed",
-        params![commit, passed],
+fn table_exists(connection: &Connection, name: &str) -> Result<bool, RosenError> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [name],
+        |row| row.get(0),
+    )?)
+}
+
+fn green_seq_for_ref(connection: &Connection, reference: &str) -> Result<i64, RosenError> {
+    if !table_exists(connection, "post_land_green")? {
+        return Ok(0);
+    }
+    Ok(connection
+        .query_row(
+            "SELECT seq FROM post_land_green WHERE ref_name=?1",
+            [reference],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(0))
+}
+
+fn has_uncovered_failure_before(connection: &Connection, commit: &str) -> Result<bool, RosenError> {
+    if !table_exists(connection, "base_history")?
+        || !table_exists(connection, "post_land_failures")?
+    {
+        return Ok(false);
+    }
+    let Some((reference, target_seq)): Option<(String, i64)> = connection
+        .query_row(
+            "SELECT ref_name, seq FROM base_history WHERE commit_id=?1 LIMIT 1",
+            [commit],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+    else {
+        return Ok(false);
+    };
+    let green_seq = green_seq_for_ref(connection, &reference)?;
+    Ok(connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM post_land_failures f
+             JOIN base_history h ON h.ref_name=?1 AND h.commit_id=f.commit_id
+             WHERE f.revert IS NULL AND h.seq>?2 AND h.seq<?3
+         )",
+        params![reference, green_seq, target_seq],
+        |row| row.get(0),
+    )?)
+}
+
+fn pending_window(
+    connection: &Connection,
+    commit: &str,
+    last: Option<&str>,
+) -> Result<(u32, Option<u64>), RosenError> {
+    if !table_exists(connection, "base_history")? {
+        return Ok((0, None));
+    }
+    let Some((reference, target_seq)): Option<(String, i64)> = connection
+        .query_row(
+            "SELECT ref_name, seq FROM base_history WHERE commit_id=?1 LIMIT 1",
+            [commit],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+    else {
+        return Ok((0, None));
+    };
+    let last_seq: Option<i64> = match last {
+        Some(commit) => connection
+            .query_row(
+                "SELECT seq FROM base_history WHERE ref_name=?1 AND commit_id=?2",
+                params![reference, commit],
+                |row| row.get(0),
+            )
+            .optional()?,
+        None => None,
+    };
+    let floor = match last_seq {
+        Some(seq) => seq,
+        None => green_seq_for_ref(connection, &reference)?,
+    };
+    let count: u32 = connection.query_row(
+        "SELECT COUNT(*) FROM base_history
+         WHERE ref_name=?1 AND change_id IS NOT NULL AND seq<=?2 AND seq>?3",
+        params![reference, target_seq, floor],
+        |row| row.get(0),
     )?;
+    if count == 0 || !table_exists(connection, "events")? {
+        return Ok((count, None));
+    }
+    let started: Option<u64> = connection.query_row(
+        "SELECT MIN(created_at) FROM events
+         WHERE kind IN ('landed','reverted') AND json_extract(detail,'$.commit') IN (
+             SELECT commit_id FROM base_history
+             WHERE ref_name=?1 AND change_id IS NOT NULL AND seq<=?2 AND seq>?3
+         )",
+        params![reference, target_seq, floor],
+        |row| row.get(0),
+    )?;
+    Ok((count, started))
+}
+
+pub fn result(server: &ProjectServer, commit: &str, passed: bool) -> Result<(), RosenError> {
+    let mut connection = progress(server)?;
+    let transaction = connection.transaction()?;
+    let existing: Option<(bool, bool)> = transaction
+        .query_row(
+            "SELECT passed, published FROM attempts WHERE commit_id=?1",
+            [commit],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let published =
+        existing.is_some_and(|(was_passed, was_published)| passed && was_passed && was_published);
+    // Replace the row so `ORDER BY rowid DESC LIMIT 1` always observes the latest attempt.
+    transaction.execute("DELETE FROM attempts WHERE commit_id=?1", [commit])?;
+    transaction.execute(
+        "INSERT INTO attempts(commit_id,passed,published) VALUES (?1,?2,?3)",
+        params![commit, passed, published],
+    )?;
+    transaction.commit()?;
     Ok(())
 }
 
@@ -80,6 +193,18 @@ pub fn passed(server: &ProjectServer, commit: &str) -> Result<bool, RosenError> 
     Ok(progress(server)?
         .query_row(
             "SELECT passed FROM attempts WHERE commit_id=?1",
+            [commit],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(false))
+}
+
+/// Whether `commit` already has a recorded failing integration attempt (#567).
+pub fn failed(server: &ProjectServer, commit: &str) -> Result<bool, RosenError> {
+    Ok(progress(server)?
+        .query_row(
+            "SELECT NOT passed FROM attempts WHERE commit_id=?1",
             [commit],
             |row| row.get(0),
         )
@@ -109,24 +234,118 @@ pub struct Uncovered {
 /// The last green build is the later of the last integration build that passed and
 /// Rosen's own post-land checkpoint, which also advances for a project with no commands.
 pub fn uncovered(server: &ProjectServer) -> Result<Uncovered, RosenError> {
+    let connection = ledger(server)?;
+    let Some(reference) = base_ref_name(&connection)? else {
+        return Ok(Uncovered::default());
+    };
     let green = last_green(server)?;
-    let (lands, since): (u32, Option<u64>) = ledger(server)?.query_row(
-        "WITH pending AS (
-             SELECT h.commit_id FROM base_history h JOIN base_refs r ON r.name=h.ref_name
-             WHERE h.change_id IS NOT NULL AND h.seq>MAX(
-                 COALESCE((SELECT seq FROM base_history
-                           WHERE ref_name=h.ref_name AND commit_id=?1), 0),
-                 COALESCE((SELECT seq FROM post_land_green WHERE ref_name=h.ref_name), 0)))
-         SELECT (SELECT COUNT(*) FROM pending),
-                (SELECT MIN(created_at) FROM events WHERE kind IN ('landed','reverted')
-                 AND json_extract(detail,'$.commit') IN (SELECT commit_id FROM pending))",
-        params![green],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
+    let integration_seq: i64 = match green.as_deref() {
+        Some(commit) => connection
+            .query_row(
+                "SELECT seq FROM base_history WHERE ref_name=?1 AND commit_id=?2",
+                params![reference, commit],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0),
+        None => 0,
+    };
+    let floor = integration_seq.max(green_seq_for_ref(&connection, &reference)?);
+    let (lands, since) = pending_since_floor(&connection, &reference, floor)?;
     Ok(Uncovered {
         lands,
         since: since.map(|milliseconds| milliseconds / 1000),
     })
+}
+
+/// Landed changes past Rosen's `post_land_green` that have had no post-land result (#567).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PostLandStall {
+    pub lands: u32,
+    /// The oldest landed commit not yet covered by Rosen's `post_land_green`.
+    pub oldest_commit: String,
+    /// When the stall started (Unix seconds): the later of the oldest unverified land
+    /// and the latest post-land result event.
+    pub since: u64,
+}
+
+/// Reads landed commits newer than Rosen's `post_land_green` and when post-land verification
+/// last produced any result, for the project health stall check (#567).
+pub fn post_land_stall(server: &ProjectServer) -> Result<Option<PostLandStall>, RosenError> {
+    let connection = ledger(server)?;
+    let Some(reference) = base_ref_name(&connection)? else {
+        return Ok(None);
+    };
+    let floor = green_seq_for_ref(&connection, &reference)?;
+    let oldest_commit: Option<String> = connection
+        .query_row(
+            "SELECT commit_id FROM base_history
+             WHERE ref_name=?1 AND change_id IS NOT NULL AND seq>?2
+             ORDER BY seq ASC LIMIT 1",
+            params![reference, floor],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(oldest_commit) = oldest_commit else {
+        return Ok(None);
+    };
+    let (lands, oldest_landed_ms) = pending_since_floor(&connection, &reference, floor)?;
+    if lands == 0 {
+        return Ok(None);
+    }
+    let last_result_ms: Option<u64> = if table_exists(&connection, "events")? {
+        connection.query_row(
+            "SELECT MAX(created_at) FROM events
+             WHERE kind IN ('green','built','post_land_failure','bisect')",
+            [],
+            |row| row.get(0),
+        )?
+    } else {
+        None
+    };
+    let Some(since_ms) = oldest_landed_ms.max(last_result_ms) else {
+        return Ok(None);
+    };
+    Ok(Some(PostLandStall {
+        lands,
+        oldest_commit,
+        since: since_ms / 1000,
+    }))
+}
+
+fn base_ref_name(connection: &Connection) -> Result<Option<String>, RosenError> {
+    if !table_exists(connection, "base_refs")? || !table_exists(connection, "base_history")? {
+        return Ok(None);
+    }
+    Ok(connection
+        .query_row("SELECT name FROM base_refs LIMIT 1", [], |row| row.get(0))
+        .optional()?)
+}
+
+fn pending_since_floor(
+    connection: &Connection,
+    reference: &str,
+    floor: i64,
+) -> Result<(u32, Option<u64>), RosenError> {
+    let lands: u32 = connection.query_row(
+        "SELECT COUNT(*) FROM base_history
+         WHERE ref_name=?1 AND change_id IS NOT NULL AND seq>?2",
+        params![reference, floor],
+        |row| row.get(0),
+    )?;
+    if lands == 0 || !table_exists(connection, "events")? {
+        return Ok((lands, None));
+    }
+    let since: Option<u64> = connection.query_row(
+        "SELECT MIN(created_at) FROM events
+         WHERE kind IN ('landed','reverted') AND json_extract(detail,'$.commit') IN (
+             SELECT commit_id FROM base_history
+             WHERE ref_name=?1 AND change_id IS NOT NULL AND seq>?2
+         )",
+        params![reference, floor],
+        |row| row.get(0),
+    )?;
+    Ok((lands, since))
 }
 
 /// Saves why an integration build failed, for the stuck-integration notice (#504).
@@ -212,22 +431,73 @@ pub(crate) async fn merge_test_job(
     server: &ProjectServer,
     client: &rosen_client::Client,
 ) -> Result<Option<rosen_client::protocol::PostLandJob>, RosenError> {
-    use rosen_client::protocol::{CheckKind, CheckPriority, PostLandJob};
-    let commit: Option<String> = ledger(server)?
+    let connection = ledger(server)?;
+    let Some(reference) = base_ref_name(&connection)? else {
+        return Ok(None);
+    };
+    let green_seq = green_seq_for_ref(&connection, &reference)?;
+    let failed_seq = last_non_reverting_failed_seq(&connection, &reference)?;
+    let floor = green_seq.max(failed_seq);
+    let commit: Option<String> = connection
         .query_row(
-            "SELECT h.commit_id FROM base_history h JOIN base_refs r ON r.name=h.ref_name
-         WHERE h.change_id IS NOT NULL AND h.seq>COALESCE(
-             (SELECT seq FROM post_land_green WHERE ref_name=h.ref_name),0)
-           AND h.seq>COALESCE((SELECT MAX(failed.seq) FROM post_land_failures f
-             JOIN bisections b ON b.kind=f.kind AND b.phase='done'
-                 AND json_extract(b.commits,'$[' || b.high || '][0]')=f.commit_id
-             JOIN base_history failed ON failed.ref_name=b.ref_name AND failed.commit_id=b.failed
-             WHERE b.ref_name=h.ref_name AND f.kind='test' AND f.requires_revert=0),0)
-         ORDER BY h.seq DESC LIMIT 1",
-            [],
+            "SELECT commit_id FROM base_history
+             WHERE ref_name=?1 AND change_id IS NOT NULL AND seq>?2
+             ORDER BY seq DESC LIMIT 1",
+            params![reference, floor],
             |row| row.get(0),
         )
         .optional()?;
+    build_test_job(client, commit).await
+}
+
+/// The newest landed commit past Rosen's `post_land_green`, ignoring prior failed-batch
+/// suppression so startup resume or a forced integration can re-verify the tip (#567).
+pub(crate) async fn tip_test_job(
+    server: &ProjectServer,
+    client: &rosen_client::Client,
+) -> Result<Option<rosen_client::protocol::PostLandJob>, RosenError> {
+    let connection = ledger(server)?;
+    let Some(reference) = base_ref_name(&connection)? else {
+        return Ok(None);
+    };
+    let floor = green_seq_for_ref(&connection, &reference)?;
+    let commit: Option<String> = connection
+        .query_row(
+            "SELECT commit_id FROM base_history
+             WHERE ref_name=?1 AND change_id IS NOT NULL AND seq>?2
+             ORDER BY seq DESC LIMIT 1",
+            params![reference, floor],
+            |row| row.get(0),
+        )
+        .optional()?;
+    build_test_job(client, commit).await
+}
+
+fn last_non_reverting_failed_seq(
+    connection: &Connection,
+    reference: &str,
+) -> Result<i64, RosenError> {
+    if !table_exists(connection, "post_land_failures")? || !table_exists(connection, "bisections")?
+    {
+        return Ok(0);
+    }
+    let seq: i64 = connection.query_row(
+        "SELECT COALESCE(MAX(failed.seq), 0) FROM post_land_failures f
+         JOIN bisections b ON b.kind=f.kind AND b.phase='done'
+             AND json_extract(b.commits,'$[' || b.high || '][0]')=f.commit_id
+         JOIN base_history failed ON failed.ref_name=b.ref_name AND failed.commit_id=b.failed
+         WHERE b.ref_name=?1 AND f.kind='test' AND f.requires_revert=0",
+        [reference],
+        |row| row.get(0),
+    )?;
+    Ok(seq.max(0))
+}
+
+async fn build_test_job(
+    client: &rosen_client::Client,
+    commit: Option<String>,
+) -> Result<Option<rosen_client::protocol::PostLandJob>, RosenError> {
+    use rosen_client::protocol::{CheckKind, CheckPriority, PostLandJob};
     let Some(commit) = commit else {
         return Ok(None);
     };
@@ -241,4 +511,92 @@ pub(crate) async fn merge_test_job(
         // An offered job carries no submitter; Rosen records it with the result.
         submitter: None,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seed_server(
+        name: &str,
+    ) -> Result<(std::path::PathBuf, ProjectServer), Box<dyn std::error::Error>> {
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let root = std::env::temp_dir().join(format!("velocity-567-{name}-{unique}"));
+        let server = ProjectServer::new(&root, 1);
+        std::fs::create_dir_all(server.data_dir())?;
+        let conn = Connection::open(server.data_dir().join("metadata.sqlite"))?;
+        conn.execute_batch(
+            "CREATE TABLE base_refs (name TEXT PRIMARY KEY, target TEXT NOT NULL);
+             CREATE TABLE base_history (
+                 ref_name TEXT NOT NULL, seq INTEGER NOT NULL,
+                 commit_id TEXT NOT NULL, change_id TEXT
+             );
+             CREATE TABLE post_land_green (ref_name TEXT PRIMARY KEY, seq INTEGER NOT NULL, commit_id TEXT NOT NULL);
+             CREATE TABLE post_land_failures (
+                 session INTEGER PRIMARY KEY, change_id TEXT NOT NULL, commit_id TEXT NOT NULL,
+                 kind TEXT NOT NULL, output TEXT NOT NULL, requires_revert INTEGER NOT NULL, revert TEXT
+             );
+             CREATE TABLE events (seq INTEGER PRIMARY KEY, kind TEXT NOT NULL, detail TEXT NOT NULL, created_at INTEGER NOT NULL);
+             INSERT INTO base_refs(name, target) VALUES ('master', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+             INSERT INTO post_land_green(ref_name, seq, commit_id) VALUES ('master', 1, '0000000000000000000000000000000000000000');
+             INSERT INTO base_history(ref_name, seq, commit_id, change_id) VALUES
+                 ('master', 1, '0000000000000000000000000000000000000000', 'c0'),
+                 ('master', 2, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'c1'),
+                 ('master', 3, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'c2');",
+        )?;
+        Ok((root, server))
+    }
+
+    // Risk (#567): after a failed batch, landing a fix-forward commit must immediately become
+    // due for re-verification rather than waiting for 10 lands or 2 hours, while an unfixed
+    // failing tip must not spin-loop.
+    #[test]
+    fn due_re_verifies_immediately_after_failed_batch_advances()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, server) = seed_server("due")?;
+        let first = "a".repeat(40);
+        let fix = "b".repeat(40);
+        result(&server, &first, false)?;
+        assert!(!due(&server, &first, false)?);
+        assert!(due(&server, &fix, false)?);
+        result(&server, &fix, true)?;
+        assert!(due(&server, &fix, false)?);
+        // Re-recording an older commit as failed updates its rowid to become the latest attempt.
+        result(&server, &first, false)?;
+        assert!(due(&server, &fix, false)?);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    // Risk (#567): landed changes past post_land_green with no post-land result must report
+    // the count, oldest unverified commit, and stall start time, clearing once green advances.
+    #[test]
+    fn post_land_stall_tracks_oldest_unverified_commit_and_clears_on_green()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, server) = seed_server("stall")?;
+        let first = "a".repeat(40);
+        let fix = "b".repeat(40);
+        let conn = Connection::open(server.data_dir().join("metadata.sqlite"))?;
+        conn.execute(
+            "INSERT INTO events(seq, kind, detail, created_at) VALUES
+                (1, 'landed', ?1, 100000),
+                (2, 'landed', ?2, 120000),
+                (3, 'post_land_failure', '{}', 180000)",
+            params![
+                format!(r#"{{"commit":"{first}"}}"#),
+                format!(r#"{{"commit":"{fix}"}}"#),
+            ],
+        )?;
+        let stall = post_land_stall(&server)?.ok_or("expected active stall")?;
+        assert_eq!(stall.lands, 2);
+        assert_eq!(stall.oldest_commit, first);
+        assert_eq!(stall.since, 180);
+        conn.execute(
+            "UPDATE post_land_green SET seq=3, commit_id=?1 WHERE ref_name='master'",
+            [&fix],
+        )?;
+        assert_eq!(post_land_stall(&server)?, None);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
 }

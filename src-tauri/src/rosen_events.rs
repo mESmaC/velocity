@@ -189,8 +189,10 @@ async fn consume(
         event.kind,
         velocity_rosen::ProjectEventKind::PostLandFailure
             | velocity_rosen::ProjectEventKind::RevertRefused
+            | velocity_rosen::ProjectEventKind::Built
+            | velocity_rosen::ProjectEventKind::Green
     ) {
-        // The independent repair worker reads durable evidence, even while a build runs.
+        // The independent repair worker reads durable evidence to start or close repairs (#567).
         crate::rosen_landing::wake(application);
     }
     if event.kind == velocity_rosen::ProjectEventKind::Mirror {

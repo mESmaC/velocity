@@ -1990,7 +1990,7 @@ export type GraphStatus_Serialize = {
 
 export type HealthSeverity = "Info" | "Warning" | "Error";
 
-export type HealthSignalKind = "MirrorBehind" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "UpdaterManifestBehind" | "ReleaseGateRefused";
+export type HealthSignalKind = "MirrorBehind" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "PostLandStalled" | "UpdaterManifestBehind" | "ReleaseGateRefused";
 
 /**  A model you hid from the pickers by clicking its chip (F15 Models). */
 export type HiddenModel = {

@@ -1,8 +1,9 @@
 //! Executes Rosen’s post-land verification jobs. Rosen owns bisection, reverts
 //! and durable failure records (F7, R12).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use velocity_core::duty::DutyEventKind;
@@ -28,6 +29,25 @@ const BATCHES: u32 = 8;
 const STEPS: u32 = 64;
 /// The project's folder the post-land checks build in, beside its agents' workspaces.
 const VERIFY_FOLDER: &str = "post-land-checks";
+
+/// Projects whose startup post-land resume check has already run in this process (#567).
+static STARTUP_RESUMED: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
+
+fn needs_startup_resume(project: u32) -> bool {
+    let resumed = STARTUP_RESUMED.get_or_init(Mutex::default);
+    !resumed
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .contains(&project)
+}
+
+fn mark_startup_resumed(project: u32) {
+    let resumed = STARTUP_RESUMED.get_or_init(Mutex::default);
+    resumed
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(project);
+}
 
 /// What Velocity has said about the batch it last tested in one project.
 #[derive(Default)]
@@ -109,41 +129,69 @@ impl RosenLanding {
 impl<Host: LandingHost> Verify<Host> {
     async fn run(&self) {
         for _ in 0..BATCHES {
+            let startup_resume = self.kind == CheckKind::Test && needs_startup_resume(self.project);
             let next = match self.kind {
                 CheckKind::Build => post_land::next_build_batch(&self.server).await,
                 CheckKind::Test => post_land::next_batch(&self.server).await,
             };
             let batch = match next {
                 Ok(Some(batch)) => batch,
-                // Every local land is covered: check forced release integrations (#521)
-                // and orphaned lands from other machines (#519).
+                // Every local land is covered: resume unverified tip on startup (#567),
+                // check forced release integrations (#521) and orphaned lands (#519).
                 Ok(None) => {
                     if self.kind == CheckKind::Test {
-                        if let Some(target) = self.runner.take_forced_integration(self.project)
-                            && let Some(commit) = target
-                        {
-                            self.verify_forced_commit(&commit).await;
-                        }
-                        self.verify_orphaned_lands().await;
+                        self.handle_no_batch(startup_resume).await;
                     }
                     return;
                 }
-                // Rosen is not running: the next tick asks again.
+                // Rosen is not running: the next tick asks again (and keeps startup_resume pending).
                 Err(_) => return,
             };
             // Rosen may offer a merge-mode build here; the independent build worker
             // owns its folder and advances that prefix before tests are offered.
-            if batch.kind != self.kind || self.settled(&batch.commit) {
+            if batch.kind != self.kind || (!startup_resume && self.settled(&batch.commit)) {
                 return;
             }
             if batch.after_land && batch.kind == CheckKind::Test {
-                self.integrate(&batch).await;
+                self.integrate(&batch, startup_resume).await;
                 return;
+            }
+            if startup_resume {
+                mark_startup_resumed(self.project);
             }
             if !self.verify(&batch).await {
                 return;
             }
         }
+    }
+
+    async fn handle_no_batch(&self, startup_resume: bool) {
+        if startup_resume {
+            match post_land::unverified_tip_batch(&self.server).await {
+                Ok(Some(batch)) => {
+                    if batch.after_land {
+                        self.integrate(&batch, true).await;
+                    } else {
+                        mark_startup_resumed(self.project);
+                        let _ = self.verify(&batch).await;
+                    }
+                    return;
+                }
+                Ok(None) => mark_startup_resumed(self.project),
+                Err(_) => return,
+            }
+        }
+        if let Some(target) = self.runner.take_forced_integration(self.project) {
+            match target {
+                Some(commit) => self.verify_forced_commit(&commit).await,
+                None => {
+                    if let Ok(Some(batch)) = post_land::unverified_tip_batch(&self.server).await {
+                        self.integrate(&batch, true).await;
+                    }
+                }
+            }
+        }
+        self.verify_orphaned_lands().await;
     }
 
     /// Runs post-land verification for issues another machine landed and left open without
@@ -306,8 +354,10 @@ impl<Host: LandingHost> Verify<Host> {
         self.run_orphaned_batch(&batch).await;
     }
 
-    async fn integrate(&self, batch: &Batch) {
-        let forced = self.runner.has_forced_integration(self.project);
+    async fn integrate(&self, batch: &Batch, startup_resume: bool) {
+        let forced = startup_resume
+            || self.runner.has_forced_integration(self.project)
+            || self.has_landed_open_repair(&batch.commit).await;
         if !forced {
             let idle = self.host.integration_idle(self.project);
             match integration::due(&self.server, &batch.commit, idle) {
@@ -327,8 +377,52 @@ impl<Host: LandingHost> Verify<Host> {
                 return;
             }
         };
+        if startup_resume {
+            mark_startup_resumed(self.project);
+        }
         let _ = self.runner.take_forced_integration(self.project);
-        self.verify(batch).await;
+        let _ = self.verify(batch).await;
+        // Release the integration slot and wake other projects that may be waiting on it.
+        drop(_slot);
+        self.runner.wake();
+    }
+
+    /// True when an open build repair thread has landed its fix and `batch_commit` has not
+    /// already been recorded as a failed attempt, so the fix-forward verifies immediately (#567).
+    async fn has_landed_open_repair(&self, batch_commit: &str) -> bool {
+        if matches!(integration::failed(&self.server, batch_commit), Ok(true)) {
+            // Do not re-run a batch commit that already failed and has no newer land.
+            return false;
+        }
+        for repair in self
+            .project_item
+            .build_repairs
+            .iter()
+            .filter(|repair| !repair.closed)
+        {
+            let Some(thread) = self
+                .project_item
+                .threads
+                .iter()
+                .find(|thread| thread.id == repair.thread)
+            else {
+                continue;
+            };
+            if thread.rosen_issue.landed_commit().is_some()
+                || thread.state == velocity_store::ThreadState::Merged
+            {
+                return true;
+            }
+            if let Some(change) = thread.rosen_change.as_deref()
+                && matches!(
+                    velocity_rosen::build_repairs::change_landed_commit(&self.server, change).await,
+                    Ok(Some(_))
+                )
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// Tests one batch. `true` when it went green, so the next can be looked for.

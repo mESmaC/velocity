@@ -19,8 +19,7 @@ pub async fn issue_build_coverage(
     if let Some(green) = crate::integration::last_green(server)? {
         greens.push(green);
     }
-    if !crate::post_land::after_land(server).await?
-        && let Some(green) = legacy_green(&client).await?
+    if let Some(green) = legacy_green(&client).await?
         && !greens.contains(&green)
     {
         greens.push(green);

@@ -3,8 +3,8 @@
 
 use std::collections::BTreeMap;
 
-use rosen_client::protocol::CheckKind;
-use rusqlite::{Connection, OpenFlags};
+use rosen_client::protocol::{CheckKind, ErrorCode};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::Deserialize;
 
 use crate::{ProjectServer, RosenError, integration};
@@ -101,6 +101,123 @@ fn is_integration(failure: &rosen_client::protocol::PostLandFailure) -> bool {
     failure.kind == CheckKind::Test
         && failure.revert.is_none()
         && failure.output.starts_with(integration::FAILURE_HEADING)
+}
+
+/// Commits in `commits` covered by any green post-land pass — Velocity's integration build,
+/// Rosen's build prefix (`post_land_build_green`), or Rosen's test prefix (`post_land_green`).
+/// Any green pass at or after a fix commit settles its build repair (#567).
+pub async fn repair_coverage(
+    server: &ProjectServer,
+    commits: &[String],
+) -> Result<Vec<String>, RosenError> {
+    if commits.is_empty() {
+        return Ok(Vec::new());
+    }
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let greens = green_checkpoints(server, &client).await?;
+    if greens.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut covered = Vec::new();
+    for commit in commits {
+        let Ok(identifier) = crate::policy::object(commit) else {
+            continue;
+        };
+        for green in &greens {
+            match client.merge_base(commit, green).await {
+                Ok(answer) if answer.merge_base == Some(identifier) => {
+                    covered.push(commit.clone());
+                    break;
+                }
+                Ok(_) | Err(rosen_client::Error::Server(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(covered)
+}
+
+async fn green_checkpoints(
+    server: &ProjectServer,
+    client: &rosen_client::Client,
+) -> Result<Vec<String>, RosenError> {
+    let mut greens = Vec::new();
+    if let Some(green) = integration::last_green(server)? {
+        greens.push(green);
+    }
+    match client.post_land_status().await {
+        Ok(status) => {
+            for checkpoint in [status.last_built, status.last_green].into_iter().flatten() {
+                let commit = checkpoint.commit.to_string();
+                if !greens.contains(&commit) {
+                    greens.push(commit);
+                }
+            }
+        }
+        Err(rosen_client::Error::Server(error)) if error.code == ErrorCode::UnknownRequest => {
+            for green in [
+                client.post_land_build_next().await?.last_green,
+                client.post_land_next().await?.last_green,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let commit = green.to_string();
+                if !greens.contains(&commit) {
+                    greens.push(commit);
+                }
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(greens)
+}
+
+/// The newest non-reverted commit landed on the base for `change`, if any (#567).
+pub async fn change_landed_commit(
+    server: &ProjectServer,
+    change: &str,
+) -> Result<Option<String>, RosenError> {
+    let metadata = server.data_dir().join("metadata.sqlite");
+    let change = change.to_owned();
+    tokio::task::spawn_blocking(move || read_change_landed_commit(&metadata, &change))
+        .await
+        .map_err(|error| RosenError::BuildRepairData(error.to_string()))?
+}
+
+fn read_change_landed_commit(
+    metadata: &std::path::Path,
+    change: &str,
+) -> Result<Option<String>, RosenError> {
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    let connection = Connection::open_with_flags(metadata, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(std::time::Duration::from_secs(2))?;
+    let has_history: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='base_history')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_history {
+        return Ok(None);
+    }
+    let has_reverts: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='auto_reverts')",
+        [],
+        |row| row.get(0),
+    )?;
+    let sql = if has_reverts {
+        "SELECT h.commit_id FROM base_history h
+         WHERE h.change_id=?1
+           AND NOT EXISTS(SELECT 1 FROM auto_reverts r WHERE r.culprit=h.commit_id)
+         ORDER BY h.seq DESC LIMIT 1"
+    } else {
+        "SELECT commit_id FROM base_history WHERE change_id=?1 ORDER BY seq DESC LIMIT 1"
+    };
+    Ok(connection
+        .query_row(sql, [change], |row| row.get(0))
+        .optional()?)
 }
 
 #[derive(Default)]
