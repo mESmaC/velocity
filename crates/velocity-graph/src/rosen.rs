@@ -1,7 +1,9 @@
 //! A view of an immutable Rosen tree. Equal directory IDs skip entire subtrees.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use rosen_client::protocol::{
@@ -13,9 +15,59 @@ use rosen_core::{FileMode, Object, ObjectId, ObjectKind, Tree};
 
 use crate::Error;
 
+static SHARED_RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+
+thread_local! {
+    static CONNECT_DURATION: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+}
+
+pub(crate) fn reset_connect_duration() {
+    CONNECT_DURATION.with(|cell| cell.set(Duration::ZERO));
+}
+
+pub(crate) fn take_connect_duration() -> Duration {
+    CONNECT_DURATION.with(|cell| cell.replace(Duration::ZERO))
+}
+
+fn record_connect_duration(elapsed: Duration) {
+    CONNECT_DURATION.with(|cell| cell.set(cell.get().saturating_add(elapsed)));
+}
+
+fn shared_runtime() -> Result<&'static tokio::runtime::Runtime, Error> {
+    SHARED_RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|error| Error::Invalid(error.clone()))
+}
+
+async fn connect_timed(
+    endpoint: &Endpoint,
+) -> Result<std::sync::Arc<velocity_rosen::connection::Connection>, Error> {
+    let (connection, elapsed) = velocity_rosen::connection::requests_timed(endpoint).await?;
+    record_connect_duration(elapsed);
+    Ok(connection)
+}
+
+async fn check_transport<T>(
+    endpoint: &Endpoint,
+    connection: &std::sync::Arc<velocity_rosen::connection::Connection>,
+    result: Result<T, Error>,
+) -> Result<T, Error> {
+    if let Err(Error::Rosen(rosen_client::Error::Disconnected | rosen_client::Error::Io(_))) =
+        &result
+    {
+        velocity_rosen::connection::invalidate(endpoint, connection).await;
+    }
+    result
+}
+
 pub struct Source {
     endpoint: Endpoint,
-    runtime: tokio::runtime::Runtime,
     workspace: bool,
     pub tree: Option<ObjectId>,
     directories: HashMap<ObjectId, Tree>,
@@ -27,15 +79,24 @@ impl Source {
     }
 
     pub fn new(endpoint: Endpoint, workspace: bool) -> Result<Self, Error> {
+        let _ = shared_runtime()?;
         Ok(Self {
             endpoint,
-            runtime: tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?,
             workspace,
             tree: None,
             directories: HashMap::new(),
         })
+    }
+
+    /// Clones this source's directory cache and current tree so a branched workspace
+    /// diffs only its changed subtrees against the parent view (#541).
+    pub(crate) fn clone_for_branch(&self, workspace: bool) -> Self {
+        Self {
+            endpoint: self.endpoint.clone(),
+            workspace,
+            tree: self.tree,
+            directories: self.directories.clone(),
+        }
     }
 
     pub fn workspace_tree(&self, root: &Path) -> Result<Option<ObjectId>, Error> {
@@ -46,12 +107,18 @@ impl Source {
 
     pub fn revision_tree(&self, revision: &str) -> Result<ObjectId, Error> {
         self.request(async {
-            let client = velocity_rosen::connection::requests(&self.endpoint).await?;
+            let client = connect_timed(&self.endpoint).await?;
             let request = ReadRequest {
                 at: Some(revision.to_owned()),
                 path: String::new(),
             };
-            match client.read_file(request).await? {
+            let answer = check_transport(
+                &self.endpoint,
+                &client,
+                client.read_file(request).await.map_err(Error::from),
+            )
+            .await?;
+            match answer {
                 ReadAnswer::Directory { id, .. } => Ok(id),
                 ReadAnswer::File { .. } => {
                     Err(Error::Invalid("Rosen revision has no root tree".into()))
@@ -64,9 +131,10 @@ impl Source {
         let directories = &mut self.directories;
         let previous = self.tree;
         let endpoint = &self.endpoint;
-        wait(&self.runtime, async {
-            let client = velocity_rosen::connection::requests(endpoint).await?;
-            changes(&client, directories, previous, tree).await
+        wait(shared_runtime()?, async {
+            let client = connect_timed(endpoint).await?;
+            let result = changes(&client, directories, previous, tree).await;
+            check_transport(endpoint, &client, result).await
         })
     }
 
@@ -75,8 +143,9 @@ impl Source {
             return Ok(HashMap::new());
         }
         self.request(async {
-            let client = velocity_rosen::connection::requests(&self.endpoint).await?;
-            objects(&client, ids, ObjectKind::Blob).await
+            let client = connect_timed(&self.endpoint).await?;
+            let result = objects(&client, ids, ObjectKind::Blob).await;
+            check_transport(&self.endpoint, &client, result).await
         })
     }
 
@@ -85,12 +154,18 @@ impl Source {
             .tree
             .ok_or_else(|| Error::Invalid("Rosen graph has no tree".into()))?;
         self.request(async {
-            let client = velocity_rosen::connection::requests(&self.endpoint).await?;
+            let client = connect_timed(&self.endpoint).await?;
             let request = ReadRequest {
                 at: Some(tree.to_string()),
                 path: path.to_owned(),
             };
-            match client.read_file(request).await? {
+            let answer = check_transport(
+                &self.endpoint,
+                &client,
+                client.read_file(request).await.map_err(Error::from),
+            )
+            .await?;
+            match answer {
                 ReadAnswer::File { data, .. } => {
                     String::from_utf8(data).map_err(|error| Error::Invalid(error.to_string()))
                 }
@@ -110,12 +185,17 @@ impl Source {
         let change = WorkspaceMarker::read(root)?.change.to_string();
         let filter_paths = paths.clone();
         self.request(async {
-            let client = velocity_rosen::connection::requests(&self.endpoint).await?;
+            let client = connect_timed(&self.endpoint).await?;
             let query = OverlapQuery {
                 change: Some(change.clone()),
                 paths,
             };
-            let answer = client.overlaps(query).await?;
+            let answer = check_transport(
+                &self.endpoint,
+                &client,
+                client.overlaps(query).await.map_err(Error::from),
+            )
+            .await?;
             let mut overlaps = Vec::new();
             for overlap in answer.overlaps.iter().take(8) {
                 let symbols =
@@ -146,7 +226,7 @@ impl Source {
     ) -> Result<Vec<crate::signature_impact::StaleReferenceWarning>, Error> {
         let change = change.to_owned();
         self.request(async {
-            let client = velocity_rosen::connection::requests(&self.endpoint).await?;
+            let client = connect_timed(&self.endpoint).await?;
             Ok(crate::signature_impact::change_stale_reference_warnings(
                 &client,
                 graph,
@@ -166,7 +246,7 @@ impl Source {
         let texts = texts.to_vec();
         let exclude = exclude_change.map(str::to_owned);
         self.request(async {
-            let client = velocity_rosen::connection::requests(&self.endpoint).await?;
+            let client = connect_timed(&self.endpoint).await?;
             Ok(crate::signature_impact::dispatch_stale_reference_warnings(
                 &client,
                 graph,
@@ -179,10 +259,15 @@ impl Source {
 
     pub fn pieces(&self) -> Result<Vec<crate::spec_outline::LiveClaim>, Error> {
         let endpoint = &self.endpoint;
-        self.runtime.block_on(async {
+        shared_runtime()?.block_on(async {
             tokio::time::timeout(Duration::from_secs(2), async {
-                let client = velocity_rosen::connection::requests(endpoint).await?;
-                let pieces = client.pieces().await?;
+                let client = connect_timed(endpoint).await?;
+                let pieces = check_transport(
+                    endpoint,
+                    &client,
+                    client.pieces().await.map_err(Error::from),
+                )
+                .await?;
                 Ok(pieces
                     .into_iter()
                     .map(|claim| crate::spec_outline::LiveClaim {
@@ -198,7 +283,7 @@ impl Source {
     }
 
     fn request<T>(&self, future: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
-        wait(&self.runtime, future)
+        wait(shared_runtime()?, future)
     }
 }
 

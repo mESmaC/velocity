@@ -4,13 +4,17 @@
 
 use std::io::{BufReader, Write};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
+use serde_json::Value;
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use velocity_core::duty::DutyRole;
+use velocity_github::mcp_stdio::{self, ToolServer};
 use velocity_github::{IssueClient, ScoutServer};
 use velocity_interview::Interviews;
+use velocity_rosen::mcp_latency::LatencyRecorder;
 use velocity_store::duty::ScoutRoster;
 use velocity_threads::parked_review::{PARKED_REVIEW_SWITCH, ParkedReviewServer};
 use velocity_threads::{
@@ -23,6 +27,44 @@ use crate::layout::MainLayout;
 use crate::state::ManagedStateStore;
 use crate::threads::{lock, report};
 
+struct TimedToolServer<T> {
+    inner: T,
+    latency: LatencyRecorder,
+}
+
+impl<T: ToolServer> TimedToolServer<T> {
+    fn new(inner: T) -> Self {
+        let latency = LatencyRecorder::open(inner.name(), None);
+        Self { inner, latency }
+    }
+}
+
+impl<T: ToolServer> ToolServer for TimedToolServer<T> {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    fn instructions(&self) -> String {
+        self.inner.instructions()
+    }
+
+    fn tools(&self) -> Vec<Value> {
+        self.inner.tools()
+    }
+
+    fn call(&mut self, name: Option<&str>, arguments: Value) -> Result<Value, String> {
+        let started = Instant::now();
+        let result = self.inner.call(name, arguments);
+        self.latency.record(
+            name.unwrap_or("unknown"),
+            Duration::ZERO,
+            started.elapsed(),
+            result.is_ok(),
+        );
+        result
+    }
+}
+
 /// `velocity --scout-mcp <worktree> <scout> <report>`: serve one scout's MCP connection on
 /// stdin/stdout and exit. `false` when Velocity was started normally.
 pub fn serve_scout_server() -> anyhow::Result<bool> {
@@ -32,9 +74,11 @@ pub fn serve_scout_server() -> anyhow::Result<bool> {
         let [_, launch] = arguments.as_slice() else {
             anyhow::bail!("Usage: {PARKED_REVIEW_SWITCH} <launch-file>");
         };
-        let mut server =
-            ParkedReviewServer::open(std::path::Path::new(launch)).map_err(anyhow::Error::msg)?;
-        server.serve(
+        let mut server = TimedToolServer::new(
+            ParkedReviewServer::open(std::path::Path::new(launch)).map_err(anyhow::Error::msg)?,
+        );
+        mcp_stdio::serve(
+            &mut server,
             BufReader::new(std::io::stdin().lock()),
             std::io::stdout().lock(),
         )?;
@@ -55,9 +99,11 @@ pub fn serve_scout_server() -> anyhow::Result<bool> {
         let [_, launch] = arguments.as_slice() else {
             anyhow::bail!("Usage: {REVIEW_SWARM_SWITCH} <launch-file>");
         };
-        let mut server =
-            ReviewSwarmServer::open(std::path::Path::new(launch)).map_err(anyhow::Error::msg)?;
-        server.serve(
+        let mut server = TimedToolServer::new(
+            ReviewSwarmServer::open(std::path::Path::new(launch)).map_err(anyhow::Error::msg)?,
+        );
+        mcp_stdio::serve(
+            &mut server,
             BufReader::new(std::io::stdin().lock()),
             std::io::stdout().lock(),
         )?;
@@ -72,12 +118,14 @@ pub fn serve_scout_server() -> anyhow::Result<bool> {
     let client = IssueClient::discover(std::path::Path::new(worktree)).map_err(|error| {
         format!("This project has no GitHub repository to file issues in ({error})")
     });
-    let mut server = ScoutServer::new(client, scout.clone(), Some(PathBuf::from(report)));
+    let mut server = TimedToolServer::new(ScoutServer::new(
+        client,
+        scout.clone(),
+        Some(PathBuf::from(report)),
+    ));
     let input = BufReader::new(std::io::stdin().lock());
     let mut output = std::io::stdout().lock();
-    server
-        .serve(input, &mut output)
-        .context("The scout MCP connection failed")?;
+    mcp_stdio::serve(&mut server, input, &mut output).context("The scout MCP connection failed")?;
     output.flush()?;
     Ok(true)
 }

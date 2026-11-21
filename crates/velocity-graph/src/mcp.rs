@@ -7,12 +7,13 @@ use std::ffi::OsString;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use notify::{RecursiveMode, Watcher};
 use rosen_client::Endpoint;
 use rosen_client::snapshot::WorkspaceMarker;
 use serde_json::{Value, json};
+use velocity_rosen::mcp_latency::{LatencyRecorder, duration_ms};
 
 use crate::Error;
 use crate::index::Index;
@@ -83,6 +84,7 @@ pub fn serve_stdio(arguments: &[OsString]) -> Result<(), Error> {
     serve_connection(
         PathBuf::from(worktree),
         cache,
+        Some(app_data.to_path_buf()),
         backend,
         thread,
         std::io::BufReader::new(std::io::stdin()),
@@ -141,15 +143,21 @@ pub fn task_context(
 const MAP_WAIT: Duration = Duration::from_millis(1500);
 const MAX_PENDING_PATH_BYTES: usize = 32 * 1024;
 
+struct UsageRecord {
+    name: String,
+    outcome: crate::usage::ToolOutcome,
+}
+
 /// One agent's connection.
 struct Connection {
     backend: Backend,
     root: PathBuf,
     cache: PathBuf,
-    thread: Option<String>,
     dirty: Mutex<HashSet<String>>,
     request: Mutex<()>,
     status: WorkspaceStatus,
+    latency: LatencyRecorder,
+    usage_tx: Option<mpsc::SyncSender<UsageRecord>>,
 }
 
 enum Backend {
@@ -173,26 +181,40 @@ pub fn serve(
         tools: Box::default(),
         endpoint,
     };
-    serve_connection(root, cache, backend, None, input, output)
+    serve_connection(root, cache, None, backend, None, input, output)
 }
 
 fn serve_connection(
     root: PathBuf,
     cache: PathBuf,
+    app_data: Option<PathBuf>,
     backend: Backend,
     thread: Option<String>,
     input: impl BufRead,
     mut output: impl Write,
 ) -> Result<(), Error> {
     let status = WorkspaceStatus::track(&cache, &root);
+    let latency = LatencyRecorder::open(SERVER_NAME, app_data.as_deref());
+    // Offload usage.json lock/rewrite so tool calls reply immediately (#541).
+    let (usage_tx, usage_rx) = mpsc::sync_channel::<UsageRecord>(128);
+    let usage_writer = {
+        let cache = cache.clone();
+        let root = root.clone();
+        std::thread::spawn(move || {
+            while let Ok(entry) = usage_rx.recv() {
+                record_tool(&cache, &root, thread.as_deref(), &entry.name, entry.outcome);
+            }
+        })
+    };
     let connection = Arc::new(Connection {
         backend,
         root,
         cache,
-        thread,
         dirty: Mutex::default(),
         request: Mutex::default(),
         status,
+        latency,
+        usage_tx: Some(usage_tx),
     });
     let (changes, pending) = mpsc::sync_channel(1);
     let watcher = watch(&connection, changes);
@@ -211,6 +233,8 @@ fn serve_connection(
     let _ = updater.join();
     // A connection can end while building; let its parses reach the cache.
     let _ = builder.join();
+    drop(connection);
+    let _ = usage_writer.join();
     result
 }
 
@@ -381,11 +405,16 @@ fn respond(request: &Value, connection: &Connection) -> Option<Value> {
         // Shared guidance and the workspace map are published once in the session preface
         // instead of MCP initialize instructions, which some harnesses copy onto every tool
         // description (#538).
-        "initialize" => json!({
-            "protocolVersion": "2025-11-25",
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": "velocity-graph", "version": env!("CARGO_PKG_VERSION")},
-        }),
+        "initialize" => {
+            connection
+                .latency
+                .record("initialize", Duration::ZERO, Duration::ZERO, true);
+            json!({
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "velocity-graph", "version": env!("CARGO_PKG_VERSION")},
+            })
+        }
         "ping" => json!({}),
         "tools/list" => json!({"tools": tool_list()}),
         "tools/call" => call(&request["params"], connection),
@@ -394,23 +423,40 @@ fn respond(request: &Value, connection: &Connection) -> Option<Value> {
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
 }
 
+struct CallTiming {
+    connect_ms: u64,
+    work_ms: u64,
+}
+
 fn call(parameters: &Value, connection: &Connection) -> Value {
     let name = parameters["name"].as_str().unwrap_or_default();
+    let started = Instant::now();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         connection.call(name, &parameters["arguments"])
     }))
     .unwrap_or_else(|_| Err("the code graph failed on this request".into()));
-    let (text, outcome, failed) = match result {
-        Ok((text, outcome)) => (text, outcome, false),
-        Err(CallError { message, outcome }) => (message, outcome, true),
+    let total_ms = duration_ms(started.elapsed());
+    let (text, outcome, failed, timing) = match result {
+        Ok((text, outcome, timing)) => (text, outcome, false, timing),
+        Err(CallError { message, outcome }) => (
+            message,
+            outcome,
+            true,
+            CallTiming {
+                connect_ms: 0,
+                work_ms: total_ms,
+            },
+        ),
     };
-    record_tool(
-        &connection.cache,
-        &connection.root,
-        connection.thread.as_deref(),
-        name,
-        outcome,
-    );
+    connection
+        .latency
+        .record_split(name, timing.connect_ms, timing.work_ms, total_ms, !failed);
+    if let Some(usage_tx) = &connection.usage_tx {
+        let _ = usage_tx.try_send(UsageRecord {
+            name: name.to_owned(),
+            outcome,
+        });
+    }
     let text = crate::query::within_budget(text);
     if failed {
         json!({"isError": true, "content": [{"type": "text", "text": text}]})
@@ -438,40 +484,94 @@ impl Connection {
         &self,
         name: &str,
         arguments: &Value,
-    ) -> Result<(String, crate::usage::ToolOutcome), CallError> {
-        if name == "graph_grep" {
-            let text = crate::workspace_search::grep(&self.root, arguments)?;
-            return Ok((text, crate::usage::ToolOutcome::Other));
-        }
-        if name == "graph_glob" {
-            let text = crate::workspace_search::glob_files(&self.root, arguments)?;
-            return Ok((text, crate::usage::ToolOutcome::Other));
+    ) -> Result<(String, crate::usage::ToolOutcome, CallTiming), CallError> {
+        let started = Instant::now();
+        if let Some(text) = self.call_workspace_search(name, arguments)? {
+            return Ok((
+                text,
+                crate::usage::ToolOutcome::Other,
+                CallTiming {
+                    connect_ms: 0,
+                    work_ms: duration_ms(started.elapsed()),
+                },
+            ));
         }
         match &self.backend {
             Backend::Local { tools, endpoint } => {
-                let mut tools = tools.lock().unwrap_or_else(|error| error.into_inner());
-                let tools = ensure_tools(self, &mut tools, endpoint.clone())?;
-                refresh(tools, self)?;
-                tools.measured_call(name, arguments)
+                self.call_local(tools, endpoint.clone(), name, arguments, started)
             }
-            Backend::Shared(project) => {
-                let action = Action::Tool {
-                    name: name.into(),
-                    arguments: arguments.clone(),
-                };
-                let reply = self.request(project, action)?;
-                if reply.failed {
-                    return Err(CallError {
-                        message: reply.text,
-                        outcome: reply.outcome,
-                    });
-                }
-                Ok((reply.text, reply.outcome))
-            }
+            Backend::Shared(project) => self.call_shared(project, name, arguments),
         }
     }
 
-    fn request(&self, project: &Project, action: Action) -> Result<Reply, CallError> {
+    fn call_workspace_search(
+        &self,
+        name: &str,
+        arguments: &Value,
+    ) -> Result<Option<String>, CallError> {
+        match name {
+            "graph_grep" => Ok(Some(crate::workspace_search::grep(&self.root, arguments)?)),
+            "graph_glob" => Ok(Some(crate::workspace_search::glob_files(
+                &self.root, arguments,
+            )?)),
+            _ => Ok(None),
+        }
+    }
+
+    fn call_local(
+        &self,
+        tools: &Mutex<Option<Tools>>,
+        endpoint: Option<Endpoint>,
+        name: &str,
+        arguments: &Value,
+        started: Instant,
+    ) -> Result<(String, crate::usage::ToolOutcome, CallTiming), CallError> {
+        crate::rosen::reset_connect_duration();
+        let mut tools = tools.lock().unwrap_or_else(|error| error.into_inner());
+        let tools = ensure_tools(self, &mut tools, endpoint)?;
+        refresh(tools, self)?;
+        let (text, outcome) = tools.measured_call(name, arguments)?;
+        let connect_ms = duration_ms(crate::rosen::take_connect_duration());
+        let total_ms = duration_ms(started.elapsed());
+        Ok((
+            text,
+            outcome,
+            CallTiming {
+                connect_ms,
+                work_ms: total_ms.saturating_sub(connect_ms),
+            },
+        ))
+    }
+
+    fn call_shared(
+        &self,
+        project: &Project,
+        name: &str,
+        arguments: &Value,
+    ) -> Result<(String, crate::usage::ToolOutcome, CallTiming), CallError> {
+        let action = Action::Tool {
+            name: name.into(),
+            arguments: arguments.clone(),
+        };
+        let (reply, pipe_connect) = self.request(project, action)?;
+        let connect_ms = duration_ms(pipe_connect).saturating_add(reply.rosen_connect_ms);
+        if reply.failed {
+            return Err(CallError {
+                message: reply.text,
+                outcome: reply.outcome,
+            });
+        }
+        Ok((
+            reply.text,
+            reply.outcome,
+            CallTiming {
+                connect_ms,
+                work_ms: reply.work_ms,
+            },
+        ))
+    }
+
+    fn request(&self, project: &Project, action: Action) -> Result<(Reply, Duration), CallError> {
         let _request = self
             .request
             .lock()
@@ -482,7 +582,7 @@ impl Connection {
             .unwrap_or_else(|error| error.into_inner())
             .drain()
             .collect();
-        let result = project.request(&self.root, changed.clone(), action, QUERY_TIMEOUT);
+        let result = project.request_timed(&self.root, changed.clone(), action, QUERY_TIMEOUT);
         let mut dirty = self.dirty.lock().unwrap_or_else(|error| error.into_inner());
         if result.is_err() {
             dirty.extend(changed);

@@ -103,6 +103,7 @@ fn serve_stdio_inner(
     let mut options = ToolOptions::new(
         continuous_dispatch,
         handler.map(|_| &handle_issue as &crate::issue_tools::IssueHandler<'_>),
+        Some(&app_data),
     );
     if next_work.is_some() {
         options = options

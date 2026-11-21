@@ -3,18 +3,23 @@ use crate::{
     issue_tools::{self, IssueHandler},
     next_work_tools::{self, NextWorkHandler},
     read_tools::{self, MessageReader},
+    remote,
 };
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
+use std::path::Path;
+use std::time::Instant;
 use velocity_core::issue_dependencies::{
     IssueReference, blocker_list, parse_blockers, with_declared_blockers,
 };
 use velocity_core::text_budget::tool_answer;
+use velocity_rosen::mcp_latency::LatencyRecorder;
 
 #[derive(Default)]
 pub(crate) struct ToolOptions<'a> {
     continuous_dispatch: bool,
     issue_handler: Option<&'a IssueHandler<'a>>,
+    app_data: Option<&'a Path>,
     next_work_handler: Option<&'a NextWorkHandler<'a>>,
 }
 
@@ -22,10 +27,12 @@ impl<'a> ToolOptions<'a> {
     pub(crate) fn new(
         continuous_dispatch: bool,
         issue_handler: Option<&'a IssueHandler<'a>>,
+        app_data: Option<&'a Path>,
     ) -> Self {
         Self {
             continuous_dispatch,
             issue_handler,
+            app_data,
             next_work_handler: None,
         }
     }
@@ -66,6 +73,7 @@ pub(crate) fn serve_with_options(
     let connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let output = std::sync::Arc::new(std::sync::Mutex::new(output));
     let receiver = read_requests(input, connected.clone(), output.clone());
+    let latency = LatencyRecorder::open(crate::SERVER_NAME, options.app_data);
     let mut session = ToolSession::default();
     let result = (|| {
         for line in receiver {
@@ -79,6 +87,7 @@ pub(crate) fn serve_with_options(
                     &mut session,
                     &connected,
                     &options,
+                    &latency,
                 ),
                 Err(_) => Some(failure(Value::Null, -32700, "Parse error")),
             };
@@ -118,6 +127,7 @@ struct ToolSession {
     messages: MessageReader,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn respond(
     channel: &Channel,
     member: &str,
@@ -126,6 +136,7 @@ fn respond(
     session: &mut ToolSession,
     connected: &std::sync::atomic::AtomicBool,
     options: &ToolOptions<'_>,
+    latency: &LatencyRecorder,
 ) -> Option<Value> {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = request.get("method").and_then(Value::as_str);
@@ -134,42 +145,103 @@ fn respond(
     }
     request.get("id")?;
     let result = match method.unwrap_or_default() {
-        "initialize" => match channel.join_with_session(member, nick, true) {
-            Ok(nick) => {
-                session.nick = Some(nick.clone());
-                json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},
-                "serverInfo":{"name":"velocity-airc","version":env!("CARGO_PKG_VERSION")},
-                "instructions":instructions(
-                    &nick,
-                    options.continuous_dispatch,
-                    options.issue_handler.is_some(),
-                )})
+        "initialize" => {
+            match initialize_session(channel, member, nick, session, options, latency) {
+                Ok(value) => value,
+                Err(error) => return Some(failure(id, -32603, &error.to_string())),
             }
-            Err(error) => return Some(failure(id, -32603, &error.to_string())),
-        },
+        }
         "ping" => json!({}),
         _ if session.nick.is_none() => return Some(failure(id, -32600, "Initialize first")),
         "tools/list" => match channel.is_rosen_project(member) {
             Ok(rosen) => json!({"tools":tool_list(rosen, options)}),
             Err(error) => return Some(failure(id, -32603, &error.to_string())),
         },
-        "tools/call" => {
-            let parameters = &request["params"];
-            let (text, failed) = match call(
-                channel, member, nick, parameters, connected, options, session,
-            ) {
-                Ok(value) => (value.to_string(), false),
-                Err(error) => (error.to_string(), true),
-            };
-            let text = tool_answer(
-                text,
-                "Use a query, a smaller limit, or one sequence or task when the tool supports it.",
-            );
-            json!({"isError":failed,"content":[{"type":"text","text":text}]})
-        }
+        "tools/call" => call_tool(
+            channel,
+            member,
+            nick,
+            &request["params"],
+            connected,
+            options,
+            session,
+            latency,
+        ),
         _ => return Some(failure(id, -32601, "Method not found")),
     };
     Some(json!({"jsonrpc":"2.0","id":id,"result":result}))
+}
+
+fn initialize_session(
+    channel: &Channel,
+    member: &str,
+    nick: &str,
+    session: &mut ToolSession,
+    options: &ToolOptions<'_>,
+    latency: &LatencyRecorder,
+) -> Result<Value, Error> {
+    remote::reset_connect_duration();
+    let started = Instant::now();
+    let joined = channel.join_with_session(member, nick, true);
+    latency.record(
+        "initialize",
+        remote::take_connect_duration(),
+        started.elapsed(),
+        joined.is_ok(),
+    );
+    let nick = joined?;
+    session.nick = Some(nick.clone());
+    // Pre-warm the incremental remote event cache before the first tool call (#541).
+    if let Some(remote) = channel.remote.clone() {
+        let _ = std::thread::Builder::new()
+            .name("airc-warm".into())
+            .spawn(move || {
+                let _ = remote.warm();
+            });
+    }
+    Ok(json!({
+        "protocolVersion":"2025-11-25",
+        "capabilities":{"tools":{}},
+        "serverInfo":{"name":"velocity-airc","version":env!("CARGO_PKG_VERSION")},
+        "instructions":instructions(
+            &nick,
+            options.continuous_dispatch,
+            options.issue_handler.is_some(),
+        ),
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn call_tool(
+    channel: &Channel,
+    member: &str,
+    nick: &str,
+    parameters: &Value,
+    connected: &std::sync::atomic::AtomicBool,
+    options: &ToolOptions<'_>,
+    session: &mut ToolSession,
+    latency: &LatencyRecorder,
+) -> Value {
+    let tool_name = parameters["name"].as_str().unwrap_or("unknown");
+    remote::reset_connect_duration();
+    let started = Instant::now();
+    let (text, failed) = match call(
+        channel, member, nick, parameters, connected, options, session,
+    ) {
+        Ok(value) => (value.to_string(), false),
+        Err(error) => (error.to_string(), true),
+    };
+    latency.record(
+        tool_name,
+        remote::take_connect_duration(),
+        started.elapsed(),
+        !failed,
+    );
+    let text = tool_answer(
+        text,
+        "Use a query, a smaller limit, or one sequence or task when the tool supports it.",
+    );
+    json!({"isError":failed,"content":[{"type":"text","text":text}]})
 }
 
 fn call(

@@ -11,14 +11,12 @@ use serde_json::json;
 
 impl Remote {
     pub(crate) fn change_for(&self, member: &str) -> Result<String, Error> {
-        if let Some(change) = self
-            .read(0)?
-            .iter()
-            .rev()
-            .find(|record| record.member == member && record.checkout.is_some())
-            .and_then(|record| record.change_id().map(str::to_owned))
+        let checkouts = self.checkouts()?;
+        if let Some(change) = checkouts
+            .get(&self.member(member))
+            .or_else(|| checkouts.get(member))
         {
-            return Ok(change);
+            return Ok(change.clone());
         }
         self.run(async |client| {
             let presence = client.channel_presence().await?;
@@ -59,24 +57,29 @@ impl Remote {
     }
 
     pub(crate) fn work_claims(&self, requester: Option<&str>) -> Result<WorkClaims, Error> {
-        let records = self.read(0)?;
-        let checkout = |member: &str| {
-            records
-                .iter()
-                .rev()
-                .find(|record| record.member == member && record.checkout.is_some())
-                .and_then(crate::Entry::change_id)
+        let checkouts = self.checkouts()?;
+        let lookup_checkout = |member: &str| {
+            checkouts
+                .get(&self.member(member))
+                .or_else(|| checkouts.get(member))
+                .map(String::as_str)
         };
-        let current = requester.and_then(checkout);
+        let current = requester.and_then(lookup_checkout);
         self.run(async |client| {
-            let paths = client.claim_list(ClaimFilter::default()).await?;
-            let changes = client.change_list(wire(json!({}))?).await?;
-            let pieces = client
-                .pieces()
-                .await?
+            let (paths, held_pieces) =
+                tokio::try_join!(client.claim_list(ClaimFilter::default()), client.pieces(),)?;
+            let needs_changes = held_pieces
+                .iter()
+                .any(|held| lookup_checkout(&self.local_member(&held.member)).is_none());
+            let changes = if needs_changes {
+                client.change_list(wire(json!({}))?).await?
+            } else {
+                Vec::new()
+            };
+            let pieces = held_pieces
                 .iter()
                 .map(|held| {
-                    let change = checkout(&self.local_member(&held.member))
+                    let change = lookup_checkout(&self.local_member(&held.member))
                         .map(str::to_owned)
                         .or_else(|| {
                             changes
@@ -148,7 +151,7 @@ impl Remote {
             };
             if let Some(change) = change
                 && let Some(refused) = self
-                    .claim_files(&client, &change, &held, extended, &files)
+                    .claim_files(client, &change, &held, extended, &files)
                     .await?
             {
                 return Ok(refused);

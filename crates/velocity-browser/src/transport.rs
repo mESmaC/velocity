@@ -3,12 +3,13 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
+use velocity_rosen::mcp_latency::LatencyRecorder;
 
 use crate::{
     BrowserHub, Result, error,
@@ -100,6 +101,7 @@ pub fn serve_mcp() -> Result<()> {
         .ok()
         .and_then(|token| Uuid::parse_str(&token).ok())
         .ok_or_else(|| error("Missing browser tool session"))?;
+    let latency = LatencyRecorder::open(SERVER, None);
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
     let mut line = Vec::new();
@@ -116,38 +118,49 @@ pub fn serve_mcp() -> Result<()> {
             return Err(error("Browser request exceeded its size limit"));
         }
         let request = serde_json::from_slice(&line)?;
-        if let Some(response) = reply(port, token, request) {
+        if let Some(response) = reply(port, token, request, &latency) {
             writeln!(output, "{response}")?;
             output.flush()?;
         }
     }
 }
 
-fn reply(port: u16, token: Uuid, request: Value) -> Option<Value> {
+fn reply(port: u16, token: Uuid, request: Value, latency: &LatencyRecorder) -> Option<Value> {
     let id = request.get("id")?;
     let result = match request["method"].as_str()? {
         // Shared browser guidance is published once in the session preface (src-tauri/src/browser.rs)
         // rather than repeated in MCP initialize instructions (#538).
-        "initialize" => json!({
-            "protocolVersion": request["params"]["protocolVersion"].as_str().unwrap_or("2024-11-05"),
-            "capabilities":{"tools":{}},"serverInfo":{"name":SERVER,"version":"0.1.0"},
-        }),
+        "initialize" => {
+            latency.record("initialize", Duration::ZERO, Duration::ZERO, true);
+            json!({
+                "protocolVersion": request["params"]["protocolVersion"].as_str().unwrap_or("2024-11-05"),
+                "capabilities":{"tools":{}},"serverInfo":{"name":SERVER,"version":"0.1.0"},
+            })
+        }
         "ping" => json!({}),
         "tools/list" => json!({"tools":tools::definitions()}),
         "tools/call" => {
             let params = &request["params"];
             let name = params["name"].as_str().unwrap_or_default().to_owned();
             let arguments = params["arguments"].clone();
+            let started = Instant::now();
             match forward(
                 port,
                 Request {
                     token,
-                    name,
+                    name: name.clone(),
                     arguments,
                 },
             ) {
-                Ok(value) => value,
-                Err(error) => contents(Err(error)),
+                Ok((value, connect)) => {
+                    let ok = !value["isError"].as_bool().unwrap_or(false);
+                    latency.record(&name, connect, started.elapsed(), ok);
+                    value
+                }
+                Err(error) => {
+                    latency.record(&name, Duration::ZERO, started.elapsed(), false);
+                    contents(Err(error))
+                }
             }
         }
         _ => {
@@ -159,9 +172,11 @@ fn reply(port: u16, token: Uuid, request: Value) -> Option<Value> {
     Some(json!({"jsonrpc":"2.0","id":id,"result":result}))
 }
 
-fn forward(port: u16, request: Request) -> Result<Value> {
+fn forward(port: u16, request: Request) -> Result<(Value, Duration)> {
     let address = (Ipv4Addr::LOCALHOST, port).into();
+    let connect_started = Instant::now();
     let mut socket = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
+    let connect_elapsed = connect_started.elapsed();
     socket.set_read_timeout(Some(CALL_TIMEOUT + Duration::from_secs(3)))?;
     socket.set_write_timeout(Some(Duration::from_secs(2)))?;
     writeln!(socket, "{}", serde_json::to_string(&request)?)?;
@@ -169,5 +184,5 @@ fn forward(port: u16, request: Request) -> Result<Value> {
     BufReader::new(socket)
         .take(RESPONSE_BYTES)
         .read_until(b'\n', &mut line)?;
-    Ok(serde_json::from_slice(&line)?)
+    Ok((serde_json::from_slice(&line)?, connect_elapsed))
 }

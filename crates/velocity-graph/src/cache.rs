@@ -5,9 +5,9 @@
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, Read, Seek, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +19,7 @@ use crate::language::Language;
 pub const PARSER_VERSION: u32 = 9;
 const CACHE_LIMIT: u64 = 64 * 1024 * 1024;
 const FRAME_LIMIT: usize = 8 * 1024 * 1024;
+const READ_BUFFER_BYTES: usize = 256 * 1024;
 
 #[derive(Serialize)]
 struct Frame<'a> {
@@ -43,13 +44,18 @@ struct Entry {
 
 type Entries = HashMap<String, Entry>;
 
-pub struct Cache {
+struct CacheInner {
     log: PathBuf,
     entries: Entries,
     verified_len: u64,
     observed_len: u64,
     live_bytes: u64,
 }
+
+/// Shareable handle to the per-project parse cache so multiple warm workspace views
+/// inside `--graph-project` share one in-memory cache without duplicating 64 MiB (#541).
+#[derive(Clone)]
+pub struct Cache(Arc<Mutex<CacheInner>>);
 
 /// The cache key of a file's parse.
 pub fn key(hash: &str, language: Language) -> String {
@@ -66,72 +72,137 @@ impl Cache {
     /// The cache under `folder`. A missing or unreadable log is an empty cache.
     pub fn open(folder: &Path) -> Self {
         let log = folder.join("parses.log");
-        let mut cache = Self {
+        let mut inner = CacheInner {
             log,
             entries: HashMap::new(),
             verified_len: 0,
             observed_len: 0,
             live_bytes: 0,
         };
-        cache.reload();
-        cache
+        inner.reload();
+        Self(Arc::new(Mutex::new(inner)))
     }
 
-    /// Reads the log again, picking up what other agents appended since it was opened.
+    /// Reads newly appended frames (or reloads fully if compacted) without re-reading
+    /// the entire parse log on every append (#541).
     pub fn reload(&mut self) {
-        let size = self.size();
-        if size != self.observed_len
-            && let Ok(file) = File::open(&self.log)
-        {
-            self.entries.clear();
-            self.live_bytes = 0;
-            self.verified_len = 0;
-            let version = version();
-            let mut input = BufReader::new(file);
-            while let Some(body) = read_frame(&mut input) {
-                let Ok(FrameKey { key }) = serde_json::from_slice::<FrameKey>(&body) else {
-                    break;
-                };
-                let position = self.verified_len;
-                self.verified_len += body.len() as u64 + 8;
-                if key.starts_with(&version) {
-                    self.remember(key, body, position);
-                }
-            }
-            self.observed_len = size;
-        }
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .reload();
     }
 
     pub fn size(&self) -> u64 {
-        std::fs::metadata(&self.log).map_or(0, |metadata| metadata.len())
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .size()
     }
 
     /// Serializes cache misses, log writes and compaction across workspaces.
     pub fn build_lock(&self) -> Result<File, Error> {
-        if let Some(folder) = self.log.parent() {
+        let log = self
+            .0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .log
+            .clone();
+        if let Some(folder) = log.parent() {
             std::fs::create_dir_all(folder)?;
         }
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(self.log.with_extension("build.lock"))?;
+            .open(log.with_extension("build.lock"))?;
         lock.lock()?;
         Ok(lock)
     }
 
     pub fn get(&self, key: &str) -> Option<Arc<FileParse>> {
-        let entry = self.entries.get(key)?;
+        let inner = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let entry = inner.entries.get(key)?;
         let FrameParse { parse } = serde_json::from_slice(&entry.body).ok()?;
         Some(Arc::new(parse))
     }
 
     pub fn contains(&self, key: &str) -> bool {
-        self.entries.contains_key(key)
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entries
+            .contains_key(key)
     }
 
     /// Appends new parses while the caller holds the build lock.
     pub fn append(&mut self, parses: &[(String, Arc<FileParse>)]) -> Result<(), Error> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .append(parses)
+    }
+
+    /// Rewrites the log with unique parses for the current parser version.
+    pub fn compact(&mut self) -> Result<(), Error> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .compact()
+    }
+}
+
+impl CacheInner {
+    fn reload(&mut self) {
+        let size = self.size();
+        if size == self.observed_len {
+            return;
+        }
+        let Ok(mut file) = File::open(&self.log) else {
+            return;
+        };
+        let version = version();
+        // Fast path: log grew by append. Read only frames after `verified_len` (#541).
+        if size > self.observed_len
+            && self.verified_len > 0
+            && file.seek(SeekFrom::Start(self.verified_len)).is_ok()
+        {
+            let before = self.verified_len;
+            self.read_frames(file, &version);
+            if self.verified_len > before || size == self.verified_len {
+                self.observed_len = size;
+                return;
+            }
+            let Ok(reopened) = File::open(&self.log) else {
+                return;
+            };
+            file = reopened;
+        }
+        self.entries.clear();
+        self.live_bytes = 0;
+        self.verified_len = 0;
+        self.read_frames(file, &version);
+        self.observed_len = size;
+    }
+
+    fn read_frames(&mut self, file: File, version: &str) {
+        let mut input = BufReader::with_capacity(READ_BUFFER_BYTES, file);
+        while let Some(body) = read_frame(&mut input) {
+            let Some(key) = extract_frame_key(&body) else {
+                break;
+            };
+            let position = self.verified_len;
+            self.verified_len += body.len() as u64 + 8;
+            if key.starts_with(version) {
+                self.remember(key, body, position);
+            }
+        }
+    }
+
+    fn size(&self) -> u64 {
+        std::fs::metadata(&self.log).map_or(0, |metadata| metadata.len())
+    }
+
+    fn append(&mut self, parses: &[(String, Arc<FileParse>)]) -> Result<(), Error> {
         if parses.is_empty() {
             return Ok(());
         }
@@ -142,7 +213,7 @@ impl Cache {
             .write(true)
             .open(&self.log)?;
         log.set_len(self.verified_len)?;
-        log.seek(std::io::SeekFrom::End(0))?;
+        log.seek(SeekFrom::End(0))?;
         for (key, parse) in parses {
             if self.entries.contains_key(key) {
                 continue;
@@ -161,8 +232,7 @@ impl Cache {
         Ok(())
     }
 
-    /// Rewrites the log with unique parses for the current parser version.
-    pub fn compact(&mut self) -> Result<(), Error> {
+    fn compact(&mut self) -> Result<(), Error> {
         if self.observed_len <= self.live_bytes * 2 && self.observed_len <= CACHE_LIMIT * 2 {
             return Ok(());
         }
@@ -213,6 +283,22 @@ impl Cache {
     }
 }
 
+/// Fast prefix scan for `{"key":"..."}` written by [`Frame`], avoiding full JSON scanning
+/// of large parse bodies on cache load; falls back to serde when escaped or reordered.
+fn extract_frame_key(body: &[u8]) -> Option<String> {
+    const PREFIX: &[u8] = br#"{"key":""#;
+    if let Some(rest) = body.strip_prefix(PREFIX)
+        && let Some(end) = rest.iter().position(|&byte| byte == b'"' || byte == b'\\')
+        && rest[end] == b'"'
+        && let Ok(key) = std::str::from_utf8(&rest[..end])
+    {
+        return Some(key.to_owned());
+    }
+    serde_json::from_slice::<FrameKey>(body)
+        .ok()
+        .map(|frame| frame.key)
+}
+
 /// `[length u32][crc32 u32][JSON]`, little-endian.
 fn write_frame(log: &mut File, body: &[u8]) -> std::io::Result<()> {
     log.write_all(&(body.len() as u32).to_le_bytes())?;
@@ -232,4 +318,41 @@ fn read_frame(input: &mut impl Read) -> Option<Vec<u8>> {
     let mut body = vec![0; length];
     input.read_exact(&mut body).ok()?;
     (crc32fast::hash(&body) == u32::from_le_bytes(checksum)).then_some(body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn incremental_reload_reads_appended_frames_and_survives_compaction() -> Result<(), Error> {
+        // Risk (#541): reloading an 88 MiB parse cache from offset 0 on every append stalled
+        // cold/warm graph calls; incremental tailing must preserve persisted cache state.
+        let directory =
+            std::env::temp_dir().join(format!("velocity-graph-cache-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory)?;
+        let mut writer = Cache::open(&directory);
+        let mut reader = Cache::open(&directory);
+        let first_key = key("hash-1", Language::Rust);
+        let second_key = key("hash-2", Language::Rust);
+        writer.append(&[(first_key.clone(), Arc::new(FileParse::default()))])?;
+        reader.reload();
+        assert!(reader.contains(&first_key));
+        assert!(!reader.contains(&second_key));
+        writer.append(&[(second_key.clone(), Arc::new(FileParse::default()))])?;
+        reader.reload();
+        assert!(reader.contains(&first_key));
+        assert!(reader.contains(&second_key));
+        assert_eq!(
+            extract_frame_key(br#"{"key":"plain:key","parse":{}}"#).as_deref(),
+            Some("plain:key")
+        );
+        assert_eq!(
+            extract_frame_key(br#"{"parse":{},"key":"reordered\"key"}"#).as_deref(),
+            Some("reordered\"key")
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+        Ok(())
+    }
 }

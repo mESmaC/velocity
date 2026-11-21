@@ -8,7 +8,67 @@ use rosen_client::protocol::channel::{AppendEntry, ChannelEvent, SendMessage};
 use rosen_client::{Client, Endpoint};
 use serde::de::DeserializeOwned;
 use serde_json::json;
+use std::cell::Cell;
 use std::path::Path;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+
+thread_local! {
+    static CONNECT_DURATION: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+}
+
+pub(crate) fn reset_connect_duration() {
+    CONNECT_DURATION.with(|cell| cell.set(Duration::ZERO));
+}
+
+pub(crate) fn take_connect_duration() -> Duration {
+    CONNECT_DURATION.with(|cell| cell.replace(Duration::ZERO))
+}
+
+pub(crate) fn record_connect_duration(elapsed: Duration) {
+    CONNECT_DURATION.with(|cell| cell.set(cell.get().saturating_add(elapsed)));
+}
+
+fn shared_runtime() -> Result<&'static tokio::runtime::Runtime, Error> {
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_name("airc-rosen")
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|error| Error::Invalid(error.clone()))
+}
+
+fn run_on_shared_runtime<T: Send, Fut: std::future::Future<Output = Result<T, Error>>>(
+    make: impl FnOnce() -> Fut + Send,
+) -> Result<T, Error> {
+    let runtime = shared_runtime()?;
+    // Channel's existing synchronous callers also run inside ACP's async runtime.
+    // A scoped thread avoids nested block_on while still reusing the shared runtime.
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(move || runtime.block_on(make()))
+                .join()
+                .map_err(|_| Error::Invalid("Rosen channel worker panicked".into()))?
+        })
+    } else {
+        runtime.block_on(make())
+    }
+}
+
+fn is_transport_error(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Rosen(rosen_client::Error::Disconnected | rosen_client::Error::Io(_))
+    )
+}
 
 #[derive(Clone)]
 pub(crate) struct Remote {
@@ -100,33 +160,47 @@ impl Remote {
 
     pub(crate) fn run<T: Send>(
         &self,
-        operation: impl AsyncFnOnce(Client) -> Result<T, Error> + Send,
+        operation: impl AsyncFnOnce(&Client) -> Result<T, Error> + Send,
     ) -> Result<T, Error> {
-        // Channel's existing synchronous callers also run inside ACP's async runtime.
-        // A separate thread avoids nested block_on and owns the connection's reader.
-        std::thread::scope(|scope| {
-            scope
-                .spawn(|| {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()?;
-                    runtime.block_on(async {
-                        let client = Client::connect(&self.endpoint).await?;
-                        operation(client).await
-                    })
-                })
-                .join()
-                .map_err(|_| Error::Invalid("Rosen channel worker panicked".into()))?
-        })
+        let endpoint = &self.endpoint;
+        let (result, connect_elapsed) = run_on_shared_runtime(move || async move {
+            let (connection, connect_elapsed) =
+                velocity_rosen::connection::requests_timed(endpoint).await?;
+            let result = operation(&connection).await;
+            if let Err(ref error) = result
+                && is_transport_error(error)
+            {
+                velocity_rosen::connection::invalidate(endpoint, &connection).await;
+            }
+            Ok((result, connect_elapsed))
+        })?;
+        record_connect_duration(connect_elapsed);
+        result
+    }
+
+    pub(crate) fn run_dedicated<T: Send>(
+        &self,
+        operation: impl AsyncFnOnce(&Client) -> Result<T, Error> + Send,
+    ) -> Result<T, Error> {
+        let endpoint = &self.endpoint;
+        let (result, connect_elapsed) = run_on_shared_runtime(move || async move {
+            let started = Instant::now();
+            let connection = velocity_rosen::connection::Connection::dedicated(endpoint).await?;
+            let connect_elapsed = started.elapsed();
+            let result = operation(&connection).await;
+            Ok((result, connect_elapsed))
+        })?;
+        record_connect_duration(connect_elapsed);
+        result
     }
 
     pub(crate) fn tip(&self) -> Result<u64, Error> {
-        self.run(async |client| {
-            let tip = client.status().await?.last_event;
-            if tip != 0 {
-                return Ok(tip);
-            }
-            Ok(crate::remote_events::read_events(&client, None, 0)
+        let tip = self.run(async |client| Ok(client.status().await?.last_event))?;
+        if tip != 0 {
+            return Ok(tip);
+        }
+        self.run_dedicated(async |client| {
+            Ok(crate::remote_events::read_events(client, None, 0)
                 .await?
                 .last()
                 .map_or(0, |record| record.sequence))
@@ -135,7 +209,7 @@ impl Remote {
 
     pub(crate) fn event_head(&self) -> Result<velocity_rosen::EventHead, Error> {
         self.run(async |client| {
-            velocity_rosen::EventHead::read(&client)
+            velocity_rosen::EventHead::read(client)
                 .await
                 .map_err(|error| Error::Invalid(error.to_string()))
         })
@@ -298,14 +372,14 @@ impl Remote {
         let text = format!("{RECORD_PREFIX}{}", serde_json::to_string(&stored_record)?);
         let request: AppendEntry =
             wire(json!({"ledger":"past_work","author":{"kind":"user"},"text":text}))?;
-        self.run(async |client| {
+        self.run_dedicated(async |client| {
             // Ping does not wait for Rosen's subscription task to capture "now".
             // Replay from before the write so concurrent appends cannot be skipped.
             let after = client.status().await?.last_event;
             let stored = client.ledger_append(request).await?;
             let sequence = tokio::time::timeout(
                 std::time::Duration::from_secs(30),
-                record_sequence(&client, after, stored.seq),
+                record_sequence(client, after, stored.seq),
             )
             .await
             .map_err(|_| {

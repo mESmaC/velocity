@@ -58,6 +58,9 @@ impl Channel {
                 "Ledger must be discovery or past_work".into(),
             ));
         }
+        if let Some(remote) = &self.remote {
+            return remote.read_ledger(name, after);
+        }
         Ok(self
             .read(after)?
             .into_iter()

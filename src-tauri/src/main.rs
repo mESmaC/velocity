@@ -14,6 +14,10 @@ static ROSEN_BINARIES: [(&str, &[u8]); 2] = [
 ];
 
 fn main() -> anyhow::Result<()> {
+    velocity_rosen::mcp_latency::mark_process_start();
+    if let Some(app_data) = helper_app_data() {
+        velocity_rosen::mcp_latency::set_default_app_data(app_data);
+    }
     // The release builds Rosen from the commit the workspace manifest pins, so that names
     // the binaries: a later Velocity shows it for a server still running this build (#515).
     #[cfg(feature = "bundled-rosen")]
@@ -71,4 +75,13 @@ fn main() -> anyhow::Result<()> {
     }
     velocity_rosen::agent_run::install(&std::env::current_exe()?);
     velocity_app_lib::run()
+}
+
+fn helper_app_data() -> Option<std::path::PathBuf> {
+    #[derive(serde::Deserialize)]
+    struct AppConfig {
+        identifier: String,
+    }
+    let config: AppConfig = serde_json::from_str(include_str!("../tauri.conf.json")).ok()?;
+    Some(dirs::data_dir()?.join(config.identifier))
 }

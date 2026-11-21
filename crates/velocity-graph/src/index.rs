@@ -18,6 +18,7 @@ use crate::graph::{FileInput, Graph};
 use crate::language::Language;
 use crate::subsystems::detect;
 
+#[derive(Clone)]
 struct FileState {
     hash: String,
     language: Option<Language>,
@@ -142,10 +143,14 @@ impl Index {
     }
 
     fn empty(root: &Path, cache_folder: &Path) -> Self {
+        Self::empty_with_cache(root, cache_folder, Cache::open(cache_folder))
+    }
+
+    fn empty_with_cache(root: &Path, cache_folder: &Path, cache: Cache) -> Self {
         Self {
             root: root.to_path_buf(),
             cache_folder: cache_folder.to_path_buf(),
-            cache: Cache::open(cache_folder),
+            cache,
             files: BTreeMap::new(),
             manifests: HashMap::new(),
             rosen: None,
@@ -154,6 +159,78 @@ impl Index {
             graph: Graph::build(&[], Vec::new(), &HashMap::new()),
             report: BuildReport::default(),
         }
+    }
+
+    pub(crate) fn open_rosen_tree_with_cache(
+        root: &Path,
+        cache_folder: &Path,
+        cache: Cache,
+        endpoint: Endpoint,
+        tree: ObjectId,
+        workspace: bool,
+    ) -> Result<Self, Error> {
+        let mut index = Self::empty_with_cache(root, cache_folder, cache);
+        let mut source = crate::rosen::Source::new(endpoint, workspace)?;
+        index.load_tree(&mut source, tree, |_, _| {})?;
+        index.rosen = Some(source);
+        Ok(index)
+    }
+
+    /// Creates a new Rosen index for `target_tree` by cloning this view's shared file parses
+    /// and directory cache, then applying only the diff between trees (#541).
+    pub(crate) fn branch_to_tree(
+        &self,
+        root: &Path,
+        target_tree: ObjectId,
+        workspace: bool,
+    ) -> Result<Self, Error> {
+        let source = self
+            .rosen
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("Cannot branch a non-Rosen index".into()))?;
+        let mut branched = Self {
+            root: root.to_path_buf(),
+            cache_folder: self.cache_folder.clone(),
+            cache: self.cache.clone(),
+            files: self.files.clone(),
+            manifests: self.manifests.clone(),
+            rosen: None,
+            git: None,
+            skipped: BTreeMap::new(),
+            graph: Graph::build(&[], Vec::new(), &HashMap::new()),
+            report: self.report,
+        };
+        let mut next_source = source.clone_for_branch(workspace);
+        if next_source.tree != Some(target_tree) {
+            branched.load_tree(&mut next_source, target_tree, |_, _| {})?;
+        } else {
+            branched.rebuild();
+        }
+        branched.rosen = Some(next_source);
+        Ok(branched)
+    }
+
+    pub(crate) fn set_rosen_root(&mut self, root: &Path, workspace: bool, clear_stale: bool) {
+        self.root = root.to_path_buf();
+        if let Some(source) = &mut self.rosen {
+            source.use_workspace(workspace);
+        }
+        if clear_stale {
+            self.graph.stale_addresses.clear();
+        }
+    }
+
+    pub(crate) fn refresh_to_tree(&mut self, tree: ObjectId) -> Result<bool, Error> {
+        let Some(mut source) = self.rosen.take() else {
+            return Ok(false);
+        };
+        let result = if source.tree != Some(tree) {
+            self.load_tree(&mut source, tree, |_, _| {}).map(|()| true)
+        } else {
+            Ok(false)
+        };
+        self.rosen = Some(source);
+        result
     }
 
     /// Indexes commit `revision` of the git repository at `repository`, bare or not, from
@@ -434,23 +511,6 @@ impl Index {
             self.graph.stale_addresses.clear();
         }
         Ok(refreshed)
-    }
-
-    pub(crate) fn select_base(&mut self) -> Result<bool, Error> {
-        let Some(mut source) = self.rosen.take() else {
-            return Ok(false);
-        };
-        let result = source.revision_tree("base").and_then(|tree| {
-            if source.tree == Some(tree) {
-                return Ok(false);
-            }
-            self.load_tree(&mut source, tree, |_, _| {}).map(|()| true)
-        });
-        self.root = PathBuf::from("base");
-        self.graph.stale_addresses.clear();
-        source.use_workspace(false);
-        self.rosen = Some(source);
-        result
     }
 
     pub fn cache_bytes(&self) -> u64 {

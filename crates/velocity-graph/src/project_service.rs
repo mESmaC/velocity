@@ -1,4 +1,5 @@
-//! Local graph worker. All connections for a project share one live index.
+//! Local graph worker. All connections for a project share warm live indexes across
+//! concurrent workspaces (#541).
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -6,14 +7,20 @@ use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use rosen_client::Endpoint;
 use rosen_client::protocol::transport::{self, BoxStream, Listener};
+use rosen_client::snapshot::WorkspaceMarker;
+use rosen_core::ObjectId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::oneshot;
+use velocity_rosen::mcp_latency::duration_ms;
 
+use crate::cache::Cache;
 use crate::signature_impact::StaleReferenceWarning;
 use crate::usage::ToolOutcome;
 use crate::{Error, Index, Tools};
@@ -25,7 +32,9 @@ const MENTION_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(90);
 const SIGNATURE_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+/// Keep `base` plus several concurrent agent workspaces warm in memory without thrashing (#541).
+const MAX_WARM_VIEWS: usize = 6;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Action {
@@ -64,6 +73,10 @@ pub(crate) struct Reply {
     mentions: Vec<BTreeSet<String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     signature_warnings: Vec<StaleReferenceWarning>,
+    #[serde(default)]
+    pub rosen_connect_ms: u64,
+    #[serde(default)]
+    pub work_ms: u64,
 }
 
 impl Reply {
@@ -74,8 +87,15 @@ impl Reply {
             failed: false,
             mentions: Vec::new(),
             signature_warnings: Vec::new(),
+            rosen_connect_ms: 0,
+            work_ms: 0,
         }
     }
+}
+
+struct PersistentClient {
+    runtime: tokio::runtime::Runtime,
+    stream: Option<BufReader<BoxStream>>,
 }
 
 pub(crate) struct Project {
@@ -83,6 +103,7 @@ pub(crate) struct Project {
     executable: PathBuf,
     address: Endpoint,
     rosen: Option<Endpoint>,
+    client: Mutex<Option<PersistentClient>>,
 }
 
 impl Project {
@@ -93,6 +114,7 @@ impl Project {
             executable,
             address,
             rosen,
+            client: Mutex::new(None),
         }
     }
 
@@ -103,29 +125,75 @@ impl Project {
         action: Action,
         timeout: Duration,
     ) -> Result<Reply, String> {
+        self.request_timed(workspace, changed, action, timeout)
+            .map(|(reply, _)| reply)
+    }
+
+    /// Sends one request over a persistent pipe connection to `--graph-project`, returning
+    /// the reply and time spent connecting to the worker (0 ms when already warm).
+    pub fn request_timed(
+        &self,
+        workspace: &Path,
+        changed: Vec<String>,
+        action: Action,
+        timeout: Duration,
+    ) -> Result<(Reply, Duration), String> {
         let request = Request {
             workspace: workspace.to_path_buf(),
             rosen: self.rosen.as_ref().map(ToString::to_string),
             changed,
             action,
         };
-        runtime()
-            .map_err(|error| error.to_string())?
-            .block_on(async {
-                tokio::time::timeout(timeout, self.exchange(request))
-                    .await
-                    .map_err(|_| "The project graph is busy".to_owned())?
-            })
+        let mut guard = self
+            .client
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if guard.is_none() {
+            let runtime = runtime().map_err(|error| error.to_string())?;
+            *guard = Some(PersistentClient {
+                runtime,
+                stream: None,
+            });
+        }
+        let Some(client) = guard.as_mut() else {
+            return Err("The project graph client is unavailable".into());
+        };
+        client.runtime.block_on(async {
+            tokio::time::timeout(timeout, self.exchange(&mut client.stream, &request))
+                .await
+                .map_err(|_| "The project graph is busy".to_owned())?
+        })
     }
 
-    async fn exchange(&self, request: Request) -> Result<Reply, String> {
-        let mut stream = self.connect().await.map_err(|error| error.to_string())?;
-        write(&mut stream, &request)
-            .await
-            .map_err(|error| error.to_string())?;
-        read::<Result<Reply, String>>(&mut stream)
-            .await
-            .map_err(|error| error.to_string())?
+    async fn exchange(
+        &self,
+        cached: &mut Option<BufReader<BoxStream>>,
+        request: &Request,
+    ) -> Result<(Reply, Duration), String> {
+        let mut connect_elapsed = Duration::ZERO;
+        // Try the already-open stream first; on EOF/broken pipe reconnect once transparently.
+        for attempt in 0..2 {
+            let reused = cached.is_some();
+            if cached.is_none() {
+                let started = Instant::now();
+                let stream = self.connect().await.map_err(|error| error.to_string())?;
+                connect_elapsed = connect_elapsed.saturating_add(started.elapsed());
+                *cached = Some(BufReader::new(stream));
+            }
+            let Some(reader) = cached.as_mut() else {
+                return Err("Project graph connection missing".into());
+            };
+            match send_and_receive(reader, request).await {
+                Ok(reply) => return reply.map(|reply| (reply, connect_elapsed)),
+                Err(error) => {
+                    *cached = None;
+                    if !reused || attempt == 1 {
+                        return Err(error.to_string());
+                    }
+                }
+            }
+        }
+        Err("Project graph connection closed".into())
     }
 
     async fn connect(&self) -> io::Result<BoxStream> {
@@ -173,6 +241,14 @@ impl Project {
     }
 }
 
+async fn send_and_receive(
+    reader: &mut BufReader<BoxStream>,
+    request: &Request,
+) -> io::Result<Result<Reply, String>> {
+    write(reader.get_mut(), request).await?;
+    read_buffered::<Result<Reply, String>>(reader).await
+}
+
 fn address(cache: &Path) -> Endpoint {
     let key = crate::status::workspace_key(cache);
     if cfg!(windows) {
@@ -193,12 +269,20 @@ fn runtime() -> io::Result<tokio::runtime::Runtime> {
         .build()
 }
 
-async fn read<T: serde::de::DeserializeOwned>(stream: &mut BoxStream) -> io::Result<T> {
+async fn read_buffered<T: serde::de::DeserializeOwned>(
+    reader: &mut BufReader<BoxStream>,
+) -> io::Result<T> {
     let mut bytes = Vec::new();
-    BufReader::new(stream)
+    let count = reader
         .take(FRAME_LIMIT)
         .read_until(b'\n', &mut bytes)
         .await?;
+    if count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "Project graph connection closed",
+        ));
+    }
     if bytes.last() != Some(&b'\n') {
         return Err(io::Error::other("Incomplete project graph message"));
     }
@@ -213,10 +297,14 @@ async fn write(stream: &mut BoxStream, message: &impl Serialize) -> io::Result<(
         ));
     }
     bytes.push(b'\n');
-    stream.write_all(&bytes).await
+    stream.write_all(&bytes).await?;
+    stream.flush().await
 }
 
-/// Requests are handled serially, so a snapshot cannot change during source rendering.
+type WorkItem = (Request, oneshot::Sender<Result<Reply, String>>);
+
+/// Requests are handled serially on the main thread (outside Tokio, so Rosen requests never
+/// nest runtimes), while a Tokio acceptor thread serves persistent client connections (#541).
 pub fn serve_project(arguments: &[OsString]) -> Result<(), Error> {
     let [cache] = arguments else {
         return Err(Error::Invalid(
@@ -224,38 +312,100 @@ pub fn serve_project(arguments: &[OsString]) -> Result<(), Error> {
         ));
     };
     let cache = Path::new(cache);
-    let runtime = runtime()?;
-    let mut listener = match runtime.block_on(async { Listener::bind(&address(cache)) }) {
-        Err(error) if error.kind() == io::ErrorKind::AddrInUse => return Ok(()),
-        result => result?,
-    };
+    let endpoint = address(cache);
+    let (bound_tx, bound_rx) = mpsc::sync_channel::<io::Result<()>>(1);
+    let (work_tx, work_rx) = mpsc::channel::<WorkItem>();
+    let _acceptor = std::thread::Builder::new()
+        .name("graph-project-accept".into())
+        .spawn(move || run_acceptor(endpoint, bound_tx, work_tx));
+    match bound_rx.recv() {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) if error.kind() == io::ErrorKind::AddrInUse => return Ok(()),
+        Ok(Err(error)) => return Err(error.into()),
+        Err(_) => return Err(Error::Invalid("Project graph listener stopped".into())),
+    }
     let mut graph = ProjectGraph::default();
-    while let Ok(stream) =
-        runtime.block_on(async { tokio::time::timeout(IDLE_TIMEOUT, listener.accept()).await })
-    {
-        let mut stream = stream?;
-        let Ok(Ok(request)) = runtime.block_on(async {
-            tokio::time::timeout(IO_TIMEOUT, read::<Request>(&mut stream)).await
-        }) else {
-            continue;
-        };
+    while let Ok((request, reply_tx)) = work_rx.recv_timeout(IDLE_TIMEOUT) {
         let response = graph.handle(cache, request);
-        let _ = runtime.block_on(async {
-            tokio::time::timeout(IO_TIMEOUT, write(&mut stream, &response)).await
-        });
+        let _ = reply_tx.send(response);
     }
     Ok(())
+}
+
+fn run_acceptor(
+    endpoint: Endpoint,
+    bound: mpsc::SyncSender<io::Result<()>>,
+    work: mpsc::Sender<WorkItem>,
+) {
+    let runtime = match runtime() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let _ = bound.send(Err(error));
+            return;
+        }
+    };
+    runtime.block_on(async move {
+        let mut listener = match Listener::bind(&endpoint) {
+            Ok(listener) => {
+                let _ = bound.send(Ok(()));
+                listener
+            }
+            Err(error) => {
+                let _ = bound.send(Err(error));
+                return;
+            }
+        };
+        while let Ok(stream) = listener.accept().await {
+            let work = work.clone();
+            tokio::spawn(serve_client(BufReader::new(stream), work));
+        }
+    });
+}
+
+async fn serve_client(mut reader: BufReader<BoxStream>, work: mpsc::Sender<WorkItem>) {
+    loop {
+        let Ok(request) = read_buffered::<Request>(&mut reader).await else {
+            break;
+        };
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if work.send((request, reply_tx)).is_err() {
+            break;
+        }
+        let Ok(response) = reply_rx.await else {
+            break;
+        };
+        let written = tokio::time::timeout(IO_TIMEOUT, write(reader.get_mut(), &response)).await;
+        if !matches!(written, Ok(Ok(()))) {
+            break;
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum ViewKey {
+    Base,
+    Workspace(PathBuf),
+}
+
+struct WarmView {
+    key: ViewKey,
+    tree: ObjectId,
+    tools: Tools,
 }
 
 #[derive(Default)]
 struct ProjectGraph {
     endpoint: Option<String>,
-    tools: Option<Tools>,
+    cache: Option<Cache>,
+    rosen_views: Vec<WarmView>,
+    git_view: Option<Tools>,
     mention_refresh: Option<(PathBuf, Instant)>,
 }
 
 impl ProjectGraph {
     fn handle(&mut self, cache: &Path, request: Request) -> Result<Reply, String> {
+        crate::rosen::reset_connect_duration();
+        let started = Instant::now();
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.run(cache, request)))
                 .unwrap_or_else(|_| {
@@ -263,34 +413,28 @@ impl ProjectGraph {
                         "The project graph stopped on an internal error".into(),
                     ))
                 });
-        if result.is_err() {
-            self.tools = None;
+        let connect_ms = duration_ms(crate::rosen::take_connect_duration());
+        let total_ms = duration_ms(started.elapsed());
+        match result {
+            Ok(mut reply) => {
+                reply.rosen_connect_ms = connect_ms;
+                reply.work_ms = total_ms.saturating_sub(connect_ms);
+                Ok(reply)
+            }
+            Err(error) => {
+                self.git_view = None;
+                Err(error.to_string())
+            }
         }
-        result.map_err(|error| error.to_string())
     }
 
     fn run(&mut self, cache: &Path, request: Request) -> Result<Reply, Error> {
-        let tools = self.select(cache, &request)?;
+        let (tools, is_rosen) = self.select(cache, &request)?;
         Ok(match request.action {
             Action::Refresh | Action::WarmBase => Reply::plain(String::new()),
             Action::Map => Reply::plain(tools.map()),
             Action::Task(title) => Reply::plain(tools.task_matches(&title).unwrap_or_default()),
-            Action::Tool { name, arguments } => match tools.measured_call(&name, &arguments) {
-                Ok((text, outcome)) => Reply {
-                    text,
-                    outcome,
-                    failed: false,
-                    mentions: Vec::new(),
-                    signature_warnings: Vec::new(),
-                },
-                Err(error) => Reply {
-                    text: error.message,
-                    outcome: error.outcome,
-                    failed: true,
-                    mentions: Vec::new(),
-                    signature_warnings: Vec::new(),
-                },
-            },
+            Action::Tool { name, arguments } => run_tool(tools, is_rosen, &name, &arguments),
             Action::Mentions(texts) => {
                 let graph = &tools.index().graph;
                 let mentions = texts
@@ -332,7 +476,13 @@ impl ProjectGraph {
         })
     }
 
-    fn select(&mut self, cache: &Path, request: &Request) -> Result<&mut Tools, Error> {
+    fn shared_cache(&mut self, folder: &Path) -> Cache {
+        self.cache
+            .get_or_insert_with(|| Cache::open(folder))
+            .clone()
+    }
+
+    fn select(&mut self, cache: &Path, request: &Request) -> Result<(&mut Tools, bool), Error> {
         let mentions = matches!(request.action, Action::Mentions(_));
         let signature_query = matches!(
             request.action,
@@ -340,55 +490,183 @@ impl ProjectGraph {
         );
         let base = matches!(request.action, Action::WarmBase)
             || (mentions || signature_query) && request.rosen.is_some();
-        let rosen =
-            base || rosen_client::snapshot::WorkspaceMarker::path(&request.workspace).is_file();
-        let address = request.rosen.as_ref().filter(|_| rosen);
-        if self.tools.as_ref().is_some_and(|tools| {
-            tools.index().is_rosen() != rosen || self.endpoint.as_ref() != address
-        }) {
-            self.tools = None;
+        let rosen = base || WorkspaceMarker::path(&request.workspace).is_file();
+        if rosen {
+            let address = request
+                .rosen
+                .as_deref()
+                .ok_or_else(|| Error::Invalid("Missing project Rosen endpoint".into()))?;
+            let tools = self.select_rosen(cache, address, &request.workspace, base)?;
+            return Ok((tools, true));
         }
+        let tools = self.select_git(cache, request, mentions)?;
+        Ok((tools, false))
+    }
+
+    fn select_rosen(
+        &mut self,
+        cache: &Path,
+        address: &str,
+        workspace: &Path,
+        base: bool,
+    ) -> Result<&mut Tools, Error> {
+        if self.endpoint.as_deref() != Some(address) {
+            self.rosen_views.clear();
+            self.endpoint = Some(address.to_owned());
+        }
+        let target_tree = if base {
+            crate::rosen::Source::new(Endpoint::new(address), false)?.revision_tree("base")?
+        } else {
+            WorkspaceMarker::read(workspace)?.tree
+        };
+        let key = if base {
+            ViewKey::Base
+        } else {
+            ViewKey::Workspace(workspace.to_path_buf())
+        };
+        let root = if base { Path::new("base") } else { workspace };
+        if self.reuse_warm_view(&key, root, target_tree, base)? {
+            return Ok(&mut self.rosen_views[0].tools);
+        }
+        let index = self.build_rosen_index(cache, address, root, target_tree, base)?;
+        self.insert_view(WarmView {
+            key,
+            tree: target_tree,
+            tools: Tools::new(index),
+        });
+        Ok(&mut self.rosen_views[0].tools)
+    }
+
+    /// Reuses an exact `(key, tree)` view, another view at the exact same immutable tree,
+    /// or refreshes the same workspace's existing view incrementally in place (#541).
+    fn reuse_warm_view(
+        &mut self,
+        key: &ViewKey,
+        root: &Path,
+        target_tree: ObjectId,
+        base: bool,
+    ) -> Result<bool, Error> {
+        if let Some(position) = self
+            .rosen_views
+            .iter()
+            .position(|view| view.key == *key && view.tree == target_tree)
+        {
+            self.promote_view(position);
+            return Ok(true);
+        }
+        if let Some(position) = self
+            .rosen_views
+            .iter()
+            .position(|view| view.tree == target_tree)
+        {
+            self.promote_view(position);
+            self.rosen_views[0].tools.set_rosen_root(root, !base, true);
+            return Ok(true);
+        }
+        if let Some(position) = self.rosen_views.iter().position(|view| view.key == *key) {
+            self.promote_view(position);
+            let view = &mut self.rosen_views[0];
+            view.tools.set_rosen_root(root, !base, false);
+            view.tools.refresh_to_tree(target_tree)?;
+            view.tree = target_tree;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn build_rosen_index(
+        &mut self,
+        cache: &Path,
+        address: &str,
+        root: &Path,
+        target_tree: ObjectId,
+        base: bool,
+    ) -> Result<Index, Error> {
+        if let Some(donor) = self
+            .rosen_views
+            .iter()
+            .position(|view| view.key == ViewKey::Base)
+            .or_else(|| (!self.rosen_views.is_empty()).then_some(0))
+        {
+            return self.rosen_views[donor]
+                .tools
+                .index()
+                .branch_to_tree(root, target_tree, !base);
+        }
+        let shared = self.shared_cache(cache);
+        Index::open_rosen_tree_with_cache(
+            root,
+            cache,
+            shared,
+            Endpoint::new(address),
+            target_tree,
+            !base,
+        )
+    }
+
+    fn promote_view(&mut self, position: usize) {
+        if position > 0 {
+            let view = self.rosen_views.remove(position);
+            self.rosen_views.insert(0, view);
+        }
+    }
+
+    fn insert_view(&mut self, view: WarmView) {
+        self.rosen_views.insert(0, view);
+        self.rosen_views.truncate(MAX_WARM_VIEWS);
+    }
+
+    fn select_git(
+        &mut self,
+        cache: &Path,
+        request: &Request,
+        mentions: bool,
+    ) -> Result<&mut Tools, Error> {
         let same_workspace = self
-            .tools
+            .git_view
             .as_ref()
             .is_some_and(|tools| tools.index().root() == request.workspace);
-        if self.tools.is_none() {
-            let endpoint = address.cloned().map(Endpoint::new);
-            let index = if base {
-                let endpoint = endpoint
-                    .ok_or_else(|| Error::Invalid("Missing project Rosen endpoint".into()))?;
-                Index::open_revision(endpoint, "base", cache)?
-            } else {
-                Index::open_workspace(&request.workspace, cache, endpoint)?
-            };
-            self.tools = Some(Tools::new(index));
-            self.endpoint = address.cloned();
+        if self.git_view.is_none() {
+            let index = Index::open_workspace(&request.workspace, cache, None)?;
+            self.git_view = Some(Tools::new(index));
         }
         let tools = self
-            .tools
+            .git_view
             .as_mut()
             .ok_or_else(|| Error::Invalid("Project graph unavailable".into()))?;
-        if base {
-            tools.select_base()?;
-        } else {
-            tools.select_workspace(&request.workspace)?;
-            if !rosen {
-                let refresh = mentions
-                    && self.mention_refresh.as_ref().is_none_or(|(root, checked)| {
-                        root != &request.workspace || checked.elapsed() >= MENTION_REFRESH_INTERVAL
-                    });
-                if refresh {
-                    // Issue queries have no connection watching this checkout for edits.
-                    if same_workspace {
-                        tools.refresh(&[String::new()])?;
-                    }
-                    self.mention_refresh = Some((request.workspace.clone(), Instant::now()));
-                } else {
-                    tools.refresh(&request.changed)?;
-                }
+        tools.select_workspace(&request.workspace)?;
+        let refresh = mentions
+            && self.mention_refresh.as_ref().is_none_or(|(root, checked)| {
+                root != &request.workspace || checked.elapsed() >= MENTION_REFRESH_INTERVAL
+            });
+        if refresh {
+            if same_workspace {
+                tools.refresh(&[String::new()])?;
             }
+            self.mention_refresh = Some((request.workspace.clone(), Instant::now()));
+        } else {
+            tools.refresh(&request.changed)?;
         }
         Ok(tools)
+    }
+}
+
+fn run_tool(tools: &mut Tools, is_rosen: bool, name: &str, arguments: &Value) -> Reply {
+    let outcome = if is_rosen {
+        tools.measured_call_synced(name, arguments)
+    } else {
+        tools.measured_call(name, arguments)
+    };
+    match outcome {
+        Ok((text, outcome)) => Reply {
+            outcome,
+            ..Reply::plain(text)
+        },
+        Err(error) => Reply {
+            outcome: error.outcome,
+            failed: true,
+            ..Reply::plain(error.message)
+        },
     }
 }
 

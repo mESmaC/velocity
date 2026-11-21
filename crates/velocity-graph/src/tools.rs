@@ -146,11 +146,16 @@ Most used: {}.",
         Ok(())
     }
 
-    pub(crate) fn select_base(&mut self) -> Result<(), Error> {
-        if self.index.select_base()? {
+    pub(crate) fn refresh_to_tree(&mut self, tree: rosen_core::ObjectId) -> Result<bool, Error> {
+        if self.index.refresh_to_tree(tree)? {
             self.rebuild_search();
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
+    }
+
+    pub(crate) fn set_rosen_root(&mut self, root: &Path, workspace: bool, clear_stale: bool) {
+        self.index.set_rosen_root(root, workspace, clear_stale);
     }
 
     pub(crate) fn task_matches(&mut self, title: &str) -> Option<String> {
@@ -220,6 +225,25 @@ Most used: {}.",
         name: &str,
         arguments: &Value,
     ) -> Result<(String, ToolOutcome), CallError> {
+        self.measured_call_inner(name, arguments, true)
+    }
+
+    /// Runs a tool when the caller has already synchronized a Rosen index to its target tree,
+    /// avoiding a duplicate `.rosen/workspace.json` read (#541).
+    pub(crate) fn measured_call_synced(
+        &mut self,
+        name: &str,
+        arguments: &Value,
+    ) -> Result<(String, ToolOutcome), CallError> {
+        self.measured_call_inner(name, arguments, false)
+    }
+
+    fn measured_call_inner(
+        &mut self,
+        name: &str,
+        arguments: &Value,
+        refresh_rosen: bool,
+    ) -> Result<(String, ToolOutcome), CallError> {
         if name == "graph_grep" {
             if self.index.is_git() {
                 return Err("graph_grep requires a workspace checkout".into());
@@ -235,7 +259,7 @@ Most used: {}.",
             return Ok((within_budget(text), ToolOutcome::Other));
         }
         if name == "graph_overlaps" {
-            if self.index.is_rosen() {
+            if refresh_rosen && self.index.is_rosen() {
                 let _ = self.refresh(&[]);
             }
             let paths = arguments
@@ -251,7 +275,9 @@ Most used: {}.",
             return Ok((within_budget(overlaps.to_string()), ToolOutcome::Other));
         }
         if self.index.is_rosen() {
-            self.refresh(&[]).map_err(|error| error.to_string())?;
+            if refresh_rosen {
+                self.refresh(&[]).map_err(|error| error.to_string())?;
+            }
             let draft = self.draft(name, arguments)?;
             return Ok(self.render(draft));
         }

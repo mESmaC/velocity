@@ -1,6 +1,8 @@
 //! The server's single event log is the feed; sequence numbers are never local.
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
 
 use crate::{
     Entry, Error, EventPayload, OverlapDetail, OverlapSymbols,
@@ -13,6 +15,69 @@ use rosen_client::{
     Client,
     protocol::{Event, EventKind},
 };
+
+#[derive(Default)]
+struct RemoteEventCache {
+    identity: Option<String>,
+    tip: u64,
+    synced_once: bool,
+    entries: Vec<Entry>,
+    /// Scoped member -> latest registered checkout change ID.
+    checkouts: BTreeMap<String, String>,
+    /// Change ID -> scoped member from checkout records.
+    change_members: BTreeMap<String, String>,
+}
+
+impl RemoteEventCache {
+    fn reset(&mut self) {
+        self.tip = 0;
+        self.synced_once = false;
+        self.entries.clear();
+        self.checkouts.clear();
+        self.change_members.clear();
+    }
+
+    fn push_all(&mut self, delta: Vec<Entry>) {
+        for record in delta {
+            if record.sequence > self.tip {
+                self.tip = record.sequence;
+            }
+            if record.checkout.is_some()
+                && let Some(change) = record.change_id()
+            {
+                self.checkouts
+                    .insert(record.member.clone(), change.to_owned());
+                self.change_members
+                    .insert(change.to_owned(), record.member.clone());
+            }
+            self.entries.push(record);
+        }
+    }
+}
+
+type EndpointCaches = Mutex<HashMap<String, Arc<Mutex<RemoteEventCache>>>>;
+static REMOTE_CACHES: OnceLock<EndpointCaches> = OnceLock::new();
+
+fn endpoint_cache(endpoint: &str) -> Arc<Mutex<RemoteEventCache>> {
+    let mut map = REMOTE_CACHES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    Arc::clone(map.entry(endpoint.to_owned()).or_default())
+}
+
+fn database_identity(data_dir: &str) -> String {
+    let database = Path::new(data_dir).join("metadata.sqlite");
+    let created = std::fs::metadata(&database)
+        .and_then(|metadata| metadata.created())
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos());
+    match created {
+        Some(nanos) => format!("{data_dir}:{nanos}"),
+        None => data_dir.to_owned(),
+    }
+}
 
 pub(crate) fn time(milliseconds: i64) -> String {
     format_timestamp_millis(milliseconds).unwrap_or_default()
@@ -258,37 +323,137 @@ fn apply_timestamps(records: &mut [Entry], floor: Option<i64>, server_times: &BT
 }
 
 impl Remote {
-    pub(crate) fn read(&self, after: u64) -> Result<Vec<Entry>, Error> {
-        let mut records = self.run(async |client| {
-            let mut records = read_events(&client, None, 0).await?;
-            route_project_entries(&client, &mut records).await?;
-            Ok(records)
+    /// Syncs the per-endpoint incremental event cache up to Rosen's current `last_event` (#541).
+    fn sync_cache(&self) -> Result<Arc<Mutex<RemoteEventCache>>, Error> {
+        let cache_arc = endpoint_cache(self.endpoint.as_str());
+        let (data_dir, identity, tip) = self.run(async |client| {
+            let status = client.status().await?;
+            let identity = database_identity(&status.data_dir);
+            Ok((status.data_dir, identity, status.last_event))
         })?;
-        records.retain(|record| record.sequence > after);
+        let (start_after, reset) = {
+            let cache = cache_arc.lock().unwrap_or_else(|error| error.into_inner());
+            let changed = cache.identity.as_deref() != Some(identity.as_str()) || tip < cache.tip;
+            if !changed && cache.synced_once && tip != 0 && tip == cache.tip {
+                drop(cache);
+                return Ok(cache_arc);
+            }
+            if changed {
+                (0, true)
+            } else {
+                (cache.tip, false)
+            }
+        };
+        let delta = if tip != 0 && start_after >= tip {
+            Vec::new()
+        } else {
+            self.run_dedicated(async |client| {
+                read_events_with_status(client, None, start_after, tip, &data_dir).await
+            })?
+        };
+        let mut cache = cache_arc.lock().unwrap_or_else(|error| error.into_inner());
+        if reset || cache.identity.as_deref() != Some(identity.as_str()) || tip < cache.tip {
+            cache.reset();
+        }
+        cache.identity = Some(identity);
+        // Guard against a concurrent caller advancing past start_after before we re-locked.
+        let filtered: Vec<Entry> = delta
+            .into_iter()
+            .filter(|record| record.sequence > cache.tip)
+            .collect();
+        cache.push_all(filtered);
+        cache.tip = cache.tip.max(tip);
+        cache.synced_once = true;
+        drop(cache);
+        Ok(cache_arc)
+    }
+
+    pub(crate) fn warm(&self) -> Result<(), Error> {
+        self.sync_cache().map(drop)
+    }
+
+    pub(crate) fn checkouts(&self) -> Result<BTreeMap<String, String>, Error> {
+        let cache_arc = self.sync_cache()?;
+        let cache = cache_arc.lock().unwrap_or_else(|error| error.into_inner());
+        Ok(cache.checkouts.clone())
+    }
+
+    pub(crate) fn read(&self, after: u64) -> Result<Vec<Entry>, Error> {
+        let cache_arc = self.sync_cache()?;
+        let (mut records, change_members) = {
+            let cache = cache_arc.lock().unwrap_or_else(|error| error.into_inner());
+            let start = cache
+                .entries
+                .partition_point(|record| record.sequence <= after);
+            let slice = cache.entries[start..].to_vec();
+            let needs_routing = slice.iter().any(|record| record.change_id().is_some());
+            let members = if needs_routing {
+                Some(cache.change_members.clone())
+            } else {
+                None
+            };
+            (slice, members)
+        };
+        if let Some(change_members) = change_members {
+            self.run(async |client| {
+                route_project_entries(client, &change_members, &mut records).await
+            })?;
+        }
         for record in &mut records {
             self.local_record(record);
         }
         Ok(records)
     }
 
-    pub(crate) fn delivery_cursor(&self, member: &str, saved: u64) -> Result<u64, Error> {
-        self.run(async |client| {
-            let members = client.channel_presence().await?;
-            let Some(_known) = members
+    pub(crate) fn read_ledger(&self, ledger: &str, after: u64) -> Result<Vec<Entry>, Error> {
+        let cache_arc = self.sync_cache()?;
+        let mut records: Vec<Entry> = {
+            let cache = cache_arc.lock().unwrap_or_else(|error| error.into_inner());
+            let start = cache
+                .entries
+                .partition_point(|record| record.sequence <= after);
+            cache.entries[start..]
                 .iter()
-                .find(|known| known.member == self.member(member))
-            else {
-                return Ok(saved);
-            };
-            if saved != 0 {
-                return Ok(saved);
-            }
-            Ok(read_events(&client, None, 0)
+                .filter(|record| record.kind == ledger)
+                .cloned()
+                .collect()
+        };
+        for record in &mut records {
+            self.local_record(record);
+        }
+        Ok(records)
+    }
+
+    pub(crate) fn latest_task_list(&self) -> Result<Option<String>, Error> {
+        let cache_arc = self.sync_cache()?;
+        let cache = cache_arc.lock().unwrap_or_else(|error| error.into_inner());
+        Ok(cache
+            .entries
+            .iter()
+            .rev()
+            .find(|record| record.kind == "task_list")
+            .map(|record| record.text.clone()))
+    }
+
+    pub(crate) fn delivery_cursor(&self, member: &str, saved: u64) -> Result<u64, Error> {
+        let scoped = self.member(member);
+        let present = self.run(async |client| {
+            Ok(client
+                .channel_presence()
                 .await?
                 .iter()
-                .find(|record| record.member == self.member(member) && record.kind == "join")
-                .map_or(0, |record| record.sequence))
-        })
+                .any(|known| known.member == scoped))
+        })?;
+        if !present || saved != 0 {
+            return Ok(saved);
+        }
+        let cache_arc = self.sync_cache()?;
+        let cache = cache_arc.lock().unwrap_or_else(|error| error.into_inner());
+        Ok(cache
+            .entries
+            .iter()
+            .find(|record| record.member == scoped && record.kind == "join")
+            .map_or(0, |record| record.sequence))
     }
 
     pub(crate) fn acknowledged_cursor(&self, nick: &str) -> Result<u64, Error> {
@@ -309,17 +474,29 @@ impl Remote {
     }
 
     pub(crate) fn targeted(&self, nick: &str, after: u64, idle: bool) -> Result<Vec<Entry>, Error> {
-        self.run(async |client| {
-            if idle
-                && let Some(member) = client
+        if idle {
+            self.run(async |client| {
+                if let Some(member) = client
                     .channel_presence()
                     .await?
                     .iter()
                     .find(|member| member.nick == nick)
-            {
-                client.channel_release_held(&member.member).await?;
-            }
-            let mut records = read_events(&client, Some(nick), after).await?;
+                {
+                    client.channel_release_held(&member.member).await?;
+                }
+                Ok(())
+            })?;
+        }
+        let (data_dir, tip) = self.run(async |client| {
+            let status = client.status().await?;
+            Ok((status.data_dir, status.last_event))
+        })?;
+        if tip != 0 && after >= tip {
+            return Ok(Vec::new());
+        }
+        self.run_dedicated(async |client| {
+            let mut records =
+                read_events_with_status(client, Some(nick), after, tip, &data_dir).await?;
             for record in &mut records {
                 self.local_record(record);
             }
@@ -334,7 +511,19 @@ pub(crate) async fn read_events(
     after: u64,
 ) -> Result<Vec<Entry>, Error> {
     let status = client.status().await?;
-    let tip = status.last_event;
+    read_events_with_status(client, nick, after, status.last_event, &status.data_dir).await
+}
+
+async fn read_events_with_status(
+    client: &Client,
+    nick: Option<&str>,
+    after: u64,
+    tip: u64,
+    data_dir: &str,
+) -> Result<Vec<Entry>, Error> {
+    if tip != 0 && after >= tip {
+        return Ok(Vec::new());
+    }
     let mut events = subscribe_events(client, nick, after).await?;
     let mut records = Vec::new();
     let mut reached = after;
@@ -363,7 +552,7 @@ pub(crate) async fn read_events(
             break;
         }
     }
-    let data_dir = PathBuf::from(status.data_dir);
+    let data_dir = PathBuf::from(data_dir);
     let (floor, server_times) =
         tokio::task::spawn_blocking(move || velocity_rosen::event_timestamps(&data_dir, after))
             .await
@@ -472,17 +661,19 @@ fn target_project_event(event: &Event, nick: &str, records: &mut [Entry]) {
 
 // Rosen's change owner is the full workspace name; the channel nick can be
 // shortened or suffixed. Join them by the server's registered change/member IDs.
-async fn route_project_entries(client: &Client, records: &mut [Entry]) -> Result<(), Error> {
-    let members = client.channel_presence().await?;
-    let changes = client
-        .change_list(crate::remote::wire(serde_json::json!({}))?)
-        .await?;
+async fn route_project_entries(
+    client: &Client,
+    change_members: &BTreeMap<String, String>,
+    records: &mut [Entry],
+) -> Result<(), Error> {
+    let (members, changes) = tokio::try_join!(
+        client.channel_presence(),
+        client.change_list(crate::remote::wire(serde_json::json!({}))?),
+    )?;
     let mut nicks = BTreeMap::new();
-    for record in records.iter().filter(|record| record.checkout.is_some()) {
-        if let Some(change) = record.change_id()
-            && let Some(member) = members.iter().find(|member| member.member == record.member)
-        {
-            nicks.insert(change.to_owned(), member.nick.clone());
+    for (change, member_id) in change_members {
+        if let Some(member) = members.iter().find(|member| &member.member == member_id) {
+            nicks.insert(change.clone(), member.nick.clone());
         }
     }
     for change in &changes {

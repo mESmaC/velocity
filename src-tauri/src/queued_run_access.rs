@@ -1,4 +1,5 @@
 use std::io;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use velocity_acp::client::{
@@ -8,6 +9,7 @@ use velocity_acp::client::{
     request_workflow_run, run_cancel_tool, run_status_tool, workflow_run_tool,
 };
 use velocity_github::mcp_stdio::{self, ToolServer};
+use velocity_rosen::mcp_latency::LatencyRecorder;
 
 pub fn serve() -> anyhow::Result<bool> {
     let mut arguments = std::env::args_os().skip(1);
@@ -25,8 +27,13 @@ pub fn serve() -> anyhow::Result<bool> {
         .ok_or_else(|| anyhow::anyhow!("Missing queued run port"))?
         .parse()?;
     let token = std::env::var(QUEUED_RUN_TOKEN_ENV)?;
+    let latency = LatencyRecorder::open(QUEUED_RUN_SERVER, None);
     mcp_stdio::serve(
-        &mut Server { port, token },
+        &mut Server {
+            port,
+            token,
+            latency,
+        },
         io::stdin().lock(),
         io::stdout().lock(),
     )?;
@@ -36,6 +43,7 @@ pub fn serve() -> anyhow::Result<bool> {
 struct Server {
     port: u16,
     token: String,
+    latency: LatencyRecorder,
 }
 
 impl ToolServer for Server {
@@ -62,13 +70,21 @@ impl ToolServer for Server {
     }
 
     fn call(&mut self, name: Option<&str>, arguments: Value) -> Result<Value, String> {
-        match name {
+        let started = Instant::now();
+        let result = match name {
             Some(QUEUED_RUN_TOOL) => request_queued_run(self.port, &self.token, arguments),
             Some(RUN_STATUS_TOOL) => request_run_status(self.port, &self.token, arguments),
             Some(RUN_CANCEL_TOOL) => request_run_cancel(self.port, &self.token, arguments),
             Some(WORKFLOW_RUN_TOOL) => request_workflow_run(self.port, &self.token, arguments),
             Some(PREFLIGHT_TOOL) => request_preflight(self.port, &self.token, arguments),
             _ => Err("Unknown queued run tool".into()),
-        }
+        };
+        self.latency.record(
+            name.unwrap_or("unknown"),
+            Duration::ZERO,
+            started.elapsed(),
+            result.is_ok(),
+        );
+        result
     }
 }

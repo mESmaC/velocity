@@ -217,11 +217,8 @@ impl Channel {
     pub fn task_list(&self) -> Result<Vec<TaskListRow>, Error> {
         if let Some(remote) = &self.remote {
             return remote
-                .read(0)?
-                .iter()
-                .rev()
-                .find(|record| record.kind == "task_list")
-                .map(|record| serde_json::from_str(&record.text).map_err(Error::from))
+                .latest_task_list()?
+                .map(|text| serde_json::from_str(&text).map_err(Error::from))
                 .unwrap_or_else(|| Ok(Vec::new()));
         }
         let path = self.directory.join(TASK_LIST_FILE);

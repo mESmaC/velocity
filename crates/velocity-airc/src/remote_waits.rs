@@ -100,7 +100,7 @@ impl Remote {
         file: &str,
         cancelled: impl Fn() -> bool + Sync,
     ) -> Result<serde_json::Value, Error> {
-        self.run(async |client| {
+        self.run_dedicated(async |client| {
             // An explicit cursor also replays releases while Rosen starts its
             // subscription task; a ping cannot establish that task's starting point.
             let after = client.status().await?.last_event;

@@ -5,9 +5,13 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use rosen_client::{Client, Endpoint, Error};
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
+
+/// Skip the synchronous `ping()` check when a shared connection was verified recently (#541).
+const VERIFY_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Owns the runtime of a Rosen connection (or an operation that opens its own
 /// connection). Dropping the scope cancels its detached tasks and closes their I/O.
@@ -82,7 +86,12 @@ impl Connection {
     }
 }
 
-type Entry = Arc<AsyncMutex<Option<Arc<Connection>>>>;
+struct CachedConnection {
+    connection: Arc<Connection>,
+    verified_at: Instant,
+}
+
+type Entry = Arc<AsyncMutex<Option<CachedConnection>>>;
 static REQUESTS: LazyLock<Mutex<HashMap<String, Entry>>> = LazyLock::new(Mutex::default);
 
 pub(crate) fn forget(endpoint: &Endpoint) {
@@ -91,17 +100,49 @@ pub(crate) fn forget(endpoint: &Endpoint) {
     }
 }
 
+/// Drops a cached shared connection if it is still the active entry for `endpoint`,
+/// forcing the next caller to open a fresh pipe immediately.
+pub async fn invalidate(endpoint: &Endpoint, failed: &Arc<Connection>) {
+    let entry = {
+        let entries = REQUESTS.lock().unwrap_or_else(|error| error.into_inner());
+        entries.get(endpoint.as_str()).cloned()
+    };
+    if let Some(entry) = entry {
+        let mut guard = entry.lock().await;
+        if guard
+            .as_ref()
+            .is_some_and(|cached| Arc::ptr_eq(&cached.connection, failed))
+        {
+            *guard = None;
+        }
+    }
+}
+
 /// Ordinary requests share a connection across callers. Event streams use a
 /// dedicated connection because a subscription replaces its predecessor.
 pub async fn requests(endpoint: &Endpoint) -> Result<Arc<Connection>, Error> {
+    requests_timed(endpoint)
+        .await
+        .map(|(connection, _)| connection)
+}
+
+/// Like [`requests`], returning the time spent connecting or verifying the Rosen connection.
+pub async fn requests_timed(endpoint: &Endpoint) -> Result<(Arc<Connection>, Duration), Error> {
+    let started = Instant::now();
     let entry = {
         let mut entries = REQUESTS.lock().unwrap_or_else(|error| error.into_inner());
         Arc::clone(entries.entry(endpoint.to_string()).or_default())
     };
-    let mut entry = entry.lock().await;
-    if let Some(connection) = entry.as_ref() {
-        match tokio::time::timeout(std::time::Duration::from_secs(10), connection.ping()).await {
-            Ok(Ok(())) => return Ok(Arc::clone(connection)),
+    let mut guard = entry.lock().await;
+    if let Some(cached) = guard.as_mut() {
+        if cached.verified_at.elapsed() < VERIFY_INTERVAL {
+            return Ok((Arc::clone(&cached.connection), started.elapsed()));
+        }
+        match tokio::time::timeout(Duration::from_secs(10), cached.connection.ping()).await {
+            Ok(Ok(())) => {
+                cached.verified_at = Instant::now();
+                return Ok((Arc::clone(&cached.connection), started.elapsed()));
+            }
             Ok(Err(_)) => {}
             Err(_) => {
                 return Err(std::io::Error::new(
@@ -112,8 +153,11 @@ pub async fn requests(endpoint: &Endpoint) -> Result<Arc<Connection>, Error> {
             }
         }
     }
-    *entry = None;
+    *guard = None;
     let connection = Arc::new(Connection::dedicated(endpoint).await?);
-    *entry = Some(Arc::clone(&connection));
-    Ok(connection)
+    *guard = Some(CachedConnection {
+        connection: Arc::clone(&connection),
+        verified_at: Instant::now(),
+    });
+    Ok((connection, started.elapsed()))
 }
