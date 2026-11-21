@@ -595,6 +595,8 @@ mod tests {
             "UPDATE post_land_green SET seq=3, commit_id=?1 WHERE ref_name='master'",
             [&fix],
         )?;
+        // Close the SQLite handle before removing the temp directory on Windows.
+        drop(conn);
         assert_eq!(post_land_stall(&server)?, None);
         std::fs::remove_dir_all(root)?;
         Ok(())
