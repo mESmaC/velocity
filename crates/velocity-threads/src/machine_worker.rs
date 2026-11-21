@@ -275,7 +275,12 @@ fn agent_setup(
 }
 
 fn rosen_server(root: &Path, environment: &[(String, String)]) -> Option<McpServer> {
-    let command = velocity_rosen::mcp_command(root, environment)?;
+    let command = std::env::current_exe()
+        .ok()
+        .and_then(|executable| {
+            velocity_rosen::mcp_proxy::proxy_mcp_command(&executable, root, environment)
+        })
+        .or_else(|| velocity_rosen::mcp_command(root, environment))?;
     Some(McpServer::Stdio(
         McpServerStdio::new("rosen", command.program)
             .args(command.arguments)

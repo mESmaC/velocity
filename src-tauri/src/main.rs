@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod queued_run_access;
+mod rosen_mcp;
 
 /// Rosen's binaries ride inside a release (F5). They are a `static` in the executable's
 /// own crate, so no library's metadata carries them and no other crate rebuilds for them.
@@ -49,6 +50,9 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(code);
     }
     if queued_run_access::serve()? {
+        return Ok(());
+    }
+    if rosen_mcp::serve()? {
         return Ok(());
     }
     if let Ok(executable) = std::env::current_exe() {

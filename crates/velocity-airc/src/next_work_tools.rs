@@ -77,12 +77,12 @@ pub(crate) fn tool() -> Value {
             "branch": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Optional Rosen change ID or branch name recorded on the claim; defaults to ROSEN_CHANGE or this thread's branch."
+                "description": "Git projects only: branch name recorded on the claim. Omitted on Rosen projects."
             },
             "files": {
                 "type": "array",
                 "items": { "type": "string", "minLength": 1 },
-                "description": "Optional initial repository-relative file paths to claim alongside the piece."
+                "description": "Git projects only: optional initial repository-relative file paths. On Rosen projects, claim code paths with `rosen claim --exclusive <paths>` (or `claim` with `exclusive: true` on the `rosen` MCP server)."
             }
         }),
         &[],

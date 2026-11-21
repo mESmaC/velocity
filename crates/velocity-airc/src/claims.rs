@@ -51,7 +51,7 @@ pub fn piece_key(piece: &str) -> String {
     let rest = rest.trim();
     match prefix.as_str() {
         "issue" => format!("issue:{}", rest.trim_start_matches('#').trim()),
-        "task" | "spec" | "branch" => format!("{prefix}:{rest}"),
+        "task" | "spec" | "branch" | "change" => format!("{prefix}:{rest}"),
         _ => text,
     }
 }
@@ -135,6 +135,16 @@ impl Channel {
 
     /// A goal swarm reserves its known files while claiming the piece. Other AIRC
     /// callers retain advisory file overlaps for the share and wait workflow.
+    /// Claims a work item by identity on a Rosen project without branch or file fields (#531).
+    pub fn claim_work_item(
+        &self,
+        member: &str,
+        piece: &str,
+        task: &str,
+    ) -> Result<ClaimResult, Error> {
+        self.claim_work(member, piece, task, "", Vec::new(), false)
+    }
+
     pub fn claim_goal_piece(
         &self,
         member: &str,
@@ -156,10 +166,14 @@ impl Channel {
         require_clear_files: bool,
     ) -> Result<ClaimResult, Error> {
         if task.trim().is_empty()
-            || branch.trim().is_empty()
+            || (self.remote.is_none() && branch.trim().is_empty())
             || files.iter().any(|file| file.trim().is_empty())
         {
-            return Err(Error::Invalid("Claims need a task and branch".into()));
+            return Err(Error::Invalid(if self.remote.is_some() {
+                "Claims need a task".into()
+            } else {
+                "Claims need a task and branch".into()
+            }));
         }
         if let Some(remote) = &self.remote {
             return remote.claim_work(member, piece, task, branch, files);
@@ -269,8 +283,10 @@ impl Channel {
     }
 
     /// Observed edits extend every piece this agent holds, without changing piece ownership.
+    /// On Rosen projects, Rosen owns path claims (`rosen claim --exclusive <paths>`), so
+    /// observed tool edits never write AIRC file claims (#531).
     pub fn observe_file(&self, member: &str, file: &str) -> Result<(), Error> {
-        if !repository_relative(file) {
+        if self.remote.is_some() || !repository_relative(file) {
             return Ok(());
         }
         for claim in self

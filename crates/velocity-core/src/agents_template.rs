@@ -83,8 +83,8 @@ The project spec defines what to build. The Task List defines what is left.
 {tests_and_docs}
 
 ## Coordination (Rosen path claims and AIRC)
-- Before editing, claim every path you expect to touch with `rosen claim <paths>`.
-- Record `rosen share <paths>` before editing a held path, or `rosen wait <paths>` when its change must land first.
+- Before editing, claim every code path you expect to touch with `rosen claim --exclusive <paths>` (or the `rosen` MCP `claim` tool with `exclusive: true`); plain `rosen claim <paths>` notices are for registration lists and generated files, which `--exclusive` refuses.
+- Record `rosen share <paths>` before editing a held path, or call the parking `wait` tool on the `rosen` MCP server (or `rosen wait <paths>`) when its change must land first.
 - Use AIRC for work choice, discoveries and messages. Message another agent only when a claim, overlap or dependency needs words.
 - Answer requests addressed to you with done or declined and a reason. Never repeat events Velocity posts or reply to inform messages.
 

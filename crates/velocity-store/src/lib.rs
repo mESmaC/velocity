@@ -868,6 +868,10 @@ pub struct ThreadItem {
     pub airc_server_identity: Option<String>,
     #[serde(default)]
     pub dependency_wait: Option<String>,
+    /// Durable Rosen path wait tracked for parking and resume (#531).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub rosen_path_wait: Option<rosen::RosenPathWait>,
     /// The agent's ACP session id, which a parked thread loads again on resume (§2.2).
     #[serde(default)]
     pub agent_session: Option<String>,
@@ -937,6 +941,7 @@ impl ThreadItem {
             airc_cursor: 0,
             airc_server_identity: None,
             dependency_wait: None,
+            rosen_path_wait: None,
             agent_session: None,
             context_handoff: None,
             provider_queued: false,
@@ -998,6 +1003,7 @@ impl ThreadItem {
             airc_cursor: 0,
             airc_server_identity: None,
             dependency_wait: None,
+            rosen_path_wait: None,
             agent_session: None,
             context_handoff: None,
             provider_queued: false,

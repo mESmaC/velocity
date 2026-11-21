@@ -254,9 +254,11 @@ impl Job {
                     "",
                 )]),
         ));
-        setup
-            .shared_servers
-            .extend(rosen_server(launch, &agent_launch.env));
+        setup.shared_servers.extend(rosen_server(
+            &self.runner.executable,
+            launch,
+            &agent_launch.env,
+        ));
         Ok((agent_launch, setup))
     }
 
@@ -438,8 +440,14 @@ impl Job {
     }
 }
 
-fn rosen_server(launch: &SwarmLaunch, environment: &[(String, String)]) -> Option<McpServer> {
-    let command = velocity_rosen::mcp_command(&launch.workspace, environment)?;
+fn rosen_server(
+    executable: &std::path::Path,
+    launch: &SwarmLaunch,
+    environment: &[(String, String)],
+) -> Option<McpServer> {
+    let command =
+        velocity_rosen::mcp_proxy::proxy_mcp_command(executable, &launch.workspace, environment)
+            .or_else(|| velocity_rosen::mcp_command(&launch.workspace, environment))?;
     Some(McpServer::Stdio(
         McpServerStdio::new("rosen", command.program)
             .args(command.arguments)

@@ -28,6 +28,7 @@ mod light_target;
 pub mod machine_dispatch;
 pub mod machines;
 pub mod mcp_latency;
+pub mod mcp_proxy;
 pub mod memory;
 mod migration;
 mod mirror;

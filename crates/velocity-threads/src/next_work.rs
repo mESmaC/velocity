@@ -177,6 +177,7 @@ pub(crate) fn select_and_claim(
         .map(|claim| claim.key().to_owned())
         .collect();
     let (candidates, github_note) = collect_candidates(project, sources, &claimed, issue_loader);
+    let rosen = channel.is_rosen_project(request.member)?;
     let branch = resolve_branch(project, &request);
     let files: Vec<String> = request.files.to_vec();
     let checkout = Path::new(&project.repository_path);
@@ -185,7 +186,12 @@ pub(crate) fn select_and_claim(
     for candidate in candidates {
         let piece = candidate.piece_key();
         let title = candidate.title();
-        match channel.claim_piece(request.member, &piece, &title, &branch, files.clone())? {
+        let outcome = if rosen {
+            channel.claim_work_item(request.member, &piece, &title)?
+        } else {
+            channel.claim_piece(request.member, &piece, &title, &branch, files.clone())?
+        };
+        match outcome {
             ClaimResult::Granted { .. } => {
                 let brief = build_brief_sync(
                     app_data,
@@ -193,18 +199,21 @@ pub(crate) fn select_and_claim(
                     channel,
                     candidate.brief_input(&request, &branch, checkout, spec_path),
                 );
+                let mut claim_summary = json!({
+                    "piece": candidate.piece_key(),
+                    "task": candidate.title(),
+                    "nick": request.nick,
+                });
+                if !rosen {
+                    claim_summary["branch"] = json!(branch);
+                }
                 let mut answer = json!({
                     "status": "claimed",
                     "piece": piece,
                     "kind": candidate.kind(),
                     "title": title,
                     "reference": candidate.reference(),
-                    "claim": {
-                        "piece": candidate.piece_key(),
-                        "task": candidate.title(),
-                        "branch": branch,
-                        "nick": request.nick,
-                    },
+                    "claim": claim_summary,
                     "brief": brief.render(NEXT_WORK_BRIEF_BUDGET),
                 });
                 if !brief.signature_warnings.is_empty() {

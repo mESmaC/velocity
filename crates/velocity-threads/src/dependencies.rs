@@ -38,6 +38,10 @@ pub fn refresh(
         .threads
         .iter()
         .filter_map(|thread| {
+            // Rosen path waits own `dependency_wait` on Rosen threads (#531).
+            if thread.rosen_path_wait.is_some() {
+                return None;
+            }
             let description = waits
                 .iter()
                 .find(|wait| wait.member == format!("thread-{}", thread.id))

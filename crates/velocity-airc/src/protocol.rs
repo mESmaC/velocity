@@ -105,7 +105,12 @@ pub(crate) fn serve_with_options(
     result.and(cleanup)
 }
 
-fn instructions(nick: &str, continuous_dispatch: bool, has_issue_tools: bool) -> String {
+fn instructions(
+    nick: &str,
+    rosen: bool,
+    continuous_dispatch: bool,
+    has_issue_tools: bool,
+) -> String {
     let task_rule = if continuous_dispatch {
         "Continuous dispatch started this thread. Use task_add, task_update and task_delete without waiting for a user request. Record concrete follow-up work and split work into actionable tasks. Velocity marks your assigned task done when your change lands, so leave it assigned while you work."
     } else {
@@ -116,8 +121,13 @@ fn instructions(nick: &str, continuous_dispatch: bool, has_issue_tools: bool) ->
     } else {
         ""
     };
+    let claim_rule = if rosen {
+        "Check work-item ownership with airc_claims using the candidate task or piece as the task filter; Velocity records AIRC work-item identity for each thread. Rosen owns path claims on this project: claim code paths BEFORE editing with `rosen claim --exclusive <paths>` (or the `rosen` MCP `claim` tool with `exclusive: true`), where the first claim wins; plain `rosen claim <paths>` notices are for registration lists and generated files. Record deliberate overlaps with `rosen share <paths>`, park on held paths with the `wait` tool on the `rosen` MCP server, and release paths with `rosen release <paths>`."
+    } else {
+        "Check ownership with airc_claims using the candidate task or piece as the task filter. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so check the next candidate. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file."
+    };
     format!(
-        "You joined this project's AIRC channel as {nick}. Check ownership with airc_claims using the candidate task or piece as the task filter. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so check the next candidate. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. Log readers (read_feed, read_events, read_ledger) return newest first (up to 50), filter by query or after/before sequence, return next_before for older matches, and read oversized entries by sequence with offset. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview.{issue_rule} Use append_ledger with velocity_issue only to report a problem in the Velocity IDE/tooling running your session (its worktrees, AIRC, duty tools, agent shells, build queue, code graph or desktop app), which Velocity files on mESmaC/velocity regardless of which project you are in; for issues on this project's repository (including when this project is mESmaC/velocity), use issue_create instead. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue instead and is filed on mESmaC/rosen. Use at most one ledger issue field. Search read_ledger with ledger discovery and the problem's terms before reporting it. An issue that waits on other issues names them in blocked_by, which records GitHub issue dependencies; never hold it with a label."
+        "You joined this project's AIRC channel as {nick}. {claim_rule} Messages require named recipients and an intent. Log readers (read_feed, read_events, read_ledger) return newest first (up to 50), filter by query or after/before sequence, return next_before for older matches, and read oversized entries by sequence with offset. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview.{issue_rule} Use append_ledger with velocity_issue only to report a problem in the Velocity IDE/tooling running your session (its worktrees, AIRC, duty tools, agent shells, build queue, code graph or desktop app), which Velocity files on mESmaC/velocity regardless of which project you are in; for issues on this project's repository (including when this project is mESmaC/velocity), use issue_create instead. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue instead and is filed on mESmaC/rosen. Use at most one ledger issue field. Search read_ledger with ledger discovery and the problem's terms before reporting it. An issue that waits on other issues names them in blocked_by, which records GitHub issue dependencies; never hold it with a label."
     )
 }
 
@@ -199,12 +209,14 @@ fn initialize_session(
                 let _ = remote.warm();
             });
     }
+    let rosen = channel.is_rosen_project(member)?;
     Ok(json!({
         "protocolVersion":"2025-11-25",
         "capabilities":{"tools":{}},
         "serverInfo":{"name":"velocity-airc","version":env!("CARGO_PKG_VERSION")},
         "instructions":instructions(
             &nick,
+            rosen,
             options.continuous_dispatch,
             options.issue_handler.is_some(),
         ),
@@ -262,12 +274,19 @@ fn call(
             channel.rebase(member)?;
             Ok(json!({"rebased":true}))
         }
-        "airc_wait" => channel.wait_until(
-            member,
-            text(arguments, "holder")?,
-            text(arguments, "file")?,
-            || !connected.load(std::sync::atomic::Ordering::Acquire),
-        ),
+        "airc_wait" => {
+            if channel.is_rosen_project(member)? {
+                return Err(Error::Invalid(
+                    "Rosen owns path waits on this project; use the `wait` tool on the `rosen` MCP server to park until held paths are free.".into(),
+                ));
+            }
+            channel.wait_until(
+                member,
+                text(arguments, "holder")?,
+                text(arguments, "file")?,
+                || !connected.load(std::sync::atomic::Ordering::Acquire),
+            )
+        }
         name if crate::task_tools::TASK_TOOLS.contains(&name) => {
             crate::task_tools::call(channel, member, name, arguments)
         }
@@ -401,11 +420,11 @@ fn tool_list(rosen: bool, options: &ToolOptions<'_>) -> Vec<Value> {
         tools.push(next_work_tools::tool());
     }
     tools.extend(writing_tools());
-    tools.extend(claim_tools());
+    tools.extend(claim_tools(rosen));
     if !rosen {
         tools.push(tool("airc_rebase", "Bring your registered branch up to date without rewriting history. Commit current edits first, then call this on a targeted merge notice or at landing. Velocity posts rebased on success or conflict on failure; resolve conflicts in your own worktree, regenerate artifacts and check before pushing.", json!({}), &[]));
+        tools.push(tool("airc_wait", "Wait for a file holder. This call stays pending until its dependency ends; do not edit meanwhile. Velocity may park you while you wait: it ends your session to free a provider slot and resumes it when the dependency ends, with the outcome as your next message. On merge Velocity updates your branch before you continue; resolve any reported conflict before continuing.", json!({"holder":{"type":"string"},"file":{"type":"string"}}), &["holder", "file"]));
     }
-    tools.push(tool("airc_wait", "Wait for a file holder. This call stays pending until its dependency ends; do not edit meanwhile. Velocity may park you while you wait: it ends your session to free a provider slot and resumes it when the dependency ends, with the outcome as your next message. On merge Velocity updates your branch before you continue; resolve any reported conflict before continuing.", json!({"holder":{"type":"string"},"file":{"type":"string"}}), &["holder", "file"]));
     tools
 }
 
@@ -468,34 +487,42 @@ fn failure(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
 
-fn claim_tools() -> Vec<Value> {
+fn claim_tools(rosen: bool) -> Vec<Value> {
     let string = json!({"type":"string","minLength":1});
-    vec![
-        tool(
-            "airc_claims",
-            "Read matching claims by repository-relative path or exact task text or piece key (both filters must match when supplied). Without filters, get counts by agent, your own claims and claims overlapping your files. Pass next_offset as offset for more summary rows.",
-            json!({"path":string, "task":string, "offset":{"type":"integer","minimum":0}}),
-            &[],
-        ),
-        tool(
-            "airc_claim",
-            "Claim or extend your piece BEFORE editing. First claimant wins; a refusal names the holder. piece locks a work item by identity: task:<id>, issue:<number> or spec:<section>; without it the task text is the lock. Files are repository-relative; use ::registration for shared registration lists.",
-            json!({"piece":string,"task":string,"branch":string,"files":{"type":"array","items":string}}),
-            &["task", "branch", "files"],
-        ),
-        tool(
-            "airc_release",
-            "Release your own piece, named by its piece or task, after it merges or is deleted",
-            json!({"task":string}),
-            &["task"],
-        ),
-        tool(
-            "airc_share",
-            "Record a share before editing an overlapping file",
-            json!({"holder":string,"file":string}),
-            &["holder", "file"],
-        ),
-    ]
+    let claims_description = if rosen {
+        "Read work-item ownership claims (and any active Rosen path claims) filtered by exact task text, piece key or repository-relative path. Without filters, get counts by agent, your own work-item claims and overlapping path claims. Claim code paths with `rosen claim --exclusive <paths>` (or `claim` with `exclusive: true` on the `rosen` MCP server). Pass next_offset as offset for more summary rows."
+    } else {
+        "Read matching claims by repository-relative path or exact task text or piece key (both filters must match when supplied). Without filters, get counts by agent, your own claims and claims overlapping your files. Pass next_offset as offset for more summary rows."
+    };
+    let mut tools = vec![tool(
+        "airc_claims",
+        claims_description,
+        json!({"path":string, "task":string, "offset":{"type":"integer","minimum":0}}),
+        &[],
+    )];
+    if !rosen {
+        tools.extend([
+            tool(
+                "airc_claim",
+                "Claim or extend your piece BEFORE editing. First claimant wins; a refusal names the holder. piece locks a work item by identity: task:<id>, issue:<number> or spec:<section>; without it the task text is the lock. Files are repository-relative; use ::registration for shared registration lists.",
+                json!({"piece":string,"task":string,"branch":string,"files":{"type":"array","items":string}}),
+                &["task", "branch", "files"],
+            ),
+            tool(
+                "airc_release",
+                "Release your own piece, named by its piece or task, after it merges or is deleted",
+                json!({"task":string}),
+                &["task"],
+            ),
+            tool(
+                "airc_share",
+                "Record a share before editing an overlapping file",
+                json!({"holder":string,"file":string}),
+                &["holder", "file"],
+            ),
+        ]);
+    }
+    tools
 }
 
 fn claim_call(
@@ -504,6 +531,21 @@ fn claim_call(
     name: &str,
     arguments: &Value,
 ) -> Result<Value, Error> {
+    if name != "airc_claims" && channel.is_rosen_project(member)? {
+        let guidance = match name {
+            "airc_claim" => {
+                "Rosen owns path claims on this project; use `rosen claim --exclusive <paths>` (or the `rosen` MCP `claim` tool with `exclusive: true`) for code paths and plain `rosen claim <paths>` for registration lists and generated files. Velocity owns AIRC work-item identity."
+            }
+            "airc_share" => {
+                "Rosen owns path shares on this project; use `rosen share <paths>` (or the `rosen` MCP `share` tool)."
+            }
+            "airc_release" => {
+                "Rosen owns path releases on this project; use `rosen release <paths>` (or the `rosen` MCP `release` tool). Velocity releases AIRC work-item claims when the change lands or is abandoned."
+            }
+            _ => "This claim tool is not used on Rosen projects.",
+        };
+        return Err(Error::Invalid(guidance.into()));
+    }
     match name {
         "airc_claims" => read_tools::claims(channel, member, arguments),
         "airc_claim" => {
@@ -576,4 +618,125 @@ fn write_response(output: &std::sync::Mutex<impl Write>, response: &Value) -> Re
     writeln!(output)?;
     output.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn run_mcp(
+        channel: &Channel,
+        member: &str,
+        nick: &str,
+        requests: &[Value],
+    ) -> Result<Vec<Value>, Error> {
+        let input = requests
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        struct SharedWrite(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl Write for SharedWrite {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                let mut guard = self
+                    .0
+                    .lock()
+                    .map_err(|error| std::io::Error::other(error.to_string()))?;
+                guard.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        serve(
+            channel,
+            member,
+            nick,
+            Cursor::new(input),
+            SharedWrite(output.clone()),
+        )?;
+        let bytes = output
+            .lock()
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .clone();
+        let text = String::from_utf8(bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+        text.lines()
+            .map(|line| serde_json::from_str(line).map_err(Error::from))
+            .collect()
+    }
+
+    // Risk (#531): on Rosen projects, AIRC must hide and reject legacy path-claim tools
+    // (`airc_claim`, `airc_share`, `airc_wait`, `airc_release`, `airc_rebase`) while keeping
+    // `airc_claims` and pointing agents to `rosen claim --exclusive <paths>`.
+    #[test]
+    fn rosen_project_hides_and_rejects_airc_path_claim_tools()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "velocity-airc-rosen-tools-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        let app_data = root.join("app-data");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&app_data)?;
+        std::fs::create_dir_all(&repo)?;
+        std::fs::write(repo.join("rosen.toml"), "")?;
+
+        let channel = Channel::open(&app_data, "1")?;
+        channel.register_checkout(
+            "thread-1",
+            crate::waits::Checkout::rosen(
+                repo.display().to_string(),
+                repo.display().to_string(),
+                Some("kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk".into()),
+                "master".into(),
+            ),
+        )?;
+        let replies = run_mcp(
+            &channel,
+            "thread-1",
+            "issue-531",
+            &[
+                json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+                json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"airc_claim","arguments":{"task":"t","branch":"b","files":["a.rs"]}}}),
+                json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"airc_wait","arguments":{"holder":"other","file":"a.rs"}}}),
+            ],
+        )?;
+        let instructions = replies[0]["result"]["instructions"].as_str().unwrap_or("");
+        assert!(instructions.contains("rosen claim --exclusive <paths>"));
+        let names: Vec<&str> = replies[1]["result"]["tools"]
+            .as_array()
+            .ok_or("missing tools")?
+            .iter()
+            .filter_map(|item| item["name"].as_str())
+            .collect();
+        assert!(names.contains(&"airc_claims"));
+        for hidden in [
+            "airc_claim",
+            "airc_share",
+            "airc_wait",
+            "airc_release",
+            "airc_rebase",
+        ] {
+            assert!(
+                !names.contains(&hidden),
+                "{hidden} should be hidden on Rosen projects"
+            );
+        }
+        assert_eq!(replies[2]["result"]["isError"], json!(true));
+        assert!(
+            replies[2]["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("rosen claim --exclusive <paths>")
+        );
+        assert_eq!(replies[3]["result"]["isError"], json!(true));
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
 }

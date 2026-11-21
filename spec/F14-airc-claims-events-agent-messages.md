@@ -220,7 +220,9 @@ The native prelaunch claim and the tool connection therefore keep one member and
 Presence, piece locks, agent messages, message modes and ledgers use Rosen's channel operations.
 The pinned protocol carries Velocity issue titles natively; Rosen report text and titles use a versioned discovery envelope in the same server ledger, retaining the server's agent authorship, time and event sequence.
 The adapter projects that envelope back to ordinary discovery text and `rosen_issue` for tools, reporting and the modal.
-File claims are exclusive Rosen path claims, shares are path shares, and waits are path waits on the registered Rosen change.
+File claims are Rosen path claims (`rosen claim --exclusive <paths>` or the `rosen` MCP `claim` tool with `exclusive: true` for code paths; plain `rosen claim <paths>` notices for registration lists and generated files), shares are `rosen share`, releases are `rosen release`, and parking waits use the `wait` tool exposed on the `rosen` MCP server (#531).
+On Rosen projects AIRC keeps work-item identity only: `airc_claim`, `airc_share`, `airc_wait` and `airc_release` are hidden and rejected (as `airc_rebase` is), advance claims omit `branch` and `files` (using `change:<id>` instead of `branch:<slug>` for free-form threads), and observed tool edits do not write AIRC file claims.
+When an agent calls `wait` on the `rosen` MCP server and another change holds a path, Rosen records the path wait and returns immediately; once the agent ends its turn, Velocity parks the session and resumes it (applying any pending rebase) when all waited paths are free.
 A refused file claim releases a piece newly taken by that call, while an existing piece stays held.
 The Claims view reads current server pieces and paths.
 Velocity's observed events, registered checkouts, task requests and results, and per-line delivery acknowledgements are versioned records in the server's Past work ledger; the adapter projects them into their original feed kinds instead of showing their envelopes as Past work.

@@ -178,6 +178,12 @@ async fn consume(
     if event.kind == velocity_rosen::ProjectEventKind::Review {
         crate::handoff::observe_review(application, project, event)?;
     }
+    if matches!(
+        event.kind,
+        velocity_rosen::ProjectEventKind::Claim | velocity_rosen::ProjectEventKind::Released
+    ) {
+        observe_path_wait(application, project, event).await?;
+    }
     let (has_evidence, work_evidence) = observe_work(application, project, event).await?;
     match velocity_rosen::change_event(event) {
         Some((change, ChangeEvent::Rebased)) => {
@@ -216,6 +222,155 @@ async fn consume(
         }
         None if has_evidence => run_follow_ups(application, project).await,
         None => {}
+    }
+    Ok(())
+}
+
+fn open_rosen_thread(application: &AppHandle, project: u32, change: &str) -> Option<ThreadKey> {
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .ok()?;
+    store
+        .project(project)?
+        .threads
+        .iter()
+        .find(|thread| {
+            thread.rosen_change.as_deref() == Some(change)
+                && matches!(
+                    thread.state,
+                    velocity_store::ThreadState::Working | velocity_store::ThreadState::Review
+                )
+        })
+        .map(|thread| (project, thread.id))
+}
+
+/// Tracks Rosen path waits and wake releases on the owning thread so Velocity can park
+/// once the turn ends and never miss a release that arrives before turn end (#531).
+async fn observe_path_wait(
+    application: &AppHandle,
+    project: u32,
+    event: &velocity_rosen::ProjectEvent,
+) -> Result<(), String> {
+    let Some(change) = event.change.as_deref() else {
+        return Ok(());
+    };
+    let Some(key) = open_rosen_thread(application, project, change) else {
+        return Ok(());
+    };
+    match event.kind {
+        velocity_rosen::ProjectEventKind::Claim
+            if event.detail.get("kind").and_then(|value| value.as_str()) == Some("wait") =>
+        {
+            let paths = event_strings(&event.detail, "paths");
+            let holders = overlap_owners(&event.detail);
+            record_rosen_wait(application, key, paths, holders)?;
+        }
+        velocity_rosen::ProjectEventKind::Released => {
+            let is_wake = event.detail.get("wake").and_then(|value| value.as_bool()) == Some(true);
+            if is_wake {
+                let path = event.detail.get("path").and_then(|value| value.as_str());
+                let released_by = event
+                    .detail
+                    .get("released_by")
+                    .and_then(|value| value.as_str());
+                record_rosen_wake(application, key, path, released_by)?;
+            } else if let Ok(server) = crate::rosen::server(application, project).await
+                && let Ok(active) = velocity_rosen::mcp_proxy::active_waits(&server, change).await
+                && active.is_empty()
+            {
+                clear_rosen_wait(application, key)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn event_strings(detail: &serde_json::Value, key: &str) -> Vec<String> {
+    detail
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn overlap_owners(detail: &serde_json::Value) -> Vec<String> {
+    detail
+        .get("overlaps")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("owner").and_then(|value| value.as_str()))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn record_rosen_wait(
+    application: &AppHandle,
+    key: ThreadKey,
+    paths: Vec<String>,
+    holders: Vec<String>,
+) -> Result<(), String> {
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .update_thread(key.0, key.1, |saved| {
+        let wait = saved
+            .rosen_path_wait
+            .get_or_insert_with(velocity_store::rosen::RosenPathWait::default);
+        wait.merge(paths, holders);
+        saved.dependency_wait = Some(wait.description());
+    })
+    .map_err(|error| error.to_string())?;
+    crate::threads::refresh(application, key, false)?;
+    Ok(())
+}
+
+fn record_rosen_wake(
+    application: &AppHandle,
+    key: ThreadKey,
+    path: Option<&str>,
+    released_by: Option<&str>,
+) -> Result<(), String> {
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .update_thread(key.0, key.1, |saved| {
+        if let Some(wait) = saved.rosen_path_wait.as_mut() {
+            wait.record_wake(path, released_by);
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn clear_rosen_wait(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
+    let mut cleared = false;
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .update_thread(key.0, key.1, |saved| {
+        if saved.rosen_path_wait.take().is_some() {
+            saved.dependency_wait = None;
+            cleared = true;
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    if cleared {
+        crate::threads::refresh(application, key, false)?;
     }
     Ok(())
 }

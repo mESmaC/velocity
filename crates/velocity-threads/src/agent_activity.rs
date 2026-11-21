@@ -300,6 +300,11 @@ fn is_wait_step(verb: &str, argument: &str) -> bool {
         || argument.contains("workflow_run")
         || verb.contains("airc_wait")
         || argument.contains("airc_wait")
+        || normalized.contains("rosen wait")
+        || verb.contains("rosen__wait")
+        || verb.contains("mcp_rosen_wait")
+        || argument.contains("rosen__wait")
+        || argument.contains("mcp_rosen_wait")
 }
 
 fn format_step_wait(verb: &str, argument: &str) -> String {

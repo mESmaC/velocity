@@ -17,7 +17,7 @@ pub fn attach(
     setup: &SessionSetup,
     branch: &str,
 ) -> Result<(), String> {
-    let (piece, task) = {
+    let (piece, task, rosen_change) = {
         let store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
@@ -26,7 +26,11 @@ pub fn attach(
             .project(key.0)
             .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
             .ok_or("The thread was removed before its claim")?;
-        (thread_claim_piece(thread, branch), thread.title.clone())
+        (
+            thread_claim_piece(thread, branch),
+            thread.title.clone(),
+            thread.rosen_change.clone(),
+        )
     };
     let data = application
         .path()
@@ -42,34 +46,62 @@ pub fn attach(
     )?
     .follow_through_thread(key.0, key.1)
     .map_err(|error| error.to_string())?;
+    let base = if project.default_branch.trim().is_empty() {
+        "master".into()
+    } else {
+        project.default_branch.clone()
+    };
+    let checkout = checkout_record(
+        &project.repository_path,
+        &setup.worktree,
+        rosen_change.as_deref(),
+        branch,
+        base,
+    );
     channel
-        .register_checkout(
-            &member,
-            velocity_airc::waits::Checkout::new(
-                project.repository_path.clone(),
-                setup.worktree.display().to_string(),
-                branch.into(),
-                if project.default_branch.trim().is_empty() {
-                    "master".into()
-                } else {
-                    project.default_branch.clone()
-                },
-            ),
-        )
+        .register_checkout(&member, checkout)
         .map_err(|error| error.to_string())?;
     channel
         .join(&member, &setup.worktree.display().to_string())
         .map_err(|error| error.to_string())?;
-    match channel
-        .claim_piece(&member, &piece, &task, branch, Vec::new())
-        .map_err(|error| error.to_string())?
-    {
+    // On Rosen projects AIRC keeps only work-item identity (no branch or files); Rosen owns path claims (#531).
+    let result = if rosen_change.is_some() {
+        channel.claim_work_item(&member, &piece, &task)
+    } else {
+        channel.claim_piece(&member, &piece, &task, branch, Vec::new())
+    }
+    .map_err(|error| error.to_string())?;
+    match result {
         ClaimResult::Granted { .. } => {}
         ClaimResult::Refused { holder, .. } => {
             return Err(format!("Piece already claimed by {holder}"));
         }
     }
     Ok(())
+}
+
+fn checkout_record(
+    repository: &str,
+    worktree: &Path,
+    rosen_change: Option<&str>,
+    branch: &str,
+    base: String,
+) -> velocity_airc::waits::Checkout {
+    let workspace = worktree.display().to_string();
+    match rosen_change {
+        Some(change) => velocity_airc::waits::Checkout::rosen(
+            repository.to_owned(),
+            workspace,
+            Some(change.to_owned()),
+            base,
+        ),
+        None => velocity_airc::waits::Checkout::new(
+            repository.to_owned(),
+            workspace,
+            branch.into(),
+            base,
+        ),
+    }
 }
 
 pub fn observe(

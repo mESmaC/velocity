@@ -355,9 +355,9 @@ fn rosen_goal_prompt(
         "{}\n\n---\nVelocity goal swarm context (SPEC.md F16):\n\
          - Nick: `{}` in `#{}`; workspace: `{}`.\n\
          - Claimed piece: {} ({}). {read_issue}Name this piece in your Rosen snapshot summary.\n\
-         - This is a Rosen workspace. Claim files with `rosen claim`, record overlaps with `rosen share`, and name completed work with `rosen commit -m \"<summary>\"`, then end your turn. The task is done when the change lands.\n\
+         - This is a Rosen workspace. Claim code paths with `rosen claim --exclusive <paths>` (or `claim` with `exclusive: true` on the `rosen` MCP server; plain `rosen claim <paths>` notices are for registration lists and generated files), record overlaps with `rosen share`, and name completed work with `rosen commit -m \"<summary>\"`, then end your turn. The task is done when the change lands.\n\
          - For builds and tests that can take more than a minute, use `queue_run` from `velocity-run` and end the turn until the result arrives. Use `rosen run -- <command>` for other builds and tests or when the tool is unavailable.\n\
-         - Use the task filter in `airc_claims` to check work ownership. If this task depends on another member's work, call `airc_wait` with its holder and file. Velocity continues your work on a stacked change (Rosen D19); the parent must land first.\n\
+         - Use the task filter in `airc_claims` to check work-item ownership. If this task depends on another member's held paths, call the `wait` tool on the `rosen` MCP server and end your turn. Velocity continues your work on a stacked change (Rosen D19) or resumes you once the paths are free.\n\
          - Implement and run first. Follow the project's proof-list instructions.\n\n{spec}",
         goal_excerpt(&slot.prompt),
         slot.nick,
@@ -481,13 +481,17 @@ impl ClaimContext<'_> {
             self.worktree_path,
             &final_branch,
         )?;
-        let _ = self.channel.claim_piece(
-            &self.member,
-            &key,
-            &piece.title,
-            &final_branch,
-            Vec::new(),
-        )?;
+        let is_rosen = project
+            .threads
+            .iter()
+            .any(|thread| thread.id == self.thread_id && thread.rosen_change.is_some());
+        let _ = if is_rosen {
+            self.channel
+                .claim_work_item(&self.member, &key, &piece.title)?
+        } else {
+            self.channel
+                .claim_piece(&self.member, &key, &piece.title, &final_branch, Vec::new())?
+        };
         let suffix = match &piece.key {
             WorkKey::Issue { number, .. } => format!(" \u{00b7} #{number}"),
             _ => String::new(),

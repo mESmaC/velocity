@@ -112,6 +112,68 @@ impl RosenResolutionStatus {
     }
 }
 
+/// Durable state for a thread waiting on Rosen path claims to become free (#531).
+/// Saved so a release that arrives before the agent finishes its turn, or while Velocity
+/// is restarted, still resumes the thread once all waited paths are free.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RosenPathWait {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holders: Vec<String>,
+    #[serde(default)]
+    pub ready_to_resume: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wake_messages: Vec<String>,
+}
+
+impl RosenPathWait {
+    pub fn new(paths: Vec<String>, holders: Vec<String>) -> Self {
+        let mut wait = Self::default();
+        wait.merge(paths, holders);
+        wait
+    }
+
+    pub fn merge(&mut self, paths: Vec<String>, holders: Vec<String>) {
+        for path in paths {
+            if !path.trim().is_empty() && !self.paths.contains(&path) {
+                self.paths.push(path);
+            }
+        }
+        for holder in holders {
+            if !holder.trim().is_empty() && !self.holders.contains(&holder) {
+                self.holders.push(holder);
+            }
+        }
+        self.ready_to_resume = false;
+    }
+
+    pub fn record_wake(&mut self, path: Option<&str>, released_by: Option<&str>) {
+        let message = match (path, released_by) {
+            (Some(path), Some(by)) => format!("{path} released by {by}"),
+            (Some(path), None) => format!("{path} released"),
+            (None, Some(by)) => format!("released by {by}"),
+            (None, None) => "waited paths released".into(),
+        };
+        if !self.wake_messages.contains(&message) {
+            self.wake_messages.push(message);
+        }
+    }
+
+    pub fn description(&self) -> String {
+        let paths = if self.paths.is_empty() {
+            String::from("paths")
+        } else {
+            self.paths.join(", ")
+        };
+        if self.holders.is_empty() {
+            format!("waiting on {paths}")
+        } else {
+            format!("waiting for {} · {paths}", self.holders.join(", "))
+        }
+    }
+}
+
 /// Outcome of queueing a manual conflict resolution for a Rosen thread (#522).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QueueResolution {

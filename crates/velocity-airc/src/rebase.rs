@@ -5,7 +5,7 @@ use std::path::Path;
 impl Channel {
     /// Build threads register their checkout before ACP starts. Other sessions inherit
     /// the project's working directory, including duty agents and the spec interview.
-    pub(crate) fn is_rosen_project(&self, member: &str) -> Result<bool, Error> {
+    pub fn is_rosen_project(&self, member: &str) -> Result<bool, Error> {
         if self.remote.is_some() {
             return Ok(true);
         }

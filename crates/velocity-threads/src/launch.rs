@@ -58,15 +58,15 @@ pub fn airc_work_handoff(app_data: &Path, project: u32, members: &[String]) -> S
             .map(|file| handoff_line(file))
             .collect::<Vec<_>>()
             .join(", ");
-        lines.push(format!(
-            "Held claim: {}. Paths: {}.",
-            handoff_line(claim.key()),
-            if files.is_empty() {
-                "none".into()
-            } else {
+        if files.is_empty() {
+            lines.push(format!("Held claim: {}.", handoff_line(claim.key())));
+        } else {
+            lines.push(format!(
+                "Held claim: {}. Paths: {}.",
+                handoff_line(claim.key()),
                 files
-            }
-        ));
+            ));
+        }
     }
     for wait in waits
         .iter()

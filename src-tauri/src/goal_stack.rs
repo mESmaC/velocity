@@ -23,13 +23,20 @@ pub(crate) fn continue_wait(
         return Ok(false);
     }
     let member = format!("thread-{}", key.1);
-    let wait = channel
+    let air_wait = channel
         .dependency_waits()
         .map_err(|error| error.to_string())?
         .into_iter()
         .find(|wait| wait.member == member);
-    let Some(wait) = wait else { return Ok(false) };
-    let parent = parent_change(application, key.0, &wait.holder)?;
+    let parent = if let Some(wait) = air_wait.as_ref() {
+        parent_change(application, key.0, &wait.holder)?
+    } else if let Some(rosen_wait) = thread.rosen_path_wait.as_ref()
+        && let Some(change) = thread.rosen_change.as_deref()
+    {
+        rosen_wait_parent(application, key.0, change, &rosen_wait.paths)?
+    } else {
+        None
+    };
     let Some(parent) = parent else {
         return Ok(false);
     };
@@ -50,13 +57,54 @@ pub(crate) fn continue_wait(
         }
     };
     let message = format!(
-        "Continued on stacked change {change}, on {parent}. Your task and transcript are kept. Read rosen status, claim your files on this change and continue here; Rosen waits for the parent to land."
+        "Continued on stacked change {change}, on {parent}. Your task and transcript are kept. Read rosen status, claim your code paths with `rosen claim --exclusive <paths>` on this change and continue here; Rosen waits for the parent to land."
     );
-    channel
-        .finish_stacked_wait(&member, &message)
-        .map_err(|error| error.to_string())?;
+    if air_wait.is_some() {
+        channel
+            .finish_stacked_wait(&member, &message)
+            .map_err(|error| error.to_string())?;
+    }
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .update_thread(key.0, key.1, |saved| {
+        saved.rosen_path_wait = None;
+        saved.dependency_wait = None;
+    })
+    .map_err(|error| error.to_string())?;
     crate::parking::resume(application, key, &message)?;
     Ok(true)
+}
+
+fn rosen_wait_parent(
+    application: &AppHandle,
+    project: u32,
+    change: &str,
+    paths: &[String],
+) -> Result<Option<String>, String> {
+    let holders = tauri::async_runtime::block_on(async {
+        let server = crate::rosen::server(application, project).await?;
+        velocity_rosen::mcp_proxy::wait_holders(&server, change, paths)
+            .await
+            .map_err(|error| error.to_string())
+    })?;
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let Some(project) = store.project(project) else {
+        return Ok(None);
+    };
+    for (holder_change, _) in holders {
+        if project.threads.iter().any(|other| {
+            other.rosen_change.as_deref() == Some(holder_change.as_str())
+                && matches!(other.state, ThreadState::Working | ThreadState::Review)
+        }) {
+            return Ok(Some(holder_change));
+        }
+    }
+    Ok(None)
 }
 
 fn parent_change(

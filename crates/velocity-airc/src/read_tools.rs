@@ -175,6 +175,7 @@ pub(crate) fn claims(channel: &Channel, member: &str, arguments: &Value) -> Resu
             }
         }
     }
+    let rosen = channel.is_rosen_project(member)?;
     let relevant = claims.iter().filter_map(|claim| {
         if task
             .as_ref()
@@ -194,7 +195,7 @@ pub(crate) fn claims(channel: &Channel, member: &str, arguments: &Value) -> Resu
             })
             .collect();
         ((!files.is_empty()) || (path.is_none() && (own || filtered)))
-            .then(|| claim_row(claim, own, &files))
+            .then(|| claim_row(claim, own, &files, rosen))
     });
     Ok(claim_page(counts, relevant, offset, filtered))
 }
@@ -203,9 +204,12 @@ fn physical_path(file: &str) -> &str {
     file.strip_suffix("::registration").unwrap_or(file)
 }
 
-fn claim_row(claim: &Claim, own: bool, files: &[&String]) -> Value {
+fn claim_row(claim: &Claim, own: bool, files: &[&String], rosen: bool) -> Value {
     let mut row = json!({"nick": claim.nick, "task": claim.task, "piece": claim.key(),
-        "own": own, "files": files});
+        "own": own});
+    if !rosen || !files.is_empty() {
+        row["files"] = json!(files);
+    }
     if row.to_string().len() > 1_000 {
         let preview = |text: &str, limit| text[..text.floor_char_boundary(limit)].to_owned();
         row = json!({"nick": claim.nick, "own": own, "path_count": files.len(),

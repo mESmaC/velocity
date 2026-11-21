@@ -6,7 +6,7 @@ Every member takes its own Rosen workspace from the project's warm pool, with gi
 A launch raises the Rosen warm pool on the machines it uses to the agent count (Rosen §9) instead of Velocity's git pool.
 The same native work choice and atomic AIRC piece lock apply to Rosen and git projects.
 Rosen members keep their change identity when they claim a piece; they never create or rename a git branch, open a PR or start a PR watcher.
-Its locked context names the piece, tells the agent to claim files in Rosen, build and lint through `rosen run`, and finish by naming its work with `rosen commit`.
+Its locked context names the piece, tells the agent to claim code paths with `rosen claim --exclusive <paths>` (plain notices for registration lists and generated files), build and lint through `queue_run` or `rosen run`, and finish by naming its work with `rosen commit`.
 Each Rosen member runs choosing → claimed → editing → named → landed, and a post-land revert or a refused land reopens its change (reverted → reopened) before it takes the next piece.
 The dialog sizes no reviewer pool and the view holds no PR or merge state; after-land review (F7) covers landed changes without holding them.
 
@@ -20,7 +20,7 @@ The thread view carries the conversation across rounds with a session boundary, 
 It keeps ownership with the original thread, updates the board and resumes that thread in its reopened workspace.
 These state changes and the event cursor save together and survive restart.
 
-A Rosen goal member's `airc_wait` on another member's claimed file becomes a stacked change (Rosen D19) after its session stops: Velocity snapshots its work, creates a child on the holder's unlanded change and continues the same task and transcript there.
+A Rosen goal member's `wait` on another member's held path (via the `rosen` MCP server, or legacy `airc_wait`) becomes a stacked change (Rosen D19) after its session parks: Velocity snapshots its work, creates a child on the holder's unlanded change and continues the same task and transcript there.
 The original change is retained until the replacement identity, workspace path and stack handoff are durable in state.json, including when saves are deferred.
 A failed save retains the original; cleanup retries must pass the same save barrier before abandoning it through Rosen's deletion guard.
 A copy that overlaps the dependency's edits, changes a nonregular file, or cannot be made safely keeps the original task waiting; on the holder's land it continues through Rosen's rebase, without a git checkout update.

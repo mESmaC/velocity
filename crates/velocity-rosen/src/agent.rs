@@ -116,9 +116,13 @@ pub fn workspace_note(change: &str) -> String {
          request steps your instructions give. When the work is done, name it with \
          `rosen commit -m \"<one-line summary>\"`; Velocity lands the change as soon as it combines cleanly with the base. `rosen status` shows what is stored, `rosen diff` \
          your change, and \
-         `rosen claim <paths>` claims files other agents might edit. The `rosen` MCP server \
-         offers the same commands as tools (`status`, `diff`, `claim`, `overlaps`, `commit` \
-         and the rest), returning JSON. Run `preflight` from `velocity-run` before naming \
+         `rosen claim --exclusive <paths>` claims code paths other agents might edit so the first \
+         claim wins (plain `rosen claim <paths>` notices are for registration lists and generated \
+         files, which `--exclusive` refuses). The `rosen` MCP server offers the same commands as \
+         tools (`status`, `diff`, `claim` with `exclusive: true`, `share`, `release`, `overlaps`, \
+         `wait`, `commit` and the rest), returning JSON. Calling `wait` records a Rosen path wait \
+         and returns at once; if any path is held, end your turn and Velocity parks and resumes \
+         your thread when the paths are free. Run `preflight` from `velocity-run` before naming \
          the change, then end your turn; Velocity inspects the diff and sends one pass/fail \
          report covering changed-file formatting, UI checks, touched-crate type-checks, \
          sensitive-path clippy, overlaps and generated-file freshness. For any other command \
