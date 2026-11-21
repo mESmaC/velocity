@@ -11,10 +11,12 @@ pub struct Claim {
     /// The lock key: a work-pool identity (`task:<id>`, `issue:<n>`, `spec:<section>`),
     /// a build thread's `branch:<name>`, or the task text. Older records have none and
     /// lock on their task text.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub piece: String,
     pub task: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub branch: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<String>,
     pub since: String,
 }
@@ -362,7 +364,7 @@ fn edited_symbols(entries: &[Entry], member: &str, file: &str) -> Vec<String> {
         .and_then(|record| record.checkout.as_ref())
         .map(|checkout| {
             velocity_graph::coordination::git_changes(
-                std::path::Path::new(&checkout.worktree),
+                std::path::Path::new(checkout.workspace_path()),
                 &checkout.base,
                 file,
             )

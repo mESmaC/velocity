@@ -16,7 +16,7 @@ impl Remote {
             .iter()
             .rev()
             .find(|record| record.member == member && record.checkout.is_some())
-            .and_then(|record| record.head.clone())
+            .and_then(|record| record.change_id().map(str::to_owned))
         {
             return Ok(change);
         }
@@ -65,7 +65,7 @@ impl Remote {
                 .iter()
                 .rev()
                 .find(|record| record.member == member && record.checkout.is_some())
-                .and_then(|record| record.head.as_deref())
+                .and_then(crate::Entry::change_id)
         };
         let current = requester.and_then(checkout);
         self.run(async |client| {

@@ -16,9 +16,9 @@ pub struct Entry {
     pub nick: String,
     pub member: String,
     pub text: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub to: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intent: Option<String>,
     /// The PR an event is about, so readers such as the approval record (F7)
     /// never parse it back out of the display text.
@@ -27,18 +27,21 @@ pub struct Entry {
     /// The PR head commit the event applies to (`approved` binds to it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head: Option<String>,
+    /// The Rosen change ID this event or workspace belongs to (R2, F14, #540).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim: Option<crate::claims::Claim>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dependency: Option<crate::waits::DependencyWait>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkout: Option<crate::waits::Checkout>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_mode: Option<crate::MessageMode>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "bindings", specta(type = Option<u32>))]
     pub acknowledged: Option<u64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<String>,
     /// A discovery about Velocity itself rather than the project: the issue title its agent
     /// gave. Velocity files it on its own repository.
@@ -50,6 +53,23 @@ pub struct Entry {
     /// The task and fields a `task_update_request` or `task_delete_request` names (F8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_change: Option<crate::TaskChange>,
+    /// Structured event detail replacing raw JSON strings in `text` (#540).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<crate::EventPayload>,
+}
+
+impl Entry {
+    /// The Rosen change ID recorded on this entry, falling back to pre-#540 `head`.
+    pub fn change_id(&self) -> Option<&str> {
+        self.change
+            .as_deref()
+            .or_else(|| {
+                self.checkout
+                    .as_ref()
+                    .and_then(|checkout| checkout.change.as_deref())
+            })
+            .or(self.head.as_deref())
+    }
 }
 
 pub(crate) enum DiscoveryIssue {
@@ -466,6 +486,51 @@ impl Channel {
         Ok(record)
     }
 
+    /// Velocity records a Discoveries ledger entry (for example a confirmed post-land
+    /// failure and its cause, #540) without requiring a joined agent session.
+    pub fn record_discovery(
+        &self,
+        nick_name: &str,
+        change: Option<&str>,
+        text: &str,
+    ) -> Result<Entry, Error> {
+        require_text(nick_name)?;
+        require_text(text)?;
+        let storage = Storage::open(self)?;
+        let entries = self.read_presence_log(&storage)?;
+        let mut record = entry(
+            &entries,
+            "discovery",
+            "velocity",
+            &nick(nick_name, 16),
+            text,
+        );
+        record.change = change.filter(|id| !id.trim().is_empty()).map(str::to_owned);
+        if let Some(remote) = &self.remote {
+            return remote.append_record(&record);
+        }
+        storage.append(&record)?;
+        Ok(record)
+    }
+
+    /// Records a Velocity discovery only if no existing discovery entry contains `marker`.
+    pub fn record_discovery_once(
+        &self,
+        nick_name: &str,
+        change: Option<&str>,
+        marker: &str,
+        text: &str,
+    ) -> Result<Option<Entry>, Error> {
+        if self
+            .ledger("discovery", 0)?
+            .iter()
+            .any(|existing| existing.text.contains(marker))
+        {
+            return Ok(None);
+        }
+        self.record_discovery(nick_name, change, text).map(Some)
+    }
+
     /// Velocity posts events on behalf of the nick they name; posting needs no
     /// channel membership because the poster is Velocity itself.
     pub fn post_event(&self, event: Event) -> Result<Entry, Error> {
@@ -543,11 +608,34 @@ impl Channel {
     }
 }
 
+/// Uniform UTC RFC 3339 timestamp with millisecond precision (`Z` suffix) (#540).
+pub(crate) fn format_utc_millis(time: chrono::DateTime<chrono::Utc>) -> String {
+    time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+pub(crate) fn format_timestamp_millis(milliseconds: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp_millis(milliseconds).map(format_utc_millis)
+}
+
+pub(crate) fn parse_timestamp_millis(raw: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|time| time.timestamp_millis())
+}
+
 pub(crate) fn entry(entries: &[Entry], kind: &str, member: &str, nick: &str, text: &str) -> Entry {
+    let now = chrono::Utc::now().timestamp_millis();
+    // Keep local sequence timestamps monotonic even across backward clock steps.
+    let floor = entries
+        .last()
+        .and_then(|previous| parse_timestamp_millis(&previous.time))
+        .unwrap_or(now);
+    let stamp = format_timestamp_millis(now.max(floor))
+        .unwrap_or_else(|| format_utc_millis(chrono::Utc::now()));
     Entry {
         session: None,
         sequence: entries.last().map_or(1, |entry| entry.sequence + 1),
-        time: chrono::Utc::now().to_rfc3339(),
+        time: stamp,
         kind: kind.into(),
         member: member.into(),
         nick: nick.into(),
@@ -556,6 +644,7 @@ pub(crate) fn entry(entries: &[Entry], kind: &str, member: &str, nick: &str, tex
         intent: None,
         pull_request: None,
         head: None,
+        change: None,
         claim: None,
         dependency: None,
         checkout: None,
@@ -565,6 +654,7 @@ pub(crate) fn entry(entries: &[Entry], kind: &str, member: &str, nick: &str, tex
         velocity_issue: None,
         rosen_issue: None,
         task_change: None,
+        payload: None,
     }
 }
 

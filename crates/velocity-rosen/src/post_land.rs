@@ -206,6 +206,45 @@ pub struct TestFailure {
     pub output: String,
 }
 
+/// Any confirmed post-land failure retained by Rosen (build, test or integration),
+/// whether reverted or fixed forward (#540).
+#[derive(Clone, Debug)]
+pub struct ConfirmedFailure {
+    pub session: i64,
+    pub change: String,
+    pub commit: String,
+    pub kind: CheckKind,
+    pub output: String,
+    pub reverted: bool,
+    pub integration: bool,
+}
+
+/// Every confirmed post-land failure retained by Rosen, for automatic discovery logging (#540).
+pub async fn confirmed_failures(
+    server: &ProjectServer,
+) -> Result<Vec<ConfirmedFailure>, RosenError> {
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let failures = match client.post_land_failures(None).await {
+        Ok(failures) => failures,
+        Err(rosen_client::Error::Server(error)) if error.code == ErrorCode::UnknownRequest => {
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    Ok(failures
+        .into_iter()
+        .map(|failure| ConfirmedFailure {
+            session: failure.session,
+            change: failure.change,
+            commit: failure.commit.to_string(),
+            kind: failure.kind,
+            integration: failure.output.starts_with(integration::FAILURE_HEADING),
+            output: failure.output,
+            reverted: failure.revert.is_some(),
+        })
+        .collect())
+}
+
 /// Every command passed on the batch's commit: it and every land before it are green.
 pub async fn batch_passed(server: &ProjectServer, batch: &Batch) -> Result<(), RosenError> {
     let client = crate::connection::requests(server.endpoint()).await?;

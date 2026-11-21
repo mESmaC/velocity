@@ -79,7 +79,7 @@ impl Channel {
 /// (claims, PR, pushes, waits, rebases) are never sent back: it caused them, and the
 /// tool call that did already returned the result. Routine lines about its PR from
 /// others (PR duty's review claim and release, approvals) stay in the log for
-/// `read_events`. `broken` follows [broken_for].
+/// `read_feed`. `broken` follows [broken_for].
 pub(crate) fn event_for(entry: &Entry, nick: &str, entries: &[Entry]) -> bool {
     if !entry.is_event() {
         return false;
@@ -179,7 +179,7 @@ pub(crate) fn broken_for(entry: &Entry, nick: &str, entries: &[Entry]) -> bool {
             "-c",
             "core.longpaths=true",
             "-C",
-            &checkout.worktree,
+            checkout.workspace_path(),
             "merge-base",
             "--is-ancestor",
             head,
@@ -213,6 +213,6 @@ fn edited_merge(entry: &Entry, nick: &str, entries: &[Entry]) -> bool {
     else {
         return false;
     };
-    velocity_git::landing::edited_overlap(std::path::Path::new(&checkout.worktree), head)
+    velocity_git::landing::edited_overlap(std::path::Path::new(checkout.workspace_path()), head)
         .is_ok_and(|files| !files.is_empty())
 }

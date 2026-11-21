@@ -269,6 +269,28 @@ pub(crate) fn message_delivery(entry: &Entry, nick: &str) -> Option<Delivery> {
 }
 
 fn overlaps_for(entry: &Entry, nick: &str) -> Vec<Overlap> {
+    if let Some(crate::EventPayload::PathClaim { overlaps, .. }) = &entry.payload
+        && !overlaps.is_empty()
+    {
+        return overlaps
+            .iter()
+            .filter(|overlap| entry.nick == nick || overlap.owner == nick)
+            .map(|overlap| Overlap {
+                agents: [entry.nick.clone(), overlap.owner.clone()],
+                paths: overlap
+                    .paths
+                    .iter()
+                    .map(|path| match overlap.symbols.get(path) {
+                        Some(symbols) => format!(
+                            "{path}{}",
+                            crate::claims::symbol_overlap(&symbols.requester, &symbols.holder)
+                        ),
+                        None => path.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+    }
     if let Some((pair, paths)) = entry.text.split_once(" on ")
         && let Some((requester, holder)) = pair.split_once(" overlaps ")
     {
@@ -286,40 +308,7 @@ fn overlaps_for(entry: &Entry, nick: &str) -> Vec<Overlap> {
             },
         }];
     }
-    let Ok(detail) = serde_json::from_str::<serde_json::Value>(&entry.text) else {
-        return Vec::new();
-    };
-    let Some(overlaps) = detail.get("overlaps").and_then(serde_json::Value::as_array) else {
-        return Vec::new();
-    };
-    overlaps
-        .iter()
-        .filter_map(|overlap| {
-            let holder = overlap.get("owner")?.as_str()?;
-            if entry.nick != nick && holder != nick {
-                return None;
-            }
-            Some(Overlap {
-                agents: [entry.nick.clone(), holder.into()],
-                paths: overlap
-                    .get("paths")?
-                    .as_array()?
-                    .iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .map(|path| overlap_path(path, &overlap["symbols"][path]))
-                    .collect(),
-            })
-        })
-        .collect()
-}
-
-fn overlap_path(path: &str, symbols: &serde_json::Value) -> String {
-    let names =
-        |key: &str| serde_json::from_value::<Vec<String>>(symbols[key].clone()).unwrap_or_default();
-    format!(
-        "{path}{}",
-        crate::claims::symbol_overlap(&names("requester"), &names("holder"))
-    )
+    Vec::new()
 }
 
 pub(crate) fn hold(

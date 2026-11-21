@@ -25,6 +25,15 @@ pub(crate) fn log_fields() -> Value {
     })
 }
 
+pub(crate) fn feed_fields() -> Value {
+    let mut fields = log_fields();
+    fields["kind"] = json!({
+        "type":"string",
+        "description":"Optional entry kind filter (such as merged, rebased, claim, message, checkout), or \"events\" for F14 event-log entries only"
+    });
+    fields
+}
+
 pub(crate) fn log(channel: &Channel, name: &str, arguments: &Value) -> Result<Value, Error> {
     let selected = sequence(arguments, "sequence")?;
     let after = sequence(arguments, "after")?.max(selected.saturating_sub(1));
@@ -42,15 +51,7 @@ pub(crate) fn log(channel: &Channel, name: &str, arguments: &Value) -> Result<Va
         .unwrap_or_default()
         .trim()
         .to_lowercase();
-    let mut entries = match name {
-        "read_feed" => channel
-            .read(after)?
-            .into_iter()
-            .filter(|entry| !matches!(entry.kind.as_str(), "delivery_ack" | "message_mode"))
-            .collect(),
-        "read_events" => channel.events(after)?,
-        _ => channel.ledger(ledger(arguments)?, after)?,
-    };
+    let mut entries = readable_log_entries(channel, name, arguments, after)?;
     if selected != 0 {
         let entry = entries
             .iter()
@@ -80,12 +81,48 @@ pub(crate) fn log(channel: &Channel, name: &str, arguments: &Value) -> Result<Va
     Ok(json!({"entries": rows, "more": more, "next_before": last.filter(|_| more > 0)}))
 }
 
+fn readable_log_entries(
+    channel: &Channel,
+    name: &str,
+    arguments: &Value,
+    after: u64,
+) -> Result<Vec<Entry>, Error> {
+    let kind_filter = arguments
+        .get("kind")
+        .map(|_| text(arguments, "kind"))
+        .transpose()?
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match name {
+        "read_feed" if kind_filter == Some("events") => channel.events(after),
+        "read_feed" => Ok(channel
+            .read(after)?
+            .into_iter()
+            .filter(|entry| {
+                !matches!(
+                    entry.kind.as_str(),
+                    "delivery_ack" | "message_mode" | "task_list" | "dependency_end"
+                ) && kind_filter.is_none_or(|wanted| entry.kind == wanted)
+            })
+            .collect()),
+        "read_events" => channel.events(after),
+        _ => channel.ledger(ledger(arguments)?, after),
+    }
+}
+
 fn matches_query(entry: &Entry, query: &str) -> bool {
     query.is_empty()
         || [&entry.text, &entry.kind, &entry.nick]
             .into_iter()
             .chain(&entry.files)
             .any(|field| field.to_lowercase().contains(query))
+        || entry
+            .change_id()
+            .is_some_and(|change| change.to_lowercase().contains(query))
+        || entry
+            .payload
+            .as_ref()
+            .is_some_and(|payload| payload.matches_query(query))
         || entry.claim.as_ref().is_some_and(|claim| {
             std::iter::once(&claim.task)
                 .chain(&claim.files)

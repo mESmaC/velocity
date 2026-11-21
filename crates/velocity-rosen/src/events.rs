@@ -185,6 +185,39 @@ pub fn change_event(event: &Event) -> Option<(&str, ChangeEvent)> {
     Some((change, meaning))
 }
 
+/// Server-assigned UTC millisecond timestamps (`events.created_at`) for events after
+/// `after`, plus the latest timestamp at or before `after` as a monotonic floor (#540).
+/// Returns `(None, empty)` when the server's metadata database is not on this machine
+/// (for example when talking through a remote forwarding daemon).
+pub fn event_timestamps(
+    data_dir: &Path,
+    after: u64,
+) -> Result<(Option<i64>, BTreeMap<u64, i64>), RosenError> {
+    let database = data_dir.join("metadata.sqlite");
+    if !database.is_file() {
+        return Ok((None, BTreeMap::new()));
+    }
+    let connection = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(std::time::Duration::from_secs(2))?;
+    let from = i64::try_from(after).unwrap_or(i64::MAX);
+    let floor: Option<i64> = connection.query_row(
+        "SELECT MAX(created_at) FROM events WHERE seq <= ?1",
+        [from],
+        |row| row.get(0),
+    )?;
+    let mut query =
+        connection.prepare("SELECT seq, created_at FROM events WHERE seq > ?1 ORDER BY seq")?;
+    let rows = query.query_map([from], |row| {
+        Ok((row.get::<_, u64>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut timestamps = BTreeMap::new();
+    for row in rows {
+        let (sequence, created_at) = row?;
+        timestamps.insert(sequence, created_at);
+    }
+    Ok((floor, timestamps))
+}
+
 /// The files a `conflict` event names (R5).
 pub fn conflict_paths(event: &Event) -> Vec<String> {
     event_paths(event, "paths")

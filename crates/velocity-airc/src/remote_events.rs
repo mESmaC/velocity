@@ -1,6 +1,11 @@
 //! The server's single event log is the feed; sequence numbers are never local.
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
 use crate::{
-    Entry, Error,
+    Entry, Error, EventPayload, OverlapDetail, OverlapSymbols,
+    channel::{format_timestamp_millis, parse_timestamp_millis},
+    payload::overlap_text,
     remote::{RECORD_PREFIX, Remote},
 };
 use rosen_client::protocol::channel::{ChannelEvent, ChannelMessage, Member, PieceClaim};
@@ -10,9 +15,7 @@ use rosen_client::{
 };
 
 pub(crate) fn time(milliseconds: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(milliseconds)
-        .map(|time| time.to_rfc3339())
-        .unwrap_or_default()
+    format_timestamp_millis(milliseconds).unwrap_or_default()
 }
 
 pub(crate) fn message_entry(message: &ChannelMessage) -> Entry {
@@ -44,7 +47,13 @@ pub(crate) fn claim(claim: &PieceClaim, files: Vec<String>) -> crate::Claim {
 
 fn member_entry(member: &Member, kind: &str) -> Entry {
     let mut record = crate::channel::entry(&[], kind, &member.member, &member.nick, kind);
-    record.time = time(member.left_at.unwrap_or(member.joined_at));
+    // Mode changes carry no timestamp of their own; `apply_timestamps` assigns the
+    // server event time so a later mode change never borrows an earlier `joined_at`.
+    if kind == "message_mode" {
+        record.time.clear();
+    } else {
+        record.time = time(member.left_at.unwrap_or(member.joined_at));
+    }
     record.message_mode = Some(match member.mode {
         rosen_client::protocol::channel::MessageMode::Open => crate::MessageMode::Open,
         rosen_client::protocol::channel::MessageMode::HeadsDown => crate::MessageMode::HeadsDown,
@@ -61,24 +70,32 @@ pub(crate) fn channel_entry(event: ChannelEvent) -> Result<Vec<Entry>, Error> {
         ChannelEvent::Left { member } => vec![member_entry(&member, "leave")],
         ChannelEvent::Mode { member } => vec![member_entry(&member, "message_mode")],
         ChannelEvent::Message { message } => vec![message_entry(&message)],
-        ChannelEvent::Claim { claim: held, .. } => vec![claim_entry(&held)],
-        ChannelEvent::Refused { nick, holder } => vec![crate::channel::entry(
-            &[],
-            "refused",
-            "velocity",
-            &nick,
-            &format!(
-                "refused {}; held by {} since {}",
-                holder.task,
-                holder.nick,
-                time(holder.since)
-            ),
-        )],
+        ChannelEvent::Claim {
+            claim: held,
+            extended,
+        } => vec![claim_entry(&held, extended)],
+        ChannelEvent::Refused { nick, holder } => {
+            let mut record = crate::channel::entry(
+                &[],
+                "refused",
+                "velocity",
+                &nick,
+                &format!(
+                    "refused {}; held by {} since {}",
+                    holder.task,
+                    holder.nick,
+                    time(holder.since)
+                ),
+            );
+            record.time.clear();
+            vec![record]
+        }
         ChannelEvent::Released { pieces } => pieces
             .iter()
             .map(|held| {
                 let mut record =
                     crate::channel::entry(&[], "released", "velocity", &held.nick, &held.task);
+                record.time.clear();
                 record.claim = Some(claim(held, Vec::new()));
                 record
             })
@@ -88,7 +105,7 @@ pub(crate) fn channel_entry(event: ChannelEvent) -> Result<Vec<Entry>, Error> {
     Ok(records)
 }
 
-fn claim_entry(held: &PieceClaim) -> Entry {
+fn claim_entry(held: &PieceClaim, extended: bool) -> Entry {
     let mut record = crate::channel::entry(
         &[],
         "claim",
@@ -96,7 +113,12 @@ fn claim_entry(held: &PieceClaim) -> Entry {
         &held.nick,
         &format!("claimed {}", held.task),
     );
-    record.time = time(held.since);
+    // An extended claim keeps the original `since`; leave `time` for the server event time.
+    if extended {
+        record.time.clear();
+    } else {
+        record.time = time(held.since);
+    }
     record.claim = Some(claim(held, Vec::new()));
     record
 }
@@ -107,7 +129,12 @@ fn ledger_entry(stored: rosen_client::protocol::channel::LedgerEntry) -> Result<
         .strip_prefix(RECORD_PREFIX)
         .filter(|_| stored.member.is_none())
     {
-        return Ok(serde_json::from_str(text)?);
+        let mut record: Entry = serde_json::from_str(text)?;
+        // Use the server's ledger timestamp (later refined by `events.created_at`) instead
+        // of unnormalized client clocks stored inside the envelope (#540).
+        record.time = time(stored.time);
+        normalize_envelope(&mut record);
+        return Ok(record);
     }
     let mut record = crate::channel::entry(
         &[],
@@ -131,6 +158,25 @@ fn ledger_entry(stored: rosen_client::protocol::channel::LedgerEntry) -> Result<
     Ok(record)
 }
 
+fn normalize_envelope(record: &mut Entry) {
+    if let Some(claim) = &mut record.claim
+        && let Some(millis) = parse_timestamp_millis(&claim.since)
+    {
+        claim.since = time(millis);
+    }
+    if record.kind == "checkout" {
+        if record.change.is_none() {
+            record.change = record.head.take();
+        }
+        if let Some(checkout) = record.checkout.take() {
+            record.checkout = Some(checkout.into_rosen(record.change.clone()));
+        }
+        if record.text == "thread checkout" {
+            record.text = "thread workspace".into();
+        }
+    }
+}
+
 pub(crate) fn event_entries(event: &Event) -> Result<Vec<Entry>, Error> {
     let mut records = if event.kind == EventKind::Channel {
         channel_entry(serde_json::from_value(event.detail.clone())?)?
@@ -139,9 +185,6 @@ pub(crate) fn event_entries(event: &Event) -> Result<Vec<Entry>, Error> {
     };
     for record in &mut records {
         record.sequence = event.seq;
-        if matches!(record.kind.as_str(), "refused" | "released") {
-            record.time.clear();
-        }
     }
     Ok(records)
 }
@@ -171,10 +214,12 @@ fn project_entry(event: &Event) -> Option<Entry> {
         .get("owner")
         .and_then(|value| value.as_str())
         .unwrap_or("velocity");
-    let mut record = crate::channel::entry(&[], kind, "velocity", owner, &event.detail.to_string());
-    // Project events do not carry wall-clock timestamps. Keep their projection stable.
+    let (text, payload) = EventPayload::from_rosen(event, kind, owner)?;
+    let mut record = crate::channel::entry(&[], kind, "velocity", owner, &text);
+    // Filled from Rosen's `events.created_at` (or monotonic neighbor) in `apply_timestamps`.
     record.time.clear();
-    record.head = event.change.clone();
+    record.change = event.change.clone();
+    record.payload = Some(payload);
     record.files = event
         .detail
         .get("paths")
@@ -182,6 +227,34 @@ fn project_entry(event: &Event) -> Option<Entry> {
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
     Some(record)
+}
+
+/// Assigns uniform, monotonic UTC millisecond timestamps to every projected record,
+/// preferring the server's authoritative `events.created_at` column (#540).
+fn apply_timestamps(records: &mut [Entry], floor: Option<i64>, server_times: &BTreeMap<u64, i64>) {
+    let candidates: Vec<Option<i64>> = records
+        .iter()
+        .map(|record| {
+            server_times
+                .get(&record.sequence)
+                .copied()
+                .or_else(|| parse_timestamp_millis(&record.time))
+        })
+        .collect();
+    let fallback = floor
+        .or_else(|| candidates.iter().flatten().copied().next())
+        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+    let mut current = floor;
+    for (record, candidate) in records.iter_mut().zip(candidates) {
+        let resolved = match (candidate, current) {
+            (Some(stamp), Some(previous)) => stamp.max(previous),
+            (Some(stamp), None) => stamp,
+            (None, Some(previous)) => previous,
+            (None, None) => fallback,
+        };
+        current = Some(resolved);
+        record.time = time(resolved);
+    }
 }
 
 impl Remote {
@@ -260,15 +333,9 @@ pub(crate) async fn read_events(
     nick: Option<&str>,
     after: u64,
 ) -> Result<Vec<Entry>, Error> {
-    let tip = client.status().await?.last_event;
-    let mut events = match nick {
-        Some(nick) => {
-            client
-                .subscribe_as(rosen_client::identity::parse_agent(nick)?, Some(after))
-                .await?
-        }
-        None => client.subscribe(Some(after)).await?,
-    };
+    let status = client.status().await?;
+    let tip = status.last_event;
+    let mut events = subscribe_events(client, nick, after).await?;
     let mut records = Vec::new();
     let mut reached = after;
     // A cache daemon reports no watermark, and a targeted stream omits unrelated
@@ -279,8 +346,7 @@ pub(crate) async fn read_events(
         } else {
             std::time::Duration::from_millis(100)
         };
-        let received = tokio::time::timeout(timeout, events.recv()).await;
-        let event = match received {
+        let event = match tokio::time::timeout(timeout, events.recv()).await {
             Ok(Some(event)) => event,
             Ok(None) => return Err(rosen_client::Error::Disconnected.into()),
             Err(_) if nick.is_none() && reached < tip => {
@@ -291,48 +357,90 @@ pub(crate) async fn read_events(
             Err(_) => break,
         };
         reached = event.seq;
-        let mut projected = event_entries(&event)?;
-        if let Some(nick) = nick {
-            target_project_event(&event, nick, &mut projected);
-            if event.kind == EventKind::Claim
-                && projected.iter().any(|record| record.kind == "overlap")
-                && let Ok(Some(detail)) = tokio::time::timeout(
-                    std::time::Duration::from_millis(750),
-                    overlap_symbols(client, &event),
-                )
-                .await
-            {
-                let text = detail.to_string();
-                for record in &mut projected {
-                    record.text.clone_from(&text);
-                }
-            }
-        }
+        let projected = project_stream_event(client, &event, nick).await?;
         records.extend(projected);
         if tip != 0 && event.seq >= tip {
             break;
         }
     }
+    let data_dir = PathBuf::from(status.data_dir);
+    let (floor, server_times) =
+        tokio::task::spawn_blocking(move || velocity_rosen::event_timestamps(&data_dir, after))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+    apply_timestamps(&mut records, floor, &server_times);
     Ok(records)
 }
 
-async fn overlap_symbols(client: &Client, event: &Event) -> Option<serde_json::Value> {
-    let mut detail = event.detail.clone();
-    let requester = event.change.as_deref()?;
-    let overlaps = detail.get_mut("overlaps")?.as_array_mut()?;
-    for overlap in overlaps.iter_mut().take(8) {
-        let parsed: rosen_client::protocol::OverlapRecord =
-            serde_json::from_value(overlap.clone()).ok()?;
-        let symbols =
-            velocity_graph::coordination::rosen_overlap_symbols(client, requester, &parsed).await;
-        if symbols
-            .as_object()
-            .is_some_and(|symbols| !symbols.is_empty())
+async fn subscribe_events(
+    client: &Client,
+    nick: Option<&str>,
+    after: u64,
+) -> Result<tokio::sync::mpsc::Receiver<Event>, Error> {
+    match nick {
+        Some(nick) => Ok(client
+            .subscribe_as(rosen_client::identity::parse_agent(nick)?, Some(after))
+            .await?),
+        None => Ok(client.subscribe(Some(after)).await?),
+    }
+}
+
+async fn project_stream_event(
+    client: &Client,
+    event: &Event,
+    nick: Option<&str>,
+) -> Result<Vec<Entry>, Error> {
+    let mut projected = event_entries(event)?;
+    if let Some(nick) = nick {
+        target_project_event(event, nick, &mut projected);
+        if event.kind == EventKind::Claim
+            && projected.iter().any(|record| record.kind == "overlap")
+            && let Ok(Some(overlaps)) = tokio::time::timeout(
+                std::time::Duration::from_millis(750),
+                overlap_symbols(client, event),
+            )
+            .await
         {
-            overlap["symbols"] = symbols;
+            apply_overlap_symbols(&mut projected, &overlaps);
         }
     }
-    Some(detail)
+    Ok(projected)
+}
+
+async fn overlap_symbols(
+    client: &Client,
+    event: &Event,
+) -> Option<Vec<BTreeMap<String, OverlapSymbols>>> {
+    let requester = event.change.as_deref()?;
+    let overlaps = event.detail.get("overlaps")?.as_array()?;
+    let mut resolved = Vec::new();
+    for overlap in overlaps.iter().take(8) {
+        let parsed: rosen_client::protocol::OverlapRecord =
+            serde_json::from_value(overlap.clone()).ok()?;
+        let value =
+            velocity_graph::coordination::rosen_overlap_symbols(client, requester, &parsed).await;
+        let symbols =
+            serde_json::from_value::<BTreeMap<String, OverlapSymbols>>(value).unwrap_or_default();
+        resolved.push(symbols);
+    }
+    Some(resolved)
+}
+
+fn apply_overlap_symbols(records: &mut [Entry], resolved: &[BTreeMap<String, OverlapSymbols>]) {
+    for record in records {
+        if let Some(EventPayload::PathClaim { overlaps, .. }) = &mut record.payload {
+            for (overlap, symbols) in overlaps.iter_mut().zip(resolved) {
+                if !symbols.is_empty() {
+                    overlap.symbols.clone_from(symbols);
+                }
+            }
+            if !overlaps.is_empty() {
+                record.text = overlap_text(&record.nick, overlaps);
+            }
+        }
+    }
 }
 
 fn target_project_event(event: &Event, nick: &str, records: &mut [Entry]) {
@@ -369,12 +477,12 @@ async fn route_project_entries(client: &Client, records: &mut [Entry]) -> Result
     let changes = client
         .change_list(crate::remote::wire(serde_json::json!({}))?)
         .await?;
-    let mut nicks = std::collections::BTreeMap::new();
+    let mut nicks = BTreeMap::new();
     for record in records.iter().filter(|record| record.checkout.is_some()) {
-        if let Some(change) = &record.head
+        if let Some(change) = record.change_id()
             && let Some(member) = members.iter().find(|member| member.member == record.member)
         {
-            nicks.insert(change.clone(), member.nick.clone());
+            nicks.insert(change.to_owned(), member.nick.clone());
         }
     }
     for change in &changes {
@@ -382,7 +490,7 @@ async fn route_project_entries(client: &Client, records: &mut [Entry]) -> Result
             .entry(change.change.id.to_string())
             .or_insert_with(|| change.change.owner.to_string());
     }
-    let owners: std::collections::BTreeMap<_, _> = changes
+    let owners: BTreeMap<_, _> = changes
         .iter()
         .filter_map(|change| {
             nicks
@@ -391,7 +499,7 @@ async fn route_project_entries(client: &Client, records: &mut [Entry]) -> Result
         })
         .collect();
     for record in records {
-        let Some(nick) = record.head.as_ref().and_then(|change| nicks.get(change)) else {
+        let Some(nick) = record.change_id().and_then(|change| nicks.get(change)) else {
             continue;
         };
         record.nick = nick.clone();
@@ -404,51 +512,52 @@ async fn route_project_entries(client: &Client, records: &mut [Entry]) -> Result
     Ok(())
 }
 
-fn route_overlap(
-    record: &mut Entry,
-    nick: &str,
-    owners: &std::collections::BTreeMap<String, String>,
-) {
-    let Ok(mut detail) = serde_json::from_str::<serde_json::Value>(&record.text) else {
+fn route_overlap(record: &mut Entry, nick: &str, owners: &BTreeMap<String, String>) {
+    let Some(EventPayload::PathClaim { overlaps, .. }) = &mut record.payload else {
         return;
     };
-    let Some(overlaps) = detail
-        .get_mut("overlaps")
-        .and_then(|value| value.as_array_mut())
-        .filter(|rows| !rows.is_empty())
-    else {
+    if overlaps.is_empty() {
         return;
-    };
+    }
     record.kind = "overlap".into();
     record.to.push(nick.into());
-    for overlap in overlaps {
-        if let Some(owner) = overlap.get("owner").and_then(|value| value.as_str()) {
-            let holder = owners.get(owner).cloned().unwrap_or_else(|| owner.into());
-            overlap["owner"] = serde_json::Value::String(holder.clone());
-            record.to.push(holder);
-        }
+    for overlap in overlaps.iter_mut() {
+        let holder = owners
+            .get(&overlap.owner)
+            .cloned()
+            .unwrap_or_else(|| overlap.owner.clone());
+        overlap.owner = holder.clone();
+        record.to.push(holder);
     }
-    record.text = detail.to_string();
+    record.text = overlap_text(nick, overlaps);
 }
 
 /// Keep the recipients resolved by the project view and the symbol details
 /// resolved by the targeted view of the same event.
 pub(crate) fn copy_overlap_symbols(project: &mut Entry, targeted: &Entry) {
-    let (Ok(mut project_detail), Ok(targeted_detail)) = (
-        serde_json::from_str::<serde_json::Value>(&project.text),
-        serde_json::from_str::<serde_json::Value>(&targeted.text),
-    ) else {
+    let (
+        Some(EventPayload::PathClaim {
+            overlaps: project_rows,
+            ..
+        }),
+        Some(EventPayload::PathClaim {
+            overlaps: targeted_rows,
+            ..
+        }),
+    ) = (&mut project.payload, &targeted.payload)
+    else {
         return;
     };
-    if let (Some(project_rows), Some(targeted_rows)) = (
-        project_detail["overlaps"].as_array_mut(),
-        targeted_detail["overlaps"].as_array(),
-    ) {
-        for (project_row, targeted_row) in project_rows.iter_mut().zip(targeted_rows) {
-            if let Some(symbols) = targeted_row.get("symbols") {
-                project_row["symbols"] = symbols.clone();
-            }
+    copy_rows(project_rows, targeted_rows);
+    if !project_rows.is_empty() {
+        project.text = overlap_text(&project.nick, project_rows);
+    }
+}
+
+fn copy_rows(project_rows: &mut [OverlapDetail], targeted_rows: &[OverlapDetail]) {
+    for (project_row, targeted_row) in project_rows.iter_mut().zip(targeted_rows) {
+        if !targeted_row.symbols.is_empty() {
+            project_row.symbols.clone_from(&targeted_row.symbols);
         }
-        project.text = project_detail.to_string();
     }
 }

@@ -6,6 +6,9 @@ impl Channel {
     /// Build threads register their checkout before ACP starts. Other sessions inherit
     /// the project's working directory, including duty agents and the spec interview.
     pub(crate) fn is_rosen_project(&self, member: &str) -> Result<bool, Error> {
+        if self.remote.is_some() {
+            return Ok(true);
+        }
         let entries = self.read(0)?;
         if let Some(checkout) = entries
             .iter()
@@ -14,7 +17,9 @@ impl Channel {
             .and_then(|entry| entry.checkout.as_ref())
         {
             return Ok(Path::new(&checkout.repository).join("rosen.toml").is_file()
-                || Path::new(&checkout.worktree).join("rosen.toml").is_file());
+                || Path::new(checkout.workspace_path())
+                    .join("rosen.toml")
+                    .is_file());
         }
         Ok(std::env::current_dir()?.join("rosen.toml").is_file())
     }
@@ -44,7 +49,7 @@ impl Channel {
             .ok_or_else(|| Error::Invalid("Join first".into()))?;
         let result = velocity_git::continue_after_dependency(
             Path::new(&checkout.repository),
-            Path::new(&checkout.worktree),
+            Path::new(checkout.workspace_path()),
             &checkout.branch,
             &checkout.base,
         );

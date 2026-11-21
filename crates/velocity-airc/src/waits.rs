@@ -11,9 +11,21 @@ use std::path::Path;
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 pub struct Checkout {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub repository: String,
+    /// Git worktree path; omitted on Rosen workspaces (which use `workspace`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub worktree: String,
+    /// Rosen workspace path; omitted on Git worktrees (which use `worktree`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub workspace: String,
+    /// Rosen change ID for this workspace (#540).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change: Option<String>,
+    /// Git branch name; omitted on Rosen workspaces.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub branch: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub base: String,
 }
 
@@ -22,9 +34,51 @@ impl Checkout {
         Self {
             repository,
             worktree,
+            workspace: String::new(),
+            change: None,
             branch,
             base,
         }
+    }
+
+    pub fn rosen(
+        repository: String,
+        workspace: String,
+        change: Option<String>,
+        base: String,
+    ) -> Self {
+        Self {
+            repository,
+            worktree: String::new(),
+            workspace,
+            change,
+            branch: String::new(),
+            base,
+        }
+    }
+
+    /// Directory path of the workspace or git worktree.
+    pub fn workspace_path(&self) -> &str {
+        if !self.workspace.is_empty() {
+            &self.workspace
+        } else {
+            &self.worktree
+        }
+    }
+
+    /// Converts a Git-era checkout record to Rosen terms (`workspace` and `change`,
+    /// omitting `worktree` and `branch`).
+    pub(crate) fn into_rosen(mut self, change: Option<String>) -> Self {
+        if self.workspace.is_empty() && !self.worktree.is_empty() {
+            self.workspace = std::mem::take(&mut self.worktree);
+        } else {
+            self.worktree.clear();
+        }
+        self.branch.clear();
+        if self.change.is_none() {
+            self.change = change;
+        }
+        self
     }
 }
 
@@ -64,17 +118,30 @@ impl Channel {
     pub fn register_checkout(&self, member: &str, checkout: Checkout) -> Result<(), Error> {
         let storage = Storage::open(self)?;
         let entries = storage.snapshot()?;
-        let mut record = entry(&entries, "checkout", member, member, "thread checkout");
-        if self.remote.is_some() {
-            let metadata = Path::new(&checkout.worktree).join(".rosen/workspace.json");
-            if metadata.is_file() {
-                let value: serde_json::Value = serde_json::from_slice(&std::fs::read(metadata)?)?;
-                record.head = value
-                    .get("change")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_owned);
-            }
-        }
+        let metadata = Path::new(checkout.workspace_path()).join(".rosen/workspace.json");
+        let rosen_change = if metadata.is_file() {
+            let value: serde_json::Value = serde_json::from_slice(&std::fs::read(metadata)?)?;
+            value
+                .get("change")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        } else {
+            None
+        };
+        let is_rosen =
+            self.remote.is_some() || rosen_change.is_some() || !checkout.workspace.is_empty();
+        let (text, checkout, change) = if is_rosen {
+            let change = checkout.change.clone().or(rosen_change);
+            (
+                "thread workspace",
+                checkout.into_rosen(change.clone()),
+                change,
+            )
+        } else {
+            ("thread checkout", checkout, None)
+        };
+        let mut record = entry(&entries, "checkout", member, member, text);
+        record.change = change;
         record.checkout = Some(checkout);
         storage.append(&record)
     }
@@ -313,14 +380,14 @@ impl Channel {
             .ok_or_else(|| {
                 Error::Invalid("Runner did not register this thread's checkout".into())
             })?;
-        if Path::new(&checkout.worktree).join(".rosen").exists() {
+        if Path::new(checkout.workspace_path()).join(".rosen").exists() {
             // Rosen rebases stacked children when the parent lands. Velocity applies
             // the pending head at the session's step boundary, never through git.
             return Ok(());
         }
         velocity_git::continue_after_dependency(
             Path::new(&checkout.repository),
-            Path::new(&checkout.worktree),
+            Path::new(checkout.workspace_path()),
             &checkout.branch,
             &checkout.base,
         )

@@ -58,7 +58,7 @@ pub use agent::{
 pub use conflicts::{conflict_message, has_open_conflicts, regeneration_message};
 pub use events::{
     ChangeEvent, EventHead, EventReplay, EventStream, change_event, conflict_paths,
-    regenerate_paths, revert_output,
+    event_timestamps, regenerate_paths, revert_output,
 };
 pub use events::{IssueEvent, issue_event};
 pub use git_base::synchronize_git_base;

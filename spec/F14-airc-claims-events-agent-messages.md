@@ -69,6 +69,7 @@ Velocity posts them; agents never type them.
   It answers a `question`, and replies "done" or "declined, because …" to a `request`.
   Agents can't broadcast; only your comments go to every agent.
 - **Log discoveries** that other agents need (environment quirks, platform bugs) to the Discoveries ledger.
+  Velocity also fills the Discoveries ledger automatically with confirmed post-land failures and their causes (#540).
   Every merge is appended to Past work.
 - **Report Velocity's and Rosen's own problems.**
   To file an issue on the project's own repository (including spec questions, contradictions or code findings, even when that project is `mESmaC/velocity`), agents use `issue_create` (#535).
@@ -107,15 +108,16 @@ A legacy PR merge that touches the recipient's claimed or edited files requests 
 GitHub review requests reach the PR author's agent through F6 follow-through, and their AIRC records remain in the log.
 An agent is never sent its own events (its claims and claim updates, its PR, pushes, waits, shares and rebases): it caused them, and the tool call that did returned the result.
 Routine lines about its work posted by others, such as review coverage, stay in the log.
-The event log stays readable on demand with `read_events`.
+The event log stays readable on demand with `read_feed` (using `kind: "events"` for event-log entries only, or a specific kind such as `"merged"` or `"rebased"`, #540).
 `airc_claims { path?, task?, offset? }` filters held claims by repository-relative path, exact task text or piece key.
 With no filter it shows counts by agent, the caller's own claims and claims touching the caller's claimed files.
 Each page stays below 2 kB, summarizes oversized rows and returns `next_offset` when more rows are available.
 `read_messages` shows up to ten addressed messages or user comments that the session has neither read nor received through step-boundary delivery.
 Each preview shows up to 512 UTF-8 bytes.
 Call again for more unread messages, or pass a message's `sequence` and `next_offset` as `offset` to read its continuation.
-`read_feed` excludes internal delivery acknowledgements and message-mode records, retaining the original sequence numbers for cursor reads.
-`read_feed`, `read_events` and `read_ledger` return newest-first pages with up to 50 entries by default and report how many matching entries remain.
+`read_feed` excludes internal delivery acknowledgements, message-mode records, dependency-end plumbing and task-list snapshots, retaining the original sequence numbers for cursor reads.
+Entries omit null and empty optional fields, carry uniform monotonic UTC millisecond timestamps, store structured Rosen event details in typed `payload` fields instead of JSON strings, and use Rosen terms (`workspace`, `change`) in checkout entries (#540).
+`read_feed` and `read_ledger` return newest-first pages with up to 50 entries by default and report how many matching entries remain.
 Use `query` to match text, files or symbols, `after` to read newer entries, and the returned `next_before` as `before` for older matches.
 Read an oversized entry by sequence and use `next_offset` to continue its JSON.
 Before reporting a discovery, search the Discoveries ledger for terms that identify the problem.
@@ -164,7 +166,7 @@ A line meant for one agent never reaches all of them.
   Enter sends.
 
 **Storage:** Rosen projects use their Rosen server's channel (R13, D10); git projects keep daily log and ledger files per project under the app data folder.
-Agents reach AIRC through MCP tools (`claim`, `release`, `share`, `wait`, `read_feed`, `read_events`, `send_message { to, intent, text }`, `read_messages`, `append_ledger`, `read_ledger`), which the agent runner gives every agent on every provider; the agent runner injects unread mentions at each step boundary.
+Agents reach AIRC through MCP tools (`claim`, `release`, `share`, `wait`, `read_feed`, `send_message { to, intent, text }`, `read_messages`, `append_ledger`, `read_ledger`), which the agent runner gives every agent on every provider; the agent runner injects unread mentions at each step boundary.
 
 **Git projects.**
 The M8 channel backend is `velocity-airc`: launch `velocity-airc <app-data> <project-id> <member-id> <worktree-leaf-or-duty-nick>` as an MCP stdio server.
@@ -174,7 +176,7 @@ The project-id is the project's store identifier.
 Velocity posts events (the F14 tags) as `velocity` on behalf of the nick they name, without joining; an event about a PR also carries its number and head SHA, which the approval record (F7) reads.
 UTC daily JSONL logs and the Discoveries/Past work files share monotonically increasing sequence cursors; writes are serialized across processes and flushed before acknowledgement.
 Nicks are cut at word boundaries to 16 characters, with collision suffixes; `you` and `velocity` are reserved.
-Tools available at this stage are `join`, `leave`, `list_nicks`, `read_feed`, `read_events`, `read_messages`, `send_message`, `append_ledger { ledger, text, velocity_issue?, rosen_issue? }`, and `read_ledger`.
+Tools available at this stage are `join`, `leave`, `list_nicks`, `read_feed`, `read_messages`, `send_message`, `append_ledger { ledger, text, velocity_issue?, rosen_issue? }`, and `read_ledger`.
 The channel also exposes `airc_claims`, `airc_claim { piece?, task, branch, files }`, `airc_release { task }` and `airc_share { holder, file }`.
 Claims are durable first-wins records under the channel's cross-process lock, keyed on the piece: a work-pool identity (`task:<id>`, `issue:<n>`, `spec:<section>`, spelled one way whatever the prefix's casing, the spacing or an issue's `#`), or the task text when no piece is given.
 The task is display text, so two pieces with the same title never contend.

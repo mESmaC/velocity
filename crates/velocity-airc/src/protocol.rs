@@ -309,14 +309,8 @@ fn tool_list(rosen: bool, options: &ToolOptions<'_>) -> Vec<Value> {
         ),
         tool(
             "read_feed",
-            "Read the project feed (newest first, filterable by query or sequence).",
-            read_tools::log_fields(),
-            &[],
-        ),
-        tool(
-            "read_events",
-            "Read project events (newest first, filterable by query or sequence).",
-            read_tools::log_fields(),
+            "Read the project feed (newest first, filterable by query, sequence or kind; pass kind=\"events\" for event-log entries only).",
+            read_tools::feed_fields(),
             &[],
         ),
         tool(

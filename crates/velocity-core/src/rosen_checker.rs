@@ -220,6 +220,93 @@ pub fn verify_stopped_line(commit: &str, reason: &str) -> String {
     ))
 }
 
+/// Stable session marker embedded in automatic post-land failure discoveries so
+/// repeated ticks and restarts never duplicate the same confirmed failure (#540).
+pub fn post_land_failure_marker(session: i64) -> String {
+    format!("session {session} ·")
+}
+
+/// Concise, searchable Discoveries ledger entry for a confirmed post-land failure
+/// and its cause (#540).
+pub fn post_land_failure_discovery(
+    session: i64,
+    kind: &str,
+    change: &str,
+    commit: &str,
+    reverted: bool,
+    output: &str,
+) -> String {
+    let outcome = if reverted { "reverted" } else { "fix forward" };
+    let (headline, cause) = failure_cause(output);
+    let prefix = format!(
+        "Post-land {kind} failure ({} change {} · commit {} · {outcome})",
+        post_land_failure_marker(session),
+        short_change(change),
+        short_commit(commit),
+    );
+    match (headline, cause) {
+        (Some(headline), Some(cause)) => format!("{prefix}: {headline} — {cause}"),
+        (Some(headline), None) => format!("{prefix}: {headline}"),
+        (None, Some(cause)) => format!("{prefix}: {cause}"),
+        (None, None) => prefix,
+    }
+}
+
+fn failure_cause(output: &str) -> (Option<String>, Option<String>) {
+    let trimmed = output
+        .trim()
+        .strip_prefix("Integration build failed.")
+        .map_or(output.trim(), str::trim_start);
+    let (header, body) = match trimmed.split_once("\n\n") {
+        Some((header, body)) => (header.trim(), body.trim()),
+        None => (trimmed, ""),
+    };
+    let headline = (!header.is_empty()).then(|| collapse_excerpt(header, 180));
+    if body.is_empty() {
+        return (headline, None);
+    }
+    let diagnostic: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && is_cause_line(line))
+        .take(4)
+        .collect();
+    let chosen: Vec<&str> = if diagnostic.is_empty() {
+        body.lines()
+            .rev()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .take(3)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    } else {
+        diagnostic
+    };
+    let cause = (!chosen.is_empty()).then(|| collapse_excerpt(&chosen.join(" | "), 420));
+    (headline, cause)
+}
+
+fn is_cause_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("error[")
+        || lower.starts_with("error:")
+        || lower.contains("failed")
+        || lower.contains("panicked at")
+        || lower.contains("assertion")
+        || lower.starts_with("test ") && lower.ends_with("... failed")
+}
+
+fn collapse_excerpt(text: &str, limit: usize) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.len() <= limit {
+        return collapsed;
+    }
+    let end = collapsed.floor_char_boundary(limit.saturating_sub(1));
+    format!("{}…", &collapsed[..end])
+}
+
 /// The last `OUTPUT_TAIL` characters of `output`, from the start of a line.
 fn tail(output: &str) -> &str {
     let output = output.trim_end();

@@ -754,11 +754,32 @@ export type ChangeRow_Serialize = {
 	output: string | null,
 };
 
-export type Checkout = {
-	repository: string,
-	worktree: string,
-	branch: string,
-	base: string,
+export type Checkout = Checkout_Serialize | Checkout_Deserialize;
+
+export type Checkout_Deserialize = {
+	repository?: string,
+	/**  Git worktree path; omitted on Rosen workspaces (which use `workspace`). */
+	worktree?: string,
+	/**  Rosen workspace path; omitted on Git worktrees (which use `worktree`). */
+	workspace?: string,
+	/**  Rosen change ID for this workspace (#540). */
+	change?: string | null,
+	/**  Git branch name; omitted on Rosen workspaces. */
+	branch?: string,
+	base?: string,
+};
+
+export type Checkout_Serialize = {
+	repository?: string,
+	/**  Git worktree path; omitted on Rosen workspaces (which use `workspace`). */
+	worktree?: string,
+	/**  Rosen workspace path; omitted on Git worktrees (which use `worktree`). */
+	workspace?: string,
+	/**  Rosen change ID for this workspace (#540). */
+	change?: string,
+	/**  Git branch name; omitted on Rosen workspaces. */
+	branch?: string,
+	base?: string,
 };
 
 export type Claim = Claim_Serialize | Claim_Deserialize;
@@ -773,8 +794,8 @@ export type Claim_Deserialize = {
 	 */
 	piece?: string,
 	task: string,
-	branch: string,
-	files: string[],
+	branch?: string,
+	files?: string[],
 	since: string,
 };
 
@@ -786,10 +807,10 @@ export type Claim_Serialize = {
 	 *  a build thread's `branch:<name>`, or the task text. Older records have none and
 	 *  lock on their task text.
 	 */
-	piece: string,
+	piece?: string,
 	task: string,
-	branch: string,
-	files: string[],
+	branch?: string,
+	files?: string[],
 	since: string,
 };
 
@@ -1356,9 +1377,11 @@ export type Entry_Deserialize = {
 	pull_request?: number | null,
 	/**  The PR head commit the event applies to (`approved` binds to it). */
 	head?: string | null,
+	/**  The Rosen change ID this event or workspace belongs to (R2, F14, #540). */
+	change?: string | null,
 	claim?: Claim_Deserialize | null,
 	dependency?: DependencyWait | null,
-	checkout?: Checkout | null,
+	checkout?: Checkout_Deserialize | null,
 	message_mode?: MessageMode | null,
 	acknowledged?: number | null,
 	files?: string[],
@@ -1371,6 +1394,8 @@ export type Entry_Deserialize = {
 	rosen_issue?: string | null,
 	/**  The task and fields a `task_update_request` or `task_delete_request` names (F8). */
 	task_change?: TaskChange_Deserialize | null,
+	/**  Structured event detail replacing raw JSON strings in `text` (#540). */
+	payload?: EventPayload_Deserialize | null,
 };
 
 export type Entry_Serialize = {
@@ -1382,8 +1407,8 @@ export type Entry_Serialize = {
 	nick: string,
 	member: string,
 	text: string,
-	to: string[],
-	intent: string | null,
+	to?: string[],
+	intent?: string,
 	/**
 	 *  The PR an event is about, so readers such as the approval record (F7)
 	 *  never parse it back out of the display text.
@@ -1391,12 +1416,14 @@ export type Entry_Serialize = {
 	pull_request?: number,
 	/**  The PR head commit the event applies to (`approved` binds to it). */
 	head?: string,
+	/**  The Rosen change ID this event or workspace belongs to (R2, F14, #540). */
+	change?: string,
 	claim?: Claim_Serialize,
 	dependency?: DependencyWait,
-	checkout?: Checkout,
-	message_mode: MessageMode | null,
-	acknowledged: number | null,
-	files: string[],
+	checkout?: Checkout_Serialize,
+	message_mode?: MessageMode,
+	acknowledged?: number,
+	files?: string[],
 	/**
 	 *  A discovery about Velocity itself rather than the project: the issue title its agent
 	 *  gave. Velocity files it on its own repository.
@@ -1406,12 +1433,23 @@ export type Entry_Serialize = {
 	rosen_issue?: string,
 	/**  The task and fields a `task_update_request` or `task_delete_request` names (F8). */
 	task_change?: TaskChange_Serialize,
+	/**  Structured event detail replacing raw JSON strings in `text` (#540). */
+	payload?: EventPayload_Serialize,
 };
 
 export type ErrorCardView = {
 	headline: string,
 	detail: string,
 };
+
+/**  Typed event detail carried beside an entry's human-readable `text`. */
+export type EventPayload = EventPayload_Serialize | EventPayload_Deserialize;
+
+/**  Typed event detail carried beside an entry's human-readable `text`. */
+export type EventPayload_Deserialize = { type: "rebased"; onto?: string | null; tree?: string | null; regenerate?: string[]; conflicts?: string[] } | { type: "landed"; commit: string } | { type: "conflict"; onto?: string | null; paths?: string[] } | { type: "path_claim"; exclusive?: boolean | null; overlaps?: OverlapDetail_Deserialize[] } | { type: "released"; reason?: string | null; commit?: string | null; path?: string | null; released_by?: string | null; wake?: boolean | null; woken?: WokenDetail[] } | { type: "reverted"; culprit?: string | null; commit?: string | null; output?: string | null };
+
+/**  Typed event detail carried beside an entry's human-readable `text`. */
+export type EventPayload_Serialize = { type: "rebased"; onto?: string; tree?: string; regenerate?: string[]; conflicts?: string[] } | { type: "landed"; commit: string } | { type: "conflict"; onto?: string; paths?: string[] } | { type: "path_claim"; exclusive?: boolean; overlaps?: OverlapDetail_Serialize[] } | { type: "released"; reason?: string; commit?: string; path?: string; released_by?: string; wake?: boolean; woken?: WokenDetail[] } | { type: "reverted"; culprit?: string; commit?: string; output?: string };
 
 /**  A rule in the side panel's Flagged list, with its first flagged phrase. */
 export type FlaggedRule = {
@@ -3115,6 +3153,40 @@ export type OutlineSnapshot_Serialize = {
 	rewrites: RewriteView_Serialize[],
 	flagged: FlaggedRule[],
 	coverage: CoverageItem[],
+};
+
+/**  One concurrent change whose claimed paths overlap a path claim. */
+export type OverlapDetail = OverlapDetail_Serialize | OverlapDetail_Deserialize;
+
+/**  One concurrent change whose claimed paths overlap a path claim. */
+export type OverlapDetail_Deserialize = {
+	owner: string,
+	change?: string | null,
+	paths?: string[],
+	symbols?: { [key in string]: OverlapSymbols_Deserialize },
+};
+
+/**  One concurrent change whose claimed paths overlap a path claim. */
+export type OverlapDetail_Serialize = {
+	owner: string,
+	change?: string,
+	paths?: string[],
+	symbols?: { [key in string]: OverlapSymbols_Serialize },
+};
+
+/**  Symbol edits in an overlapping file, split by requester and current holder. */
+export type OverlapSymbols = OverlapSymbols_Serialize | OverlapSymbols_Deserialize;
+
+/**  Symbol edits in an overlapping file, split by requester and current holder. */
+export type OverlapSymbols_Deserialize = {
+	requester?: string[],
+	holder?: string[],
+};
+
+/**  Symbol edits in an overlapping file, split by requester and current holder. */
+export type OverlapSymbols_Serialize = {
+	requester?: string[],
+	holder?: string[],
 };
 
 export type OwningThread = {
@@ -5663,6 +5735,13 @@ export type VersionControl = "rosen" | "git";
 
 export type WindowStateChanged = {
 	maximized: boolean,
+};
+
+/**  One waiting change woken when another change released a path claim. */
+export type WokenDetail = {
+	change: string,
+	owner: string,
+	path: string,
 };
 
 export type WorkChange = {

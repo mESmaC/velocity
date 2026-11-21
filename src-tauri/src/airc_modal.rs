@@ -247,11 +247,14 @@ fn record(entry: &Entry, project: u32, reported: &ReportedDiscoveries) -> AircRe
     }
 }
 
-/// Rosen's `landed` event becomes a `merged` entry whose text is its detail,
-/// `{"commit": "<hex>"}`. Other `merged` entries carry no commit.
+/// Rosen's `landed` event becomes a `merged` entry with a typed `Landed` payload
+/// (or legacy JSON `{"commit": "<hex>"}` text). Other `merged` entries carry no commit.
 fn land_commit(entry: &Entry) -> Option<String> {
     if entry.kind != "merged" {
         return None;
+    }
+    if let Some(velocity_airc::EventPayload::Landed { commit }) = &entry.payload {
+        return (!commit.is_empty()).then(|| commit.clone());
     }
     let detail: serde_json::Value = serde_json::from_str(&entry.text).ok()?;
     detail.get("commit")?.as_str().map(str::to_owned)
