@@ -2,8 +2,9 @@ use std::io;
 
 use serde_json::Value;
 use velocity_acp::client::{
-    QUEUED_RUN_SERVER, QUEUED_RUN_SWITCH, QUEUED_RUN_TOKEN_ENV, QUEUED_RUN_TOOL, WORKFLOW_RUN_TOOL,
-    queued_run_tool, request_queued_run, request_workflow_run, workflow_run_tool,
+    PREFLIGHT_TOOL, QUEUED_RUN_SERVER, QUEUED_RUN_SWITCH, QUEUED_RUN_TOKEN_ENV, QUEUED_RUN_TOOL,
+    WORKFLOW_RUN_TOOL, preflight_tool, queued_run_tool, request_preflight, request_queued_run,
+    request_workflow_run, workflow_run_tool,
 };
 use velocity_github::mcp_stdio::{self, ToolServer};
 
@@ -42,18 +43,20 @@ impl ToolServer for Server {
     }
 
     fn instructions(&self) -> String {
-        "Queue a long command, or request a GitHub workflow run the project owner allows,          then end your turn to receive its result from Velocity."
+        "Run preflight before naming a change, queue a long command, or request a GitHub workflow \
+         run the project owner allows, then end your turn to receive the result from Velocity."
             .into()
     }
 
     fn tools(&self) -> Vec<Value> {
-        vec![queued_run_tool(), workflow_run_tool()]
+        vec![queued_run_tool(), workflow_run_tool(), preflight_tool()]
     }
 
     fn call(&mut self, name: Option<&str>, arguments: Value) -> Result<Value, String> {
         match name {
             Some(QUEUED_RUN_TOOL) => request_queued_run(self.port, &self.token, arguments),
             Some(WORKFLOW_RUN_TOOL) => request_workflow_run(self.port, &self.token, arguments),
+            Some(PREFLIGHT_TOOL) => request_preflight(self.port, &self.token, arguments),
             _ => Err("Unknown queued run tool".into()),
         }
     }

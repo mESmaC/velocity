@@ -25,6 +25,9 @@
   New turns wait until their memory budget fits above Rosen's machine-wide reserve, which defaults to 4 GiB (#484).
   Velocity also checks headroom before starting each command within a check set (#481).
   A queued command counts as waiting in the build queue, so it is never stalled.
+  `velocity-run` also offers `preflight` (#537), which agents call before naming a change.
+  After the turn ends, Velocity snapshots the workspace, reads the change's diff and the base's `rosen.toml`, and runs only the checks that apply: `rustfmt --check` on changed Rust files only, UI type-check and lint when `ui/` changed, queued `cargo check -p` for each touched crate plus `cargo clippy -p` for touched crates on sensitive paths, active overlaps with symbol analysis, and generated-file freshness checks (`Cargo.lock`, `ui/pnpm-lock.yaml`, `ui/src/lib/bindings.ts` and Rosen merge regeneration).
+  Velocity keeps the full output outside the workspace and delivers one pass/fail report with excerpts from any failing step in the agent's next prompt.
 
 <!-- split-spec links -->
 

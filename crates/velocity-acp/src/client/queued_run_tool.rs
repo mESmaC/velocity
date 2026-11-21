@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use velocity_core::queued_runs::{QueuedRunClass, QueuedRunRecord};
 
+use super::preflight_tool::PreflightRequest;
 use super::workflow_run_tool::WorkflowRequest;
 
 pub const QUEUED_RUN_SWITCH: &str = "--queued-run-mcp";
@@ -20,11 +21,13 @@ pub const QUEUED_RUN_PORT_ENV: &str = "VELOCITY_QUEUED_RUN_PORT";
 pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const REQUEST_BYTES: u64 = 128 * 1024;
 
-pub(super) const INSTRUCTIONS: &str = "Use `queue_run` from `velocity-run` for commands that \
-    can take more than a minute, including `cargo check -p <crate>` and Lean checks. \
-    Pass the program and its arguments separately. Agents use cargo fmt and UI type-check \
-    and lint. The integration build covers Rust compilation, clippy and tests. After a \
-    command queues, end your turn. Velocity sends the result and log path in your next prompt.";
+pub(super) const INSTRUCTIONS: &str = "Use `preflight` from `velocity-run` before naming a \
+    change to run the applicable formatting, UI, crate type-check, sensitive-path clippy, \
+    overlap and generated-file freshness checks in one call. Use `queue_run` from \
+    `velocity-run` for commands that can take more than a minute, including \
+    `cargo check -p <crate>` and Lean checks. Pass the program and its arguments separately. \
+    After a command or preflight queues, end your turn. Velocity sends the result and log path \
+    in your next prompt.";
 
 #[derive(Deserialize, Serialize)]
 pub(super) struct Request {
@@ -33,19 +36,20 @@ pub(super) struct Request {
     pub work: Work,
 }
 
-/// What a tool asks the session's queue for: on the wire, the key `command` or `workflow`.
+/// What a tool asks the session's queue for: on the wire, `command`, `workflow` or `preflight`.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(super) enum Work {
     Command(RunCommand),
     Workflow(WorkflowRequest),
+    Preflight(PreflightRequest),
 }
 
 /// What the queue answers an accepted request with.
 #[derive(Serialize)]
 #[serde(untagged)]
 pub(super) enum Accepted {
-    /// The file a queued command's output goes to.
+    /// The file a queued command's or preflight's output goes to.
     Log(PathBuf),
     /// The workflow run as the thread shows it.
     Workflow(String),

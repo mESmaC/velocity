@@ -13,15 +13,22 @@ use std::path::PathBuf;
 /// runs in place of your git.
 #[cfg(windows)]
 pub fn find_program(program: &OsStr) -> PathBuf {
+    let Some(search_path) = search_path() else {
+        return PathBuf::from(program);
+    };
+    find_program_on_path(program, &search_path)
+}
+
+/// Resolves a bare program name against `search_path`, trying each `PATHEXT` extension on
+/// Windows so `.cmd` shims such as `pnpm` start cleanly without a shell.
+#[cfg(windows)]
+pub fn find_program_on_path(program: &OsStr, search_path: &OsStr) -> PathBuf {
     let bare = PathBuf::from(program);
     if bare.extension().is_some() || bare.components().count() > 1 {
         return bare;
     }
     let extensions = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned());
-    let Some(search_path) = search_path() else {
-        return bare;
-    };
-    for folder in std::env::split_paths(&search_path) {
+    for folder in std::env::split_paths(search_path) {
         for extension in extensions
             .split(';')
             .filter(|extension| !extension.is_empty())
@@ -41,6 +48,11 @@ pub fn find_program(program: &OsStr) -> PathBuf {
 /// `PATH` is set searches that one, which `spawn_owned_command` extends (`search_path`).
 #[cfg(not(windows))]
 pub fn find_program(program: &OsStr) -> PathBuf {
+    PathBuf::from(program)
+}
+
+#[cfg(not(windows))]
+pub fn find_program_on_path(program: &OsStr, _search_path: &OsStr) -> PathBuf {
     PathBuf::from(program)
 }
 

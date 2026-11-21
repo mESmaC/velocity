@@ -118,11 +118,13 @@ pub fn workspace_note(change: &str) -> String {
          your change, and \
          `rosen claim <paths>` claims files other agents might edit. The `rosen` MCP server \
          offers the same commands as tools (`status`, `diff`, `claim`, `overlaps`, `commit` \
-         and the rest), returning JSON. For any command that can take more than a minute, \
-         use `queue_run` from `velocity-run` when available, then end your turn. Velocity \
-         runs it in Rosen's queue and sends the result and full log path when it finishes. \
-         Use cargo fmt, UI type-check and lint, and `rosen run -- cargo check -p <crate>` \
-         for the Rust crate your change touches. The integration build covers Rust \
-         compilation, clippy, tests and stress runs."
+         and the rest), returning JSON. Run `preflight` from `velocity-run` before naming \
+         the change, then end your turn; Velocity inspects the diff and sends one pass/fail \
+         report covering changed-file formatting, UI checks, touched-crate type-checks, \
+         sensitive-path clippy, overlaps and generated-file freshness. For any other command \
+         that can take more than a minute, use `queue_run` from `velocity-run` when available, \
+         then end your turn. Velocity runs it in Rosen's queue and sends the result and full \
+         log path when it finishes. The integration build covers full Rust compilation, \
+         clippy, tests and stress runs."
     )
 }

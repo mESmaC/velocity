@@ -178,9 +178,20 @@ pub fn spawn_agent(launch: &AgentLaunch, worktree: &Path) -> Result<AgentProcess
 /// No resource or security limits are applied to the agent or its tools. The `CreationFlags`
 /// wrap below replaces the flags `hidden_command` set, so it repeats `CREATE_NO_WINDOW`; clippy's
 /// `disallowed_types` keeps every other process from using it (#276).
-#[allow(clippy::disallowed_types)]
 pub fn spawn_owned_command(mut command: Command) -> std::io::Result<AgentProcess> {
     extend_search_path(&mut command);
+    wrap_owned_command(command)
+}
+
+/// Like [`spawn_owned_command`], but keeps the caller's `PATH` without prepending
+/// Velocity's agent shims. Used by Velocity-owned checks (`preflight`) that invoke real
+/// toolchain binaries (`cargo clippy`, `rustfmt`, `export-bindings`) directly.
+pub(super) fn spawn_owned_toolchain_command(command: Command) -> std::io::Result<AgentProcess> {
+    wrap_owned_command(command)
+}
+
+#[allow(clippy::disallowed_types)]
+fn wrap_owned_command(command: Command) -> std::io::Result<AgentProcess> {
     let mut command = CommandWrap::from(command);
     command.wrap(KillOnDrop);
     #[cfg(windows)]

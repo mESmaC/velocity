@@ -18,6 +18,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use velocity_core::queued_runs::{QueuedRunRecord, lost_runs_prompt};
 
+use super::preflight_run::PreflightRun;
 use super::queued_run_command::{QueuedRun, RunResult, resolve_directory};
 use super::queued_run_tool::{
     self, Accepted, REQUEST_BYTES, REQUEST_TIMEOUT, Request, RunCommand, Work,
@@ -316,6 +317,7 @@ impl QueueHost {
             Ok(Ok(request)) if request.token == self.token => match request.work {
                 Work::Command(command) => self.enqueue(command, runs).map(Accepted::Log),
                 Work::Workflow(workflow) => self.start_workflow(workflow, runs).await,
+                Work::Preflight(_) => self.start_preflight(runs).map(Accepted::Log),
             },
             Ok(Ok(_)) => Err("Invalid session token".into()),
             Ok(Err(error)) => Err(error.to_string()),
@@ -342,6 +344,37 @@ impl QueueHost {
             .send(QueueEvent::Started(Box::new(run.started())));
         runs.spawn(run.finish(self.stop.clone()));
         Ok(Accepted::Workflow(title))
+    }
+
+    /// Runs the change's preflight checks after the agent ends its turn so no concurrent
+    /// edits race with snapshotting, formatting or crate checks.
+    fn start_preflight(&self, runs: &mut JoinSet<RunResult>) -> Result<PathBuf, String> {
+        let run = PreflightRun::admit(&self.worktree, &self.launch)?;
+        let log = run.log.clone();
+        let mut turn_ended = self.turn_ended.clone();
+        turn_ended.mark_unchanged();
+        self.outstanding.fetch_add(1, Ordering::Release);
+        let _ = self
+            .events
+            .send(QueueEvent::Started(Box::new(run.started())));
+        let (rosen, worktree, launch, stop) = (
+            self.rosen.clone(),
+            self.worktree.clone(),
+            self.launch.clone(),
+            self.stop.clone(),
+        );
+        runs.spawn(async move {
+            tokio::select! {
+                released = turn_ended.changed() => {
+                    if released.is_err() {
+                        stop.cancel();
+                    }
+                }
+                () = stop.cancelled() => {}
+            }
+            run.finish(&rosen, &worktree, &launch, stop).await
+        });
+        Ok(log)
     }
 
     fn enqueue(

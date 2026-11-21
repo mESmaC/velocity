@@ -54,8 +54,9 @@ const DEFAULT_AGENTS_BODY: &str = r#"Use the project instructions already loaded
 The project spec defines what to build. The Task List defines what is left.
 
 ## Commands
-- Agents use Rust formatting, UI type-check and lint, and one targeted Rust type-check. The integration build runs Rust compilation, clippy and full tests. The release gate runs the stress suite.
-- Queue `cargo check -p <crate>` for the crate your change touches via `queue_run` from `velocity-run`, or use `rosen run -- cargo check -p <crate>`. After an MCP command queues, end your turn and continue from Velocity's result.
+- Run `preflight` from `velocity-run` before naming the change, then end your turn and continue from Velocity's pass/fail report.
+- Queue targeted `cargo check -p <crate>` or Lean checks via `queue_run` from `velocity-run`, or use `rosen run -- cargo check -p <crate>`. After an MCP command queues, end your turn and continue from Velocity's result.
+- Format only changed Rust files rather than `cargo fmt --all`, which can rewrite unclaimed files. The integration build runs Rust compilation, clippy and full tests. The release gate runs the stress suite.
 - Check only what your change affects before naming it. Never repeat a passed check unless its inputs changed.
 - Run `lake build` in `proofs/` when changing a pinned Lean project.
 

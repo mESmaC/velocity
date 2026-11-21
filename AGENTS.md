@@ -25,9 +25,9 @@ Velocity is a Rust + Tauri desktop IDE for running coding agents in parallel.
 
 ## Commands
 
-- Agents run Rust formatting, UI type-check and lint, and a targeted Rust type-check. The integration build runs Rust compilation, clippy and the full tests. The release gate runs stress.
-- Queue `cargo check -p <crate>` for the crate your change touches with `queue_run` from `velocity-run`, or use `rosen run -- cargo check -p <crate>`. End your turn after an MCP run queues and continue from the result Velocity sends.
-- Format Rust with `cargo fmt --all`. For UI changes use `pnpm -C ui check`, `pnpm -C ui lint` and `pnpm -C ui format`. Skip unaffected checks and skip reruns when covered inputs are unchanged.
+- Run `preflight` from `velocity-run` before naming the change, then end your turn and continue from the pass/fail report Velocity sends. It inspects the change's diff and runs only the checks that apply (`rustfmt --check` on changed Rust files, UI type-check and lint when `ui/` changed, queued `cargo check -p` for touched crates plus `cargo clippy -p` for touched crates on sensitive paths, active overlaps and generated-file freshness).
+- Queue targeted `cargo check -p <crate>` or Lean checks during development with `queue_run` from `velocity-run`, or use `rosen run -- cargo check -p <crate>`. End your turn after an MCP run queues and continue from the result Velocity sends.
+- Format only changed Rust files (`rustfmt --edition 2024 <files>`) rather than `cargo fmt --all`, which can rewrite unclaimed files. For UI formatting use `pnpm -C ui format`. The integration build runs full Rust compilation, clippy and tests; the release gate runs stress.
 
 ## Code and UI
 

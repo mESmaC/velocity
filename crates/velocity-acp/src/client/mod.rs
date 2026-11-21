@@ -18,6 +18,8 @@ mod kimi_limits;
 mod limits;
 mod live_limits;
 mod own_config;
+mod preflight_run;
+mod preflight_tool;
 mod probe;
 mod process;
 mod program_path;
@@ -69,6 +71,7 @@ pub use limits::{
     read_codex_usage,
 };
 pub use live_limits::{subscribe_account_limits, subscribe_limits, subscription_limit_error};
+pub use preflight_tool::{PREFLIGHT_TOOL, preflight_tool, request_preflight};
 pub use probe::{AgentProbe, ProbedModel, probe_agent};
 pub use process::{
     AgentLaunch, AgentProcess, hidden_command, spawn_owned_command, stop_owned_process,
