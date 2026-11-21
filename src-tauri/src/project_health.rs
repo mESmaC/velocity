@@ -422,6 +422,11 @@ async fn check_project(application: &AppHandle, app_data: &Path, project: &Proje
     let dispatch = crate::continuous_dispatch::health_snapshot(application, project.id, now)
         .unwrap_or_default();
     let mut items = Vec::new();
+    if let Some(item) =
+        check_collapse_proactive_auth(application, project, &server, now, now_ms).await
+    {
+        items.push(item);
+    }
     if let Some(item) = check_mirror(application, project, &server, now, now_ms).await {
         items.push(item);
     }
@@ -465,6 +470,128 @@ async fn check_project(application: &AppHandle, app_data: &Path, project: &Proje
     items.extend(check_release_health(application, project, &server, now, now_ms).await);
     items.extend(collect_recent_actions(application, project.id, now, &items));
     stabilize_and_publish(application, project.id, items, now_ms);
+}
+
+/// Signal: Collapse mirror reads need proactive auth (#571).
+///
+/// Private Collapse repositories answer unauthenticated `git ls-remote` with 404 and no
+/// login challenge, so Rosen's mirror push tip check and Velocity's catch-up both need
+/// `http.https://api.collapse.sh/.proactiveAuth = basic` (Git 2.46 or later).
+async fn check_collapse_proactive_auth(
+    application: &AppHandle,
+    project: &ProjectItem,
+    server: &ProjectServer,
+    now: u64,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    let (repository, mirror_url) = collapse_mirror_target(project, server).await?;
+    let status = tauri::async_runtime::spawn_blocking(move || {
+        velocity_collapse::check_proactive_auth(Some(&mirror_url))
+    })
+    .await
+    .ok()?;
+    match status {
+        velocity_collapse::ProactiveAuthStatus::Configured => None,
+        velocity_collapse::ProactiveAuthStatus::UnsupportedGit { reason } => Some(
+            ProjectHealthItem::new(
+                "collapse-proactive-auth",
+                HealthSignalKind::CollapseProactiveAuth,
+                HealthSeverity::Error,
+                "Collapse mirror reads need proactive auth",
+                reason,
+                now_ms,
+            )
+            .with_detail(Some(format!(
+                "{repository} · requires {} = basic",
+                velocity_collapse::PROACTIVE_AUTH_KEY
+            ))),
+        ),
+        velocity_collapse::ProactiveAuthStatus::Missing { current } => {
+            remediate_collapse_proactive_auth(
+                application,
+                project,
+                &repository,
+                current.as_deref(),
+                now,
+                now_ms,
+            )
+            .await
+        }
+    }
+}
+
+async fn remediate_collapse_proactive_auth(
+    application: &AppHandle,
+    project: &ProjectItem,
+    repository: &str,
+    current: Option<&str>,
+    now: u64,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    let set_result = tauri::async_runtime::spawn_blocking(velocity_collapse::ensure_proactive_auth)
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|inner| inner.map_err(|error| error.to_string()));
+    match set_result {
+        Ok(()) => {
+            let action = format!(
+                "Set {} = basic in global git config",
+                velocity_collapse::PROACTIVE_AUTH_KEY
+            );
+            crate::diagnostics::record(SOURCE, &format!("{}: {action}", project.name));
+            record_recent_action(
+                application,
+                project.id,
+                ProjectHealthItem::new(
+                    "collapse-proactive-auth",
+                    HealthSignalKind::CollapseProactiveAuth,
+                    HealthSeverity::Info,
+                    "Collapse mirror reads need proactive auth",
+                    action,
+                    now_ms,
+                )
+                .with_detail(Some(repository.to_owned())),
+                now,
+            );
+            None
+        }
+        Err(error) => {
+            let detail = match current {
+                Some(value) => format!("{repository} · current value: {value}"),
+                None => format!(
+                    "{repository} · missing {} = basic",
+                    velocity_collapse::PROACTIVE_AUTH_KEY
+                ),
+            };
+            Some(
+                ProjectHealthItem::new(
+                    "collapse-proactive-auth",
+                    HealthSignalKind::CollapseProactiveAuth,
+                    HealthSeverity::Error,
+                    "Collapse mirror reads need proactive auth",
+                    format!(
+                        "Could not set {} = basic: {error}",
+                        velocity_collapse::PROACTIVE_AUTH_KEY
+                    ),
+                    now_ms,
+                )
+                .with_detail(Some(detail)),
+            )
+        }
+    }
+}
+
+async fn collapse_mirror_target(
+    project: &ProjectItem,
+    server: &ProjectServer,
+) -> Option<(String, String)> {
+    if let Some(repository) = &project.collapse_repository {
+        let remote = velocity_core::collapse::mirror_remote(repository)?;
+        return Some((repository.clone(), remote));
+    }
+    let remote = velocity_rosen::mirror_remote(server).await.ok().flatten()?;
+    let repository = velocity_core::collapse::repository_from_remote(&remote)?;
+    Some((repository, remote))
 }
 
 /// Signal 1: Mirror behind the base for more than 10 min (#509).

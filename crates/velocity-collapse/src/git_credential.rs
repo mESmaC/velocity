@@ -16,8 +16,28 @@ use crate::CollapseError;
 
 /// The URL scope the per-path setting is saved under in the user's git configuration.
 const HOST_SCOPE: &str = "https://api.collapse.sh";
+/// The URL scope `http.<url>.proactiveAuth` is saved under in global git configuration (#571).
+const PROACTIVE_AUTH_SCOPE: &str = "https://api.collapse.sh/";
+/// Global git config key enabling proactive Basic auth on private Collapse reads (#571).
+pub const PROACTIVE_AUTH_KEY: &str = "http.https://api.collapse.sh/.proactiveAuth";
+/// Value for `http.<url>.proactiveAuth` so Git sends credentials without waiting for a 401.
+const PROACTIVE_AUTH_VALUE: &str = "basic";
+/// Git 2.46 introduced `http.proactiveAuth` (#571).
+pub const MIN_PROACTIVE_AUTH_GIT_VERSION: (u32, u32) = (2, 46);
 /// Collapse accepts any username with a push token; its link panel uses `rosen`.
 const USERNAME: &str = "rosen";
+
+/// State of Git's proactive HTTP auth configuration for Collapse mirror reads (#571).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProactiveAuthStatus {
+    /// Git 2.46 or later is installed and `http.proactiveAuth` resolves to `basic` for Collapse.
+    Configured,
+    /// Git is older than 2.46 (or its version could not be read), so `http.proactiveAuth`
+    /// is unsupported.
+    UnsupportedGit { reason: String },
+    /// Git 2.46 or later is installed, but `http.proactiveAuth` is not configured as `basic`.
+    Missing { current: Option<String> },
+}
 
 /// Saves `secret` in the git credential helper under each of `urls`, keyed by path.
 /// Velocity keeps no copy; the helper owns it from here, as `git credential approve` does
@@ -26,6 +46,7 @@ pub fn store_push_secret(urls: &[String], secret: &str) -> Result<(), CollapseEr
     let Some(first) = urls.first() else {
         return Ok(());
     };
+    ensure_proactive_auth()?;
     ensure_helper(first)?;
     ensure_path_specific_credentials()?;
     urls.iter().try_for_each(|url| approve(url, secret, true))
@@ -42,6 +63,7 @@ pub fn share_push_secret(remote: &str, urls: &[String]) -> Result<bool, Collapse
     let Some(secret) = held_secret(remote)? else {
         return Ok(false);
     };
+    ensure_proactive_auth()?;
     urls.iter()
         .try_for_each(|url| approve(url, &secret, false))?;
     Ok(true)
@@ -148,6 +170,109 @@ fn ensure_path_specific_credentials() -> Result<(), CollapseError> {
             "Could not save {key} in your git configuration: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         )))
+    }
+}
+
+/// Checks that the installed Git supports `http.proactiveAuth` (Git 2.46 or later, #571).
+pub fn check_git_version() -> Result<(u32, u32), CollapseError> {
+    let output = hidden_git()
+        .arg("--version")
+        .output()
+        .map_err(|error| CollapseError::Git(format!("Could not run git: {error}")))?;
+    let (min_major, min_minor) = MIN_PROACTIVE_AUTH_GIT_VERSION;
+    if !output.status.success() {
+        return Err(CollapseError::Git(format!(
+            "Collapse mirror reads need Git {min_major}.{min_minor} or later for http.proactiveAuth, but `git --version` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match parse_git_version(&stdout) {
+        Some(version) if version >= MIN_PROACTIVE_AUTH_GIT_VERSION => Ok(version),
+        Some((major, minor)) => Err(CollapseError::Git(format!(
+            "Collapse mirror reads need Git {min_major}.{min_minor} or later for http.proactiveAuth (found Git {major}.{minor}). Update Git and try again."
+        ))),
+        None => Err(CollapseError::Git(format!(
+            "Collapse mirror reads need Git {min_major}.{min_minor} or later for http.proactiveAuth, but could not parse `git --version` output: {}",
+            stdout.trim()
+        ))),
+    }
+}
+
+/// Parses `(major, minor)` from `git --version` output, e.g. `git version 2.46.0.windows.1`.
+fn parse_git_version(output: &str) -> Option<(u32, u32)> {
+    let token = output.split_whitespace().find(|part| {
+        part.chars().next().is_some_and(|ch| ch.is_ascii_digit()) && part.contains('.')
+    })?;
+    let mut pieces = token.split('.');
+    let major = parse_leading_u32(pieces.next()?)?;
+    let minor = parse_leading_u32(pieces.next()?)?;
+    Some((major, minor))
+}
+
+fn parse_leading_u32(segment: &str) -> Option<u32> {
+    let digits: String = segment.chars().take_while(char::is_ascii_digit).collect();
+    (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
+}
+
+/// Sets `http.https://api.collapse.sh/.proactiveAuth basic` in global git config so reads
+/// of private Collapse repositories send credentials instead of receiving 404 (#571).
+/// Checks for Git 2.46 or later first and refuses when Git is older.
+pub fn ensure_proactive_auth() -> Result<(), CollapseError> {
+    check_git_version()?;
+    if git_output(&["config", "--global", "--get", PROACTIVE_AUTH_KEY])?
+        .trim()
+        .eq_ignore_ascii_case(PROACTIVE_AUTH_VALUE)
+    {
+        return Ok(());
+    }
+    let output = hidden_git()
+        .args([
+            "config",
+            "--global",
+            "--replace-all",
+            PROACTIVE_AUTH_KEY,
+            PROACTIVE_AUTH_VALUE,
+        ])
+        .output()
+        .map_err(|error| CollapseError::Git(format!("Could not run git: {error}")))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(CollapseError::Git(format!(
+            "Could not save {PROACTIVE_AUTH_KEY} in your git configuration: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
+}
+
+/// Checks whether Git supports `http.proactiveAuth` and resolves it to `basic` for Collapse (#571).
+pub fn check_proactive_auth(mirror_url: Option<&str>) -> ProactiveAuthStatus {
+    if let Err(error) = check_git_version() {
+        return ProactiveAuthStatus::UnsupportedGit {
+            reason: error.to_string(),
+        };
+    }
+    let target = mirror_url
+        .map(str::trim)
+        .filter(|url| {
+            url.get(..PROACTIVE_AUTH_SCOPE.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(PROACTIVE_AUTH_SCOPE))
+        })
+        .unwrap_or(PROACTIVE_AUTH_SCOPE);
+    match git_output(&["config", "--get-urlmatch", "http.proactiveAuth", target]) {
+        Ok(value) if value.trim().eq_ignore_ascii_case(PROACTIVE_AUTH_VALUE) => {
+            ProactiveAuthStatus::Configured
+        }
+        Ok(value) => {
+            let trimmed = value.trim();
+            ProactiveAuthStatus::Missing {
+                current: (!trimmed.is_empty()).then(|| trimmed.to_owned()),
+            }
+        }
+        Err(error) => ProactiveAuthStatus::Missing {
+            current: Some(error.to_string()),
+        },
     }
 }
 

@@ -55,6 +55,7 @@
   With it Rosen sends Collapse its open changes, review, coverage, configuration, post-land events, machines and presence, sends ledger entries, and fetches the actions the owner queues on Collapse.
   Collapse authenticates all three with the repository's push token, and Rosen asks git's credential helper for it under `<collapse>/rosen/state` and `<collapse>/ledgers`.
   Per-path credentials key those apart from the mirror URL, so Velocity stores the same push token under all three URLs, and it stays in the credential helper, never in `rosen.toml` or `state.json`.
+  Private Collapse repositories answer unauthenticated Git reads with 404 rather than a login challenge, so Velocity also sets `http.https://api.collapse.sh/.proactiveAuth` to `basic` in the user's global git configuration whenever it provisions Collapse credentials (Create with Collapse, Mirror to Collapse and Collapse sign-in), requiring Git 2.46 or later (#571).
   Rosen's relay runs only the kinds the server's operator allowed.
   Velocity owns the project's server, so linking allows every kind Collapse offers (`approve`, `land`, `mark`, `config` and `revoke`), and the toast names them.
   Each relayed action still passes Rosen's gates and is recorded as `<account>@collapse`.

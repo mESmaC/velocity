@@ -37,6 +37,7 @@ pub enum HealthSeverity {
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 pub enum HealthSignalKind {
     MirrorBehind,
+    CollapseProactiveAuth,
     IntegrationUncovered,
     BaseRed,
     LandedIssuesWaiting,

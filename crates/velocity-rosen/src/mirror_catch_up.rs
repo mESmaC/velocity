@@ -355,9 +355,14 @@ fn run_git(
     arguments: &[&str],
     timeout: Duration,
 ) -> Result<String, RosenError> {
-    let mut child = crate::process::hidden_command("git")
+    let mut command = crate::process::hidden_command("git");
+    command
         .current_dir(directory)
-        .args(["-c", "core.longpaths=true", "-c", "gc.auto=0"])
+        .args(["-c", "core.longpaths=true", "-c", "gc.auto=0"]);
+    if uses_collapse_api_host(remote) {
+        command.args(["-c", "http.https://api.collapse.sh/.proactiveAuth=basic"]);
+    }
+    let mut child = command
         .args(arguments)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never")
@@ -410,6 +415,16 @@ fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<ExitStatus,
             Err(error) => return Err(RosenError::MirrorData(error.to_string())),
         }
     }
+}
+
+/// Private Collapse repositories answer unauthenticated reads with 404 rather than a
+/// login challenge, so reads against Collapse's API host send Basic auth proactively (#571).
+fn uses_collapse_api_host(remote: &str) -> bool {
+    const PREFIX: &str = "https://api.collapse.sh/";
+    remote
+        .trim()
+        .get(..PREFIX.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(PREFIX))
 }
 
 /// Replaces any `user:token@` prefix in `remote` so credentials never reach logs or UI.

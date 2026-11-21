@@ -104,6 +104,10 @@ pub async fn provision_mirror(
     credentials: &CollapseCredentials,
     request: &MirrorRequest<'_>,
 ) -> Result<ProvisionedMirror, CollapseError> {
+    // Check Git supports http.proactiveAuth before creating a repository on Collapse (#571).
+    tokio::task::spawn_blocking(crate::git_credential::check_git_version)
+        .await
+        .map_err(|error| CollapseError::Git(error.to_string()))??;
     let client = Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()

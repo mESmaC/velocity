@@ -15,6 +15,10 @@ mod url_text;
 
 pub use connect::connect;
 pub use credential::{CollapseCredentials, forget_credentials, load_credentials};
+pub use git_credential::{
+    MIN_PROACTIVE_AUTH_GIT_VERSION, PROACTIVE_AUTH_KEY, ProactiveAuthStatus, check_proactive_auth,
+    ensure_proactive_auth,
+};
 pub use health::{RepositoryActivity, repository_activity};
 pub use provision::{MirrorRequest, ProvisionedMirror, provision_mirror, share_push_token};
 

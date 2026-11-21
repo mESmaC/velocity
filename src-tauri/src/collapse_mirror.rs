@@ -41,6 +41,13 @@ async fn load_credentials() -> Result<Option<CollapseCredentials>, String> {
         .map_err(|error| error.to_string())
 }
 
+async fn ensure_proactive_auth() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(velocity_collapse::ensure_proactive_auth)
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
 /// Create with a Collapse mirror: provisions the repository before the initial import,
 /// which pushes the new base at once. A blank name uses the project folder's name, and
 /// the request then names the provisioned `owner/repository`. Without a connection an
@@ -61,6 +68,7 @@ pub(crate) async fn prepare_new_project(request: &mut NewProjectRequest) -> Resu
         if !typed.contains('/') {
             return Err(NOT_CONNECTED.into());
         }
+        ensure_proactive_auth().await?;
         share_hand_stored_token(&typed).await;
         return Ok(());
     };

@@ -34,11 +34,15 @@ const MAX_REQUEST_BYTES: usize = 16 * 1024;
 const MAX_MACHINE_BYTES: usize = 88;
 
 /// Runs the whole sign-in: `open_browser` receives the approval page's URL. The tokens are
-/// saved to the OS credential store before this returns.
+/// saved to the OS credential store and Collapse's proactive HTTP auth setting is written
+/// to global git config before this returns (#571).
 pub async fn connect(
     machine: &str,
     open_browser: impl FnOnce(&str) -> Result<(), String>,
 ) -> Result<CollapseCredentials, CollapseError> {
+    tokio::task::spawn_blocking(crate::git_credential::check_git_version)
+        .await
+        .map_err(|error| CollapseError::Git(error.to_string()))??;
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let port = listener.local_addr()?.port();
     let request = SignInRequest::new(machine, format!("http://127.0.0.1:{port}{CALLBACK_PATH}"));
@@ -49,9 +53,12 @@ pub async fn connect(
     drop(listener);
     let credentials = exchange(&request, &code).await?;
     let saved = credentials.clone();
-    tokio::task::spawn_blocking(move || save_credentials(&saved))
-        .await
-        .map_err(|error| CollapseError::Credential(error.to_string()))??;
+    tokio::task::spawn_blocking(move || {
+        save_credentials(&saved)?;
+        crate::git_credential::ensure_proactive_auth()
+    })
+    .await
+    .map_err(|error| CollapseError::Credential(error.to_string()))??;
     Ok(credentials)
 }
 
