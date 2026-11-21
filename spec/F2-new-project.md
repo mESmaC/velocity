@@ -23,6 +23,9 @@ New projects still start with a single `SPEC.md`.
   The push token is stored under the state feed and ledger URLs as well, where Rosen looks for it, and the new project's server allows the relay.
   Velocity never stores the push token, and reads it from the credential helper only to copy it to the state feed and ledger URLs of a project whose mirror already has one.
   Without a Collapse connection the dialog still accepts an existing `owner/repository` whose push token git already has, and copies that token to those URLs.
+  The Collapse option also offers an optional **Issues and CI on GitHub** (`owner/repo`) field so a Collapse-mirrored project can name the GitHub repository used for issues, continuous dispatch, base CI, releases and Rosen pin bumps (Q28, #574).
+  The same field is editable in Settings → Workspaces, where Velocity suggests a GitHub repository configured later as Collapse's downstream remote.
+  Running Mirror to Collapse on an existing GitHub project preserves its `github_remote` pointing at GitHub so dispatch and CI keep working.
 - **Model for the interview:** choose a model, effort and speed.
 - **What are you building?** Enter a free-text brief.
 - **Create & start interview** (`Ctrl+Enter`) creates the folder when needed and starts the Rosen server with an initial base.

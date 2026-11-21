@@ -19,7 +19,7 @@ pub use git_credential::{
     MIN_PROACTIVE_AUTH_GIT_VERSION, PROACTIVE_AUTH_KEY, ProactiveAuthStatus, check_proactive_auth,
     ensure_proactive_auth,
 };
-pub use health::{RepositoryActivity, repository_activity};
+pub use health::{RepositoryActivity, repository_activity, repository_downstream};
 pub use provision::{MirrorRequest, ProvisionedMirror, provision_mirror, share_push_token};
 
 /// Collapse's read-only MCP endpoint (Collapse C9), streamable HTTP with a bearer token.

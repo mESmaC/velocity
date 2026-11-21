@@ -122,7 +122,8 @@
   border-radius: var(--r-md);
   background: var(--field);
 }
-.np .where > .inp {
+.np .where > .inp,
+.np .field > .inp {
   flex: none;
 }
 .np .inp:focus-within,

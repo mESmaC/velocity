@@ -103,6 +103,7 @@ pub async fn create_project(
         // The new `rosen.toml` names the Collapse root; the relay is the server's setting.
         crate::collapse_mirror::allow_relay_after_create(&host, created.identifier).await;
     }
+    crate::base_ci::wake(&host);
     crate::interview::start(&host);
     Ok(created)
 }

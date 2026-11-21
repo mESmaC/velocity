@@ -147,11 +147,16 @@ fn project_record(resolved: &ResolvedRequest, branch: String) -> NewProjectRecor
         .as_deref()
         .filter(|mirror| mirror.starts_with("https://github.com/"))
         .and_then(|mirror| velocity_github::RepositoryName::parse(mirror).ok());
-    let repository = resolved.repository.clone().or(github_mirror).or_else(|| {
-        (resolved.location == NewProjectLocation::OpenFolder)
-            .then(|| velocity_github::checkout_repository(&resolved.path))
-            .flatten()
-    });
+    let repository = resolved
+        .repository
+        .clone()
+        .or(github_mirror)
+        .or_else(|| resolved.github_repository.clone())
+        .or_else(|| {
+            (resolved.location == NewProjectLocation::OpenFolder)
+                .then(|| velocity_github::checkout_repository(&resolved.path))
+                .flatten()
+        });
     match repository {
         Some(repository) => record.on_github(repository.full_name()),
         None => record,
@@ -163,4 +168,40 @@ fn lock<'a, Value>(
     name: &'static str,
 ) -> Result<MutexGuard<'a, Value>, NewProjectError> {
     mutex.lock().map_err(|_| NewProjectError::Poisoned(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::project_record;
+    use crate::request::{ProjectLocationRequest, ProjectMirror};
+    use crate::resolve::resolve;
+    use velocity_store::ProjectLocationKind;
+
+    #[test]
+    fn collapse_mirror_sets_github_remote_only_when_named() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = std::env::temp_dir().join("velocity-collapse-github-test");
+        let with_github = resolve(&ProjectLocationRequest::RosenFolder {
+            path: root.display().to_string(),
+            mirror: ProjectMirror::Collapse {
+                repository: "mESmaC/velocity".into(),
+                github_repository: Some("https://github.com/mESmaC/velocity.git".into()),
+            },
+        })?;
+        let record = project_record(&with_github, "main".into());
+        assert_eq!(record.github_remote.as_deref(), Some("mESmaC/velocity"));
+        assert_eq!(record.location_kind, ProjectLocationKind::GitHub);
+
+        let without_github = resolve(&ProjectLocationRequest::RosenFolder {
+            path: root.display().to_string(),
+            mirror: ProjectMirror::Collapse {
+                repository: "mESmaC/velocity".into(),
+                github_repository: None,
+            },
+        })?;
+        let record = project_record(&without_github, "main".into());
+        assert_eq!(record.github_remote, None);
+        assert_eq!(record.location_kind, ProjectLocationKind::Local);
+        Ok(())
+    }
 }

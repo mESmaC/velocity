@@ -201,6 +201,29 @@ impl ForwarderState {
     }
 }
 
+/// The GitHub `owner/repository` a GitHub remote URL or `owner/repository` names (#574).
+/// Rejects credentials, query strings, fragments and non-GitHub hosts.
+pub fn github_repository_from_remote(remote: &str) -> Option<String> {
+    let trimmed = remote.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = strip_prefix_ignoring_case(trimmed, "https://github.com/")
+        .or_else(|| strip_prefix_ignoring_case(trimmed, "http://github.com/"))
+        .or_else(|| strip_prefix_ignoring_case(trimmed, "ssh://git@github.com/"))
+        .or_else(|| strip_prefix_ignoring_case(trimmed, "git@github.com:"))
+        .or_else(|| strip_prefix_ignoring_case(trimmed, "github.com/"))
+        .unwrap_or(trimmed);
+    if path.contains([':', '@', '?', '#', '\\']) {
+        return None;
+    }
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, repository) = path.split_once('/')?;
+    (valid_github_owner(owner) && valid_github_repository(repository))
+        .then(|| format!("{owner}/{repository}"))
+}
+
 /// The project's Collapse mirror as Collapse reports it: its last land and the forwarder
 /// to the downstream remote (#427). Read with the personal token; holds no credential.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -218,6 +241,10 @@ pub struct CollapseMirrorHealth {
     pub last_land_agent: Option<String>,
     /// The repository is archived on Collapse, which refuses mirror pushes.
     pub archived: bool,
+    /// GitHub `owner/repository` Collapse forwards to when its downstream remote is on
+    /// GitHub, suggested in project settings (#574).
+    #[serde(default)]
+    pub downstream_github: Option<String>,
 }
 
 fn strip_prefix_ignoring_case<'text>(text: &'text str, prefix: &str) -> Option<&'text str> {
@@ -236,13 +263,66 @@ fn valid_segment(segment: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
+fn valid_github_owner(owner: &str) -> bool {
+    !owner.is_empty()
+        && owner.len() <= 39
+        && !owner.starts_with('-')
+        && !owner.ends_with('-')
+        && !owner.contains("--")
+        && owner
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+fn valid_github_repository(repository: &str) -> bool {
+    !repository.is_empty()
+        && repository.len() <= 100
+        && repository != "."
+        && repository != ".."
+        && repository
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
 fn is_commit(commit: &str) -> bool {
     (7..=64).contains(&commit.len()) && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::land_page;
+    use super::{github_repository_from_remote, land_page};
+
+    #[test]
+    fn github_repository_from_remote_accepts_github_urls_and_names() {
+        assert_eq!(
+            github_repository_from_remote("mESmaC/velocity").as_deref(),
+            Some("mESmaC/velocity")
+        );
+        assert_eq!(
+            github_repository_from_remote("https://github.com/mESmaC/velocity.git").as_deref(),
+            Some("mESmaC/velocity")
+        );
+        assert_eq!(
+            github_repository_from_remote("git@github.com:mESmaC/collapse.sh.git").as_deref(),
+            Some("mESmaC/collapse.sh")
+        );
+        assert_eq!(
+            github_repository_from_remote("ssh://git@github.com/mESmaC/rosen/").as_deref(),
+            Some("mESmaC/rosen")
+        );
+        assert_eq!(
+            github_repository_from_remote("https://api.collapse.sh/mESmaC/velocity.git"),
+            None
+        );
+        assert_eq!(
+            github_repository_from_remote("https://token@github.com/mESmaC/velocity.git"),
+            None
+        );
+        assert_eq!(
+            github_repository_from_remote("https://github.com/mESmaC/velocity?x=1"),
+            None
+        );
+    }
 
     /// Risk (#573): Collapse serves landed commits at `/<owner>/<name>/land/<commit>`
     /// (Collapse C5), not `/commit/<commit>`, which returns 404.

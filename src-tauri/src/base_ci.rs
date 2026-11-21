@@ -45,7 +45,18 @@ struct Subject {
     branch: String,
 }
 
+struct BaseCiWake(std::sync::mpsc::Sender<()>);
+
+/// Wakes the base CI poller immediately, e.g. when a project's GitHub repository changes (#574).
+pub(crate) fn wake(application: &AppHandle) {
+    if let Some(wake) = application.try_state::<BaseCiWake>() {
+        let _ = wake.0.send(());
+    }
+}
+
 pub fn initialize(application: &AppHandle) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    application.manage(BaseCiWake(sender));
     let application = application.clone();
     // `gh` blocks, so the looks have a thread of their own.
     std::thread::spawn(move || {
@@ -54,8 +65,9 @@ pub fn initialize(application: &AppHandle) {
         let mut last_failures: BTreeMap<u32, String> = BTreeMap::new();
         // Cache failed-step logs by project and run ID so steady-state polls never re-fetch.
         let mut log_caches: BTreeMap<u32, BTreeMap<u64, FailedLog>> = BTreeMap::new();
-        std::thread::sleep(FIRST_LOOK);
+        let _ = receiver.recv_timeout(FIRST_LOOK);
         loop {
+            while receiver.try_recv().is_ok() {}
             for subject in subjects(&application) {
                 let run_logs = log_caches.entry(subject.project).or_default();
                 let failure = look(&application, &subject, run_logs).err();
@@ -71,7 +83,7 @@ pub fn initialize(application: &AppHandle) {
                     None => last_failures.remove(&subject.project),
                 };
             }
-            std::thread::sleep(LOOK_INTERVAL);
+            let _ = receiver.recv_timeout(LOOK_INTERVAL);
         }
     });
 }

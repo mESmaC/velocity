@@ -102,6 +102,7 @@ export type {
   NavigationIntent_Deserialize as NavigationIntent,
   NewProjectDefaults_Serialize as NewProjectDefaults,
   NewProjectRequest_Deserialize as NewProjectRequest,
+  ProjectGitHubRepository,
   ProjectLocationRequest,
   ProjectMirror,
   RailItem_Serialize as RailItem,
@@ -120,6 +121,8 @@ export const layoutCommands = {
 export const projectCommands = {
   list: commands.listProjects,
   switch: commands.switchProject,
+  githubRepository: commands.getProjectGithubRepository,
+  setGitHubRepository: commands.setProjectGithubRepository,
 };
 
 export const onProjectSelected = (callback: EventCallback<ProjectSelected>) =>

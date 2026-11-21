@@ -6,8 +6,15 @@ use velocity_store::{EffortLevel, ProviderKind, Settings, SpeedMode};
 #[derive(Clone, Debug, serde::Deserialize, specta::Type)]
 pub enum ProjectMirror {
     None,
-    Collapse { repository: String },
-    GitHub { repository: String },
+    Collapse {
+        repository: String,
+        /// Optional GitHub `owner/repository` holding issues and CI (F2, Q28, #574).
+        #[serde(default)]
+        github_repository: Option<String>,
+    },
+    GitHub {
+        repository: String,
+    },
 }
 
 #[derive(Clone, Debug, serde::Deserialize, specta::Type)]

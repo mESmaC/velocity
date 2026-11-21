@@ -15,3 +15,4 @@ pub use request::{
     CreatedProject, NewProjectDefaults, NewProjectRequest, OpenProjectRequest,
     ProjectLocationRequest, ProjectMirror, new_project_defaults, projects_directory,
 };
+pub use resolve::parse_github_repository;

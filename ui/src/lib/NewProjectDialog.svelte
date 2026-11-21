@@ -51,6 +51,7 @@
   let mirrorChosen = false;
   let folder = $state('');
   let repository = $state('');
+  let githubRepository = $state('');
   let effort = $state<EffortLevel>('high');
   let speed = $state<SpeedMode>('regular');
   let brief = $state('');
@@ -125,7 +126,15 @@
   function location(): ProjectLocationRequest {
     let mirror: ProjectMirror = 'None';
     if (mirrorKind === 'github') mirror = { GitHub: { repository } };
-    if (mirrorKind === 'collapse') mirror = { Collapse: { repository } };
+    if (mirrorKind === 'collapse') {
+      const github = githubRepository.trim();
+      mirror = {
+        Collapse: {
+          repository,
+          github_repository: github ? github : null,
+        },
+      };
+    }
     return { RosenFolder: { path: folder, mirror } };
   }
 
@@ -193,6 +202,7 @@
                 mirrorKind = choice;
                 mirrorChosen = true;
                 repository = '';
+                githubRepository = '';
               }}>{mirrorLabels[choice]}</button
             >
           {/each}
@@ -215,10 +225,27 @@
               bind:value={repository}
             />
           </label>
-          {#if mirrorKind === 'collapse' && !collapseAccount}<p class="np-note">
-              Connect Collapse in Settings · Agents to create the repository
-              here, or name one whose push token git already has.
-            </p>{/if}
+          {#if mirrorKind === 'collapse'}
+            <div class="field">
+              <label class="label" for="new-project-github-repo"
+                >Issues and CI on GitHub</label
+              >
+              <label class="inp">
+                <span class="pre">github.com/</span>
+                <input
+                  id="new-project-github-repo"
+                  aria-label="Issues and CI on GitHub"
+                  spellcheck="false"
+                  placeholder="owner/repo (optional)"
+                  bind:value={githubRepository}
+                />
+              </label>
+            </div>
+            {#if !collapseAccount}<p class="np-note">
+                Connect Collapse in Settings · Agents to create the repository
+                here, or name one whose push token git already has.
+              </p>{/if}
+          {/if}
         {/if}
       </fieldset>
       <div class="field">

@@ -56,9 +56,9 @@ export const commands = {
 	 *  repository named after the project, stores its push token in git's credential helper,
 	 *  and lands a `rosen.toml` change pointing `[mirror] remote` at it and naming its
 	 *  `collapse` root, so Rosen also sends its live state and ledger entries and runs the
-	 *  owner's actions from Collapse (#517). A project that was on GitHub then opens the
-	 *  repository's Downstream remote settings, where the owner keeps GitHub fed through
-	 *  Collapse's forwarder (C4). Says what happened in a toast.
+	 *  owner's actions from Collapse (#517). A project that was on GitHub keeps its
+	 *  `github_remote` pointing at GitHub (#574) and opens the repository's Downstream remote
+	 *  settings, where the owner keeps GitHub fed through Collapse's forwarder (C4).
 	 */
 	mirrorToCollapse: (projectIdentifier: number) => __TAURI_INVOKE<null>("mirror_to_collapse", { projectIdentifier }),
 	/**
@@ -113,7 +113,17 @@ export const commands = {
 	approveMachine: (projectIdentifier: number, machine: string) => __TAURI_INVOKE<null>("approve_machine", { projectIdentifier, machine }),
 	revokeMachine: (projectIdentifier: number, machine: string) => __TAURI_INVOKE<null>("revoke_machine", { projectIdentifier, machine }),
 	dispatchToMachine: (projectIdentifier: number, machine: string, prompt: string) => __TAURI_INVOKE<string>("dispatch_to_machine", { projectIdentifier, machine, prompt }),
+	/**
+	 *  Reads the project's GitHub repository for issues and CI, along with Collapse's
+	 *  downstream GitHub repository when one is configured (#574).
+	 */
+	getProjectGithubRepository: (projectIdentifier: number) => __TAURI_INVOKE<ProjectGitHubRepository_Serialize>("get_project_github_repository", { projectIdentifier }),
 	listProjects: () => __TAURI_INVOKE<ProjectList>("list_projects"),
+	/**
+	 *  Saves or clears the project's GitHub `owner/repository` for issues, base CI, releases
+	 *  and Rosen pin bumps (#574).
+	 */
+	setProjectGithubRepository: (projectIdentifier: number, repository: string) => __TAURI_INVOKE<ProjectGitHubRepository_Serialize>("set_project_github_repository", { projectIdentifier, repository }),
 	switchProject: (identifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("switch_project", { identifier }),
 	/**
 	 *  `cut_release` (§3.1): without `commit`, releases the newest commit with a green
@@ -926,6 +936,11 @@ export type CollapseMirrorHealth_Deserialize = {
 	last_land_agent?: string | null,
 	/**  The repository is archived on Collapse, which refuses mirror pushes. */
 	archived: boolean,
+	/**
+	 *  GitHub `owner/repository` Collapse forwards to when its downstream remote is on
+	 *  GitHub, suggested in project settings (#574).
+	 */
+	downstream_github?: string | null,
 };
 
 /**
@@ -945,6 +960,11 @@ export type CollapseMirrorHealth_Serialize = {
 	last_land_agent: string | null,
 	/**  The repository is archived on Collapse, which refuses mirror pushes. */
 	archived: boolean,
+	/**
+	 *  GitHub `owner/repository` Collapse forwards to when its downstream remote is on
+	 *  GitHub, suggested in project settings (#574).
+	 */
+	downstream_github: string | null,
 };
 
 export type CommandLatencyRow = {
@@ -3259,7 +3279,7 @@ export type NewProjectDefaults_Serialize = {
 export type NewProjectRequest = NewProjectRequest_Serialize | NewProjectRequest_Deserialize;
 
 export type NewProjectRequest_Deserialize = {
-	location: ProjectLocationRequest,
+	location: ProjectLocationRequest_Deserialize,
 	model_name?: string | null,
 	effort: EffortLevel,
 	speed: SpeedMode,
@@ -3267,7 +3287,7 @@ export type NewProjectRequest_Deserialize = {
 };
 
 export type NewProjectRequest_Serialize = {
-	location: ProjectLocationRequest,
+	location: ProjectLocationRequest_Serialize,
 	model_name: string | null,
 	effort: EffortLevel,
 	speed: SpeedMode,
@@ -3636,6 +3656,34 @@ export type ProcessMemory = {
 	budget_mib: number,
 };
 
+/**
+ *  The project's GitHub repository for issues, base CI and releases, plus Collapse's
+ *  downstream GitHub repository when Collapse reports one (#574).
+ */
+export type ProjectGitHubRepository = ProjectGitHubRepository_Serialize | ProjectGitHubRepository_Deserialize;
+
+/**
+ *  The project's GitHub repository for issues, base CI and releases, plus Collapse's
+ *  downstream GitHub repository when Collapse reports one (#574).
+ */
+export type ProjectGitHubRepository_Deserialize = {
+	project_identifier: number,
+	repository?: string | null,
+	collapse_repository?: string | null,
+	suggested_downstream?: string | null,
+};
+
+/**
+ *  The project's GitHub repository for issues, base CI and releases, plus Collapse's
+ *  downstream GitHub repository when Collapse reports one (#574).
+ */
+export type ProjectGitHubRepository_Serialize = {
+	project_identifier: number,
+	repository: string | null,
+	collapse_repository: string | null,
+	suggested_downstream: string | null,
+};
+
 export type ProjectHealthChanged = ProjectHealthChanged_Serialize | ProjectHealthChanged_Deserialize;
 
 export type ProjectHealthChanged_Deserialize = {
@@ -3785,18 +3833,42 @@ export type ProjectList = {
 
 export type ProjectLocationKind = "local" | "git_hub";
 
-export type ProjectLocationRequest = 
+export type ProjectLocationRequest = ProjectLocationRequest_Serialize | ProjectLocationRequest_Deserialize;
+
+export type ProjectLocationRequest_Deserialize = 
 /**  Compatibility for headless callers. Creates the same Rosen project as the dialog. */
 ({ LocalFolder: {
 	path: string,
 	create_if_needed: boolean,
 } }) & { RosenFolder?: never } | ({ RosenFolder: {
 	path: string,
-	mirror: ProjectMirror,
+	mirror: ProjectMirror_Deserialize,
 } }) & { LocalFolder?: never };
 
-export type ProjectMirror = "None" | ({ Collapse: {
+export type ProjectLocationRequest_Serialize = 
+/**  Compatibility for headless callers. Creates the same Rosen project as the dialog. */
+({ LocalFolder: {
+	path: string,
+	create_if_needed: boolean,
+} }) & { RosenFolder?: never } | ({ RosenFolder: {
+	path: string,
+	mirror: ProjectMirror_Serialize,
+} }) & { LocalFolder?: never };
+
+export type ProjectMirror = ProjectMirror_Serialize | ProjectMirror_Deserialize;
+
+export type ProjectMirror_Deserialize = "None" | ({ Collapse: {
 	repository: string,
+	/**  Optional GitHub `owner/repository` holding issues and CI (F2, Q28, #574). */
+	github_repository?: string | null,
+} }) & { GitHub?: never } | ({ GitHub: {
+	repository: string,
+} }) & { Collapse?: never };
+
+export type ProjectMirror_Serialize = "None" | ({ Collapse: {
+	repository: string,
+	/**  Optional GitHub `owner/repository` holding issues and CI (F2, Q28, #574). */
+	github_repository: string | null,
 } }) & { GitHub?: never } | ({ GitHub: {
 	repository: string,
 } }) & { Collapse?: never };

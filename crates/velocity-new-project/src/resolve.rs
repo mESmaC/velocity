@@ -15,6 +15,7 @@ pub(crate) struct ResolvedRequest {
     pub(crate) path: PathBuf,
     pub(crate) name: String,
     pub(crate) repository: Option<RepositoryName>,
+    pub(crate) github_repository: Option<RepositoryName>,
     pub(crate) mirror: Option<String>,
     pub(crate) explicit_destination: bool,
 }
@@ -28,18 +29,49 @@ impl ResolvedRequest {
 pub(crate) fn resolve(
     location: &ProjectLocationRequest,
 ) -> Result<ResolvedRequest, NewProjectError> {
-    let (path, mirror) = match location {
-        ProjectLocationRequest::LocalFolder { path, .. } => (path, None),
-        ProjectLocationRequest::RosenFolder { path, mirror } => (path, mirror_url(mirror)?),
+    let (path, mirror, github_repository) = match location {
+        ProjectLocationRequest::LocalFolder { path, .. } => (path, None, None),
+        ProjectLocationRequest::RosenFolder { path, mirror } => {
+            let github_repository = match mirror {
+                ProjectMirror::Collapse {
+                    github_repository: Some(text),
+                    ..
+                } => parse_github_repository(text)?,
+                _ => None,
+            };
+            (path, mirror_url(mirror)?, github_repository)
+        }
     };
-    folder(path, NewProjectLocation::NewFolder, mirror)
+    let mut resolved = folder(path, NewProjectLocation::NewFolder, mirror)?;
+    resolved.github_repository = github_repository;
+    Ok(resolved)
+}
+
+/// Parses an optional GitHub `owner/repository` (or GitHub HTTPS URL) for issues and CI (#574).
+pub fn parse_github_repository(input: &str) -> Result<Option<RepositoryName>, NewProjectError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let name = trimmed
+        .strip_prefix("https://github.com/")
+        .or_else(|| trimmed.strip_prefix("http://github.com/"))
+        .or_else(|| trimmed.strip_prefix("github.com/"))
+        .unwrap_or(trimmed);
+    // Keep credentials and arbitrary URLs out of the project configuration.
+    if name.contains([':', '@', '?', '#', '\\']) {
+        return Err(NewProjectError::Refused(
+            "Enter a GitHub owner/repository or https://github.com/ repository URL.".into(),
+        ));
+    }
+    Ok(Some(RepositoryName::parse(name)?))
 }
 
 fn mirror_url(mirror: &ProjectMirror) -> Result<Option<String>, NewProjectError> {
     let (input, host) = match mirror {
         ProjectMirror::None => return Ok(None),
         ProjectMirror::GitHub { repository } => (repository, "https://github.com/"),
-        ProjectMirror::Collapse { repository } => (repository, "https://api.collapse.sh/"),
+        ProjectMirror::Collapse { repository, .. } => (repository, "https://api.collapse.sh/"),
     };
     let trimmed = input.trim();
     let name = trimmed.strip_prefix(host).unwrap_or(trimmed);
@@ -78,6 +110,7 @@ pub(crate) fn resolve_open(
                 path,
                 name: repository.name().to_owned(),
                 repository: Some(repository),
+                github_repository: None,
                 mirror: None,
                 explicit_destination,
             })
@@ -99,6 +132,7 @@ fn folder(
         path,
         name,
         repository: None,
+        github_repository: None,
         mirror,
         explicit_destination: true,
     })

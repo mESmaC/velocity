@@ -2,7 +2,7 @@
 
 use velocity_core::rosen_mirror::{MirrorDivergence, MirrorState};
 
-use crate::{StateStore, StoreError};
+use crate::{ProjectLocationKind, StateStore, StoreError};
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MirrorRejection {
@@ -112,6 +112,36 @@ impl StateStore {
             }
             item.collapse_repository = repository;
             item.collapse_live_state = live_state;
+            (true, ())
+        })?;
+        Ok(true)
+    }
+
+    /// Saves the project's GitHub `owner/repository` for issues, base CI, releases and
+    /// Rosen pin bumps (#574), and reports whether it changed. Clearing or changing the
+    /// repository clears any cached base CI from the previous repository.
+    pub fn save_github_remote(
+        &mut self,
+        project: u32,
+        repository: Option<String>,
+    ) -> Result<bool, StoreError> {
+        let Some(current) = self.project(project) else {
+            return Ok(false);
+        };
+        let location_kind = if repository.is_some() {
+            ProjectLocationKind::GitHub
+        } else {
+            ProjectLocationKind::Local
+        };
+        if current.github_remote == repository && current.location_kind == location_kind {
+            return Ok(false);
+        }
+        self.edit_project_in_place(project, |item| {
+            if item.github_remote != repository {
+                item.base_ci = None;
+            }
+            item.github_remote = repository;
+            item.location_kind = location_kind;
             (true, ())
         })?;
         Ok(true)
@@ -232,6 +262,7 @@ mod tests {
             last_land_at: Some("2026-11-19T20:00:00Z".into()),
             last_land_agent: Some("issue-427@server".into()),
             archived: false,
+            downstream_github: Some("mESmaC/one".into()),
         };
         assert!(store.save_collapse_mirror_health(1, Some(health.clone()))?);
         assert!(!store.save_collapse_mirror_health(1, Some(health.clone()))?);
@@ -244,6 +275,63 @@ mod tests {
         let store = StateStore::load_or_default(&directory)?;
         assert_eq!(store.state.projects[0].collapse_mirror_health, None);
         assert!(!store.state.projects[0].collapse_live_state);
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#574): moving a GitHub project to a Collapse mirror must keep `github_remote`
+    // pointing at GitHub across save and reload, and edits to `github_remote` must persist
+    // while clearing stale base CI from another repository.
+    #[test]
+    fn github_remote_survives_collapse_mirror_and_reload() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use crate::ProjectLocationKind;
+        use velocity_core::base_ci::{BaseCi, BaseCiState};
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-github-remote-{unique}"));
+        let mut store = StateStore::load_or_default(&directory)?;
+        store.state.projects = vec![ProjectItem::new(1, "One".into(), r"C:\project one".into())];
+        store.store_snapshot(store.state.clone())?;
+
+        assert!(store.save_github_remote(1, Some("mESmaC/velocity".into()))?);
+        assert!(!store.save_github_remote(1, Some("mESmaC/velocity".into()))?);
+        store.save_base_ci(
+            1,
+            Some(BaseCi {
+                state: BaseCiState::Green,
+                commit: Some("a".repeat(40)),
+                failing: Vec::new(),
+                running: false,
+            }),
+        )?;
+        assert!(store.save_collapse_repository(1, Some("owner/velocity".into()), Some(true))?);
+
+        let mut store = StateStore::load_or_default(&directory)?;
+        assert_eq!(
+            store.state.projects[0].github_remote.as_deref(),
+            Some("mESmaC/velocity")
+        );
+        assert_eq!(
+            store.state.projects[0].location_kind,
+            ProjectLocationKind::GitHub
+        );
+        assert_eq!(
+            store.state.projects[0].collapse_repository.as_deref(),
+            Some("owner/velocity")
+        );
+        assert!(store.state.projects[0].base_ci.is_some());
+
+        assert!(store.save_github_remote(1, None)?);
+        let store = StateStore::load_or_default(&directory)?;
+        assert_eq!(store.state.projects[0].github_remote, None);
+        assert_eq!(
+            store.state.projects[0].location_kind,
+            ProjectLocationKind::Local
+        );
+        assert_eq!(store.state.projects[0].base_ci, None);
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

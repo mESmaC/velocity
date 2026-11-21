@@ -200,6 +200,19 @@
   gap: var(--sp-4);
   align-items: center;
 }
+.worktree-github-suggestion {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  margin-top: var(--sp-4);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.worktree-github-suggestion code {
+  font-family: var(--mono);
+  color: var(--text-2);
+}
 .worktree-input {
   flex: 1;
   display: flex;

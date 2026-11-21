@@ -10,7 +10,7 @@
 //! Velocity keeps no push token: provisioning passes it to `git credential approve`, and
 //! the account tokens stay in the OS credential store (§1, #430).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -56,14 +56,21 @@ async fn ensure_proactive_auth() -> Result<(), String> {
 pub(crate) async fn prepare_new_project(request: &mut NewProjectRequest) -> Result<(), String> {
     let ProjectLocationRequest::RosenFolder {
         path,
-        mirror: ProjectMirror::Collapse { repository },
+        mirror:
+            ProjectMirror::Collapse {
+                repository,
+                github_repository,
+            },
     } = &mut request.location
     else {
         return Ok(());
     };
     let folder = Path::new(path.trim());
-    // Refuse a folder Create would refuse before anything exists on Collapse.
+    // Refuse a folder or GitHub repository Create would refuse before anything exists on Collapse.
     velocity_new_project::validate_project_root(folder).map_err(|error| error.to_string())?;
+    if let Some(github) = github_repository.as_deref() {
+        velocity_new_project::parse_github_repository(github).map_err(|error| error.to_string())?;
+    }
     let typed = typed_repository(repository);
     let Some(credentials) = load_credentials().await? else {
         if !typed.contains('/') {
@@ -135,7 +142,8 @@ fn folder_repository_name(folder: &Path) -> Result<String, String> {
 struct MirrorSubject {
     name: String,
     branch: String,
-    on_github: bool,
+    repository_path: PathBuf,
+    github_remote: Option<String>,
     /// The Collapse repository the project already mirrors to.
     repository: Option<String>,
 }
@@ -152,18 +160,58 @@ fn mirror_subject(application: &AppHandle, project: u32) -> Result<MirrorSubject
     Ok(MirrorSubject {
         name: item.name.clone(),
         branch: item.default_branch.clone(),
-        on_github: item.github_remote.is_some(),
+        repository_path: PathBuf::from(&item.repository_path),
+        github_remote: item.github_remote.clone(),
         repository: item.collapse_repository.clone(),
     })
+}
+
+/// Keeps `github_remote` pointing at GitHub when Mirror to Collapse moves an existing
+/// GitHub project, capturing the previous GitHub mirror or checkout origin if unset (#574).
+async fn preserve_github_remote(
+    application: &AppHandle,
+    project: u32,
+    subject: &MirrorSubject,
+    server: &velocity_rosen::ProjectServer,
+) -> Result<bool, String> {
+    if subject.github_remote.is_some() {
+        return Ok(true);
+    }
+    let from_mirror = velocity_rosen::mirror_remote(server)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|remote| velocity_core::collapse::github_repository_from_remote(&remote));
+    let repository = match from_mirror {
+        Some(repository) => Some(repository),
+        None => {
+            let path = subject.repository_path.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                velocity_github::checkout_repository(&path).map(|name| name.full_name())
+            })
+            .await
+            .map_err(|error| error.to_string())?
+        }
+    };
+    let Some(repository) = repository else {
+        return Ok(false);
+    };
+    crate::state::try_with_store(application, move |store| {
+        store
+            .save_github_remote(project, Some(repository))
+            .map_err(|error| error.to_string())
+    })
+    .await?;
+    Ok(true)
 }
 
 /// `mirror_to_collapse` (§3.1): makes Collapse the project's mirror. Creates the Collapse
 /// repository named after the project, stores its push token in git's credential helper,
 /// and lands a `rosen.toml` change pointing `[mirror] remote` at it and naming its
 /// `collapse` root, so Rosen also sends its live state and ledger entries and runs the
-/// owner's actions from Collapse (#517). A project that was on GitHub then opens the
-/// repository's Downstream remote settings, where the owner keeps GitHub fed through
-/// Collapse's forwarder (C4). Says what happened in a toast.
+/// owner's actions from Collapse (#517). A project that was on GitHub keeps its
+/// `github_remote` pointing at GitHub (#574) and opens the repository's Downstream remote
+/// settings, where the owner keeps GitHub fed through Collapse's forwarder (C4).
 #[tauri::command]
 #[specta::specta]
 pub async fn mirror_to_collapse(
@@ -192,6 +240,8 @@ pub async fn mirror_to_collapse(
     .await
     .map_err(|error| error.to_string())?;
     let server = crate::rosen::server(&application, project_identifier).await?;
+    let on_github =
+        preserve_github_remote(&application, project_identifier, &subject, &server).await?;
     crate::rosen_mirror::check_and_catch_up(&application, project_identifier).await;
     let root = provisioned.collapse_root();
     let link = CollapseLink {
@@ -201,7 +251,7 @@ pub async fn mirror_to_collapse(
     let message = land_link(&server, &subject.name, &provisioned.repository(), &link).await?;
     toast(&application, message)?;
     crate::rosen_mirror::refresh(&application, project_identifier).await?;
-    if subject.on_github
+    if on_github
         && let Some(page) =
             velocity_core::collapse::downstream_settings_page(&provisioned.repository())
     {
@@ -510,15 +560,26 @@ pub(crate) async fn refresh_health(application: &AppHandle) -> Result<(), String
     let rows = velocity_collapse::repository_activity(&credentials)
         .await
         .map_err(|error| error.to_string())?;
+    let mut updates = Vec::with_capacity(mirrored.len());
+    for (project, repository, has_github) in mirrored {
+        let mut next = rows.iter().find(|row| row.is(&repository)).map(health);
+        if !has_github
+            && let Some(item) = &mut next
+            && item.downstream_github.is_none()
+            && item.forwarder != ForwarderState::Unconfigured
+        {
+            item.downstream_github = fetch_downstream_github(&credentials, &repository).await;
+        }
+        updates.push((project, next));
+    }
     let (refresh, moved_projects) = crate::state::try_with_store(application, move |store| {
         let mut changed = false;
         let mut moved_projects = Vec::new();
-        for (project, repository) in mirrored {
+        for (project, health) in updates {
             let previous_land = store
                 .project(project)
                 .and_then(|item| item.collapse_mirror_health.as_ref())
                 .and_then(|health| health.last_land_at.clone());
-            let health = rows.iter().find(|row| row.is(&repository)).map(health);
             let next_land = health.as_ref().and_then(|item| item.last_land_at.clone());
             if next_land.is_some() && next_land != previous_land {
                 moved_projects.push(project);
@@ -546,13 +607,69 @@ pub(crate) async fn refresh_health(application: &AppHandle) -> Result<(), String
     Ok(())
 }
 
-async fn mirrored_projects(application: &AppHandle) -> Result<Vec<(u32, String)>, String> {
+/// Returns Collapse's downstream GitHub `owner/repository` for `project`, checking the
+/// saved mirror health first and querying Collapse on demand when needed (#574).
+pub(crate) async fn read_downstream_github(
+    application: &AppHandle,
+    project: u32,
+) -> Option<String> {
+    let (collapse_repository, cached) = crate::state::with_store(application, move |store| {
+        let item = store.project(project)?;
+        Some((
+            item.collapse_repository.clone()?,
+            item.collapse_mirror_health
+                .as_ref()
+                .and_then(|health| health.downstream_github.clone()),
+        ))
+    })
+    .await
+    .ok()??;
+    if cached.is_some() {
+        return cached;
+    }
+    let credentials = load_credentials().await.ok()??;
+    let downstream = fetch_downstream_github(&credentials, &collapse_repository).await?;
+    let saved = downstream.clone();
+    let _ = crate::state::try_with_store(application, move |store| {
+        let Some(mut health) = store
+            .project(project)
+            .and_then(|item| item.collapse_mirror_health.clone())
+        else {
+            return Ok(false);
+        };
+        health.downstream_github = Some(saved);
+        store
+            .save_collapse_mirror_health(project, Some(health))
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    Some(downstream)
+}
+
+async fn fetch_downstream_github(
+    credentials: &CollapseCredentials,
+    collapse_repository: &str,
+) -> Option<String> {
+    let (owner, name) = collapse_repository.split_once('/')?;
+    let remote = velocity_collapse::repository_downstream(credentials, owner, name)
+        .await
+        .ok()??;
+    velocity_core::collapse::github_repository_from_remote(&remote)
+}
+
+async fn mirrored_projects(application: &AppHandle) -> Result<Vec<(u32, String, bool)>, String> {
     crate::state::with_store(application, |store| {
         store
             .state()
             .projects
             .iter()
-            .filter_map(|item| Some((item.id, item.collapse_repository.clone()?)))
+            .filter_map(|item| {
+                Some((
+                    item.id,
+                    item.collapse_repository.clone()?,
+                    item.github_remote.is_some(),
+                ))
+            })
             .collect()
     })
     .await
@@ -560,6 +677,10 @@ async fn mirrored_projects(application: &AppHandle) -> Result<Vec<(u32, String)>
 
 fn health(row: &RepositoryActivity) -> CollapseMirrorHealth {
     let present = |text: &Option<String>| text.clone().filter(|text| !text.trim().is_empty());
+    let downstream_github = row
+        .downstream_remote()
+        .as_deref()
+        .and_then(velocity_core::collapse::github_repository_from_remote);
     CollapseMirrorHealth {
         forwarder: ForwarderState::from_collapse(&row.forward.state),
         behind: u32::try_from(row.forward.behind.max(0)).unwrap_or(u32::MAX),
@@ -574,5 +695,6 @@ fn health(row: &RepositoryActivity) -> CollapseMirrorHealth {
             .map(|land| land.agent.clone())
             .filter(|agent| !agent.is_empty()),
         archived: row.archived_at.is_some(),
+        downstream_github,
     }
 }
