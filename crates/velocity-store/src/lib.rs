@@ -60,6 +60,7 @@ pub mod projects;
 pub mod provider_accounts;
 pub mod provider_views;
 pub mod providers;
+pub mod release_health;
 pub mod rosen;
 pub mod rosen_issue;
 pub mod rosen_mirror;
@@ -1319,6 +1320,12 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub rosen_mirror_divergence: Option<velocity_core::rosen_mirror::MirrorDivergence>,
+    /// GitHub Actions `release.yml` run IDs whose refused gate was already handled by
+    /// project health, kept across restarts so a refused run is not re-dispatched on
+    /// every startup (#549).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[specta(skip)]
+    pub retried_release_runs: Vec<u64>,
 }
 
 /// The New project dialog's interview choices, kept until the spec interview
@@ -1383,6 +1390,7 @@ impl ProjectItem {
             collapse_live_state: false,
             collapse_mirror_health: None,
             rosen_mirror_divergence: None,
+            retried_release_runs: Vec::new(),
         }
     }
 

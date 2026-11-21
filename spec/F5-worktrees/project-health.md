@@ -13,7 +13,7 @@ Velocity monitors each Rosen project in the background, performs safe automatic 
 | Slots free and open issues present, but nothing dispatched for 10 min | Log why each open issue was skipped (overlap, label, blocker, owner decision, hold, or claim) to `velocity.log` and show the summary in the notifications. |
 | A post-land check stopped for running too long | Capture the active child process before stopping the tree, parse the running test from the log, and report both in the notifications and in the failure report (#486). |
 | Updater manifest (`updater/latest.json`) is behind the newest published `v*` release | Compare the manifest version with the newest non-draft published release and report both versions in the notifications (#521). |
-| Release gate refused because the release commit has no green `velocity/integration` status | Publish a local green pass or start an immediate integration build covering that commit, and re-dispatch `release.yml` once green (#521). |
+| Release gate refused because the release commit has no green `velocity/integration` status | Publish a local green pass or start an immediate integration build covering that commit; once green, re-dispatch `release.yml` for that tag when its exact commit is green, dispatch the next free beta tag on the newer green commit for beta tags, or report that a release can be cut, recording handled runs across restarts (#521, #549). |
 
 A bell at the right of the title bar shows the number of active signals, coloured by the most severe one.
 Clicking the bell opens a dropdown listing every active signal.

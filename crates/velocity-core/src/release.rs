@@ -79,6 +79,21 @@ pub struct ManifestLag {
     pub latest_signed: bool,
 }
 
+/// How project health recovers a refused `release.yml` gate once a green integration
+/// commit covers it (#549).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RefusedGateRecovery {
+    /// Re-dispatch the refused tag on its own commit because that exact commit is green.
+    RedispatchRefusedTag { tag: String },
+    /// Dispatch the next free beta tag on the newer green commit and leave the refused
+    /// tag untouched, so the fast beta path runs on the green tree instead of running the
+    /// stress gate on the stale commit.
+    ReleaseGreenBeta { tag: String },
+    /// Integration passed, but Velocity should not dispatch automatically (no tag on the
+    /// refused run, or a non-beta tag whose exact commit is not the green commit).
+    ReportReady,
+}
+
 /// The `v<semver>` tag a release of `version` is published under, or `None` when the
 /// release workflow would refuse it. A leading `v` is accepted. The pre-release part
 /// matches the workflow's own check: ASCII letters, digits, dots and hyphens.
@@ -200,4 +215,104 @@ pub fn detect_manifest_lag(
 /// Whether `text` is a full 40-character commit ID, the form the workflow checks out.
 pub fn is_full_commit(text: &str) -> bool {
     text.len() == 40 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Whether `tag` is a `v<semver>` beta tag that takes `release.yml`'s beta fast path
+/// when its exact commit is green (`^v\d+\.\d+\.\d+-beta(\.|$)`) (#549).
+pub fn is_beta_release_tag(tag: &str) -> bool {
+    let Some(version) = version_from_release_tag(tag).and_then(|v| parse_release_version(&v))
+    else {
+        return false;
+    };
+    matches!(
+        version.prerelease.first(),
+        Some(PrereleaseIdentifier::Alpha(label)) if label == "beta"
+    )
+}
+
+/// Computes the next free `v<major>.<minor>.<patch>-beta.<n>` tag strictly above
+/// `refused_tag` and every existing `v<semver>` tag or release, returning `None` when
+/// `refused_tag` is not a beta tag (#549).
+pub fn next_free_beta_tag(refused_tag: &str, existing_tags: &[String]) -> Option<String> {
+    if !is_beta_release_tag(refused_tag) {
+        return None;
+    }
+    let refused_version = version_from_release_tag(refused_tag)
+        .and_then(|version| parse_release_version(&version))?;
+    let highest = existing_tags
+        .iter()
+        .filter_map(|tag| version_from_release_tag(tag))
+        .filter_map(|version| parse_release_version(&version))
+        .chain(std::iter::once(refused_version))
+        .max()?;
+    let (major, minor, patch, mut number) = next_beta_coordinates(&highest)?;
+    loop {
+        let candidate = format!("v{major}.{minor}.{patch}-beta.{number}");
+        if !existing_tags.iter().any(|tag| tag == &candidate) {
+            return Some(candidate);
+        }
+        number = number.checked_add(1)?;
+    }
+}
+
+fn next_beta_coordinates(highest: &ReleaseVersion) -> Option<(u64, u64, u64, u64)> {
+    match highest.prerelease.first() {
+        None => Some((
+            highest.major,
+            highest.minor,
+            highest.patch.checked_add(1)?,
+            1,
+        )),
+        Some(PrereleaseIdentifier::Alpha(label)) if label == "beta" => {
+            match highest.prerelease.get(1) {
+                None => Some((highest.major, highest.minor, highest.patch, 1)),
+                Some(PrereleaseIdentifier::Numeric(number)) => Some((
+                    highest.major,
+                    highest.minor,
+                    highest.patch,
+                    number.checked_add(1)?,
+                )),
+                Some(PrereleaseIdentifier::Alpha(_)) => Some((
+                    highest.major,
+                    highest.minor,
+                    highest.patch.checked_add(1)?,
+                    1,
+                )),
+            }
+        }
+        Some(PrereleaseIdentifier::Numeric(_)) => {
+            Some((highest.major, highest.minor, highest.patch, 1))
+        }
+        Some(PrereleaseIdentifier::Alpha(label)) if label.as_str() < "beta" => {
+            Some((highest.major, highest.minor, highest.patch, 1))
+        }
+        Some(PrereleaseIdentifier::Alpha(_)) => Some((
+            highest.major,
+            highest.minor,
+            highest.patch.checked_add(1)?,
+            1,
+        )),
+    }
+}
+
+/// Decides how project health should recover a refused `release.yml` gate once
+/// `green_commit` carries a green `velocity/integration` status (#549).
+pub fn plan_refused_gate_recovery(
+    refused_tag: Option<&str>,
+    refused_commit: &str,
+    green_commit: &str,
+    existing_tags: &[String],
+) -> RefusedGateRecovery {
+    let Some(tag) = refused_tag else {
+        return RefusedGateRecovery::ReportReady;
+    };
+    if green_commit.eq_ignore_ascii_case(refused_commit) {
+        return RefusedGateRecovery::RedispatchRefusedTag {
+            tag: tag.to_owned(),
+        };
+    }
+    if let Some(next_tag) = next_free_beta_tag(tag, existing_tags) {
+        return RefusedGateRecovery::ReleaseGreenBeta { tag: next_tag };
+    }
+    RefusedGateRecovery::ReportReady
 }

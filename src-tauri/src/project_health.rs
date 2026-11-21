@@ -19,7 +19,9 @@ use velocity_core::project_health::{
     ProjectHealthView, REVIEW_STUCK_LIMIT_SECONDS, format_duration, format_stopped_check_detail,
     short_commit,
 };
-use velocity_core::release::ManifestLag;
+use velocity_core::release::{
+    ManifestLag, RefusedGateRecovery, is_beta_release_tag, plan_refused_gate_recovery,
+};
 use velocity_core::rosen_checker::StoppedCheck;
 use velocity_github::{IssueClient, RefusedReleaseGate};
 use velocity_rosen::landing::LandCheckOutcome;
@@ -1398,9 +1400,10 @@ async fn handle_refused_gate(
     now: u64,
     now_ms: u64,
 ) -> Option<ProjectHealthItem> {
-    let already_retried = with_tracker(application, project.id, |tracker| {
-        tracker.retried_release_runs.contains(&gate.run_id)
-    });
+    let already_retried = project.retried_release_runs.contains(&gate.run_id)
+        || with_tracker(application, project.id, |tracker| {
+            tracker.retried_release_runs.contains(&gate.run_id)
+        });
     if already_retried {
         return None;
     }
@@ -1451,36 +1454,24 @@ async fn recover_refused_gate(
     now: u64,
     now_ms: u64,
 ) -> Option<ProjectHealthItem> {
-    if let Some(tag) = gate.tag.as_deref()
-        && let Err(error) =
-            dispatch_release_blocking(project, repository, tag, &gate.commit, green).await
-    {
-        return Some(
-            ProjectHealthItem::new(
-                "release-gate-refused",
-                HealthSignalKind::ReleaseGateRefused,
-                HealthSeverity::Error,
-                format!("Release gate refused{label}"),
-                format!("Could not re-dispatch release.yml: {error}"),
-                now_ms,
-            )
-            .with_detail((!gate.url.is_empty()).then(|| gate.url.clone())),
-        );
-    }
-    with_tracker(application, project.id, |tracker| {
-        tracker.retried_release_runs.insert(gate.run_id);
-        tracker.release_health = None;
-    });
-    let action = match gate.tag.as_deref() {
-        Some(tag) => format!(
-            "Integration passed at {}; re-dispatched release.yml for {tag}",
-            short_commit(green)
-        ),
-        None => format!(
-            "Integration passed at {}; release can now be cut",
-            short_commit(green)
-        ),
+    let existing_tags =
+        match load_existing_tags_for_recovery(project, repository, gate, green).await {
+            Ok(tags) => tags,
+            Err(error) => {
+                return Some(refused_gate_error_item(
+                    gate,
+                    label,
+                    format!("Could not read existing release tags: {error}"),
+                    now_ms,
+                ));
+            }
+        };
+    let plan = plan_refused_gate_recovery(gate.tag.as_deref(), &gate.commit, green, &existing_tags);
+    let action = match execute_gate_recovery(project, repository, gate, green, plan).await {
+        Ok(action) => action,
+        Err(error) => return Some(refused_gate_error_item(gate, label, error, now_ms)),
     };
+    record_retried_release_run(application, project, gate.run_id);
     crate::diagnostics::record(SOURCE, &format!("{}: {action}", project.name));
     record_recent_action(
         application,
@@ -1496,6 +1487,115 @@ async fn recover_refused_gate(
         now,
     );
     None
+}
+
+async fn load_existing_tags_for_recovery(
+    project: &ProjectItem,
+    repository: &str,
+    gate: &RefusedReleaseGate,
+    green: &str,
+) -> Result<Vec<String>, String> {
+    let needs_tags = gate
+        .tag
+        .as_deref()
+        .is_some_and(|tag| !green.eq_ignore_ascii_case(&gate.commit) && is_beta_release_tag(tag));
+    if !needs_tags {
+        return Ok(Vec::new());
+    }
+    read_release_tags_blocking(project, repository).await
+}
+
+async fn execute_gate_recovery(
+    project: &ProjectItem,
+    repository: &str,
+    gate: &RefusedReleaseGate,
+    green: &str,
+    plan: RefusedGateRecovery,
+) -> Result<String, String> {
+    match plan {
+        RefusedGateRecovery::RedispatchRefusedTag { tag } => {
+            dispatch_release_blocking(project, repository, &tag, &gate.commit, green)
+                .await
+                .map_err(|error| format!("Could not re-dispatch release.yml: {error}"))?;
+            Ok(format!(
+                "Integration passed at {}; re-dispatched release.yml for {tag}",
+                short_commit(green)
+            ))
+        }
+        RefusedGateRecovery::ReleaseGreenBeta { tag } => {
+            dispatch_release_blocking(project, repository, &tag, green, green)
+                .await
+                .map_err(|error| format!("Could not dispatch release.yml for {tag}: {error}"))?;
+            let refused = gate.tag.as_deref().unwrap_or("refused tag");
+            Ok(format!(
+                "Integration passed at {}; dispatched release.yml for {tag} instead of retrying {refused} on {}",
+                short_commit(green),
+                short_commit(&gate.commit)
+            ))
+        }
+        RefusedGateRecovery::ReportReady => Ok(match gate.tag.as_deref() {
+            Some(tag) => format!(
+                "Integration passed at {}; release can now be cut (left {tag} on {} alone)",
+                short_commit(green),
+                short_commit(&gate.commit)
+            ),
+            None => format!(
+                "Integration passed at {}; release can now be cut",
+                short_commit(green)
+            ),
+        }),
+    }
+}
+
+fn refused_gate_error_item(
+    gate: &RefusedReleaseGate,
+    label: &str,
+    action: String,
+    now_ms: u64,
+) -> ProjectHealthItem {
+    ProjectHealthItem::new(
+        "release-gate-refused",
+        HealthSignalKind::ReleaseGateRefused,
+        HealthSeverity::Error,
+        format!("Release gate refused{label}"),
+        action,
+        now_ms,
+    )
+    .with_detail((!gate.url.is_empty()).then(|| gate.url.clone()))
+}
+
+fn record_retried_release_run(application: &AppHandle, project: &ProjectItem, run_id: u64) {
+    with_tracker(application, project.id, |tracker| {
+        tracker.retried_release_runs.insert(run_id);
+        tracker.release_health = None;
+    });
+    if let Some(store) = application.try_state::<ManagedStateStore>()
+        && let Ok(mut guard) = store.lock()
+        && let Err(error) = guard.record_retried_release_run(project.id, run_id)
+    {
+        crate::diagnostics::record(
+            SOURCE,
+            &format!(
+                "{}: could not persist handled release run {run_id}: {error}",
+                project.name
+            ),
+        );
+    }
+}
+
+async fn read_release_tags_blocking(
+    project: &ProjectItem,
+    repository: &str,
+) -> Result<Vec<String>, String> {
+    let directory = Path::new(&project.repository_path).to_path_buf();
+    let repo = repository.to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        let client =
+            IssueClient::for_repository(&directory, &repo).map_err(|error| error.to_string())?;
+        client.release_tags().map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 async fn publish_and_find_green(

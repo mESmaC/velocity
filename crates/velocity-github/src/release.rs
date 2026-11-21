@@ -155,6 +155,50 @@ impl IssueClient {
         }))
     }
 
+    /// Lists every Git tag name and GitHub release tag name (including drafts) in the
+    /// repository via paginated GraphQL so release recovery chooses a free beta tag even
+    /// when more than 20 tags exist (#549).
+    pub fn release_tags(&self) -> Result<Vec<String>, GitHubCommandError> {
+        #[derive(Deserialize)]
+        struct RefNode {
+            name: String,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ReleaseNode {
+            tag_name: String,
+        }
+        let tags_query = "query($owner:String!,$name:String!,$cursor:String) {
+            repository(owner:$owner,name:$name) {
+                refs(refPrefix:\"refs/tags/\",first:100,after:$cursor) {
+                    nodes { name }
+                    pageInfo { hasNextPage endCursor }
+                }
+            }
+        }";
+        let releases_query = "query($owner:String!,$name:String!,$cursor:String) {
+            repository(owner:$owner,name:$name) {
+                releases(first:100,after:$cursor) {
+                    nodes { tagName }
+                    pageInfo { hasNextPage endCursor }
+                }
+            }
+        }";
+        let tags: Vec<Option<RefNode>> = self.transport.connection(
+            tags_query,
+            self.transport.variables(0),
+            "/data/repository/refs",
+        )?;
+        let releases: Vec<Option<ReleaseNode>> = self.transport.connection(
+            releases_query,
+            self.transport.variables(0),
+            "/data/repository/releases",
+        )?;
+        let mut names: Vec<String> = tags.into_iter().flatten().map(|node| node.name).collect();
+        names.extend(releases.into_iter().flatten().map(|node| node.tag_name));
+        Ok(names)
+    }
+
     fn list_releases(&self, limit: usize) -> Result<Vec<ApiRelease>, GitHubCommandError> {
         let endpoint = format!("repos/{}/releases?per_page={limit}", self.repository());
         self.transport.command.read(&["api", &endpoint])
