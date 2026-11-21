@@ -9,7 +9,7 @@ pub async fn get_launch_eligibility(
     application: AppHandle,
     request: LaunchRequest,
 ) -> Result<LaunchEligibility, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("get_launch_eligibility", move || {
         let store = application.state::<ManagedStateStore>();
         let guard = store
             .lock()

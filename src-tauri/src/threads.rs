@@ -2172,16 +2172,7 @@ pub(crate) fn fail(application: &AppHandle, key: ThreadKey, headline: &str, deta
 }
 
 pub(crate) fn refresh_account_labels(application: &AppHandle) -> Result<(), String> {
-    let store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    let mut layout = lock(
-        application.state::<MainLayout>().inner(),
-        "main-window state",
-    )?;
-    store.refresh_layout(&mut layout);
-    crate::layout::publish(application, &layout.snapshot(), None)
+    crate::layout::refresh_and_publish(application)
 }
 
 /// Rebuilds the window from saved state plus the live transcript and publishes it.
@@ -2195,51 +2186,77 @@ pub(crate) fn refresh(
         "thread sessions",
     )?
     .view(key);
-    let store = lock(
+    let refresh = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
-    )?;
-    let mut layout = lock(
-        application.state::<MainLayout>().inner(),
-        "main-window state",
-    )?;
+    )?
+    .layout_refresh();
     let identifier = usize::try_from(key.1).map_err(|error| error.to_string())?;
-    store.refresh_layout(&mut layout);
-    match view {
-        Some(view) => layout.set_live_thread(key.0, identifier, view),
-        None => layout.forget_live_thread(key.0, identifier),
-    }
-    if select
-        && store
-            .active_project()
-            .is_some_and(|project| project.id == key.0)
-    {
-        layout.select_thread(identifier);
-    }
-    let snapshot = layout.snapshot();
-    // Publish under the locks, as dispatch does, so snapshots reach the window in order.
+    let active_matches = refresh.active_project == Some(key.0);
+    let snapshot = {
+        let mut layout = lock(
+            application.state::<MainLayout>().inner(),
+            "main-window state",
+        )?;
+        let _ = refresh.apply(&mut layout);
+        match view {
+            Some(view) => layout.set_live_thread(key.0, identifier, view),
+            None => layout.forget_live_thread(key.0, identifier),
+        }
+        if select && active_matches {
+            layout.select_thread(identifier);
+        }
+        layout.snapshot()
+    };
     crate::layout::publish(application, &snapshot, None)?;
     Ok(snapshot)
 }
 
-/// Rebuilds the window's data from the store with `key`'s live transcript, without
-/// publishing it.
+/// Updates the window's data for `key` plus its live transcript without holding the store
+/// and layout locks together or rebuilding every thread entry on streamed batches (#554).
 fn rebuild_layout(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
     let view = lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
     )?
     .view(key);
-    let store = lock(
+    let patch = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
-    )?;
+    )?
+    .layout_thread_update(key.0, key.1);
+    let identifier = usize::try_from(key.1).map_err(|error| error.to_string())?;
+    let applied = {
+        let mut layout = lock(
+            application.state::<MainLayout>().inner(),
+            "main-window state",
+        )?;
+        let applied = match patch {
+            Some((revision, entry, spec_locked)) => {
+                layout.replace_thread_entry(key.0, revision, entry, spec_locked)
+            }
+            None => true,
+        };
+        if applied {
+            match view {
+                Some(view) => layout.set_live_thread(key.0, identifier, view),
+                None => layout.forget_live_thread(key.0, identifier),
+            }
+            return Ok(());
+        }
+        false
+    };
+    debug_assert!(!applied);
+    let refresh = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .layout_refresh();
     let mut layout = lock(
         application.state::<MainLayout>().inner(),
         "main-window state",
     )?;
-    store.refresh_layout(&mut layout);
-    let identifier = usize::try_from(key.1).map_err(|error| error.to_string())?;
+    let _ = refresh.apply(&mut layout);
     match view {
         Some(view) => layout.set_live_thread(key.0, identifier, view),
         None => layout.forget_live_thread(key.0, identifier),

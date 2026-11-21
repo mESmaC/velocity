@@ -35,7 +35,6 @@ use velocity_threads::landing_runner::refusal_instructions;
 
 use crate::continuous_dispatch::DispatchHealthSnapshot;
 use crate::rosen_mirror::MirrorRetryOutcome;
-use crate::state::ManagedStateStore;
 
 const SOURCE: &str = "project health";
 const FIRST_CHECK: Duration = Duration::from_secs(30);
@@ -348,26 +347,24 @@ async fn check_all_projects(application: &AppHandle) {
     let Ok(app_data) = application.path().app_data_dir() else {
         return;
     };
-    let projects = rosen_projects(application);
+    let projects = rosen_projects(application).await;
     for project in projects {
         check_project(application, &app_data, &project).await;
     }
 }
 
-fn rosen_projects(application: &AppHandle) -> Vec<ProjectItem> {
-    let Some(store) = application.try_state::<ManagedStateStore>() else {
-        return Vec::new();
-    };
-    let Ok(store) = store.lock() else {
-        return Vec::new();
-    };
-    store
-        .state()
-        .projects
-        .iter()
-        .filter(|project| project.rosen_in_use())
-        .cloned()
-        .collect()
+async fn rosen_projects(application: &AppHandle) -> Vec<ProjectItem> {
+    crate::state::with_store(application, |store| {
+        store
+            .state()
+            .projects
+            .iter()
+            .filter(|project| project.rosen_in_use())
+            .cloned()
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 async fn check_project(application: &AppHandle, app_data: &Path, project: &ProjectItem) {
@@ -1530,7 +1527,7 @@ async fn recover_refused_gate(
         Ok(action) => action,
         Err(error) => return Some(refused_gate_error_item(gate, label, error, now_ms)),
     };
-    record_retried_release_run(application, project, gate.run_id);
+    record_retried_release_run(application, project, gate.run_id).await;
     crate::diagnostics::record(SOURCE, &format!("{}: {action}", project.name));
     record_recent_action(
         application,
@@ -1623,21 +1620,23 @@ fn refused_gate_error_item(
     .with_detail((!gate.url.is_empty()).then(|| gate.url.clone()))
 }
 
-fn record_retried_release_run(application: &AppHandle, project: &ProjectItem, run_id: u64) {
+async fn record_retried_release_run(application: &AppHandle, project: &ProjectItem, run_id: u64) {
     with_tracker(application, project.id, |tracker| {
         tracker.retried_release_runs.insert(run_id);
         tracker.release_health = None;
     });
-    if let Some(store) = application.try_state::<ManagedStateStore>()
-        && let Ok(mut guard) = store.lock()
-        && let Err(error) = guard.record_retried_release_run(project.id, run_id)
-    {
+    let project_id = project.id;
+    let project_name = project.name.clone();
+    let result = crate::state::with_store(application, move |store| {
+        store
+            .record_retried_release_run(project_id, run_id)
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    if let Ok(Err(error)) = result {
         crate::diagnostics::record(
             SOURCE,
-            &format!(
-                "{}: could not persist handled release run {run_id}: {error}",
-                project.name
-            ),
+            &format!("{project_name}: could not persist handled release run {run_id}: {error}"),
         );
     }
 }

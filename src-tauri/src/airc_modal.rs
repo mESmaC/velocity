@@ -66,14 +66,17 @@ pub(crate) fn refresh(application: &AppHandle) -> Result<(), String> {
         mark_seen(application, active.project, seen)?;
     }
     let badge = unread_badge(&active.input.records, seen);
-    {
+    let badge_snapshot = {
         let mut layout = lock(
             application.state::<MainLayout>().inner(),
             "main-window state",
         )?;
-        if layout.set_airc_badge(active.project, badge) {
-            crate::layout::publish(application, &layout.snapshot(), None)?;
-        }
+        layout
+            .set_airc_badge(active.project, badge)
+            .then(|| layout.snapshot())
+    };
+    if let Some(snapshot) = badge_snapshot {
+        crate::layout::publish(application, &snapshot, None)?;
     }
     // A closed modal only needs the badge; opening it fetches the view.
     if !open {
@@ -104,7 +107,7 @@ pub async fn get_airc_modal(
     application: AppHandle,
     project_identifier: u32,
 ) -> Result<AircModalView, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("get_airc_modal", move || {
         let active = read_active(&application, false)?
             .filter(|active| active.project == project_identifier)
             .ok_or("That project is not the active project")?;
@@ -282,7 +285,7 @@ pub async fn set_airc_message_mode(
     nick: String,
     mode: velocity_airc::MessageMode,
 ) -> Result<(), String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::off_ui_thread_named("set_airc_message_mode", move || {
         read_active(&application, false)?
             .filter(|active| active.project == project_identifier)
             .ok_or("That project is not the active project")?;

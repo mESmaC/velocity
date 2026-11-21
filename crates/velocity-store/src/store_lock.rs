@@ -19,7 +19,12 @@ impl StoreLock {
     /// Acquires the store mutex, measuring lock wait time and reporting hold time on drop.
     #[track_caller]
     pub fn lock(&self) -> LockResult<StoreGuard<'_>> {
-        let caller = Location::caller();
+        self.lock_from(Location::caller())
+    }
+
+    /// Acquires the store mutex attributing wait and hold telemetry to `caller`, so async
+    /// callers hopping through `spawn_blocking` keep their own source location (#554).
+    pub fn lock_from(&self, caller: &'static Location<'static>) -> LockResult<StoreGuard<'_>> {
         let started = Instant::now();
         match self.0.lock() {
             Ok(guard) => Ok(StoreGuard::new(guard, caller, started.elapsed())),

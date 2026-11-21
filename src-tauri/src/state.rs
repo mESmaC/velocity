@@ -6,6 +6,46 @@ use velocity_store::{Settings, StateStore, StoreLock};
 
 pub type ManagedStateStore = StoreLock;
 
+/// Runs `work` against the persisted state store on Tokio's blocking pool so async tasks
+/// never block a runtime worker on the `std::sync::Mutex`, while keeping the caller's own
+/// source location in store-lock diagnostics (#554).
+#[track_caller]
+pub(crate) async fn with_store<Value: Send + 'static>(
+    application: &AppHandle,
+    work: impl FnOnce(&mut StateStore) -> Value + Send + 'static,
+) -> Result<Value, String> {
+    let caller = std::panic::Location::caller();
+    let application = application.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let managed = application.state::<ManagedStateStore>();
+        let mut store = managed
+            .lock_from(caller)
+            .map_err(|error| format!("Could not read persisted state: {error}"))?;
+        Ok(work(&mut store))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Same as [`with_store`] for fallible closures.
+#[track_caller]
+pub(crate) async fn try_with_store<Value: Send + 'static>(
+    application: &AppHandle,
+    work: impl FnOnce(&mut StateStore) -> Result<Value, String> + Send + 'static,
+) -> Result<Value, String> {
+    let caller = std::panic::Location::caller();
+    let application = application.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let managed = application.state::<ManagedStateStore>();
+        let mut store = managed
+            .lock_from(caller)
+            .map_err(|error| format!("Could not read persisted state: {error}"))?;
+        work(&mut store)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 fn resolve_store_directory(application: &AppHandle) -> anyhow::Result<PathBuf> {
     application
         .path()
@@ -72,7 +112,7 @@ pub fn save_now(application: &AppHandle) -> Result<(), String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn get_settings(application: AppHandle) -> Result<Settings, String> {
-    crate::layout::off_ui_thread_named("get_settings", move || {
+    crate::layout::run_concurrently("get_settings", move || {
         let store = application.state::<ManagedStateStore>();
         let guard = store
             .lock()
@@ -105,7 +145,7 @@ pub async fn set_settings(application: AppHandle, settings: Settings) -> Result<
 #[specta::specta]
 pub async fn get_ui_zoom(application: AppHandle) -> Result<UiZoomView, String> {
     let handle = application.clone();
-    let view = crate::layout::off_ui_thread_named("get_ui_zoom", move || {
+    let view = crate::layout::run_concurrently("get_ui_zoom", move || {
         let store = handle.state::<ManagedStateStore>();
         let store = store.lock().map_err(|error| error.to_string())?;
         Ok(store.state().settings.ui_zoom.view())

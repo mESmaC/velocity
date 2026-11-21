@@ -213,7 +213,11 @@ pub(crate) async fn confirm_builds(
     project: u32,
     sequence: u64,
 ) -> Result<Vec<String>, String> {
-    let (candidates, orphaned, commits) = build_check_targets(application, project)?;
+    let handle = application.clone();
+    let (candidates, orphaned, commits) =
+        tauri::async_runtime::spawn_blocking(move || build_check_targets(&handle, project))
+            .await
+            .map_err(|error| error.to_string())??;
     if commits.is_empty() && sequence == 0 {
         return Ok(Vec::new());
     }
@@ -226,29 +230,35 @@ pub(crate) async fn confirm_builds(
             .map_err(|error| error.to_string())?
     };
     let now = unix_seconds();
-    let mut store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    if store
-        .confirm_rosen_work_build(project, sequence, &covered)
-        .map_err(|error| error.to_string())?
-    {
-        crate::rosen_events::publish_progress(application, &store)?;
-    }
-    for (thread, commit) in candidates {
-        if covered.contains(&commit) {
-            store
-                .confirm_rosen_issue_build(project, thread, &commit)
-                .map_err(|error| error.to_string())?;
+    let covered_for_store = covered.clone();
+    let progress = crate::state::try_with_store(application, move |store| {
+        let work_changed = store
+            .confirm_rosen_work_build(project, sequence, &covered_for_store)
+            .map_err(|error| error.to_string())?;
+        for (thread, commit) in candidates {
+            if covered_for_store.contains(&commit) {
+                store
+                    .confirm_rosen_issue_build(project, thread, &commit)
+                    .map_err(|error| error.to_string())?;
+            }
         }
-    }
-    for hold in orphaned {
-        if covered.contains(&hold.commit) {
-            store
-                .confirm_landed_hold_build(project, hold.issue.number, &hold.commit, now)
-                .map_err(|error| error.to_string())?;
+        for hold in orphaned {
+            if covered_for_store.contains(&hold.commit) {
+                store
+                    .confirm_landed_hold_build(project, hold.issue.number, &hold.commit, now)
+                    .map_err(|error| error.to_string())?;
+            }
         }
+        Ok(work_changed.then(|| store.layout_refresh()))
+    })
+    .await?;
+    if let Some(progress) = progress {
+        let handle = application.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::rosen_events::publish_progress(&handle, progress)
+        })
+        .await
+        .map_err(|error| error.to_string())??;
     }
     Ok(covered)
 }

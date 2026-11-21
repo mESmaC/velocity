@@ -330,5 +330,8 @@ pub fn start(application: AppHandle) {
 #[specta::specta]
 pub async fn get_process_memory(application: AppHandle) -> Result<Vec<ProcessMemory>, String> {
     let browsers = application.state::<BrowserHub>().processes();
-    crate::layout::off_ui_thread(move || sample(std::process::id(), "Main window", &browsers)).await
+    crate::layout::run_concurrently("get_process_memory", move || {
+        sample(std::process::id(), "Main window", &browsers)
+    })
+    .await
 }

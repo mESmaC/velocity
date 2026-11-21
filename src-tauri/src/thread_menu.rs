@@ -16,7 +16,6 @@ use velocity_threads::{
     Deletion, DeletionPlan, PendingDeletions, StopOutcome, ThreadKey, plan_deletion,
 };
 
-use crate::layout::MainLayout;
 use crate::state::ManagedStateStore;
 use crate::threads::{ManagedThreads, lock, report};
 
@@ -91,13 +90,13 @@ pub async fn get_thread_menu(
     application: AppHandle,
     thread_identifier: u32,
 ) -> Result<Option<ThreadMenuView>, String> {
-    let project_identifier = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?
-    .active_project()
-    .map(|project| project.id)
-    .ok_or("Select a project first")?;
+    let project_identifier = crate::state::try_with_store(&application, |store| {
+        store
+            .active_project()
+            .map(|project| project.id)
+            .ok_or_else(|| "Select a project first".to_owned())
+    })
+    .await?;
     if let Some(entries) =
         crate::swarm_deletion::swarm_menu(&application, project_identifier, thread_identifier)
             .await?
@@ -111,7 +110,13 @@ pub async fn get_thread_menu(
         }));
     }
     let key = (project_identifier, thread_identifier);
-    let (_, thread) = match find_thread(&application, project_identifier, thread_identifier) {
+    let handle = application.clone();
+    let (_, thread) = match tauri::async_runtime::spawn_blocking(move || {
+        find_thread(&handle, project_identifier, thread_identifier)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    {
         Ok(found) => found,
         Err(error) if error == "The thread no longer exists" => return Ok(None),
         Err(error) => return Err(error),
@@ -205,7 +210,7 @@ pub async fn delete_thread(
     project_identifier: u32,
     thread_identifier: u32,
 ) -> Result<LayoutSnapshot, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("delete_thread", move || {
         delete_thread_now(application, project_identifier, thread_identifier)
     })
     .await
@@ -280,7 +285,7 @@ pub async fn undo_delete_thread(
     application: AppHandle,
     deletion: u32,
 ) -> Result<LayoutSnapshot, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("undo_delete_thread", move || {
         let undone = lock(
             application.state::<ManagedDeletions>().inner(),
             "pending deletions",
@@ -510,17 +515,5 @@ pub(crate) fn update_layout(
     application: &AppHandle,
     change: impl FnOnce(&mut velocity_core::layout_state::LayoutState),
 ) -> Result<LayoutSnapshot, String> {
-    let store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    let mut layout = lock(
-        application.state::<MainLayout>().inner(),
-        "main-window state",
-    )?;
-    store.refresh_layout(&mut layout);
-    change(&mut layout);
-    let snapshot = layout.snapshot();
-    crate::layout::publish(application, &snapshot, None)?;
-    Ok(snapshot)
+    crate::layout::refresh_with_change_and_publish(application, change)
 }

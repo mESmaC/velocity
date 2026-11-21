@@ -116,10 +116,13 @@ impl Interviews {
     }
 }
 
-/// Lays the live transcripts over a freshly rebuilt main window. Call with the store and
-/// layout already locked, after anything that rebuilds the layout from the store.
-pub fn overlay_live(interviews: &Interviews, store: &StateStore, layout: &mut LayoutState) {
-    let Some(project) = store.active_project_identifier() else {
+/// Lays the live transcripts over a freshly rebuilt main window without needing the store lock (#554).
+pub fn overlay_live_for_project(
+    interviews: &Interviews,
+    project: Option<u32>,
+    layout: &mut LayoutState,
+) {
+    let Some(project) = project else {
         return;
     };
     for (thread, blocks, busy) in interviews.live_for(project) {
@@ -127,15 +130,22 @@ pub fn overlay_live(interviews: &Interviews, store: &StateStore, layout: &mut La
     }
 }
 
+/// Lays the live transcripts over a freshly rebuilt main window. Call with the store and
+/// layout already locked, after anything that rebuilds the layout from the store.
+pub fn overlay_live(interviews: &Interviews, store: &StateStore, layout: &mut LayoutState) {
+    overlay_live_for_project(interviews, store.active_project_identifier(), layout);
+}
+
 /// Rebuilds the main window from the store, lays the live transcripts over it, publishes.
 pub fn refresh<H: Host>(host: &H) {
-    let store = lock(host.store());
-    let mut layout = lock(host.layout());
-    store.refresh_layout(&mut layout);
-    overlay_live(host.interviews(), &store, &mut layout);
-    let snapshot = layout.snapshot();
-    drop(layout);
-    drop(store);
+    let refresh = lock(host.store()).layout_refresh();
+    let project = refresh.active_project;
+    let snapshot = {
+        let mut layout = lock(host.layout());
+        refresh.apply(&mut layout);
+        overlay_live_for_project(host.interviews(), project, &mut layout);
+        layout.snapshot()
+    };
     host.publish(snapshot);
 }
 

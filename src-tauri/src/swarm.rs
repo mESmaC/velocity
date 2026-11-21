@@ -33,7 +33,10 @@ pub async fn get_swarm_dialog(
     application: AppHandle,
     query: SwarmDialogQuery,
 ) -> Result<SwarmDialog, String> {
-    crate::layout::off_ui_thread(move || get_swarm_dialog_now(application, query)).await
+    crate::layout::run_concurrently("get_swarm_dialog", move || {
+        get_swarm_dialog_now(application, query)
+    })
+    .await
 }
 
 /// [`get_swarm_dialog`] on the calling thread, for callers already off the UI thread.
@@ -65,7 +68,7 @@ pub async fn launch_swarm(
     application: AppHandle,
     request: LaunchSwarmRequest,
 ) -> Result<LayoutSnapshot, String> {
-    crate::layout::off_ui_thread(move || launch(&application, request)).await
+    crate::layout::run_concurrently("launch_swarm", move || launch(&application, request)).await
 }
 
 /// + Items: the same launch, adding members to an existing swarm.
@@ -75,7 +78,7 @@ pub async fn add_to_swarm(
     application: AppHandle,
     request: LaunchSwarmRequest,
 ) -> Result<LayoutSnapshot, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("add_to_swarm", move || {
         if request.into.is_none() {
             return Err("Choose the swarm to add items to".into());
         }
@@ -273,10 +276,6 @@ fn record_launch(
     ));
 }
 
-fn is_active(store: &velocity_store::StateStore, project: u32) -> bool {
-    store.active_project().map(|active| active.id) == Some(project)
-}
-
 fn finish_launch(
     application: &AppHandle,
     request: &LaunchSwarmRequest,
@@ -284,20 +283,12 @@ fn finish_launch(
     started: usize,
     refused: &[String],
 ) -> Result<LayoutSnapshot, String> {
-    let store = lock(
+    let refresh = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
-    )?;
-    let mut layout = lock(
-        application.state::<MainLayout>().inner(),
-        "main-window state",
-    )?;
-    store.refresh_follow_through_layout(&mut layout);
-    // After a project switch the window shows another project, where this swarm's number
-    // means nothing; the launch still reports in the toast.
-    if is_active(&store, request.project_identifier) {
-        layout.close_swarm_dialog_and_select(swarm as usize);
-    }
+    )?
+    .layout_refresh();
+    let active = refresh.active_project == Some(request.project_identifier);
     let mut message = format!(
         "{started} agent{} launched · {started} workspaces · all running",
         if started == 1 { "" } else { "s" }
@@ -305,8 +296,20 @@ fn finish_launch(
     if let Some(first) = refused.first() {
         message = format!("{message} · {} not started: {first}", refused.len());
     }
-    layout.show_toast(message, None);
-    let snapshot = layout.snapshot();
+    let snapshot = {
+        let mut layout = lock(
+            application.state::<MainLayout>().inner(),
+            "main-window state",
+        )?;
+        let _ = refresh.apply(&mut layout);
+        // After a project switch the window shows another project, where this swarm's number
+        // means nothing; the launch still reports in the toast.
+        if active {
+            layout.close_swarm_dialog_and_select(swarm as usize);
+        }
+        layout.show_toast(message, None);
+        layout.snapshot()
+    };
     crate::layout::publish(application, &snapshot, None)?;
     Ok(snapshot)
 }
@@ -318,22 +321,20 @@ pub(crate) fn post_event(
     swarm: u32,
     event: SwarmFeedEvent,
 ) -> Result<(), String> {
-    let mut store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    if !store
-        .record_swarm_event(project, swarm, event.clone())
-        .map_err(|error| error.to_string())?
-    {
-        return Ok(());
-    }
-    let mut layout = lock(
-        application.state::<MainLayout>().inner(),
-        "main-window state",
-    )?;
-    store.refresh_follow_through_layout(&mut layout);
-    crate::layout::publish(application, &layout.snapshot(), None)?;
+    let refresh = {
+        let mut store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        if !store
+            .record_swarm_event(project, swarm, event.clone())
+            .map_err(|error| error.to_string())?
+        {
+            return Ok(());
+        }
+        store.layout_refresh()
+    };
+    crate::layout::apply_refresh_and_publish(application, refresh)?;
     SwarmEventPublished {
         project_identifier: project,
         swarm_identifier: swarm,
@@ -384,15 +385,16 @@ pub fn broadcast(
 }
 
 fn snapshot(application: &AppHandle) -> Result<LayoutSnapshot, String> {
-    let store = lock(
+    let refresh = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
-    )?;
+    )?
+    .layout_refresh();
     let mut layout = lock(
         application.state::<MainLayout>().inner(),
         "main-window state",
     )?;
-    store.refresh_follow_through_layout(&mut layout);
+    let _ = refresh.apply(&mut layout);
     Ok(layout.snapshot())
 }
 

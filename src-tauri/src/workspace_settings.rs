@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager, Window};
 use tauri_plugin_dialog::DialogExt;
-use tauri_specta::Event;
 use velocity_core::thread_menu::size_label;
 use velocity_core::worktree_view::{
     WorktreeContext, WorktreePathPreview, WorktreeSettingsEdit, WorktreeSettingsView,
@@ -15,7 +14,7 @@ use velocity_core::worktree_view::{
 use velocity_git::inventory::{measure_worktree, read_drives};
 use velocity_rosen::workspace_settings::{self, LandedWorkspacePreparation, WorkspacePreparation};
 
-use crate::layout::{LayoutStateChanged, MainLayout, off_ui_thread};
+use crate::layout::{MainLayout, off_ui_thread_named, run_concurrently};
 use crate::state::ManagedStateStore;
 use crate::threads::lock;
 
@@ -45,16 +44,16 @@ pub(crate) fn initialize(application: &AppHandle) {
 }
 
 async fn refresh_footer(application: &AppHandle) {
-    let (project, uses_rosen) = {
-        let managed = application.state::<ManagedStateStore>();
-        let Ok(store) = lock(managed.inner(), "persisted state") else {
-            return;
-        };
+    let Ok((project, uses_rosen)) = crate::state::with_store(application, |store| {
         let project = store.active_project();
         (
             project.map(|item| item.id),
             project.is_some_and(|item| item.rosen_in_use()),
         )
+    })
+    .await
+    else {
+        return;
     };
     let mut count = None;
     if uses_rosen
@@ -68,18 +67,17 @@ async fn refresh_footer(application: &AppHandle) {
 }
 
 fn publish_count(application: &AppHandle, project: Option<u32>, count: Option<usize>) {
-    let managed = application.state::<MainLayout>();
-    let Ok(mut layout) = lock(managed.inner(), "layout state") else {
-        return;
+    let snapshot = {
+        let managed = application.state::<MainLayout>();
+        let Ok(mut layout) = lock(managed.inner(), "layout state") else {
+            return;
+        };
+        layout
+            .set_workspace_count(project, count)
+            .then(|| layout.snapshot())
     };
-    if layout.set_workspace_count(project, count) {
-        crate::threads::report(
-            LayoutStateChanged {
-                state: layout.snapshot(),
-            }
-            .emit(application)
-            .map_err(|error| error.to_string()),
-        );
+    if let Some(snapshot) = snapshot {
+        crate::threads::report(crate::layout::publish(application, &snapshot, None));
     }
 }
 
@@ -88,7 +86,7 @@ fn publish_count(application: &AppHandle, project: Option<u32>, count: Option<us
 pub async fn get_workspace_settings(
     application: AppHandle,
 ) -> Result<WorktreeSettingsView, String> {
-    off_ui_thread(move || {
+    run_concurrently("get_workspace_settings", move || {
         let managed = application.state::<ManagedStateStore>();
         let context = lock(managed.inner(), "persisted state")?.worktree_context();
         Ok(preferences(&context, false))
@@ -103,7 +101,7 @@ pub async fn set_workspace_settings(
     edit: WorktreeSettingsEdit,
     project_identifier: Option<u32>,
 ) -> Result<WorktreeSettingsView, String> {
-    off_ui_thread(move || {
+    off_ui_thread_named("set_workspace_settings", move || {
         let managed = application.state::<ManagedStateStore>();
         let mut store = lock(managed.inner(), "persisted state")?;
         let location_changed = store
@@ -128,7 +126,7 @@ pub async fn preview_workspace_folder(
     application: AppHandle,
     folder: String,
 ) -> Result<WorktreePathPreview, String> {
-    off_ui_thread(move || {
+    run_concurrently("preview_workspace_folder", move || {
         let managed = application.state::<ManagedStateStore>();
         let store = lock(managed.inner(), "persisted state")?;
         Ok(folder_preview(&store.worktree_context(), &folder))
@@ -177,8 +175,8 @@ pub async fn list_workspaces(
     application: AppHandle,
     project_identifier: u32,
 ) -> Result<Vec<WorkspaceRow>, String> {
-    let owners = workspace_threads(&application, project_identifier)?;
-    if !crate::rosen::rosen_in_use(&application, project_identifier) {
+    let (owners, rosen_in_use) = workspace_threads(&application, project_identifier).await?;
+    if !rosen_in_use {
         return Ok(Vec::new());
     }
     let server = crate::rosen::observation_server(&application, project_identifier)?;
@@ -200,26 +198,29 @@ pub async fn list_workspaces(
         .collect())
 }
 
-fn workspace_threads(
+async fn workspace_threads(
     application: &AppHandle,
     project: u32,
-) -> Result<BTreeMap<String, crate::rosen_status::OwningThread>, String> {
-    let managed = application.state::<ManagedStateStore>();
-    let store = lock(managed.inner(), "persisted state")?;
-    let item = store.project(project).ok_or("Unknown project")?;
-    Ok(item
-        .threads
-        .iter()
-        .filter_map(|thread| {
-            Some((
-                thread.rosen_change.clone()?,
-                crate::rosen_status::OwningThread {
-                    identifier: thread.id.to_string(),
-                    title: thread.title.clone(),
-                },
-            ))
-        })
-        .collect())
+) -> Result<(BTreeMap<String, crate::rosen_status::OwningThread>, bool), String> {
+    crate::state::try_with_store(application, move |store| {
+        let item = store.project(project).ok_or("Unknown project")?;
+        let rosen_in_use = item.rosen_in_use();
+        let owners = item
+            .threads
+            .iter()
+            .filter_map(|thread| {
+                Some((
+                    thread.rosen_change.clone()?,
+                    crate::rosen_status::OwningThread {
+                        identifier: thread.id.to_string(),
+                        title: thread.title.clone(),
+                    },
+                ))
+            })
+            .collect();
+        Ok((owners, rosen_in_use))
+    })
+    .await
 }
 
 fn workspace_sizes(
@@ -291,7 +292,13 @@ pub async fn get_workspace_preparation(
     project_identifier: u32,
 ) -> Result<Option<LandedWorkspacePreparation>, String> {
     let server = crate::rosen::observation_server(&application, project_identifier)?;
-    if !crate::rosen::uses_rosen(&application, project_identifier) {
+    let uses_rosen = crate::state::with_store(&application, move |store| {
+        store
+            .project(project_identifier)
+            .is_some_and(|item| item.version_control == velocity_store::VersionControl::Rosen)
+    })
+    .await?;
+    if !uses_rosen {
         return Ok(None);
     }
     workspace_settings::preparation(&server)
@@ -308,7 +315,13 @@ pub async fn propose_workspace_preparation(
     expected: WorkspacePreparation,
     edited: WorkspacePreparation,
 ) -> Result<Option<String>, String> {
-    if !crate::rosen::uses_rosen(&application, project_identifier) {
+    let uses_rosen = crate::state::with_store(&application, move |store| {
+        store
+            .project(project_identifier)
+            .is_some_and(|item| item.version_control == velocity_store::VersionControl::Rosen)
+    })
+    .await?;
+    if !uses_rosen {
         return Err(
             "Workspace preparation is available after the project migrates to Rosen".into(),
         );

@@ -128,31 +128,34 @@ pub async fn set_work_issue_expanded(
     number: u32,
     expanded: bool,
 ) -> Result<(), String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("set_work_issue_expanded", move || {
         let key = WorkKey::issue(&repository, number);
-        let store = application.state::<ManagedStateStore>();
-        let mut store = lock(store.inner(), "persisted state")?;
-        let project = store
-            .active_project()
-            .filter(|project| project.id == project_identifier)
-            .ok_or("The selected project changed; refresh Work")?;
-        if project.expanded_work_issues.contains(&key) == expanded {
-            return Ok(());
-        }
-        store
-            .update_project::<_, velocity_store::projects::ProjectError>(
-                project_identifier,
-                |project| {
-                    if expanded {
-                        project.expanded_work_issues.push(key);
-                    } else {
-                        project.expanded_work_issues.retain(|issue| issue != &key);
-                    }
-                    Ok(())
-                },
-            )
-            .map_err(|error| error.to_string())?;
-        crate::rosen_events::publish_progress(&application, &store)
+        let refresh = {
+            let store = application.state::<ManagedStateStore>();
+            let mut store = lock(store.inner(), "persisted state")?;
+            let project = store
+                .active_project()
+                .filter(|project| project.id == project_identifier)
+                .ok_or("The selected project changed; refresh Work")?;
+            if project.expanded_work_issues.contains(&key) == expanded {
+                return Ok(());
+            }
+            store
+                .update_project::<_, velocity_store::projects::ProjectError>(
+                    project_identifier,
+                    |project| {
+                        if expanded {
+                            project.expanded_work_issues.push(key);
+                        } else {
+                            project.expanded_work_issues.retain(|issue| issue != &key);
+                        }
+                        Ok(())
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            store.layout_refresh()
+        };
+        crate::rosen_events::publish_progress(&application, refresh)
     })
     .await
 }
@@ -164,17 +167,21 @@ pub async fn toggle_issue_expanded(
     application: AppHandle,
     number: u32,
 ) -> Result<IssuePanelSnapshot, String> {
-    crate::layout::off_ui_thread(move || {
-        let panel = application.state::<IssuePanel>();
-        let mut panel = lock(panel.inner(), "issues")?;
-        if panel.toggle_expanded(number) {
+    crate::layout::run_concurrently("toggle_issue_expanded", move || {
+        let (changed, snapshot) = {
+            let panel = application.state::<IssuePanel>();
+            let mut panel = lock(panel.inner(), "issues")?;
+            let changed = panel.toggle_expanded(number);
+            (changed, panel.clone())
+        };
+        if changed {
             IssuePanelChanged {
-                panel: panel.clone(),
+                panel: snapshot.clone(),
             }
             .emit(&application)
             .map_err(|error| error.to_string())?;
         }
-        Ok(panel.clone())
+        Ok(snapshot)
     })
     .await
 }
@@ -276,7 +283,7 @@ async fn dispatch_selected_issue(
         (plan.launch, thread)
     };
     let snapshot = crate::threads::start_planned(&application, plan, thread)?;
-    report(update_links(&application));
+    report(update_links(&application, false));
     Ok(snapshot)
 }
 
@@ -358,38 +365,41 @@ fn open_assigned_thread(
     repository: &str,
     number: u32,
 ) -> Result<Option<LayoutSnapshot>, String> {
-    let store = application.state::<ManagedStateStore>();
-    let mut store = lock(store.inner(), "persisted state")?;
-    let project = store
-        .active_project()
-        .filter(|item| item.id == project)
-        .ok_or("The selected project changed")?;
-    let identity = ThreadIssue::new(repository.into(), number);
-    let projected_owner = if project.version_control == VersionControl::Rosen {
-        project
-            .rosen_work_item(&WorkKey::issue(repository, number))
-            .and_then(|item| item.thread_identifier)
-            .filter(|identifier| {
-                project
-                    .threads
-                    .iter()
-                    .any(|thread| thread.id == *identifier)
-            })
-    } else {
-        None
+    let snapshot = {
+        let store = application.state::<ManagedStateStore>();
+        let mut store = lock(store.inner(), "persisted state")?;
+        let project = store
+            .active_project()
+            .filter(|item| item.id == project)
+            .ok_or("The selected project changed")?;
+        let identity = ThreadIssue::new(repository.into(), number);
+        let projected_owner = if project.version_control == VersionControl::Rosen {
+            project
+                .rosen_work_item(&WorkKey::issue(repository, number))
+                .and_then(|item| item.thread_identifier)
+                .filter(|identifier| {
+                    project
+                        .threads
+                        .iter()
+                        .any(|thread| thread.id == *identifier)
+                })
+        } else {
+            None
+        };
+        let Some(identifier) =
+            projected_owner.or_else(|| issue_thread(project, &identity).map(|thread| thread.id))
+        else {
+            return Ok(None);
+        };
+        let layout = application.state::<MainLayout>();
+        let mut layout = lock(layout.inner(), "main-window state")?;
+        let outcome = store
+            .dispatch_project_layout(&mut layout, LayoutAction::OpenThread(identifier as usize))
+            .map_err(|error| error.to_string())?;
+        outcome.snapshot
     };
-    let Some(identifier) =
-        projected_owner.or_else(|| issue_thread(project, &identity).map(|thread| thread.id))
-    else {
-        return Ok(None);
-    };
-    let layout = application.state::<MainLayout>();
-    let mut layout = lock(layout.inner(), "main-window state")?;
-    let outcome = store
-        .dispatch_project_layout(&mut layout, LayoutAction::OpenThread(identifier as usize))
-        .map_err(|error| error.to_string())?;
-    crate::layout::publish(application, &outcome.snapshot, None)?;
-    Ok(Some(outcome.snapshot))
+    crate::layout::publish(application, &snapshot, None)?;
+    Ok(Some(snapshot))
 }
 
 pub fn handle_intent(application: &AppHandle, intent: &LayoutIntent) -> bool {
@@ -421,14 +431,17 @@ pub fn handle_intent(application: &AppHandle, intent: &LayoutIntent) -> bool {
 }
 
 fn show_error(application: &AppHandle, error: String) {
-    let layout = application.state::<MainLayout>();
-    if let Ok(mut layout) = lock(layout.inner(), "main-window state") {
-        layout.show_toast(error, None);
-        report(crate::layout::publish(
-            application,
-            &layout.snapshot(),
-            None,
-        ));
+    let snapshot = {
+        let layout = application.state::<MainLayout>();
+        lock(layout.inner(), "main-window state")
+            .ok()
+            .map(|mut layout| {
+                layout.show_toast(error, None);
+                layout.snapshot()
+            })
+    };
+    if let Some(snapshot) = snapshot {
+        report(crate::layout::publish(application, &snapshot, None));
     }
 }
 
@@ -480,7 +493,7 @@ fn monitor(application: AppHandle) {
                 .ok()
                 .map(|store| store.state().revision);
             if revision != next {
-                report(update_links(&application));
+                report(update_links(&application, false));
                 revision = next;
             }
         }
@@ -493,21 +506,20 @@ fn refresh(
     project: Option<ProjectContext>,
     reader: &mut IssueReader,
 ) -> Result<(), String> {
-    {
-        let store = application.state::<ManagedStateStore>();
-        let store = lock(store.inner(), "persisted state")?;
-        if store.active_project().map(ProjectContext::from_project) != project {
-            return Ok(());
-        }
+    if selected_project(application)? != project {
+        return Ok(());
+    }
+    let selected_panel = {
         let panel = application.state::<IssuePanel>();
         let mut panel = lock(panel.inner(), "issues")?;
         panel.select(project.as_ref().map(|project| project.identifier));
-        IssuePanelChanged {
-            panel: panel.clone(),
-        }
-        .emit(application)
-        .map_err(|error| error.to_string())?;
+        panel.clone()
+    };
+    IssuePanelChanged {
+        panel: selected_panel,
     }
+    .emit(application)
+    .map_err(|error| error.to_string())?;
     let Some(project) = project else {
         return Ok(());
     };
@@ -523,7 +535,7 @@ fn refresh(
         }
         panel.update(result);
     }
-    update_links(application)
+    update_links(application, true)
 }
 
 fn fetch_issues(
@@ -549,35 +561,73 @@ fn fetch_issues(
     Ok(panel)
 }
 
-fn update_links(application: &AppHandle) -> Result<(), String> {
-    let store = application.state::<ManagedStateStore>();
-    let store = lock(store.inner(), "persisted state")?;
-    let panel = application.state::<IssuePanel>();
-    let mut panel = lock(panel.inner(), "issues")?;
-    let Some(project) = store
-        .active_project()
-        .filter(|project| Some(project.id) == panel.project_identifier)
-    else {
+fn update_links(application: &AppHandle, force_publish: bool) -> Result<(), String> {
+    let (project_id, repository, numbers) = {
+        let panel = application.state::<IssuePanel>();
+        let panel = lock(panel.inner(), "issues")?;
+        let Some(project_id) = panel.project_identifier else {
+            return Ok(());
+        };
+        let numbers: Vec<u32> = panel.rows.iter().map(|row| row.number).collect();
+        (project_id, panel.repository.clone(), numbers)
+    };
+    let links = {
+        let store = application.state::<ManagedStateStore>();
+        let store = lock(store.inner(), "persisted state")?;
+        let Some(project) = store
+            .active_project()
+            .filter(|project| project.id == project_id)
+        else {
+            return Ok(());
+        };
+        repository.as_deref().map(|repository| {
+            velocity_threads::dispatch::collect_issue_row_links(project, repository, &numbers)
+        })
+    };
+    let unblocks = match repository.as_deref() {
+        Some(repository) => crate::continuous_dispatch::unblock_counts(application, repository)?,
+        None => std::collections::BTreeMap::new(),
+    };
+    let publish_bundle = {
+        let panel = application.state::<IssuePanel>();
+        let mut panel = lock(panel.inner(), "issues")?;
+        if panel.project_identifier != Some(project_id) || panel.repository != repository {
+            return Ok(());
+        }
+        let mut changed = false;
+        if let Some(links) = &links {
+            changed |= velocity_threads::dispatch::apply_issue_row_links(&mut panel.rows, links);
+            for row in &mut panel.rows {
+                let next_unblocks = unblocks.get(&row.number).copied().unwrap_or(0);
+                if row.unblocks != next_unblocks {
+                    row.unblocks = next_unblocks;
+                    changed = true;
+                }
+            }
+        }
+        if !changed && !force_publish {
+            None
+        } else {
+            panel.revision = panel.revision.wrapping_add(1);
+            let palette_rows = velocity_threads::dispatch::issue_palette_rows(&panel.rows);
+            Some((panel.clone(), palette_rows))
+        }
+    };
+    let Some((panel_snapshot, palette_rows)) = publish_bundle else {
         return Ok(());
     };
-    if let Some(repository) = panel.repository.clone() {
-        velocity_threads::dispatch::associate_issue_threads(project, &repository, &mut panel.rows);
-        // The card shows why dispatch takes an issue first (#510).
-        let unblocks = crate::continuous_dispatch::unblock_counts(application, &repository)?;
-        for row in &mut panel.rows {
-            row.unblocks = unblocks.get(&row.number).copied().unwrap_or(0);
-        }
+    let layout_snapshot = {
+        let layout = application.state::<MainLayout>();
+        let mut layout = lock(layout.inner(), "main-window state")?;
+        layout
+            .set_project_issues(project_id, palette_rows)
+            .then(|| layout.snapshot())
+    };
+    if let Some(layout_snapshot) = layout_snapshot {
+        crate::layout::publish(application, &layout_snapshot, None)?;
     }
-    panel.revision = panel.revision.wrapping_add(1);
-    let layout = application.state::<MainLayout>();
-    let mut layout = lock(layout.inner(), "main-window state")?;
-    layout.set_project_issues(
-        project.id,
-        velocity_threads::dispatch::issue_palette_rows(&panel.rows),
-    );
-    crate::layout::publish(application, &layout.snapshot(), None)?;
     IssuePanelChanged {
-        panel: panel.clone(),
+        panel: panel_snapshot,
     }
     .emit(application)
     .map_err(|error| error.to_string())

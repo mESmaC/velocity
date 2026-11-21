@@ -192,35 +192,43 @@ impl SweepHost for TauriSweepHost {
 impl TauriSweepHost {
     /// Saves, then republishes the window when the project is the one on screen.
     fn save(&self, project: u32, change: ScoutChange) -> Result<bool, String> {
-        let store_state = self.0.state::<ManagedStateStore>();
-        let mut store = lock(store_state.inner(), "persisted state")?;
-        let Some(events) = store
-            .update_scouts(project, change)
-            .map_err(|error| error.to_string())?
-        else {
-            return Ok(false);
+        let (events, refresh) = {
+            let store_state = self.0.state::<ManagedStateStore>();
+            let mut store = lock(store_state.inner(), "persisted state")?;
+            let Some(events) = store
+                .update_scouts(project, change)
+                .map_err(|error| error.to_string())?
+            else {
+                return Ok(false);
+            };
+            let refresh = (store.active_project().map(|item| item.id) == Some(project))
+                .then(|| store.layout_refresh());
+            (events, refresh)
         };
-        if store.active_project().map(|item| item.id) != Some(project) {
-            drop(store);
+        if let Some(refresh) = refresh {
+            let active_project = refresh.active_project;
+            let snapshot = {
+                let mut layout = lock(self.0.state::<MainLayout>().inner(), "main-window state")?;
+                let _ = refresh.apply(&mut layout);
+                velocity_interview::overlay_live_for_project(
+                    self.0.state::<Interviews>().inner(),
+                    active_project,
+                    &mut layout,
+                );
+                layout.snapshot()
+            };
+            crate::layout::publish(&self.0, &snapshot, None)?;
             crate::airc_events::record_scout_events(&self.0, project, &events);
-            return Ok(true);
-        }
-        let mut layout = lock(self.0.state::<MainLayout>().inner(), "main-window state")?;
-        store.refresh_layout(&mut layout);
-        velocity_interview::overlay_live(self.0.state::<Interviews>().inner(), &store, &mut layout);
-        let snapshot = layout.snapshot();
-        // Publish under the locks so snapshots reach the window in order.
-        crate::layout::publish(&self.0, &snapshot, None)?;
-        drop(layout);
-        drop(store);
-        crate::airc_events::record_scout_events(&self.0, project, &events);
-        for event in events {
-            DutyEventPublished {
-                role: DutyRole::Scouts,
-                event,
+            for event in events {
+                DutyEventPublished {
+                    role: DutyRole::Scouts,
+                    event,
+                }
+                .emit(&self.0)
+                .map_err(|error| format!("Could not publish duty event: {error}"))?;
             }
-            .emit(&self.0)
-            .map_err(|error| format!("Could not publish duty event: {error}"))?;
+        } else {
+            crate::airc_events::record_scout_events(&self.0, project, &events);
         }
         Ok(true)
     }

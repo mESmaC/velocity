@@ -37,20 +37,28 @@ pub(crate) async fn rebased(
     sequence: u64,
     regenerate: &[String],
 ) -> Result<(), String> {
-    {
-        let mut store = lock(
-            application.state::<ManagedStateStore>().inner(),
-            "persisted state",
-        )?;
-        if regenerate.is_empty() {
+    let change_owned = change.to_owned();
+    let regenerate_owned = regenerate.to_vec();
+    let key = crate::state::try_with_store(application, move |store| {
+        if regenerate_owned.is_empty() {
             store.save_rosen_cursor(project, sequence)
         } else {
-            let message = velocity_rosen::regeneration_message(sequence, regenerate);
-            store.save_rosen_regeneration(project, sequence, change, &message)
+            let message = velocity_rosen::regeneration_message(sequence, &regenerate_owned);
+            store.save_rosen_regeneration(project, sequence, &change_owned, &message)
         }
         .map_err(|error| error.to_string())?;
-    }
-    if let Some(key) = thread_of(application, project, change) {
+        Ok(store
+            .project(project)
+            .and_then(|item| {
+                item.threads.iter().find(|thread| {
+                    thread.rosen_change.as_deref() == Some(change_owned.as_str())
+                        && thread.state != ThreadState::Merged
+                })
+            })
+            .map(|thread| (project, thread.id)))
+    })
+    .await?;
+    if let Some(key) = key {
         apply_at_boundary(application, key).await;
     }
     Ok(())
@@ -58,7 +66,8 @@ pub(crate) async fn rebased(
 
 /// Applies the waiting rebase of every open Rosen thread whose agent is at a step boundary.
 pub(crate) async fn apply_pending(application: &AppHandle) {
-    for key in open_threads(application) {
+    let threads = open_threads(application).await;
+    for key in threads {
         apply_at_boundary(application, key).await;
     }
 }
@@ -83,7 +92,7 @@ pub(crate) async fn prepare_at_boundary(
     if crate::rosen::paused(application) {
         return BoundaryOutcome::Waiting("Rosen is paused".into());
     }
-    let root = match workspace_path(application, key) {
+    let root = match workspace_path(application, key).await {
         WorkspaceLookup::Found(root) => root,
         WorkspaceLookup::MissingPath => {
             let reason = "workspace missing — this thread has no workspace folder".to_owned();
@@ -223,45 +232,26 @@ pub(crate) fn conflicted(
     .map_err(|error| error.to_string())
 }
 
-/// The open thread working on `change` in `project`.
-fn thread_of(application: &AppHandle, project: u32, change: &str) -> Option<ThreadKey> {
-    let store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )
-    .ok()?;
-    store
-        .project(project)?
-        .threads
-        .iter()
-        .find(|thread| {
-            thread.rosen_change.as_deref() == Some(change) && thread.state != ThreadState::Merged
-        })
-        .map(|thread| (project, thread.id))
-}
-
 /// Every open thread that works on a Rosen change.
-fn open_threads(application: &AppHandle) -> Vec<ThreadKey> {
-    let Ok(store) = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    ) else {
-        return Vec::new();
-    };
-    store
-        .state()
-        .projects
-        .iter()
-        .flat_map(|project| {
-            project
-                .threads
-                .iter()
-                .filter(|thread| {
-                    thread.rosen_change.is_some() && thread.state != ThreadState::Merged
-                })
-                .map(move |thread| (project.id, thread.id))
-        })
-        .collect()
+async fn open_threads(application: &AppHandle) -> Vec<ThreadKey> {
+    crate::state::with_store(application, |store| {
+        store
+            .state()
+            .projects
+            .iter()
+            .flat_map(|project| {
+                project
+                    .threads
+                    .iter()
+                    .filter(|thread| {
+                        thread.rosen_change.is_some() && thread.state != ThreadState::Merged
+                    })
+                    .map(move |thread| (project.id, thread.id))
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 enum WorkspaceLookup {
@@ -271,24 +261,22 @@ enum WorkspaceLookup {
 }
 
 /// The thread's recorded Rosen workspace path, whether or not the folder is still on disk.
-fn workspace_path(application: &AppHandle, key: ThreadKey) -> WorkspaceLookup {
-    let Ok(store) = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    ) else {
-        return WorkspaceLookup::NotOpen;
-    };
-    let Some(thread) = store.project(key.0).and_then(|project| {
-        project.threads.iter().find(|thread| {
-            thread.id == key.1
-                && thread.rosen_change.is_some()
-                && thread.state != ThreadState::Merged
-        })
-    }) else {
-        return WorkspaceLookup::NotOpen;
-    };
-    match thread.worktree_path.as_deref() {
-        Some(path) if !path.is_empty() => WorkspaceLookup::Found(PathBuf::from(path)),
-        _ => WorkspaceLookup::MissingPath,
-    }
+async fn workspace_path(application: &AppHandle, key: ThreadKey) -> WorkspaceLookup {
+    crate::state::with_store(application, move |store| {
+        let Some(thread) = store.project(key.0).and_then(|project| {
+            project.threads.iter().find(|thread| {
+                thread.id == key.1
+                    && thread.rosen_change.is_some()
+                    && thread.state != ThreadState::Merged
+            })
+        }) else {
+            return WorkspaceLookup::NotOpen;
+        };
+        match thread.worktree_path.as_deref() {
+            Some(path) if !path.is_empty() => WorkspaceLookup::Found(PathBuf::from(path)),
+            _ => WorkspaceLookup::MissingPath,
+        }
+    })
+    .await
+    .unwrap_or(WorkspaceLookup::NotOpen)
 }

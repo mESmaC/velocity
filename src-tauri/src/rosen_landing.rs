@@ -172,28 +172,35 @@ impl TauriLandingHost {
         kind: DutyEventKind,
         line: String,
     ) -> Result<(), String> {
-        let store_state = self.0.state::<ManagedStateStore>();
-        let mut store = lock(store_state.inner(), "persisted state")?;
-        let events = store
-            .update_scouts(project, |_, timestamp| {
-                vec![DutyFeedEvent::new(timestamp, actor, kind, line.clone())]
-            })
-            .map_err(|error| error.to_string())?;
-        let Some(events) = events else {
-            eprintln!("Rosen project {project}: {line}");
-            return Ok(());
+        let (events, refresh) = {
+            let store_state = self.0.state::<ManagedStateStore>();
+            let mut store = lock(store_state.inner(), "persisted state")?;
+            let events = store
+                .update_scouts(project, |_, timestamp| {
+                    vec![DutyFeedEvent::new(timestamp, actor, kind, line.clone())]
+                })
+                .map_err(|error| error.to_string())?;
+            let Some(events) = events else {
+                eprintln!("Rosen project {project}: {line}");
+                return Ok(());
+            };
+            if store.active_project().map(|item| item.id) != Some(project) {
+                return Ok(());
+            }
+            (events, store.layout_refresh())
         };
-        if store.active_project().map(|item| item.id) != Some(project) {
-            return Ok(());
-        }
-        let mut layout = lock(self.0.state::<MainLayout>().inner(), "main-window state")?;
-        store.refresh_layout(&mut layout);
-        velocity_interview::overlay_live(
-            self.0.state::<velocity_interview::Interviews>().inner(),
-            &store,
-            &mut layout,
-        );
-        crate::layout::publish(&self.0, &layout.snapshot(), None)?;
+        let active_project = refresh.active_project;
+        let snapshot = {
+            let mut layout = lock(self.0.state::<MainLayout>().inner(), "main-window state")?;
+            let _ = refresh.apply(&mut layout);
+            velocity_interview::overlay_live_for_project(
+                self.0.state::<velocity_interview::Interviews>().inner(),
+                active_project,
+                &mut layout,
+            );
+            layout.snapshot()
+        };
+        crate::layout::publish(&self.0, &snapshot, None)?;
         for event in events {
             DutyEventPublished::new(DutyRole::Scouts, event)
                 .emit(&self.0)

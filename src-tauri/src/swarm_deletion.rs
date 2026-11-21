@@ -119,7 +119,7 @@ pub async fn delete_swarm(
     project_identifier: u32,
     swarm_identifier: u32,
 ) -> Result<LayoutSnapshot, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("delete_swarm", move || {
         delete_swarm_now(application, project_identifier, swarm_identifier)
     })
     .await

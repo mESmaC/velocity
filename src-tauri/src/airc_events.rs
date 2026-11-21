@@ -196,7 +196,7 @@ pub async fn airc_events(
     project_identifier: u32,
     after: Option<u32>,
 ) -> Result<Vec<Entry>, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("airc_events", move || {
         open_channel(&application, project_identifier)?
             .events(cursor(after))
             .map_err(|error| error.to_string())
@@ -211,7 +211,7 @@ pub async fn airc_messages(
     project_identifier: u32,
     after: Option<u32>,
 ) -> Result<Vec<Entry>, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("airc_messages", move || {
         open_channel(&application, project_identifier)?
             .messages(cursor(after))
             .map_err(|error| error.to_string())
@@ -227,7 +227,7 @@ pub async fn airc_ledger(
     ledger: String,
     after: Option<u32>,
 ) -> Result<Vec<Entry>, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("airc_ledger", move || {
         open_channel(&application, project_identifier)?
             .ledger(&ledger, cursor(after))
             .map_err(|error| error.to_string())

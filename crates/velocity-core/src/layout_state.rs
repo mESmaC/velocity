@@ -24,6 +24,13 @@ use crate::thread_view_model::{
 use pending_sends::PendingSends;
 use std::collections::{BTreeMap, BTreeSet};
 
+fn rail_items_equal(left: &[RailItem], right: &[RailItem]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right.iter()).all(|(a, b)| {
+            a.identifier == b.identifier && a.title == b.title && a.metadata == b.metadata
+        })
+}
+
 /// What `submit_composer` sent to a thread, kept so a failed send can be undone.
 #[derive(Clone)]
 struct SentSteering {
@@ -50,6 +57,7 @@ pub struct LayoutState {
     /// Running sessions' transcripts by `(project, thread)`. Kept apart from `data` because the
     /// store rebuilds `data` from `state.json`, which has no transcript, after every change.
     live: BTreeMap<(u32, usize), LiveThreadView>,
+    store_revision: Option<u32>,
     revision: u32,
     view: NavigationView,
     settings_tab: String,
@@ -151,6 +159,7 @@ impl Default for LayoutState {
             issue_rows: BTreeMap::new(),
             installed_skills: Vec::new(),
             live: BTreeMap::new(),
+            store_revision: None,
             revision: 0,
             view: NavigationView::Home,
             settings_tab: "worktrees".into(),
@@ -193,11 +202,20 @@ impl LayoutState {
         }
     }
 
-    pub fn set_project_issues(&mut self, project: u32, issues: Vec<RailItem>) {
+    pub fn set_project_issues(&mut self, project: u32, issues: Vec<RailItem>) -> bool {
+        if self
+            .issue_rows
+            .get(&project)
+            .is_some_and(|existing| rail_items_equal(existing, &issues))
+        {
+            return false;
+        }
         self.issue_rows.insert(project, issues);
         if self.data.project_identifier == Some(project) {
             self.changed();
+            return true;
         }
+        false
     }
 
     /// The machine-wide skills the composer can invoke in any project (F4, F18).
@@ -304,6 +322,82 @@ impl LayoutState {
         }
     }
 
+    fn store_revision_is_stale(&self, revision: u32) -> bool {
+        self.store_revision
+            .is_some_and(|current| (current.wrapping_sub(revision) as i32) > 0)
+    }
+
+    /// Applies store data extracted outside the layout lock, skipping stale revisions (#554).
+    pub fn apply_store_data(
+        &mut self,
+        revision: u32,
+        data: LayoutData,
+        spec_locked: Option<bool>,
+    ) -> bool {
+        if self.store_revision_is_stale(revision) {
+            return false;
+        }
+        self.store_revision = Some(revision);
+        self.replace_data(data);
+        self.set_project_spec_locked(spec_locked);
+        true
+    }
+
+    /// Restores a switched project from data extracted before releasing the store lock (#554).
+    pub fn restore_store_project(
+        &mut self,
+        revision: u32,
+        data: LayoutData,
+        selected_thread: Option<usize>,
+        search: String,
+        spec_locked: Option<bool>,
+    ) {
+        self.store_revision = Some(revision);
+        self.restore_project(data, selected_thread, search);
+        self.set_project_spec_locked(spec_locked);
+    }
+
+    /// Replaces one thread row in place without rebuilding the rest of the sidebar (#554).
+    /// Returns `false` when the thread is missing or changed group/membership so the caller
+    /// can fall back to a full refresh.
+    pub fn replace_thread_entry(
+        &mut self,
+        project: u32,
+        revision: u32,
+        mut entry: ThreadEntry,
+        spec_locked: Option<bool>,
+    ) -> bool {
+        if self.data.project_identifier != Some(project) || self.store_revision_is_stale(revision) {
+            return true;
+        }
+        let Some(existing) = self
+            .data
+            .threads
+            .iter_mut()
+            .find(|thread| thread.policy.identifier == entry.policy.identifier)
+        else {
+            return false;
+        };
+        if existing.policy.group != entry.policy.group
+            || existing.policy.member_of != entry.policy.member_of
+        {
+            return false;
+        }
+        entry.policy.hidden = existing.policy.hidden;
+        entry.policy.matches_search = existing.policy.matches_search;
+        if let (Some(previous), Some(next)) = (&existing.detail, &mut entry.detail)
+            && next.rosen_change.is_some()
+        {
+            next.show_work = previous.show_work;
+        }
+        *existing = entry;
+        self.store_revision = Some(revision);
+        self.set_project_spec_locked(spec_locked);
+        self.follow_selected_view();
+        self.changed();
+        true
+    }
+
     /// Feature owners replace their read model after domain events, then emit a snapshot.
     pub fn replace_data(&mut self, mut data: LayoutData) {
         self.follow_new_work_session(&data);
@@ -324,18 +418,27 @@ impl LayoutState {
         if self.data.project_identifier != data.project_identifier {
             return;
         }
+        let expanded: BTreeSet<usize> = self
+            .data
+            .threads
+            .iter()
+            .filter(|previous| {
+                previous
+                    .detail
+                    .as_ref()
+                    .is_some_and(|detail| detail.show_work)
+            })
+            .map(|previous| previous.policy.identifier)
+            .collect();
+        if expanded.is_empty() {
+            return;
+        }
         for entry in &mut data.threads {
             let Some(detail) = &mut entry.detail else {
                 continue;
             };
-            if detail.rosen_change.is_some() {
-                detail.show_work = self
-                    .data
-                    .threads
-                    .iter()
-                    .find(|previous| previous.policy.identifier == entry.policy.identifier)
-                    .and_then(|previous| previous.detail.as_ref())
-                    .is_some_and(|previous| previous.show_work);
+            if detail.rosen_change.is_some() && expanded.contains(&entry.policy.identifier) {
+                detail.show_work = true;
             }
         }
     }

@@ -13,7 +13,7 @@ pub async fn list_tasks(
     application: AppHandle,
     project_identifier: u32,
 ) -> Result<Vec<TaskView>, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("list_tasks", move || {
         let store = application.state::<ManagedStateStore>();
         lock(&store, "Task List")?
             .list_tasks(project_identifier)
@@ -29,24 +29,34 @@ pub async fn add_task(
     project_identifier: u32,
     title: String,
 ) -> Result<TaskItem, String> {
-    crate::layout::off_ui_thread(move || {
-        let managed = application.state::<ManagedStateStore>();
-        let mut store = lock(&managed, "Task List")?;
-        let task = store
-            .add_task(project_identifier, title)
-            .map_err(|error| error.to_string())?;
-        let layout = application.state::<MainLayout>();
-        let mut layout = lock(&layout, "main layout")?;
-        if store.active_project_identifier() == Some(project_identifier) {
-            layout.set_task_rows(
-                store
-                    .list_tasks(project_identifier)
-                    .map_err(|error| error.to_string())?,
-            );
-        }
-        let snapshot = velocity_store::build_gate::layout_snapshot(store.state(), &mut layout);
-        drop(layout);
-        drop(store);
+    crate::layout::off_ui_thread_named("add_task", move || {
+        let (task, active_tasks, spec_locked) = {
+            let managed = application.state::<ManagedStateStore>();
+            let mut store = lock(&managed, "Task List")?;
+            let task = store
+                .add_task(project_identifier, title)
+                .map_err(|error| error.to_string())?;
+            let active_tasks = if store.active_project_identifier() == Some(project_identifier) {
+                Some(
+                    store
+                        .list_tasks(project_identifier)
+                        .map_err(|error| error.to_string())?,
+                )
+            } else {
+                None
+            };
+            let spec_locked = store.active_project().map(|project| project.spec_locked);
+            (task, active_tasks, spec_locked)
+        };
+        let snapshot = {
+            let layout = application.state::<MainLayout>();
+            let mut layout = lock(&layout, "main layout")?;
+            if let Some(tasks) = active_tasks {
+                layout.set_task_rows(tasks);
+            }
+            layout.set_project_spec_locked(spec_locked);
+            layout.snapshot()
+        };
         record_added(&application, project_identifier, &task);
         crate::layout::publish(&application, &snapshot, None)?;
         Ok(task)
@@ -69,7 +79,7 @@ pub async fn undo_task_event(
     project_identifier: u32,
     request: String,
 ) -> Result<(), String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::off_ui_thread_named("undo_task_event", move || {
         let request = request.parse().map_err(|_| "Invalid task event request")?;
         let (task, selected) = {
             let managed = application.state::<ManagedStateStore>();

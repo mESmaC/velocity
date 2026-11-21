@@ -30,7 +30,7 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
 #[tauri::command]
 #[specta::specta]
 pub async fn list_projects(application: AppHandle) -> Result<ProjectList, String> {
-    crate::layout::off_ui_thread_named("list_projects", move || {
+    crate::layout::run_concurrently("list_projects", move || {
         let store = application.state::<ManagedStateStore>();
         store
             .lock()
@@ -43,19 +43,33 @@ pub async fn list_projects(application: AppHandle) -> Result<ProjectList, String
 #[tauri::command]
 #[specta::specta]
 pub async fn switch_project(window: Window, identifier: u32) -> Result<LayoutSnapshot, String> {
-    crate::layout::off_ui_thread_named("switch_project", move || {
-        let store = window.state::<ManagedStateStore>();
-        let layout = window.state::<MainLayout>();
-        let mut store = store.lock().map_err(|error| error.to_string())?;
-        let mut layout = layout.lock().map_err(|error| error.to_string())?;
-        let selection = store
-            .switch_project_layout(&mut layout, identifier)
-            .map_err(|error| error.to_string())?;
-        let snapshot = layout.snapshot();
-        let projects = store.list_projects();
-        drop(store);
+    crate::layout::run_concurrently("switch_project", move || {
+        let switched = {
+            let store = window.state::<ManagedStateStore>();
+            let mut store = store.lock().map_err(|error| error.to_string())?;
+            store
+                .select_project(identifier, "")
+                .map_err(|error| error.to_string())?
+        };
+        let snapshot = {
+            let layout = window.state::<MainLayout>();
+            let mut layout = layout.lock().map_err(|error| error.to_string())?;
+            layout.restore_store_project(
+                switched.refresh.revision,
+                switched.refresh.data,
+                switched.selected_thread,
+                switched.search,
+                switched.refresh.spec_locked,
+            );
+            velocity_interview::overlay_live_for_project(
+                window.state::<velocity_interview::Interviews>().inner(),
+                switched.refresh.active_project,
+                &mut layout,
+            );
+            layout.snapshot()
+        };
         crate::layout::publish(&window, &snapshot, None)?;
-        publish_selection(&window, projects, selection)?;
+        publish_selection(&window, switched.projects, switched.selection)?;
         crate::skills::recheck_suggestions(
             window.app_handle(),
             identifier,

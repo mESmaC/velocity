@@ -393,7 +393,7 @@ impl Drop for ReadingGuard {
 
 /// Reads Collapse's dashboard once and saves each Collapse-mirrored project's health.
 pub(crate) async fn refresh_health(application: &AppHandle) -> Result<(), String> {
-    let mirrored = mirrored_projects(application)?;
+    let mirrored = mirrored_projects(application).await?;
     if mirrored.is_empty() || READING.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
@@ -404,32 +404,35 @@ pub(crate) async fn refresh_health(application: &AppHandle) -> Result<(), String
     let rows = velocity_collapse::repository_activity(&credentials)
         .await
         .map_err(|error| error.to_string())?;
-    let mut store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    let mut changed = false;
-    let mut moved_projects = Vec::new();
-    for (project, repository) in mirrored {
-        let previous_land = store
-            .project(project)
-            .and_then(|item| item.collapse_mirror_health.as_ref())
-            .and_then(|health| health.last_land_at.clone());
-        let health = rows.iter().find(|row| row.is(&repository)).map(health);
-        let next_land = health.as_ref().and_then(|item| item.last_land_at.clone());
-        if next_land.is_some() && next_land != previous_land {
-            moved_projects.push(project);
+    let (refresh, moved_projects) = crate::state::try_with_store(application, move |store| {
+        let mut changed = false;
+        let mut moved_projects = Vec::new();
+        for (project, repository) in mirrored {
+            let previous_land = store
+                .project(project)
+                .and_then(|item| item.collapse_mirror_health.as_ref())
+                .and_then(|health| health.last_land_at.clone());
+            let health = rows.iter().find(|row| row.is(&repository)).map(health);
+            let next_land = health.as_ref().and_then(|item| item.last_land_at.clone());
+            if next_land.is_some() && next_land != previous_land {
+                moved_projects.push(project);
+            }
+            changed |= store
+                .save_collapse_mirror_health(project, health)
+                .map_err(|error| error.to_string())?;
         }
-        changed |= store
-            .save_collapse_mirror_health(project, health)
-            .map_err(|error| error.to_string())?;
+        let refresh = changed.then(|| store.layout_refresh());
+        Ok((refresh, moved_projects))
+    })
+    .await?;
+    if let Some(refresh) = refresh {
+        let handle = application.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::layout::apply_refresh_and_publish(&handle, refresh)
+        })
+        .await
+        .map_err(|error| error.to_string())??;
     }
-    if changed {
-        let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;
-        store.refresh_layout(&mut layout);
-        crate::layout::publish(application, &layout.snapshot(), None)?;
-    }
-    drop(store);
     for project in moved_projects {
         // Another machine may have just landed to Collapse; check the tip now (#520).
         crate::rosen_mirror::check_soon(application, project);
@@ -437,17 +440,16 @@ pub(crate) async fn refresh_health(application: &AppHandle) -> Result<(), String
     Ok(())
 }
 
-fn mirrored_projects(application: &AppHandle) -> Result<Vec<(u32, String)>, String> {
-    let store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    Ok(store
-        .state()
-        .projects
-        .iter()
-        .filter_map(|item| Some((item.id, item.collapse_repository.clone()?)))
-        .collect())
+async fn mirrored_projects(application: &AppHandle) -> Result<Vec<(u32, String)>, String> {
+    crate::state::with_store(application, |store| {
+        store
+            .state()
+            .projects
+            .iter()
+            .filter_map(|item| Some((item.id, item.collapse_repository.clone()?)))
+            .collect()
+    })
+    .await
 }
 
 fn health(row: &RepositoryActivity) -> CollapseMirrorHealth {

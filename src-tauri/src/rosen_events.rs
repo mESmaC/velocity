@@ -52,7 +52,14 @@ async fn follow_project(application: &AppHandle, project: u32) {
                     connection_state(application, project, false);
                     crate::continuous_dispatch::overlap::invalidate_base_commit(project);
                     report(crate::rosen_thread::refresh(application, project, None, rewound).await);
-                    report(restore_work(application, project));
+                    let handle = application.clone();
+                    let restored = tauri::async_runtime::spawn_blocking(move || {
+                        restore_work(&handle, project)
+                    })
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|result| result);
+                    report(restored);
                     // What a crash or a failed step left undone, before anything new.
                     run_follow_ups(application, project).await;
                     report(crate::rosen_mirror::refresh(application, project).await);
@@ -149,25 +156,27 @@ async fn consume_connected(
     }
     // The last event of a rewind can be unrelated and carry no checkpoint of its own.
     if event.seq == replay.boundary() {
-        lock(
-            application.state::<ManagedStateStore>().inner(),
-            "persisted state",
-        )?
-        .save_rosen_cursor(project, event.seq)
-        .map_err(|error| error.to_string())?;
+        let sequence = event.seq;
+        crate::state::try_with_store(application, move |store| {
+            store
+                .save_rosen_cursor(project, sequence)
+                .map_err(|error| error.to_string())
+        })
+        .await?;
     }
     Ok(())
 }
 
 fn connection_state(application: &AppHandle, project: u32, reconnecting: bool) {
-    if let Ok(mut layout) = lock(application.state::<MainLayout>().inner(), "layout")
-        && layout.set_rosen_reconnecting(project, reconnecting)
-    {
-        report(crate::layout::publish(
-            application,
-            &layout.snapshot(),
-            None,
-        ));
+    let snapshot = lock(application.state::<MainLayout>().inner(), "layout")
+        .ok()
+        .and_then(|mut layout| {
+            layout
+                .set_rosen_reconnecting(project, reconnecting)
+                .then(|| layout.snapshot())
+        });
+    if let Some(snapshot) = snapshot {
+        report(crate::layout::publish(application, &snapshot, None));
     }
 }
 
@@ -210,26 +219,55 @@ async fn consume(
             run_follow_ups(application, project).await;
         }
         Some((change, ChangeEvent::Conflict)) => {
-            crate::rosen_rebase::conflicted(
-                application,
-                project,
-                change,
-                event.seq,
-                velocity_rosen::conflict_paths(event),
-            )?;
+            let handle = application.clone();
+            let change = change.to_owned();
+            let sequence = event.seq;
+            let paths = velocity_rosen::conflict_paths(event);
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::rosen_rebase::conflicted(&handle, project, &change, sequence, paths)
+            })
+            .await
+            .map_err(|error| error.to_string())??;
             run_follow_ups(application, project).await;
         }
-        Some((change, ChangeEvent::Named)) => record_named(application, project, change, event)?,
+        Some((change, ChangeEvent::Named)) => {
+            let handle = application.clone();
+            let change = change.to_owned();
+            let sequence = event.seq;
+            let commit = event
+                .detail
+                .get("commit")
+                .and_then(|commit| commit.as_str())
+                .map(str::to_owned);
+            tauri::async_runtime::spawn_blocking(move || {
+                record_named(&handle, project, &change, sequence, commit.as_deref())
+            })
+            .await
+            .map_err(|error| error.to_string())??;
+        }
         Some((change, meaning)) => {
+            let handle = application.clone();
+            let change = change.to_owned();
+            let sequence = event.seq;
             let output = velocity_rosen::revert_output(event);
-            take(
-                application,
-                project,
-                (event.seq, change),
-                meaning,
-                output.as_deref(),
-                work_evidence,
-            )?;
+            let commit = work_evidence.commit.map(str::to_owned);
+            let revert_reason = work_evidence.revert_reason.map(str::to_owned);
+            tauri::async_runtime::spawn_blocking(move || {
+                let evidence = WorkEvidence {
+                    commit: commit.as_deref(),
+                    revert_reason: revert_reason.as_deref(),
+                };
+                take(
+                    &handle,
+                    project,
+                    (sequence, &change),
+                    meaning,
+                    output.as_deref(),
+                    evidence,
+                )
+            })
+            .await
+            .map_err(|error| error.to_string())??;
             run_follow_ups(application, project).await;
         }
         None if has_evidence => run_follow_ups(application, project).await,
@@ -238,24 +276,29 @@ async fn consume(
     Ok(())
 }
 
-fn open_rosen_thread(application: &AppHandle, project: u32, change: &str) -> Option<ThreadKey> {
-    let store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )
-    .ok()?;
-    store
-        .project(project)?
-        .threads
-        .iter()
-        .find(|thread| {
-            thread.rosen_change.as_deref() == Some(change)
-                && matches!(
-                    thread.state,
-                    velocity_store::ThreadState::Working | velocity_store::ThreadState::Review
-                )
-        })
-        .map(|thread| (project, thread.id))
+async fn open_rosen_thread(
+    application: &AppHandle,
+    project: u32,
+    change: &str,
+) -> Option<ThreadKey> {
+    let change = change.to_owned();
+    crate::state::with_store(application, move |store| {
+        store
+            .project(project)?
+            .threads
+            .iter()
+            .find(|thread| {
+                thread.rosen_change.as_deref() == Some(change.as_str())
+                    && matches!(
+                        thread.state,
+                        velocity_store::ThreadState::Working | velocity_store::ThreadState::Review
+                    )
+            })
+            .map(|thread| (project, thread.id))
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Tracks Rosen path waits and wake releases on the owning thread so Velocity can park
@@ -268,7 +311,7 @@ async fn observe_path_wait(
     let Some(change) = event.change.as_deref() else {
         return Ok(());
     };
-    let Some(key) = open_rosen_thread(application, project, change) else {
+    let Some(key) = open_rosen_thread(application, project, change).await else {
         return Ok(());
     };
     match event.kind {
@@ -277,22 +320,40 @@ async fn observe_path_wait(
         {
             let paths = event_strings(&event.detail, "paths");
             let holders = overlap_owners(&event.detail);
-            record_rosen_wait(application, key, paths, holders)?;
+            let handle = application.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                record_rosen_wait(&handle, key, paths, holders)
+            })
+            .await
+            .map_err(|error| error.to_string())??;
         }
         velocity_rosen::ProjectEventKind::Released => {
             let is_wake = event.detail.get("wake").and_then(|value| value.as_bool()) == Some(true);
             if is_wake {
-                let path = event.detail.get("path").and_then(|value| value.as_str());
+                let path = event
+                    .detail
+                    .get("path")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned);
                 let released_by = event
                     .detail
                     .get("released_by")
-                    .and_then(|value| value.as_str());
-                record_rosen_wake(application, key, path, released_by)?;
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned);
+                let handle = application.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    record_rosen_wake(&handle, key, path.as_deref(), released_by.as_deref())
+                })
+                .await
+                .map_err(|error| error.to_string())??;
             } else if let Ok(server) = crate::rosen::server(application, project).await
                 && let Ok(active) = velocity_rosen::mcp_proxy::active_waits(&server, change).await
                 && active.is_empty()
             {
-                clear_rosen_wait(application, key)?;
+                let handle = application.clone();
+                tauri::async_runtime::spawn_blocking(move || clear_rosen_wait(&handle, key))
+                    .await
+                    .map_err(|error| error.to_string())??;
             }
         }
         _ => {}
@@ -450,20 +511,20 @@ fn record_named(
     application: &AppHandle,
     project: u32,
     change: &str,
-    event: &velocity_rosen::ProjectEvent,
+    sequence: u64,
+    commit: Option<&str>,
 ) -> Result<(), String> {
-    let commit = event
-        .detail
-        .get("commit")
-        .and_then(|commit| commit.as_str());
-    let mut store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    store
-        .save_rosen_named(project, event.seq, change, commit)
-        .map_err(|error| error.to_string())?;
-    publish_progress(application, &store)?;
+    let refresh = {
+        let mut store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        store
+            .save_rosen_named(project, sequence, change, commit)
+            .map_err(|error| error.to_string())?;
+        store.layout_refresh()
+    };
+    publish_progress(application, refresh)?;
     crate::rosen_landing::wake(application);
     Ok(())
 }
@@ -590,20 +651,32 @@ async fn run_thread_follow_ups(
             .any(|item| matches!(item, RosenFollowUp::Conflict { .. }));
         match follow_up_once(application, key, change, follow_up).await {
             FollowUpStep::Finished => {
-                if let Err(error) = finish(application, key, follow_up) {
+                let handle = application.clone();
+                let done = follow_up.clone();
+                let finished =
+                    tauri::async_runtime::spawn_blocking(move || finish(&handle, key, &done))
+                        .await
+                        .map_err(|error| error.to_string())
+                        .and_then(|result| result);
+                if let Err(error) = finished {
                     report::<()>(Err(error));
                     break;
                 }
             }
             step => {
-                record_follow_up_stop(
-                    application,
-                    key,
-                    follow_up,
-                    step,
-                    has_conflict,
-                    already_pending_click,
-                );
+                let handle = application.clone();
+                let item = follow_up.clone();
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    record_follow_up_stop(
+                        &handle,
+                        key,
+                        &item,
+                        step,
+                        has_conflict,
+                        already_pending_click,
+                    );
+                })
+                .await;
                 break;
             }
         }
@@ -683,27 +756,30 @@ fn update_resolution_feedback(
     resolution: Option<RosenResolutionStatus>,
     follow_up_error: Option<Option<String>>,
 ) {
-    let Ok(mut store) = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    ) else {
-        return;
+    let refresh = {
+        let Ok(mut store) = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        ) else {
+            return;
+        };
+        let mut changed = false;
+        if let Some(status) = resolution {
+            match store.set_rosen_resolution_status(key.0, key.1, Some(status)) {
+                Ok(updated) => changed |= updated,
+                Err(error) => report::<()>(Err(error.to_string())),
+            }
+        }
+        if let Some(error) = follow_up_error {
+            match store.set_rosen_follow_up_error(key.0, key.1, error) {
+                Ok(updated) => changed |= updated,
+                Err(error) => report::<()>(Err(error.to_string())),
+            }
+        }
+        changed.then(|| store.layout_refresh())
     };
-    let mut changed = false;
-    if let Some(status) = resolution {
-        match store.set_rosen_resolution_status(key.0, key.1, Some(status)) {
-            Ok(updated) => changed |= updated,
-            Err(error) => report::<()>(Err(error.to_string())),
-        }
-    }
-    if let Some(error) = follow_up_error {
-        match store.set_rosen_follow_up_error(key.0, key.1, error) {
-            Ok(updated) => changed |= updated,
-            Err(error) => report::<()>(Err(error.to_string())),
-        }
-    }
-    if changed {
-        report(publish_progress(application, &store));
+    if let Some(refresh) = refresh {
+        report(publish_progress(application, refresh));
     }
 }
 
@@ -846,14 +922,17 @@ fn deliver(
 }
 
 fn finish(application: &AppHandle, key: ThreadKey, done: &RosenFollowUp) -> Result<(), String> {
-    let mut store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    store
-        .finish_rosen_follow_up(key.0, key.1, done)
-        .map_err(|error| error.to_string())?;
-    publish_progress(application, &store)
+    let refresh = {
+        let mut store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        store
+            .finish_rosen_follow_up(key.0, key.1, done)
+            .map_err(|error| error.to_string())?;
+        store.layout_refresh()
+    };
+    publish_progress(application, refresh)
 }
 
 /// Rosen reverted thread `key`'s landed change and reopened it (Rosen R12; F7 "After a
@@ -865,7 +944,7 @@ async fn reopen_reverted(
     key: ThreadKey,
     change: &str,
 ) -> Result<(), String> {
-    let Some(root) = workspace(application, key)? else {
+    let Some(root) = workspace(application, key).await? else {
         return Ok(());
     };
     let server = crate::rosen::server(application, key.0).await?;
@@ -894,15 +973,17 @@ pub(crate) fn record_landed(
     // Keep the cursor unchanged so the event follower still takes the land. Checkpointing
     // closes the gap before the follower catches up, but only for the lifecycle generation
     // captured with this named work. A newer event or fixing state must win a delayed reply.
-    let mut store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    store
-        .checkpoint_rosen_land(project, change, generation)
-        .map_err(|error| error.to_string())?;
-    publish_progress(application, &store)?;
-    drop(store);
+    let refresh = {
+        let mut store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        store
+            .checkpoint_rosen_land(project, change, generation)
+            .map_err(|error| error.to_string())?;
+        store.layout_refresh()
+    };
+    publish_progress(application, refresh)?;
     let handle = application.clone();
     tauri::async_runtime::spawn(async move { run_follow_ups(&handle, project).await });
     Ok(())
@@ -916,7 +997,7 @@ pub(crate) fn record_land_refusal(
     generation: u64,
     message: &str,
 ) -> Result<bool, String> {
-    {
+    let refresh = {
         let mut store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
@@ -928,8 +1009,9 @@ pub(crate) fn record_land_refusal(
         {
             return Ok(false);
         }
-        report(publish_progress(application, &store));
-    }
+        store.layout_refresh()
+    };
+    report(publish_progress(application, refresh));
     let handle = application.clone();
     tauri::async_runtime::spawn(async move { run_follow_ups(&handle, project).await });
     Ok(true)
@@ -942,41 +1024,42 @@ fn save(
     progress: (RosenProgress, &str),
     evidence: WorkEvidence<'_>,
 ) -> Result<Option<u32>, String> {
-    let mut store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    let thread = store
-        .save_rosen_work_progress(project, seq, change, progress, evidence)
-        .map_err(|error| error.to_string())?;
-    publish_progress(application, &store)?;
+    let (thread, refresh) = {
+        let mut store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let thread = store
+            .save_rosen_work_progress(project, seq, change, progress, evidence)
+            .map_err(|error| error.to_string())?;
+        (thread, store.layout_refresh())
+    };
+    publish_progress(application, refresh)?;
     Ok(thread)
 }
 
 fn restore_work(application: &AppHandle, project: u32) -> Result<(), String> {
-    let mut store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    if store
-        .restore_rosen_work(project)
-        .map_err(|error| error.to_string())?
-    {
-        publish_progress(application, &store)?;
+    let refresh = {
+        let mut store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        store
+            .restore_rosen_work(project)
+            .map_err(|error| error.to_string())?
+            .then(|| store.layout_refresh())
+    };
+    if let Some(refresh) = refresh {
+        publish_progress(application, refresh)?;
     }
     Ok(())
 }
 
 pub(crate) fn publish_progress(
     application: &AppHandle,
-    store: &velocity_store::StateStore,
+    refresh: velocity_store::projects::LayoutRefresh,
 ) -> Result<(), String> {
-    let layout_state = application.state::<MainLayout>();
-    let mut layout = lock(layout_state.inner(), "layout")?;
-    store.refresh_follow_through_layout(&mut layout);
-    let state = layout.snapshot();
-    crate::layout::publish(application, &state, None)?;
-    Ok(())
+    crate::layout::apply_refresh_and_publish(application, refresh)
 }
 
 /// Stop the finished item's session and watcher before its worker takes new work.
@@ -998,7 +1081,7 @@ async fn finish_work(application: &AppHandle, key: ThreadKey) -> Result<bool, St
     if !stopped {
         return Ok(false);
     }
-    if let Some(root) = workspace(application, key)? {
+    if let Some(root) = workspace(application, key).await? {
         crate::rosen::stop_watch(application, &root).await;
     }
     crate::airc_claims::release(application, key)?;
@@ -1006,26 +1089,20 @@ async fn finish_work(application: &AppHandle, key: ThreadKey) -> Result<bool, St
     Ok(true)
 }
 
-fn workspace(application: &AppHandle, key: ThreadKey) -> Result<Option<PathBuf>, String> {
-    let store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    Ok(store
-        .project(key.0)
-        .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
-        .and_then(|thread| thread.worktree_path.as_deref())
-        .map(PathBuf::from))
+async fn workspace(application: &AppHandle, key: ThreadKey) -> Result<Option<PathBuf>, String> {
+    crate::state::with_store(application, move |store| {
+        store
+            .project(key.0)
+            .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
+            .and_then(|thread| thread.worktree_path.as_deref())
+            .map(PathBuf::from)
+    })
+    .await
 }
 
 /// Ticks the owning §7 implementation-order item in Rosen when a change lands (#539).
 async fn tick_spec_section_on_land(application: &AppHandle, key: ThreadKey) {
-    let target = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )
-    .ok()
-    .and_then(|store| {
+    let target = crate::state::with_store(application, move |store| {
         let project = store.project(key.0)?;
         let thread = project.threads.iter().find(|thread| thread.id == key.1)?;
         let issue = thread.issue.as_ref().map(|issue| issue.number);
@@ -1036,7 +1113,10 @@ async fn tick_spec_section_on_land(application: &AppHandle, key: ThreadKey) {
             .or_else(|| section.clone())
             .unwrap_or_else(|| thread.agent_name());
         Some((project.spec_path.clone(), section, issue, title, label))
-    });
+    })
+    .await
+    .ok()
+    .flatten();
     let Some((spec_path, section, issue, title, label)) = target else {
         return;
     };

@@ -32,16 +32,17 @@ pub async fn get_duty_dialog_defaults(
     application: AppHandle,
 ) -> Result<DutyDialogDefaults, String> {
     let reader = application.clone();
-    let (mut defaults, project) = crate::layout::off_ui_thread(move || {
-        let store = reader.state::<ManagedStateStore>();
-        let store = store.lock().map_err(|error| error.to_string())?;
-        let project = store
-            .active_project()
-            .filter(|project| project.rosen_in_use())
-            .map(|project| project.id);
-        Ok((store.duty_dialog_defaults(), project))
-    })
-    .await?;
+    let (mut defaults, project) =
+        crate::layout::run_concurrently("get_duty_dialog_defaults", move || {
+            let store = reader.state::<ManagedStateStore>();
+            let store = store.lock().map_err(|error| error.to_string())?;
+            let project = store
+                .active_project()
+                .filter(|project| project.rosen_in_use())
+                .map(|project| project.id);
+            Ok((store.duty_dialog_defaults(), project))
+        })
+        .await?;
     if let (Some(project), Ok(app_data)) = (project, application.path().app_data_dir()) {
         let server = velocity_rosen::ProjectServer::new(&app_data, project);
         defaults.review_swarm = velocity_rosen::post_land::after_land(&server)
@@ -58,7 +59,7 @@ pub async fn get_duty_agent_transcript(
     window: Window,
     nickname: String,
 ) -> Result<Option<Vec<TranscriptBlock>>, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("get_duty_agent_transcript", move || {
         let store = window.state::<ManagedStateStore>();
         let project = {
             let store = store.lock().map_err(|error| error.to_string())?;
@@ -78,7 +79,7 @@ pub async fn start_duty(
     window: Window,
     request: StartDutyRequest,
 ) -> Result<LayoutSnapshot, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("start_duty", move || {
         let store = window.state::<ManagedStateStore>();
         let state = window.state::<MainLayout>();
         apply_start_or_add(&window, &store, &state, request)
@@ -92,7 +93,7 @@ pub async fn add_duty_agents(
     window: Window,
     request: StartDutyRequest,
 ) -> Result<LayoutSnapshot, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("add_duty_agents", move || {
         let store = window.state::<ManagedStateStore>();
         let state = window.state::<MainLayout>();
         apply_start_or_add(&window, &store, &state, request)
@@ -106,7 +107,7 @@ pub async fn pause_duty(
     window: Window,
     request: PauseDutyRequest,
 ) -> Result<LayoutSnapshot, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("pause_duty", move || {
         let store = window.state::<ManagedStateStore>();
         let state = window.state::<MainLayout>();
         let outcome = {
@@ -132,7 +133,7 @@ pub async fn dismiss_duty_agent(
     window: Window,
     request: DismissDutyAgentRequest,
 ) -> Result<LayoutSnapshot, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("dismiss_duty_agent", move || {
         let store = window.state::<ManagedStateStore>();
         let state = window.state::<MainLayout>();
         let application = window.app_handle();
@@ -158,7 +159,7 @@ pub async fn dismiss_duty_agent(
 #[tauri::command]
 #[specta::specta]
 pub async fn stop_duty(window: Window, request: StopDutyRequest) -> Result<LayoutSnapshot, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("stop_duty", move || {
         let store = window.state::<ManagedStateStore>();
         let state = window.state::<MainLayout>();
         let (stopped, project) = {

@@ -18,7 +18,10 @@ pub mod spec_file;
 pub mod turns;
 
 pub use actions::handle_intent;
-pub use service::{Host, InterviewKey, Interviews, overlay_live, refresh, start_interviews};
+pub use service::{
+    Host, InterviewKey, Interviews, overlay_live, overlay_live_for_project, refresh,
+    start_interviews,
+};
 
 use velocity_store::StateStore;
 

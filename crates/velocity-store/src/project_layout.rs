@@ -23,6 +23,59 @@ use velocity_core::thread_view_model::{
     RosenChangeStage, RosenChangeView, RosenResolutionView, ThreadDetailEntry,
 };
 
+/// Snapshot of store data needed to refresh `LayoutState` after releasing the store lock (#554).
+pub struct LayoutRefresh {
+    pub revision: u32,
+    pub data: LayoutData,
+    pub spec_locked: Option<bool>,
+    pub active_project: Option<u32>,
+}
+
+impl LayoutRefresh {
+    pub fn apply(self, layout: &mut velocity_core::layout_state::LayoutState) -> bool {
+        layout.apply_store_data(self.revision, self.data, self.spec_locked)
+    }
+}
+
+impl crate::StateStore {
+    /// Extracts the active project's layout read model so callers can drop the store lock
+    /// before locking `LayoutState`, building `LayoutSnapshot`, or emitting IPC events (#554).
+    pub fn layout_refresh(&self) -> LayoutRefresh {
+        let active = active_project(&self.state);
+        LayoutRefresh {
+            revision: self.state.revision,
+            data: read_model(self),
+            spec_locked: active.map(|project| project.spec_locked),
+            active_project: active.map(|project| project.id),
+        }
+    }
+
+    /// Extracts a single thread's sidebar/detail entry when `project_identifier` is the active
+    /// project, avoiding a full-project read-model rebuild on streaming updates (#554).
+    pub fn layout_thread_update(
+        &self,
+        project_identifier: u32,
+        thread_identifier: u32,
+    ) -> Option<(u32, ThreadEntry, Option<bool>)> {
+        let project = active_project(&self.state)?;
+        if project.id != project_identifier {
+            return None;
+        }
+        let thread = project
+            .threads
+            .iter()
+            .find(|thread| thread.id == thread_identifier)?;
+        let membership = crate::swarms::thread_swarm(project, thread.id)
+            .map(|(swarm, agent)| (swarm.id, agent, 0))
+            .or_else(|| crate::goal_swarm_view::goal_membership(project, thread));
+        let mut entry = thread_entry(thread, project.tasks.len(), &self.state.settings);
+        entry.policy.member_of = membership
+            .filter(|_| entry.policy.group != ThreadGroup::Settled)
+            .map(|(swarm, _, _)| swarm as usize);
+        Some((self.state.revision, entry, Some(project.spec_locked)))
+    }
+}
+
 pub(crate) fn active_project(state: &PersistedState) -> Option<&ProjectItem> {
     usize::try_from(state.active_project_index)
         .ok()

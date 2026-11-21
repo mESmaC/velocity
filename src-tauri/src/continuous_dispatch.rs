@@ -82,7 +82,10 @@ pub async fn get_continuous_dispatch(
     application: AppHandle,
     project_identifier: u32,
 ) -> Result<DispatchView, String> {
-    crate::layout::off_ui_thread(move || view(&application, project_identifier)).await
+    crate::layout::run_concurrently("get_continuous_dispatch", move || {
+        view(&application, project_identifier)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -93,7 +96,7 @@ pub async fn set_continuous_dispatch(
     slots: u32,
     paused: bool,
 ) -> Result<DispatchView, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::off_ui_thread_named("set_continuous_dispatch", move || {
         lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",

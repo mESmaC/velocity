@@ -601,26 +601,32 @@ fn with_store(
 /// with an optional toast.
 fn publish(application: &AppHandle, toast: Option<String>) -> Option<ProvidersView> {
     let runtime = application.state::<ManagedProviders>().runtime();
-    let store_state = application.state::<ManagedStateStore>();
-    let store = store_state.lock().ok()?;
-    let view = store.providers_view(&ProviderContext::new(&runtime, unix_now()));
-    let settings = store.settings();
-    let layout_state = application.state::<MainLayout>();
-    if let Ok(mut layout) = layout_state.lock() {
-        let mut changed = layout.set_provider_summary(
-            velocity_store::provider_views::provider_usage(&settings),
-            velocity_store::provider_views::default_model_pill(&settings),
-            store.composer_model_pill(),
-        );
-        if let Some(message) = toast {
-            layout.show_toast(message, None);
-            changed = true;
-        }
-        if changed {
-            let _ = crate::layout::publish(application, &layout.snapshot(), None);
-        }
+    let (view, settings, composer_pill) = {
+        let store_state = application.state::<ManagedStateStore>();
+        let store = store_state.lock().ok()?;
+        let view = store.providers_view(&ProviderContext::new(&runtime, unix_now()));
+        let settings = store.settings();
+        let composer_pill = store.composer_model_pill();
+        (view, settings, composer_pill)
+    };
+    let layout_snapshot = {
+        let layout_state = application.state::<MainLayout>();
+        layout_state.lock().ok().and_then(|mut layout| {
+            let mut changed = layout.set_provider_summary(
+                velocity_store::provider_views::provider_usage(&settings),
+                velocity_store::provider_views::default_model_pill(&settings),
+                composer_pill,
+            );
+            if let Some(message) = toast {
+                layout.show_toast(message, None);
+                changed = true;
+            }
+            changed.then(|| layout.snapshot())
+        })
+    };
+    if let Some(snapshot) = layout_snapshot {
+        let _ = crate::layout::publish(application, &snapshot, None);
     }
-    drop(store);
     if let Err(error) = (ProvidersChanged { view: view.clone() }).emit(application) {
         eprintln!("Could not publish providers: {error}");
     }
@@ -634,7 +640,7 @@ pub(crate) fn current_view(application: &AppHandle) -> Result<ProvidersView, Str
 #[tauri::command]
 #[specta::specta]
 pub async fn list_providers(application: AppHandle) -> Result<ProvidersView, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("list_providers", move || {
         let missing = application.state::<ManagedProviders>().retry_missing();
         let view = current_view(&application);
         for provider in missing {
@@ -654,7 +660,7 @@ pub async fn provider_sign_in(
     application: AppHandle,
     provider: ProviderKind,
 ) -> Result<ProvidersView, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("provider_sign_in", move || {
         let providers = application.state::<ManagedProviders>();
         if providers.with_slot(provider, |slot| slot.account_login.is_some()) == Some(true) {
             return Err("Wait for this account's sign-in to finish".into());
@@ -753,7 +759,7 @@ pub async fn provider_sign_out(
     application: AppHandle,
     provider: ProviderKind,
 ) -> Result<ProvidersView, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("provider_sign_out", move || {
         let providers = application.state::<ManagedProviders>();
         let name = settings(&application).provider_name(provider);
         // Cancel while installing stops the install and everything it started (F15 Install).
@@ -831,7 +837,10 @@ pub async fn set_provider_settings(
     application: AppHandle,
     edit: ProviderEdit,
 ) -> Result<ProvidersView, String> {
-    crate::layout::off_ui_thread(move || set_provider_settings_now(application, edit)).await
+    crate::layout::off_ui_thread_named("set_provider_settings", move || {
+        set_provider_settings_now(application, edit)
+    })
+    .await
 }
 
 /// [`set_provider_settings`] on the calling thread, for callers already off the UI thread.
@@ -859,7 +868,7 @@ pub async fn get_model_menu(
     project_identifier: u32,
     thread_identifier: Option<u32>,
 ) -> Result<ModelMenuView, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("get_model_menu", move || {
         model_menu(&application, project_identifier, thread_identifier)
     })
     .await
@@ -899,7 +908,7 @@ pub async fn choose_model(
     thread_identifier: Option<u32>,
     choice: ModelMenuChoice,
 ) -> Result<ModelMenuView, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::off_ui_thread_named("choose_model", move || {
         match thread_identifier {
             Some(thread) => choose_for_thread(&application, (project_identifier, thread), choice)?,
             None => choose_for_composer(&application, project_identifier, choice)?,
@@ -914,18 +923,26 @@ fn choose_for_composer(
     project: u32,
     choice: ModelMenuChoice,
 ) -> Result<(), String> {
-    let store_state = application.state::<ManagedStateStore>();
-    let mut store = store_state.lock().map_err(|error| error.to_string())?;
-    if let ModelMenuChoice::Account { provider, account } = &choice {
-        ensure_account(&store.settings(), *provider, *account)?;
-    }
-    store
-        .choose_composer_model(project, choice)
-        .map_err(|error| error.to_string())?;
-    let layout_state = application.state::<MainLayout>();
-    let mut layout = layout_state.lock().map_err(|error| error.to_string())?;
-    if layout.set_composer_model_pill(store.composer_model_pill()) {
-        crate::layout::publish(application, &layout.snapshot(), None)?;
+    let composer_pill = {
+        let store_state = application.state::<ManagedStateStore>();
+        let mut store = store_state.lock().map_err(|error| error.to_string())?;
+        if let ModelMenuChoice::Account { provider, account } = &choice {
+            ensure_account(&store.settings(), *provider, *account)?;
+        }
+        store
+            .choose_composer_model(project, choice)
+            .map_err(|error| error.to_string())?;
+        store.composer_model_pill()
+    };
+    let snapshot = {
+        let layout_state = application.state::<MainLayout>();
+        let mut layout = layout_state.lock().map_err(|error| error.to_string())?;
+        layout
+            .set_composer_model_pill(composer_pill)
+            .then(|| layout.snapshot())
+    };
+    if let Some(snapshot) = snapshot {
+        crate::layout::publish(application, &snapshot, None)?;
     }
     Ok(())
 }

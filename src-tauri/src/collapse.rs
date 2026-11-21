@@ -140,7 +140,7 @@ fn handle_link(application: &AppHandle, link: CollapseDeepLink) -> Result<(), St
     let Some(store_state) = application.try_state::<ManagedStateStore>() else {
         return Ok(());
     };
-    let event = {
+    let (event, publish_bundle) = {
         let mut store = lock(store_state.inner(), "persisted state")?;
         let matched = store
             .state()
@@ -155,14 +155,25 @@ fn handle_link(application: &AppHandle, link: CollapseDeepLink) -> Result<(), St
             .map(|project| project.id);
         match matched {
             Some(project_identifier) => {
-                open_matched_project(application, &window, &mut store, project_identifier, link)?
+                let (event, snapshot, selection) =
+                    open_matched_project(application, &mut store, project_identifier, link)?;
+                (event, Some((snapshot, selection)))
             }
-            None => CollapseLinkOpened::Unmatched {
-                notice: velocity_core::collapse::unmatched_project_notice(&link.repository),
-                repository: link.repository,
-            },
+            None => (
+                CollapseLinkOpened::Unmatched {
+                    notice: velocity_core::collapse::unmatched_project_notice(&link.repository),
+                    repository: link.repository,
+                },
+                None,
+            ),
         }
     };
+    if let Some((snapshot, selection)) = publish_bundle {
+        crate::layout::publish(&window, &snapshot, None)?;
+        if let Some((projects, selection)) = selection {
+            crate::projects::publish_selection(&window.as_ref().window(), projects, selection)?;
+        }
+    }
     if let CollapseLinkOpened::Opened {
         project_identifier, ..
     } = &event
@@ -177,13 +188,21 @@ fn handle_link(application: &AppHandle, link: CollapseDeepLink) -> Result<(), St
     focus_window(&window)
 }
 
+type MatchedProjectPublication = (
+    CollapseLinkOpened,
+    velocity_core::layout_view::LayoutSnapshot,
+    Option<(
+        velocity_store::projects::ProjectList,
+        velocity_store::projects::ProjectSelectionView,
+    )>,
+);
+
 fn open_matched_project(
     application: &AppHandle,
-    window: &WebviewWindow,
     store: &mut velocity_store::StateStore,
     project_identifier: u32,
     link: CollapseDeepLink,
-) -> Result<CollapseLinkOpened, String> {
+) -> Result<MatchedProjectPublication, String> {
     let layout = application.state::<MainLayout>();
     let mut layout = lock(layout.inner(), "main-window state")?;
     let selection = if store
@@ -204,19 +223,16 @@ fn open_matched_project(
         .and_then(velocity_core::collapse::land_context_label);
     layout.open_draft_thread(draft_context.clone());
     let snapshot = layout.snapshot();
-    crate::layout::publish(window, &snapshot, None)?;
-    if let Some(selection) = selection {
-        crate::projects::publish_selection(
-            &window.as_ref().window(),
-            store.list_projects(),
-            selection,
-        )?;
-    }
-    Ok(CollapseLinkOpened::Opened {
-        project_identifier,
-        repository: link.repository,
-        draft_context,
-    })
+    let selection = selection.map(|selection| (store.list_projects(), selection));
+    Ok((
+        CollapseLinkOpened::Opened {
+            project_identifier,
+            repository: link.repository,
+            draft_context,
+        },
+        snapshot,
+        selection,
+    ))
 }
 
 fn deliver_link_event(

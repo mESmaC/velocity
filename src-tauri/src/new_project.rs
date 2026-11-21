@@ -22,7 +22,7 @@ use crate::state::ManagedStateStore;
 pub async fn get_new_project_defaults(
     application: AppHandle,
 ) -> Result<NewProjectDefaults, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("get_new_project_defaults", move || {
         let home = application
             .path()
             .home_dir()

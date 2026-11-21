@@ -9,35 +9,88 @@ use velocity_store::threads::ThreadError;
 
 use crate::{LaunchError, LaunchPlan};
 
+/// Per-issue thread and hold association extracted under the store lock so `issue_panel`
+/// can drop the store lock before acquiring panel/layout locks or emitting events (#554).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IssueRowLink {
+    pub number: u32,
+    pub thread_identifier: Option<u32>,
+    pub thread_label: Option<String>,
+    pub hold: Option<velocity_github::IssueHold>,
+}
+
+pub fn collect_issue_row_links(
+    project: &velocity_store::ProjectItem,
+    repository: &str,
+    numbers: &[u32],
+) -> Vec<IssueRowLink> {
+    let now = now_unix_seconds();
+    numbers
+        .iter()
+        .copied()
+        .map(|number| {
+            let assignment = ThreadIssue::new(repository.into(), number);
+            let thread = issue_thread(project, &assignment);
+            let thread_identifier = thread.map(|thread| thread.id);
+            let mut thread_label = thread.map(velocity_store::issues::issue_thread_label);
+            // A landed issue stays open until a green integration build closes it (#504).
+            if thread.is_none()
+                && project
+                    .landed_awaiting_integration(&assignment, None)
+                    .is_some()
+            {
+                thread_label = Some("landed · waiting for integration".into());
+            } else if thread.is_none() && project.remote_work_hold(&assignment, None, now).is_some()
+            {
+                thread_label = Some("in progress elsewhere".into());
+            }
+            // The card says why dispatch has not started the issue and which files overlap (#525).
+            let hold = project.overlap_hold(&assignment).map(|wait| {
+                velocity_github::IssueHold::new(wait.label(), wait.reason(), wait.paths.clone())
+            });
+            IssueRowLink {
+                number,
+                thread_identifier,
+                thread_label,
+                hold,
+            }
+        })
+        .collect()
+}
+
+pub fn apply_issue_row_links(
+    rows: &mut [velocity_github::IssuePanelRow],
+    links: &[IssueRowLink],
+) -> bool {
+    let mut changed = false;
+    for row in rows {
+        let Some(link) = links.iter().find(|link| link.number == row.number) else {
+            continue;
+        };
+        if row.thread_identifier != link.thread_identifier {
+            row.thread_identifier = link.thread_identifier;
+            changed = true;
+        }
+        if row.thread_label != link.thread_label {
+            row.thread_label = link.thread_label.clone();
+            changed = true;
+        }
+        if row.hold != link.hold {
+            row.hold = link.hold.clone();
+            changed = true;
+        }
+    }
+    changed
+}
+
 pub fn associate_issue_threads(
     project: &velocity_store::ProjectItem,
     repository: &str,
     rows: &mut [velocity_github::IssuePanelRow],
 ) {
-    for row in rows {
-        let assignment = ThreadIssue::new(repository.into(), row.number);
-        let thread = issue_thread(project, &assignment);
-        row.thread_identifier = thread.map(|thread| thread.id);
-        row.thread_label = thread.map(velocity_store::issues::issue_thread_label);
-        // A landed issue stays open until a green integration build closes it (#504).
-        if thread.is_none()
-            && project
-                .landed_awaiting_integration(&assignment, None)
-                .is_some()
-        {
-            row.thread_label = Some("landed · waiting for integration".into());
-        } else if thread.is_none()
-            && project
-                .remote_work_hold(&assignment, None, now_unix_seconds())
-                .is_some()
-        {
-            row.thread_label = Some("in progress elsewhere".into());
-        }
-        // The card says why dispatch has not started the issue and which files overlap (#525).
-        row.hold = project.overlap_hold(&assignment).map(|wait| {
-            velocity_github::IssueHold::new(wait.label(), wait.reason(), wait.paths.clone())
-        });
-    }
+    let numbers: Vec<u32> = rows.iter().map(|row| row.number).collect();
+    let links = collect_issue_row_links(project, repository, &numbers);
+    let _ = apply_issue_row_links(rows, &links);
 }
 
 pub fn issue_palette_rows(

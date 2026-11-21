@@ -60,7 +60,7 @@ pub async fn get_code_graph(
     application: AppHandle,
     project_identifier: u32,
 ) -> Result<GraphComparison, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("get_code_graph", move || {
         let app_data = app_data(&application)?;
         let usage = usage::read(&app_data, &project_identifier.to_string());
         Ok(GraphComparison::from_usage(&usage))
@@ -77,7 +77,7 @@ pub async fn set_code_graph(
     project_identifier: u32,
     enabled: bool,
 ) -> Result<GraphComparison, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::off_ui_thread_named("set_code_graph", move || {
         let app_data = app_data(&application)?;
         let usage = usage::set_enabled(&app_data, &project_identifier.to_string(), enabled)
             .map_err(|error| error.to_string())?;
@@ -93,7 +93,7 @@ pub async fn reset_code_graph_usage(
     application: AppHandle,
     project_identifier: u32,
 ) -> Result<GraphComparison, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::off_ui_thread_named("reset_code_graph_usage", move || {
         let app_data = app_data(&application)?;
         let usage = usage::reset(&app_data, &project_identifier.to_string())
             .map_err(|error| error.to_string())?;
@@ -197,7 +197,7 @@ impl Base {
         }
         let root = project.root.clone();
         let branch = project.branch.clone();
-        crate::layout::off_ui_thread(move || {
+        crate::layout::run_concurrently("resolve_graph_base", move || {
             let commit =
                 velocity_git::resolve_commit(&root, &format!("refs/remotes/origin/{branch}"))
                     .or_else(|| {
@@ -234,14 +234,17 @@ async fn observe_graph(
 ) -> Result<GraphStatus, String> {
     let project = {
         let application = application.clone();
-        crate::layout::off_ui_thread(move || ProjectGraph::read(&application, identifier)).await?
+        crate::layout::run_concurrently("graph_status", move || {
+            ProjectGraph::read(&application, identifier)
+        })
+        .await?
     };
     let base = match Base::resolve(&application, identifier, &project).await {
         Ok(base) => base,
         Err(error) => return Ok(project.status.unavailable(error)),
     };
     let commit = base.commit().to_owned();
-    let (view, job) = crate::layout::off_ui_thread(move || {
+    let (view, job) = crate::layout::run_concurrently("graph_status_observe", move || {
         project
             .status
             .observe(&commit, retry)

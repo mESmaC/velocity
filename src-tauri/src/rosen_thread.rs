@@ -11,7 +11,6 @@ use velocity_rosen::thread_change::{self, ThreadChangeQuery};
 use velocity_store::{ReviewStage, ThreadItem, ThreadState};
 use velocity_threads::ThreadKey;
 
-use crate::state::ManagedStateStore;
 use crate::threads::{ManagedThreads, action_lock, lock, report};
 
 pub(crate) async fn refresh(
@@ -35,19 +34,17 @@ async fn refresh_matching(
     force: bool,
     landed_only: bool,
 ) -> Result<(), String> {
-    let queries = {
-        let store = lock(
-            application.state::<ManagedStateStore>().inner(),
-            "persisted state",
-        )?;
+    let change_filter = change.map(str::to_owned);
+    let queries = crate::state::with_store(application, move |store| {
         let Some(project) = store.project(project) else {
-            return Ok(());
+            return Vec::new();
         };
         project
             .threads
             .iter()
             .filter_map(|thread| {
-                let (generation, query) = query(thread, change, force, landed_only)?;
+                let (generation, query) =
+                    query(thread, change_filter.as_deref(), force, landed_only)?;
                 let finished = matches!(
                     thread.state,
                     ThreadState::Done | ThreadState::Closed | ThreadState::Merged
@@ -55,7 +52,8 @@ async fn refresh_matching(
                 Some((generation, query, finished))
             })
             .collect::<Vec<_>>()
-    };
+    })
+    .await?;
     if queries.is_empty() {
         return Ok(());
     }
@@ -89,18 +87,23 @@ async fn refresh_matching(
             None => eprintln!("Rosen project {project}: no change matches {change}"),
         }
     }
-    let mut store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    let retired = store
-        .forget_missing_rosen_changes(project, &missing)
-        .map_err(|error| error.to_string())?;
-    let refreshed = store
-        .save_rosen_change_views(project, views)
-        .map_err(|error| error.to_string())?;
-    if retired || refreshed {
-        crate::rosen_events::publish_progress(application, &store)?;
+    let refresh = crate::state::try_with_store(application, move |store| {
+        let retired = store
+            .forget_missing_rosen_changes(project, &missing)
+            .map_err(|error| error.to_string())?;
+        let refreshed = store
+            .save_rosen_change_views(project, views)
+            .map_err(|error| error.to_string())?;
+        Ok((retired || refreshed).then(|| store.layout_refresh()))
+    })
+    .await?;
+    if let Some(refresh) = refresh {
+        let handle = application.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::rosen_events::publish_progress(&handle, refresh)
+        })
+        .await
+        .map_err(|error| error.to_string())??;
     }
     Ok(())
 }
@@ -173,13 +176,13 @@ pub async fn run_rosen_thread_action(
 ) -> Result<(), String> {
     let key = (project_identifier, thread_identifier);
     if matches!(action, RosenThreadAction::Resolve) {
-        let _thread = open_thread(&application, key, &change)?;
+        let _thread = open_thread(&application, key, &change).await?;
         let server = crate::rosen::server(&application, key.0).await?;
         return queue_resolution(&application, &server, key, &change).await;
     }
     let lease = action_lock(&application, key)?;
     let _action = lease.lock().await;
-    let thread = open_thread(&application, key, &change)?;
+    let thread = open_thread(&application, key, &change).await?;
     let server = crate::rosen::server(&application, key.0).await?;
     let runtimes = application.state::<ManagedThreads>();
     let reserved = if matches!(action, RosenThreadAction::Abandon) {
@@ -197,26 +200,26 @@ pub async fn run_rosen_thread_action(
     result
 }
 
-fn open_thread(
+async fn open_thread(
     application: &AppHandle,
     key: ThreadKey,
     change: &str,
 ) -> Result<ThreadItem, String> {
-    let store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    store
-        .project(key.0)
-        .and_then(|project| {
-            project.threads.iter().find(|thread| {
-                thread.id == key.1
-                    && thread.rosen_change.as_deref() == Some(change)
-                    && !matches!(thread.state, ThreadState::Merged | ThreadState::Done)
+    let change = change.to_owned();
+    crate::state::try_with_store(application, move |store| {
+        store
+            .project(key.0)
+            .and_then(|project| {
+                project.threads.iter().find(|thread| {
+                    thread.id == key.1
+                        && thread.rosen_change.as_deref() == Some(change.as_str())
+                        && !matches!(thread.state, ThreadState::Merged | ThreadState::Done)
+                })
             })
-        })
-        .cloned()
-        .ok_or_else(|| "This thread no longer has that open Rosen change".into())
+            .cloned()
+            .ok_or_else(|| "This thread no longer has that open Rosen change".into())
+    })
+    .await
 }
 
 async fn queue_resolution(
@@ -229,18 +232,19 @@ async fn queue_resolution(
         .await
         .map_err(|error| error.to_string())?
     else {
-        let cleared = lock(
-            application.state::<ManagedStateStore>().inner(),
-            "persisted state",
-        )?
-        .clear_rosen_conflict_follow_up(key.0, key.1)
-        .map_err(|error| error.to_string())?;
-        if cleared {
-            let store = lock(
-                application.state::<ManagedStateStore>().inner(),
-                "persisted state",
-            )?;
-            report(crate::rosen_events::publish_progress(application, &store));
+        let progress = crate::state::try_with_store(application, move |store| {
+            let cleared = store
+                .clear_rosen_conflict_follow_up(key.0, key.1)
+                .map_err(|error| error.to_string())?;
+            Ok(cleared.then(|| store.layout_refresh()))
+        })
+        .await?;
+        if let Some(progress) = progress {
+            let handle = application.clone();
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                report(crate::rosen_events::publish_progress(&handle, progress));
+            })
+            .await;
         }
         report(refresh(application, key.0, Some(change), true).await);
         return Err("Rosen has no open conflicts for this change".to_owned());
@@ -251,20 +255,23 @@ async fn queue_resolution(
     )?
     .view(key)
     .map_or(0, |view| view.blocks.len());
-    let queued = {
-        let mut store = lock(
-            application.state::<ManagedStateStore>().inner(),
-            "persisted state",
-        )?;
+    let change_owned = change.to_owned();
+    let (queued, progress) = crate::state::try_with_store(application, move |store| {
         let outcome = store
-            .queue_rosen_resolution(key.0, key.1, change, message, live_len)
+            .queue_rosen_resolution(key.0, key.1, &change_owned, message, live_len)
             .map_err(|error| error.to_string())?;
         if outcome == velocity_store::rosen::QueueResolution::Unavailable {
             return Err("This thread no longer has that open Rosen change".into());
         }
-        crate::rosen_events::publish_progress(application, &store)?;
-        outcome
-    };
+        Ok((outcome, store.layout_refresh()))
+    })
+    .await?;
+    let handle = application.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::rosen_events::publish_progress(&handle, progress)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
     crate::rosen_events::deliver_conflict_now(
         application,
         key,

@@ -9,7 +9,19 @@ use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
 use velocity_core::projects::{self as policy, ProjectSelection, ProjectSource};
 
-use crate::{PersistedState, ProjectLocationKind, StateStore, StoreError};
+use crate::{ProjectLocationKind, StateStore, StoreError};
+
+pub use crate::project_layout::LayoutRefresh;
+
+/// Data extracted under the store lock for a project switch so layout restoration, snapshot
+/// creation and event emission run after releasing the store lock (#554).
+pub struct ProjectSwitchData {
+    pub refresh: LayoutRefresh,
+    pub selected_thread: Option<usize>,
+    pub search: String,
+    pub selection: ProjectSelectionView,
+    pub projects: ProjectList,
+}
 
 #[derive(Debug, Error)]
 pub enum ProjectError {
@@ -108,11 +120,13 @@ impl StateStore {
         crate::build_gate::sync_layout(&self.state, layout);
     }
 
-    pub fn switch_project_layout(
+    /// Updates the persisted active project in place and returns all inputs needed to restore
+    /// `LayoutState` and publish selection events after dropping the store lock (#554).
+    pub fn select_project(
         &mut self,
-        layout: &mut LayoutState,
         requested: u32,
-    ) -> Result<ProjectSelectionView, ProjectError> {
+        current_search: &str,
+    ) -> Result<ProjectSwitchData, ProjectError> {
         let identifiers: Vec<_> = self
             .state
             .projects
@@ -123,7 +137,7 @@ impl StateStore {
         let selection = ProjectSelection {
             projects: &self.state.projects,
             active_project: current,
-            search: layout.search_query().to_owned(),
+            search: current_search.to_owned(),
             menu_open: true,
         };
         let (selection, found) =
@@ -135,17 +149,65 @@ impl StateStore {
             active_project: selection.active_project,
             menu_open: selection.menu_open,
         };
-        if self.state.active_project_index != index {
-            let mut next = self.state.clone();
-            next.active_project_index = index;
-            self.commit_project_state(next)?;
-        }
-        let selected = crate::project_layout::active_project(&self.state)
+        self.set_active_project_index(index)?;
+        let selected_thread = crate::project_layout::active_project(&self.state)
             .and_then(|project| project.active_thread_id)
             .and_then(|identifier| usize::try_from(identifier).ok());
-        layout.restore_project(crate::project_layout::read_model(self), selected, search);
-        crate::build_gate::sync_layout(&self.state, layout);
-        Ok(view)
+        Ok(ProjectSwitchData {
+            refresh: self.layout_refresh(),
+            selected_thread,
+            search,
+            selection: view,
+            projects: self.list_projects(),
+        })
+    }
+
+    pub fn switch_project_layout(
+        &mut self,
+        layout: &mut LayoutState,
+        requested: u32,
+    ) -> Result<ProjectSelectionView, ProjectError> {
+        let current_search = layout.search_query().to_owned();
+        let switched = self.select_project(requested, &current_search)?;
+        layout.restore_store_project(
+            switched.refresh.revision,
+            switched.refresh.data,
+            switched.selected_thread,
+            switched.search,
+            switched.refresh.spec_locked,
+        );
+        Ok(switched.selection)
+    }
+
+    fn set_active_project_index(&mut self, index: u32) -> Result<(), ProjectError> {
+        let previous = self.state.active_project_index;
+        if previous == index {
+            return Ok(());
+        }
+        self.state.active_project_index = index;
+        if let Err(error) = self.record_change() {
+            self.state.active_project_index = previous;
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
+    fn toggle_active_project_settled(&mut self) -> Result<(), ProjectError> {
+        let Ok(index) = usize::try_from(self.state.active_project_index) else {
+            return Ok(());
+        };
+        let Some(project) = self.state.projects.get_mut(index) else {
+            return Ok(());
+        };
+        let previous = project.settled_expanded;
+        project.settled_expanded = !previous;
+        if let Err(error) = self.record_change() {
+            if let Some(project) = self.state.projects.get_mut(index) {
+                project.settled_expanded = previous;
+            }
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     pub fn dispatch_project_layout(
@@ -156,11 +218,7 @@ impl StateStore {
         // A failed persistence write must leave both the live view and its saved
         // selection unchanged. Apply transient actions to a candidate first.
         if matches!(action, LayoutAction::ToggleSettled) {
-            let mut next = self.state.clone();
-            if let Some(project) = next.projects.get_mut(next.active_project_index as usize) {
-                project.settled_expanded = !project.settled_expanded;
-            }
-            self.commit_project_state(next)?;
+            self.toggle_active_project_settled()?;
         }
         let mut candidate = layout.clone();
         let mut intent = crate::build_gate::dispatch_layout(&self.state, &mut candidate, action);
@@ -253,19 +311,21 @@ impl StateStore {
         if project.active_thread_id == selected {
             return Ok(());
         }
-        let mut next = self.state.clone();
-        let index = usize::try_from(next.active_project_index)
+        let index = usize::try_from(self.state.active_project_index)
             .map_err(|_| ProjectError::IndexOutOfRange)?;
-        let project = next
+        let project = self
+            .state
             .projects
             .get_mut(index)
             .ok_or(ProjectError::IndexOutOfRange)?;
+        let previous = project.active_thread_id;
         project.active_thread_id = selected;
-        self.commit_project_state(next)
-    }
-
-    fn commit_project_state(&mut self, next: PersistedState) -> Result<(), ProjectError> {
-        self.store_snapshot(next)?;
+        if let Err(error) = self.record_change() {
+            if let Some(project) = self.state.projects.get_mut(index) {
+                project.active_thread_id = previous;
+            }
+            return Err(error.into());
+        }
         Ok(())
     }
 }

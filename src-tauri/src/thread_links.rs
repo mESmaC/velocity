@@ -43,40 +43,38 @@ fn show_thread(application: &AppHandle, project: u32, thread: u32) -> Result<(),
     let Some(store) = application.try_state::<ManagedStateStore>() else {
         return Ok(());
     };
-    let mut store = lock(store.inner(), "persisted state")?;
-    if !store
-        .project(project)
-        .is_some_and(|project| project.threads.iter().any(|item| item.id == thread))
-    {
-        return Err("The linked Velocity thread is unavailable on this installation".into());
-    }
-    let layout = application.state::<MainLayout>();
-    let mut layout = lock(layout.inner(), "main-window state")?;
-    let selection = if store
-        .active_project()
-        .is_some_and(|active| active.id == project)
-    {
-        None
-    } else {
-        Some(
-            store
-                .switch_project_layout(&mut layout, project)
-                .map_err(|error| error.to_string())?,
-        )
+    let (snapshot, selection) = {
+        let mut store = lock(store.inner(), "persisted state")?;
+        if !store
+            .project(project)
+            .is_some_and(|project| project.threads.iter().any(|item| item.id == thread))
+        {
+            return Err("The linked Velocity thread is unavailable on this installation".into());
+        }
+        let layout = application.state::<MainLayout>();
+        let mut layout = lock(layout.inner(), "main-window state")?;
+        let selection = if store
+            .active_project()
+            .is_some_and(|active| active.id == project)
+        {
+            None
+        } else {
+            Some(
+                store
+                    .switch_project_layout(&mut layout, project)
+                    .map_err(|error| error.to_string())?,
+            )
+        };
+        let outcome = store
+            .dispatch_project_layout(&mut layout, LayoutAction::OpenThread(thread as usize))
+            .map_err(|error| error.to_string())?;
+        let selection = selection.map(|selection| (store.list_projects(), selection));
+        (outcome.snapshot, selection)
     };
-    let outcome = store
-        .dispatch_project_layout(&mut layout, LayoutAction::OpenThread(thread as usize))
-        .map_err(|error| error.to_string())?;
-    crate::layout::publish(&window, &outcome.snapshot, None)?;
-    if let Some(selection) = selection {
-        crate::projects::publish_selection(
-            &window.as_ref().window(),
-            store.list_projects(),
-            selection,
-        )?;
+    crate::layout::publish(&window, &snapshot, None)?;
+    if let Some((projects, selection)) = selection {
+        crate::projects::publish_selection(&window.as_ref().window(), projects, selection)?;
     }
-    drop(layout);
-    drop(store);
     window.unminimize().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())
 }

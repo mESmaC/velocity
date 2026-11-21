@@ -38,7 +38,7 @@ pub async fn get_goal_swarm_dialog(
     application: AppHandle,
     query: GoalSwarmDialogQuery,
 ) -> Result<GoalSwarmDialog, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("get_goal_swarm_dialog", move || {
         let store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
@@ -60,13 +60,13 @@ pub async fn read_goal_swarm_pool(
     application: AppHandle,
     sources: Option<WorkSources>,
 ) -> Result<(), String> {
-    let project = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?
-    .active_project()
-    .cloned()
-    .ok_or("Select or create a project first")?;
+    let project = crate::state::try_with_store(&application, |store| {
+        store
+            .active_project()
+            .cloned()
+            .ok_or_else(|| "Select or create a project first".to_owned())
+    })
+    .await?;
     let identifier = project.id;
     let read = tauri::async_runtime::spawn_blocking(move || {
         velocity_threads::work_pool::read_selected_work_pool(&project, sources.unwrap_or_default())
@@ -92,7 +92,7 @@ pub async fn launch_goal_swarm(
     application: AppHandle,
     request: LaunchGoalSwarmRequest,
 ) -> Result<LayoutSnapshot, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("launch_goal_swarm", move || {
         velocity_rosen::memory::require_headroom()?;
         let (swarm_id, slots, mix_summary) = {
             let mut store = lock(
@@ -130,7 +130,7 @@ pub async fn add_goal_agents(
     application: AppHandle,
     request: AddGoalAgentsRequest,
 ) -> Result<LayoutSnapshot, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("add_goal_agents", move || {
         velocity_rosen::memory::require_headroom()?;
         let slots = lock(
             application.state::<ManagedStateStore>().inner(),
@@ -230,15 +230,16 @@ pub fn broadcast(
     let event = GoalFeedEvent::new(&clock_timestamp(), "you", GoalEventKind::You, message);
     Some(
         record_event_and_publish(application, project, swarm, event).and_then(|()| {
-            let store = lock(
+            let refresh = lock(
                 application.state::<ManagedStateStore>().inner(),
                 "persisted state",
-            )?;
+            )?
+            .layout_refresh();
             let mut layout = lock(
                 application.state::<MainLayout>().inner(),
                 "main-window state",
             )?;
-            store.refresh_follow_through_layout(&mut layout);
+            let _ = refresh.apply(&mut layout);
             Ok(layout.snapshot())
         }),
     )
@@ -330,16 +331,6 @@ fn finish_goal_launch(
     {
         return Err(reason.clone());
     }
-    let store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    let mut layout = lock(
-        application.state::<MainLayout>().inner(),
-        "main-window state",
-    )?;
-    store.refresh_layout(&mut layout);
-    layout.close_goal_dialog_after_launch(Some(swarm_id as usize));
     let plural = if started == 1 { "" } else { "s" };
     let toast = if launched {
         format!(
@@ -350,10 +341,10 @@ fn finish_goal_launch(
             "Added {started} agent{plural} \u{00b7} {started} workspace{plural} \u{00b7} claiming work in AIRC"
         )
     };
-    layout.show_toast(toast, None);
-    let snapshot = layout.snapshot();
-    crate::layout::publish(application, &snapshot, None)?;
-    Ok(snapshot)
+    crate::layout::refresh_with_change_and_publish(application, move |layout| {
+        layout.close_goal_dialog_after_launch(Some(swarm_id as usize));
+        layout.show_toast(toast, None);
+    })
 }
 
 pub(crate) async fn run_keep_going(
@@ -456,15 +447,5 @@ fn record_event_and_publish(
 }
 
 fn publish_snapshot(application: &AppHandle) -> Result<(), String> {
-    let store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    let mut layout = lock(
-        application.state::<MainLayout>().inner(),
-        "main-window state",
-    )?;
-    store.refresh_follow_through_layout(&mut layout);
-    let snapshot = layout.snapshot();
-    crate::layout::publish(application, &snapshot, None)
+    crate::layout::refresh_and_publish(application)
 }

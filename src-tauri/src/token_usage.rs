@@ -1,8 +1,6 @@
 use tauri::{AppHandle, Manager};
 use velocity_graph::token_usage::{self, Period, Project, Report};
 
-use crate::state::ManagedStateStore;
-
 #[tauri::command]
 #[specta::specta]
 pub async fn get_token_usage(
@@ -12,47 +10,47 @@ pub async fn get_token_usage(
     thread_identifier: Option<u32>,
 ) -> Result<Report, String> {
     let thread = project_identifier.zip(thread_identifier);
-    let store = application.state::<ManagedStateStore>();
-    let (mut projects, samples, trial_enabled) = {
-        let store = store.lock().map_err(|error| error.to_string())?;
-        let samples = if thread.is_none() {
-            store
+    let (mut projects, samples, trial_enabled) =
+        crate::state::with_store(&application, move |store| {
+            let samples = if thread.is_none() {
+                store
+                    .state()
+                    .projects
+                    .iter()
+                    .filter(|project| project_identifier.is_none_or(|id| id == project.id))
+                    .map(|project| (project.id, project.handoff_items.clone()))
+                    .filter(|(_, items)| items.values().any(|item| item.crossed_at.is_some()))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let projects = store
                 .state()
                 .projects
                 .iter()
-                .filter(|project| project_identifier.is_none_or(|id| id == project.id))
-                .map(|project| (project.id, project.handoff_items.clone()))
-                .filter(|(_, items)| items.values().any(|item| item.crossed_at.is_some()))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let projects = store
-            .state()
-            .projects
-            .iter()
-            .filter(|project| thread.is_none_or(|(id, _)| id == project.id))
-            .map(|project| {
-                (
-                    project.id,
-                    Project {
-                        id: project.id,
-                        name: project.name.clone(),
-                        threads: project
-                            .threads
-                            .iter()
-                            .map(|thread| (thread.id, thread.title.clone()))
-                            .collect(),
-                    },
-                )
-            })
-            .collect::<std::collections::BTreeMap<_, _>>();
-        (
-            projects,
-            samples,
-            store.state().settings.agents.context_handoff,
-        )
-    };
+                .filter(|project| thread.is_none_or(|(id, _)| id == project.id))
+                .map(|project| {
+                    (
+                        project.id,
+                        Project {
+                            id: project.id,
+                            name: project.name.clone(),
+                            threads: project
+                                .threads
+                                .iter()
+                                .map(|thread| (thread.id, thread.title.clone()))
+                                .collect(),
+                        },
+                    )
+                })
+                .collect::<std::collections::BTreeMap<_, _>>();
+            (
+                projects,
+                samples,
+                store.state().settings.agents.context_handoff,
+            )
+        })
+        .await?;
     if thread.is_none() {
         projects.entry(0).or_insert_with(|| Project {
             id: 0,
@@ -66,7 +64,7 @@ pub async fn get_token_usage(
         .map_err(|error| error.to_string())?;
     let show_trial = thread.is_none() && (trial_enabled || !samples.is_empty());
     let items = trial_items(&data, samples).await;
-    crate::layout::off_ui_thread(move || {
+    crate::layout::run_concurrently("get_token_usage", move || {
         let mut report = token_usage::report(&data, projects, period, thread)
             .map_err(|error| error.to_string())?;
         if show_trial {

@@ -388,34 +388,40 @@ fn publish(
     head: velocity_rosen::EventHead,
     observation: Option<velocity_rosen::MirrorObservation>,
 ) -> Result<(), String> {
-    let mut store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    let (sequence, state) = observation.map_or((0, None), |item| (item.sequence, item.state));
-    store
-        .resume_rosen_mirror(project, &head.identity, sequence, state.as_ref())
-        .map_err(|error| error.to_string())?;
-    let Some(item) = store.project(project) else {
-        return Ok(());
-    };
-    if sequence < item.rosen_mirror_sequence {
-        return Ok(());
-    }
-    let changed = item.rosen_mirror != state;
-    let toast = (item.rosen_mirror_rejection_sequence.is_none()
-        && state.as_ref().is_some_and(|state| state.rejected))
-    .then(|| format!("{}: Rosen mirror rejected · needs a person", item.name));
-    store
-        .save_rosen_mirror(project, sequence, state)
-        .map_err(|error| error.to_string())?;
-    if changed || toast.is_some() {
-        let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;
-        store.refresh_layout(&mut layout);
-        if let Some(message) = toast {
-            layout.show_toast(message, None);
+    let update = {
+        let mut store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let (sequence, state) = observation.map_or((0, None), |item| (item.sequence, item.state));
+        store
+            .resume_rosen_mirror(project, &head.identity, sequence, state.as_ref())
+            .map_err(|error| error.to_string())?;
+        let Some(item) = store.project(project) else {
+            return Ok(());
+        };
+        if sequence < item.rosen_mirror_sequence {
+            return Ok(());
         }
-        crate::layout::publish(application, &layout.snapshot(), None)?;
+        let changed = item.rosen_mirror != state;
+        let toast = (item.rosen_mirror_rejection_sequence.is_none()
+            && state.as_ref().is_some_and(|state| state.rejected))
+        .then(|| format!("{}: Rosen mirror rejected · needs a person", item.name));
+        store
+            .save_rosen_mirror(project, sequence, state)
+            .map_err(|error| error.to_string())?;
+        (changed || toast.is_some()).then(|| (store.layout_refresh(), toast))
+    };
+    if let Some((refresh, toast)) = update {
+        let snapshot = {
+            let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;
+            let _ = refresh.apply(&mut layout);
+            if let Some(message) = toast {
+                layout.show_toast(message, None);
+            }
+            layout.snapshot()
+        };
+        crate::layout::publish(application, &snapshot, None)?;
     }
     Ok(())
 }
@@ -428,18 +434,19 @@ fn save_collapse_repository(
     repository: Option<String>,
     live_state: Option<bool>,
 ) -> Result<(), String> {
-    let mut store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
     let mirrored = repository.is_some();
-    let changed = store
-        .save_collapse_repository(project, repository, live_state)
-        .map_err(|error| error.to_string())?;
-    if changed {
-        let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;
-        store.refresh_layout(&mut layout);
-        crate::layout::publish(application, &layout.snapshot(), None)?;
+    let refresh = {
+        let mut store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let changed = store
+            .save_collapse_repository(project, repository, live_state)
+            .map_err(|error| error.to_string())?;
+        changed.then(|| store.layout_refresh())
+    };
+    if let Some(refresh) = refresh {
+        crate::layout::apply_refresh_and_publish(application, refresh)?;
     }
     if mirrored {
         // A push just reached Collapse: read its land and forwarder state now (#427).
@@ -921,20 +928,27 @@ fn publish_divergence(
     divergence: Option<MirrorDivergence>,
     message: Option<String>,
 ) -> Result<bool, String> {
-    let mut store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    let changed = store
-        .save_mirror_divergence(project, divergence)
-        .map_err(|error| error.to_string())?;
-    if changed || message.is_some() {
-        let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;
-        store.refresh_layout(&mut layout);
-        if let Some(message) = message {
-            layout.show_toast(message, None);
-        }
-        crate::layout::publish(application, &layout.snapshot(), None)?;
+    let (changed, refresh) = {
+        let mut store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let changed = store
+            .save_mirror_divergence(project, divergence)
+            .map_err(|error| error.to_string())?;
+        let refresh = (changed || message.is_some()).then(|| store.layout_refresh());
+        (changed, refresh)
+    };
+    if let Some(refresh) = refresh {
+        let snapshot = {
+            let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;
+            let _ = refresh.apply(&mut layout);
+            if let Some(message) = message {
+                layout.show_toast(message, None);
+            }
+            layout.snapshot()
+        };
+        crate::layout::publish(application, &snapshot, None)?;
     }
     Ok(changed)
 }
@@ -950,9 +964,12 @@ fn project_name(application: &AppHandle, project: u32) -> Result<String, String>
 }
 
 fn toast(application: &AppHandle, message: String) -> Result<(), String> {
-    let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;
-    layout.show_toast(message, None);
-    crate::layout::publish(application, &layout.snapshot(), None)
+    let snapshot = {
+        let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;
+        layout.show_toast(message, None);
+        layout.snapshot()
+    };
+    crate::layout::publish(application, &snapshot, None)
 }
 
 /// A commit's first twelve characters, as toasts name it.

@@ -9,7 +9,6 @@ use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
 use velocity_core::navigation::NavigationIntent;
 use velocity_interview::Interviews;
-use velocity_store::build_gate;
 
 pub type MainLayout = Mutex<LayoutState>;
 
@@ -33,7 +32,7 @@ pub struct LayoutIntentRequested {
 #[tauri::command]
 #[specta::specta]
 pub async fn get_layout_state(window: Window) -> Result<LayoutSnapshot, String> {
-    concurrently("get_layout_state", move || read_layout(&window)).await
+    run_concurrently("get_layout_state", move || read_layout(&window)).await
 }
 
 #[tauri::command]
@@ -42,12 +41,12 @@ pub async fn dispatch_layout(
     window: Window,
     action: LayoutAction,
 ) -> Result<LayoutSnapshot, String> {
-    concurrently("dispatch_layout", move || dispatch(&window, action)).await
+    run_concurrently("dispatch_layout", move || dispatch(&window, action)).await
 }
 
-/// The layout commands take only the store and layout locks, in that order, so they run
-/// side by side on the blocking pool and never wait behind a slower command (#273).
-async fn concurrently<Value: Send + 'static>(
+/// Runs a UI command on Tokio's blocking pool without queuing behind the serial command
+/// thread, recording per-command latency under `command` (#273, #554).
+pub(crate) async fn run_concurrently<Value: Send + 'static>(
     command: &'static str,
     work: impl FnOnce() -> Result<Value, String> + Send + 'static,
 ) -> Result<Value, String> {
@@ -120,15 +119,19 @@ async fn off_ui_thread_labeled<Value: Send + 'static>(
 }
 
 fn read_layout(window: &Window) -> Result<LayoutSnapshot, String> {
-    let store = window.state::<ManagedStateStore>();
-    let state = window.state::<MainLayout>();
-    let store = store.lock().map_err(|error| error.to_string())?;
-    let mut state = state
-        .lock()
-        .map_err(|error| format!("Could not read main-window state: {error}"))?;
-    let snapshot = build_gate::layout_snapshot(store.state(), &mut state);
-    drop(state);
-    drop(store);
+    let spec_locked = {
+        let store = window.state::<ManagedStateStore>();
+        let store = store.lock().map_err(|error| error.to_string())?;
+        store.active_project().map(|project| project.spec_locked)
+    };
+    let snapshot = {
+        let state = window.state::<MainLayout>();
+        let mut state = state
+            .lock()
+            .map_err(|error| format!("Could not read main-window state: {error}"))?;
+        state.set_project_spec_locked(spec_locked);
+        state.snapshot()
+    };
     crate::collapse::flush_pending_link(window.app_handle());
     Ok(snapshot)
 }
@@ -143,11 +146,13 @@ fn dispatch(window: &Window, action: LayoutAction) -> Result<LayoutSnapshot, Str
     let outcome = store
         .dispatch_project_layout(&mut state, action)
         .map_err(|error| error.to_string())?;
-    if outcome.selection.is_some() {
+    let snapshot = if outcome.selection.is_some() {
         // A project switch rebuilds the window from state.json; put live interviews back.
         velocity_interview::overlay_live(window.state::<Interviews>().inner(), &store, &mut state);
-    }
-    let snapshot = state.snapshot();
+        state.snapshot()
+    } else {
+        outcome.snapshot
+    };
     let project_selection = outcome
         .selection
         .map(|selection| (store.list_projects(), selection));
@@ -259,24 +264,84 @@ fn deliver_steer(application: &AppHandle, project: Option<u32>, intent: &LayoutI
     };
     // A steer error means the agent never got the message: a send that reached it reports
     // later failures without an error (#274). Put it back in the composer and say why.
-    let managed = application.state::<MainLayout>();
-    let Ok(mut state) = managed.lock() else {
-        return;
+    let snapshot = {
+        let managed = application.state::<MainLayout>();
+        let Ok(mut state) = managed.lock() else {
+            return;
+        };
+        if let Some(project) = project {
+            state.return_unsent_message(project, *identifier, prompt);
+        }
+        state.show_toast(error, None);
+        state.snapshot()
     };
-    if let Some(project) = project {
-        state.return_unsent_message(project, *identifier, prompt);
-    }
-    state.show_toast(error, None);
-    crate::threads::report(publish(application, &state.snapshot(), None));
+    crate::threads::report(publish(application, &snapshot, None));
 }
 
 pub(crate) fn show_toast(application: &AppHandle, message: String) {
-    let managed = application.state::<MainLayout>();
-    let Ok(mut state) = managed.lock() else {
-        return;
+    let snapshot = {
+        let managed = application.state::<MainLayout>();
+        let Ok(mut state) = managed.lock() else {
+            return;
+        };
+        state.show_toast(message, None);
+        state.snapshot()
     };
-    state.show_toast(message, None);
-    crate::threads::report(publish(application, &state.snapshot(), None));
+    crate::threads::report(publish(application, &snapshot, None));
+}
+
+/// Applies pre-extracted store data to `MainLayout`, drops the layout lock, and emits the
+/// resulting snapshot without ever holding `ManagedStateStore` across layout or emit (#554).
+pub(crate) fn apply_refresh_and_publish(
+    application: &AppHandle,
+    refresh: velocity_store::projects::LayoutRefresh,
+) -> Result<(), String> {
+    let snapshot = {
+        let managed = application.state::<MainLayout>();
+        let mut layout = managed
+            .lock()
+            .map_err(|error| format!("Could not read main-window state: {error}"))?;
+        if !refresh.apply(&mut layout) {
+            return Ok(());
+        }
+        layout.snapshot()
+    };
+    publish(application, &snapshot, None)
+}
+
+/// Extracts fresh store data, drops the store lock, updates `MainLayout`, drops the layout
+/// lock, and publishes the resulting snapshot (#554).
+pub(crate) fn refresh_and_publish(application: &AppHandle) -> Result<(), String> {
+    let refresh = {
+        let managed = application.state::<ManagedStateStore>();
+        let store = managed.lock().map_err(|error| error.to_string())?;
+        store.layout_refresh()
+    };
+    apply_refresh_and_publish(application, refresh)
+}
+
+/// Applies `change` over fresh store data without holding `ManagedStateStore` across layout
+/// work or `MainLayout` across event emission (#554).
+pub(crate) fn refresh_with_change_and_publish(
+    application: &AppHandle,
+    change: impl FnOnce(&mut LayoutState),
+) -> Result<LayoutSnapshot, String> {
+    let refresh = {
+        let managed = application.state::<ManagedStateStore>();
+        let store = managed.lock().map_err(|error| error.to_string())?;
+        store.layout_refresh()
+    };
+    let snapshot = {
+        let managed = application.state::<MainLayout>();
+        let mut layout = managed
+            .lock()
+            .map_err(|error| format!("Could not read main-window state: {error}"))?;
+        let _ = refresh.apply(&mut layout);
+        change(&mut layout);
+        layout.snapshot()
+    };
+    publish(application, &snapshot, None)?;
+    Ok(snapshot)
 }
 
 /// How often `publish_soon` sends the window its latest state at most.
@@ -303,9 +368,12 @@ pub fn publish_soon(application: &AppHandle) {
 }
 
 fn publish_latest(application: &AppHandle) -> Result<(), String> {
-    let managed = application.state::<MainLayout>();
-    let layout = managed.lock().map_err(|error| error.to_string())?;
-    publish(application, &layout.snapshot(), None)
+    let snapshot = {
+        let managed = application.state::<MainLayout>();
+        let layout = managed.lock().map_err(|error| error.to_string())?;
+        layout.snapshot()
+    };
+    publish(application, &snapshot, None)
 }
 
 pub fn publish<Handle: Emitter<Wry> + Manager<Wry>>(
@@ -313,12 +381,23 @@ pub fn publish<Handle: Emitter<Wry> + Manager<Wry>>(
     snapshot: &LayoutSnapshot,
     intent: Option<LayoutIntent>,
 ) -> Result<(), String> {
-    // Publish under the same lock as the update, preserving reducer/event order.
-    LayoutStateChanged {
-        state: snapshot.clone(),
+    // Serialize only emission (never under store/layout locks) so concurrent publishers
+    // deliver snapshots in non-decreasing revision order and drop stale ones (#554).
+    static PUBLISHED_REVISION: OnceLock<Mutex<Option<u32>>> = OnceLock::new();
+    let order = PUBLISHED_REVISION.get_or_init(|| Mutex::new(None));
+    let mut last = order
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let stale = last.is_some_and(|previous| (previous.wrapping_sub(snapshot.revision) as i32) > 0);
+    if !stale {
+        LayoutStateChanged {
+            state: snapshot.clone(),
+        }
+        .emit(window)
+        .map_err(|error| format!("Could not publish main-window state: {error}"))?;
+        *last = Some(snapshot.revision);
     }
-    .emit(window)
-    .map_err(|error| format!("Could not publish main-window state: {error}"))?;
+    drop(last);
     if let Some(intent) = intent {
         LayoutIntentRequested { intent }
             .emit(window)
