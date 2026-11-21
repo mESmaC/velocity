@@ -101,20 +101,79 @@ impl Source {
         })
     }
 
-    pub fn overlaps(&self, root: &Path, paths: Vec<String>) -> Result<serde_json::Value, Error> {
+    pub fn overlaps(
+        &self,
+        root: &Path,
+        graph: &crate::graph::Graph,
+        paths: Vec<String>,
+    ) -> Result<serde_json::Value, Error> {
         let change = WorkspaceMarker::read(root)?.change.to_string();
+        let filter_paths = paths.clone();
         self.request(async {
             let client = velocity_rosen::connection::requests(&self.endpoint).await?;
-            let query = OverlapQuery { change: Some(change.clone()), paths };
+            let query = OverlapQuery {
+                change: Some(change.clone()),
+                paths,
+            };
             let answer = client.overlaps(query).await?;
             let mut overlaps = Vec::new();
             for overlap in answer.overlaps.iter().take(8) {
-                let symbols = crate::coordination::rosen_overlap_symbols(&client, &change, overlap).await;
+                let symbols =
+                    crate::coordination::rosen_overlap_symbols(&client, &change, overlap).await;
                 overlaps.push(serde_json::json!({
                     "change": overlap.change, "owner": overlap.owner, "paths": overlap.paths, "symbols": symbols,
                 }));
             }
-            Ok(serde_json::json!({"overlaps": overlaps, "total": answer.overlaps.len()}))
+            let signature_warnings = crate::signature_impact::change_stale_reference_warnings(
+                &client,
+                graph,
+                &change,
+                &filter_paths,
+            )
+            .await;
+            Ok(serde_json::json!({
+                "overlaps": overlaps,
+                "total": answer.overlaps.len(),
+                "signature_warnings": signature_warnings,
+            }))
+        })
+    }
+
+    pub fn change_signature_warnings(
+        &self,
+        graph: &crate::graph::Graph,
+        change: &str,
+    ) -> Result<Vec<crate::signature_impact::StaleReferenceWarning>, Error> {
+        let change = change.to_owned();
+        self.request(async {
+            let client = velocity_rosen::connection::requests(&self.endpoint).await?;
+            Ok(crate::signature_impact::change_stale_reference_warnings(
+                &client,
+                graph,
+                &change,
+                &[],
+            )
+            .await)
+        })
+    }
+
+    pub fn dispatch_signature_warnings(
+        &self,
+        graph: &crate::graph::Graph,
+        texts: &[String],
+        exclude_change: Option<&str>,
+    ) -> Result<Vec<crate::signature_impact::StaleReferenceWarning>, Error> {
+        let texts = texts.to_vec();
+        let exclude = exclude_change.map(str::to_owned);
+        self.request(async {
+            let client = velocity_rosen::connection::requests(&self.endpoint).await?;
+            Ok(crate::signature_impact::dispatch_stale_reference_warnings(
+                &client,
+                graph,
+                &texts,
+                exclude.as_deref(),
+            )
+            .await)
         })
     }
 

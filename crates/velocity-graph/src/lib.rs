@@ -21,6 +21,7 @@ mod query;
 mod resolve;
 mod rosen;
 mod search;
+pub mod signature_impact;
 mod spec_outline;
 pub mod status;
 mod subsystems;
@@ -39,7 +40,13 @@ pub use mcp::{
     INSTRUCTIONS, SERVER_NAME, SERVER_SWITCH, WARM_SWITCH, serve, serve_stdio, server_arguments,
     task_context, warm, warm_stdio, workspace_map,
 };
-pub use project_service::{PROJECT_SWITCH, mentioned_paths, serve_project, warm_project};
+pub use project_service::{
+    PROJECT_SWITCH, change_signature_warnings, dispatch_signature_warnings, mentioned_paths,
+    serve_project, warm_project,
+};
+pub use signature_impact::{
+    AlteredSignature, ChangeStatus, ReferenceDirection, SignatureChangeKind, StaleReferenceWarning,
+};
 pub use tools::Tools;
 
 #[derive(Debug, thiserror::Error)]

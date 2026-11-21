@@ -61,6 +61,7 @@ A held issue's Work card shows the hold, its reason and the blocker's overlappin
 
 **Task brief at dispatch and fix-forward handoffs (#539).** Velocity prepares a structured task brief ahead of the first prompt whenever it dispatches an issue, task or goal-swarm item.
 The brief lists the work item's acceptance criteria, links to referenced spec sections (`file:lines`) and any §8 decision mentioning them, open Rosen changes touching nearby paths or crates with their threads plus dependencies and blockers, recent AIRC discoveries and post-land failures in the same crates, and who owns the item through review.
+When another open or recently landed Rosen change alters a public symbol signature, IPC command or event type that an issue touches, dispatch warns before starting the issue and includes the signature warnings in its task brief (#542).
 Build repairs, CI repairs and post-land revert handoffs reuse the same brief structure and also carry the landed head commit and the failed check.
 When a Rosen change lands on an after-land project, Velocity ticks its owning unchecked §7 implementation-order item (`- [ ]` to `- [x]`) in its own single-line Rosen change, so agents do not edit SPEC.md §7 in every change.
 Threads that choose their own work can call AIRC's `next_work { sources?, branch?, files? }` to atomically claim the first unclaimed, unblocked item (user tasks, actionable issues in critical-path and milestone order, unchecked §7 items, then agent tasks) and receive its task brief.

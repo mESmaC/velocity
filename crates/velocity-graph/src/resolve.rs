@@ -930,7 +930,12 @@ impl Scope<'_, '_> {
                 .copied()
                 .collect();
             let targets = if self.javascript() {
-                self.javascript_targets(import, None)
+                let targets = self.javascript_targets(import, None);
+                if targets.is_empty() && is_bindings_specifier(&import.source) {
+                    self.rust_binding_targets(import)
+                } else {
+                    targets
+                }
             } else {
                 self.import_scope(import, &candidates, true)
             };
@@ -945,6 +950,39 @@ impl Scope<'_, '_> {
             ));
         }
         edges
+    }
+
+    fn rust_binding_targets(&self, import: &Import) -> Vec<usize> {
+        let raw = import.original.as_deref().unwrap_or(&import.name);
+        if raw == "commands" || raw == "events" {
+            return Vec::new();
+        }
+        let rust_name = raw
+            .strip_suffix("_Serialize")
+            .or_else(|| raw.strip_suffix("_Deserialize"))
+            .unwrap_or(raw);
+        let records = &self.graph().records;
+        self.context
+            .symbols
+            .get(rust_name)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|&candidate| {
+                let record = &records[candidate];
+                !record.test
+                    && record.path.ends_with(".rs")
+                    && matches!(
+                        record.kind,
+                        RecordKind::Symbol(
+                            SymbolKind::Class
+                                | SymbolKind::Interface
+                                | SymbolKind::Type
+                                | SymbolKind::Constant
+                        )
+                    )
+            })
+            .collect()
     }
 
     fn rust_import_files(&self, import: &Import) -> Vec<String> {
@@ -1049,6 +1087,12 @@ impl Scope<'_, '_> {
             .cloned()
             .collect()
     }
+}
+
+/// Whether a JavaScript/TypeScript import targets generated tauri-specta bindings.
+fn is_bindings_specifier(specifier: &str) -> bool {
+    let trimmed = specifier.trim_end_matches(".ts").trim_end_matches(".js");
+    trimmed == "bindings" || trimmed.ends_with("/bindings")
 }
 
 /// The project files a relative JavaScript specifier names from `folder`.

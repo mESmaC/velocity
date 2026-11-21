@@ -68,11 +68,21 @@ impl RunQueue {
         let stop = CancellationToken::new();
         let outstanding = Arc::new(AtomicUsize::new(0));
         let registry = Arc::new(Mutex::new(RunRegistry::from_history(&history)));
+        let graph_context = setup.airc.as_ref().and_then(super::airc::airc_project).map(
+            |(airc, app_data, project)| {
+                (
+                    airc.command.clone(),
+                    PathBuf::from(app_data),
+                    project.to_owned(),
+                )
+            },
+        );
         let host = QueueHost {
             token,
             rosen: rosen.program,
             worktree: setup.worktree.clone(),
             launch: launch.clone(),
+            graph_context,
             stop: stop.clone(),
             events,
             outstanding: Arc::clone(&outstanding),
@@ -522,6 +532,7 @@ struct QueueHost {
     rosen: PathBuf,
     worktree: PathBuf,
     launch: AgentLaunch,
+    graph_context: Option<(PathBuf, PathBuf, String)>,
     stop: CancellationToken,
     events: UnboundedSender<QueueEvent>,
     outstanding: Arc<AtomicUsize>,
@@ -690,7 +701,7 @@ impl QueueHost {
     /// Runs the change's preflight checks after the agent ends its turn so no concurrent
     /// edits race with snapshotting, formatting or crate checks.
     fn start_preflight(&self, runs: &mut JoinSet<RunResult>) -> Result<PathBuf, String> {
-        let run = PreflightRun::admit(&self.worktree, &self.launch)?;
+        let run = PreflightRun::admit(&self.worktree, &self.launch, self.graph_context.clone())?;
         let log = run.log.clone();
         let mut turn_ended = self.turn_ended.clone();
         turn_ended.mark_unchanged();

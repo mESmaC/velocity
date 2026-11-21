@@ -1019,7 +1019,7 @@ fn start_issue(
         return Ok(());
     }
     let claimed = claimed_pieces(application, identifier)?;
-    let (plan, thread) = {
+    let (plan, thread, rosen_project) = {
         let mut store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
@@ -1049,6 +1049,8 @@ fn start_issue(
         {
             return Ok(());
         }
+        let rosen_project =
+            (project.version_control == VersionControl::Rosen).then(|| project.clone());
         let plan = velocity_threads::dispatch::plan_project_issue_dispatch(
             &store, identifier, repository, issue, false,
         )
@@ -1061,8 +1063,16 @@ fn start_issue(
                 issue.updated_at.clone(),
             )
             .map_err(|error| error.to_string())?;
-        (plan.launch, thread)
+        (plan.launch, thread, rosen_project)
     };
+    if let Some(project) = rosen_project {
+        crate::graph_access::warn_dispatch_signatures(
+            application,
+            &project,
+            issue.number,
+            &[issue.title.clone(), issue.body.clone()],
+        );
+    }
     crate::threads::start_planned_with_selection(application, plan, thread, false)?;
     record_dispatched(application, identifier);
     Ok(())

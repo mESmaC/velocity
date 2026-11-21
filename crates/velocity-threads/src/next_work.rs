@@ -207,6 +207,9 @@ pub(crate) fn select_and_claim(
                     },
                     "brief": brief.render(NEXT_WORK_BRIEF_BUDGET),
                 });
+                if !brief.signature_warnings.is_empty() {
+                    answer["signature_warnings"] = json!(brief.signature_warnings);
+                }
                 if let Some(note) = github_note {
                     answer["github_note"] = json!(note);
                 }

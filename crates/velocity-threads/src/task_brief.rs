@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use velocity_airc::Channel;
 use velocity_core::text_budget::{PROMPT_BYTES, preview, prompt_excerpt};
+use velocity_graph::StaleReferenceWarning;
 use velocity_rosen::ProjectServer;
 use velocity_rosen::brief::{OpenChangeBrief, PostLandFailureBrief};
 use velocity_spec::{ProjectSpec, extract_acceptance_criteria, extract_section_ids};
@@ -84,6 +85,7 @@ pub struct TaskBrief {
     pub spec_links: Vec<SpecLink>,
     pub open_decisions: Vec<DecisionLink>,
     pub nearby_changes: Vec<NearbyChange>,
+    pub signature_warnings: Vec<StaleReferenceWarning>,
     pub dependencies: Vec<String>,
     pub crate_discoveries: Vec<DiscoveryNote>,
     pub post_land_failures: Vec<FailureNote>,
@@ -123,6 +125,7 @@ impl TaskBrief {
         self.write_acceptance_criteria(&mut out);
         self.write_spec_and_decisions(&mut out);
         self.write_nearby_and_dependencies(&mut out);
+        self.write_signature_warnings(&mut out);
         self.write_discoveries_and_failures(&mut out);
         out.push_str("\n## Ownership Through Review\n");
         out.push_str(&format!(
@@ -232,6 +235,17 @@ impl TaskBrief {
         }
     }
 
+    fn write_signature_warnings(&self, out: &mut String) {
+        if self.signature_warnings.is_empty() {
+            return;
+        }
+        out.push_str("\n## Signature Warnings\n");
+        for warning in &self.signature_warnings {
+            let line = velocity_graph::signature_impact::format_warning_line(warning);
+            out.push_str(&format!("- {}\n", preview(&single_line(&line), 260)));
+        }
+    }
+
     fn write_discoveries_and_failures(&self, out: &mut String) {
         out.push_str("\n## Recent Discoveries & Post-Land Failures\n");
         if self.crate_discoveries.is_empty() && self.post_land_failures.is_empty() {
@@ -269,31 +283,42 @@ pub async fn build_brief_async(
     project: &ProjectItem,
     input: BriefInput<'_>,
 ) -> TaskBrief {
-    let (open_changes, failures) = if project.version_control == VersionControl::Rosen {
-        let server = ProjectServer::new(app_data, project.id);
-        let exclude = input.exclude_change.as_deref();
-        let changes = tokio::time::timeout(
-            ROSEN_BRIEF_TIMEOUT,
-            velocity_rosen::brief::open_changes(&server, exclude),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_default();
-        let failures = tokio::time::timeout(
-            ROSEN_BRIEF_TIMEOUT,
-            velocity_rosen::brief::recent_post_land_failures(&server),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_default();
-        (changes, failures)
-    } else {
-        (Vec::new(), Vec::new())
-    };
+    let (open_changes, failures, signature_warnings) =
+        if project.version_control == VersionControl::Rosen {
+            let server = ProjectServer::new(app_data, project.id);
+            let exclude = input.exclude_change.as_deref();
+            let changes = tokio::time::timeout(
+                ROSEN_BRIEF_TIMEOUT,
+                velocity_rosen::brief::open_changes(&server, exclude),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+            let failures = tokio::time::timeout(
+                ROSEN_BRIEF_TIMEOUT,
+                velocity_rosen::brief::recent_post_land_failures(&server),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+            let warnings = fetch_signature_warnings_async(
+                app_data,
+                project.id,
+                server.endpoint().as_str(),
+                &input.evidence_texts,
+                exclude,
+            )
+            .await;
+            (changes, failures, warnings)
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        };
     let channel = Channel::open(app_data, &project.id.to_string()).ok();
-    assemble_brief(project, channel.as_ref(), &open_changes, &failures, input)
+    let mut brief = assemble_brief(project, channel.as_ref(), &open_changes, &failures, input);
+    brief.signature_warnings = signature_warnings;
+    brief
 }
 
 /// Builds a `TaskBrief` from synchronous code (used by the AIRC MCP `next_work` tool).
@@ -303,12 +328,77 @@ pub fn build_brief_sync(
     channel: &Channel,
     input: BriefInput<'_>,
 ) -> TaskBrief {
-    let (open_changes, failures) = if project.version_control == VersionControl::Rosen {
-        fetch_rosen_sync(app_data, project.id, input.exclude_change.as_deref())
-    } else {
-        (Vec::new(), Vec::new())
+    let (open_changes, failures, signature_warnings) =
+        if project.version_control == VersionControl::Rosen {
+            let (changes, failures) =
+                fetch_rosen_sync(app_data, project.id, input.exclude_change.as_deref());
+            let server = ProjectServer::new(app_data, project.id);
+            let warnings = fetch_signature_warnings_sync(
+                app_data,
+                project.id,
+                server.endpoint().as_str(),
+                &input.evidence_texts,
+                input.exclude_change.as_deref(),
+            );
+            (changes, failures, warnings)
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        };
+    let mut brief = assemble_brief(project, Some(channel), &open_changes, &failures, input);
+    brief.signature_warnings = signature_warnings;
+    brief
+}
+
+async fn fetch_signature_warnings_async(
+    app_data: &Path,
+    project_id: u32,
+    endpoint: &str,
+    texts: &[String],
+    exclude_change: Option<&str>,
+) -> Vec<StaleReferenceWarning> {
+    let Ok(executable) = std::env::current_exe() else {
+        return Vec::new();
     };
-    assemble_brief(project, Some(channel), &open_changes, &failures, input)
+    let app_data = app_data.to_path_buf();
+    let project = project_id.to_string();
+    let endpoint = endpoint.to_owned();
+    let texts = texts.to_vec();
+    let exclude = exclude_change.map(str::to_owned);
+    let lookup = tokio::task::spawn_blocking(move || {
+        velocity_graph::dispatch_signature_warnings(
+            &executable,
+            &app_data,
+            &project,
+            &endpoint,
+            &texts,
+            exclude.as_deref(),
+        )
+    });
+    tokio::time::timeout(ROSEN_BRIEF_TIMEOUT, lookup)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default()
+}
+
+fn fetch_signature_warnings_sync(
+    app_data: &Path,
+    project_id: u32,
+    endpoint: &str,
+    texts: &[String],
+    exclude_change: Option<&str>,
+) -> Vec<StaleReferenceWarning> {
+    let Ok(executable) = std::env::current_exe() else {
+        return Vec::new();
+    };
+    velocity_graph::dispatch_signature_warnings(
+        &executable,
+        app_data,
+        &project_id.to_string(),
+        endpoint,
+        texts,
+        exclude_change,
+    )
 }
 
 fn fetch_rosen_sync(
@@ -402,6 +492,7 @@ pub fn assemble_brief(
         spec_links,
         open_decisions,
         nearby_changes,
+        signature_warnings: Vec::new(),
         dependencies,
         crate_discoveries,
         post_land_failures,
@@ -1062,7 +1153,7 @@ mod tests {
             output: "error[E0432]: unresolved import in velocity-threads".into(),
         }];
 
-        let brief = assemble_brief(
+        let mut brief = assemble_brief(
             &project,
             None,
             &open,
@@ -1086,6 +1177,18 @@ mod tests {
                 spec_path: Path::new("SPEC.md"),
             },
         );
+        brief.signature_warnings.push(StaleReferenceWarning {
+            symbol: "plan_issue_dispatch".into(),
+            kind: velocity_graph::SignatureChangeKind::PublicSignature,
+            defined_in: "crates/velocity-threads/src/dispatch.rs".into(),
+            detail: "signature changed".into(),
+            direction: velocity_graph::ReferenceDirection::PeerAlteredWorkTouches,
+            peer_change: "abcd1234efgh5678".into(),
+            peer_owner: "issue-538".into(),
+            peer_status: velocity_graph::ChangeStatus::Open,
+            peer_commit: None,
+            referencing_paths: vec!["src-tauri/src/issue_panel.rs".into()],
+        });
         let rendered = brief.render(5_500);
         assert!(rendered.contains("# Fix-Forward Task Brief: Fix dispatch F9"));
         assert!(rendered.contains("Landed head: `deadbeef12345678`"));
@@ -1095,6 +1198,8 @@ mod tests {
         assert!(rendered.contains("spec/F9-issues-and-dispatch.md:1-2"));
         assert!(rendered.contains("§8 Q28 [decided]"));
         assert!(rendered.contains("Change `abcd1234` (issue-538, open)"));
+        assert!(rendered.contains("## Signature Warnings"));
+        assert!(rendered.contains("plan_issue_dispatch"));
         assert!(rendered.contains("Blocked by #500"));
         assert!(rendered.contains("unresolved import in velocity-threads"));
         assert!(rendered.contains("thread-9 (issue-539) holds issue:539 through review."));

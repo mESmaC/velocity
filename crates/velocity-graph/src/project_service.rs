@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
+use crate::signature_impact::StaleReferenceWarning;
 use crate::usage::ToolOutcome;
 use crate::{Error, Index, Tools};
 
@@ -23,6 +24,7 @@ const MENTION_BATCH_BYTES: usize = 64 * 1024;
 const MENTION_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(90);
+const SIGNATURE_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Serialize, Deserialize)]
@@ -30,9 +32,19 @@ pub(crate) enum Action {
     Refresh,
     Map,
     Task(String),
-    Tool { name: String, arguments: Value },
+    Tool {
+        name: String,
+        arguments: Value,
+    },
     WarmBase,
     Mentions(Vec<(String, String)>),
+    ChangeSignatureWarnings {
+        change: String,
+    },
+    DispatchSignatureWarnings {
+        texts: Vec<String>,
+        exclude_change: Option<String>,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -50,6 +62,8 @@ pub(crate) struct Reply {
     pub failed: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     mentions: Vec<BTreeSet<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    signature_warnings: Vec<StaleReferenceWarning>,
 }
 
 impl Reply {
@@ -59,6 +73,7 @@ impl Reply {
             outcome: ToolOutcome::Other,
             failed: false,
             mentions: Vec::new(),
+            signature_warnings: Vec::new(),
         }
     }
 }
@@ -266,12 +281,14 @@ impl ProjectGraph {
                     outcome,
                     failed: false,
                     mentions: Vec::new(),
+                    signature_warnings: Vec::new(),
                 },
                 Err(error) => Reply {
                     text: error.message,
                     outcome: error.outcome,
                     failed: true,
                     mentions: Vec::new(),
+                    signature_warnings: Vec::new(),
                 },
             },
             Action::Mentions(texts) => {
@@ -289,13 +306,40 @@ impl ProjectGraph {
                     ..Reply::plain(String::new())
                 }
             }
+            Action::ChangeSignatureWarnings { change } => {
+                let signature_warnings = tools
+                    .index()
+                    .change_signature_warnings(&change)
+                    .unwrap_or_default();
+                Reply {
+                    signature_warnings,
+                    ..Reply::plain(String::new())
+                }
+            }
+            Action::DispatchSignatureWarnings {
+                texts,
+                exclude_change,
+            } => {
+                let signature_warnings = tools
+                    .index()
+                    .dispatch_signature_warnings(&texts, exclude_change.as_deref())
+                    .unwrap_or_default();
+                Reply {
+                    signature_warnings,
+                    ..Reply::plain(String::new())
+                }
+            }
         })
     }
 
     fn select(&mut self, cache: &Path, request: &Request) -> Result<&mut Tools, Error> {
         let mentions = matches!(request.action, Action::Mentions(_));
-        let base =
-            matches!(request.action, Action::WarmBase) || mentions && request.rosen.is_some();
+        let signature_query = matches!(
+            request.action,
+            Action::ChangeSignatureWarnings { .. } | Action::DispatchSignatureWarnings { .. }
+        );
+        let base = matches!(request.action, Action::WarmBase)
+            || (mentions || signature_query) && request.rosen.is_some();
         let rosen =
             base || rosen_client::snapshot::WorkspaceMarker::path(&request.workspace).is_file();
         let address = request.rosen.as_ref().filter(|_| rosen);
@@ -415,4 +459,66 @@ pub fn warm_project(executable: &Path, app_data: &Path, project: &str, endpoint:
         Action::WarmBase,
         QUERY_TIMEOUT,
     );
+}
+
+/// Checks a Rosen change for stale references against open and recently landed changes (#542).
+pub fn change_signature_warnings(
+    executable: &Path,
+    app_data: &Path,
+    project: &str,
+    endpoint: &str,
+    change: &str,
+) -> Vec<StaleReferenceWarning> {
+    if !crate::usage::enabled(app_data, project) {
+        return Vec::new();
+    }
+    let project = Project::new(
+        crate::usage::folder(app_data, project),
+        executable.into(),
+        Some(Endpoint::new(endpoint)),
+    );
+    let action = Action::ChangeSignatureWarnings {
+        change: change.to_owned(),
+    };
+    project
+        .request(
+            Path::new("base"),
+            Vec::new(),
+            action,
+            SIGNATURE_QUERY_TIMEOUT,
+        )
+        .map(|reply| reply.signature_warnings)
+        .unwrap_or_default()
+}
+
+/// Checks whether open or recently landed Rosen changes alter signatures touched by work `texts` (#542).
+pub fn dispatch_signature_warnings(
+    executable: &Path,
+    app_data: &Path,
+    project: &str,
+    endpoint: &str,
+    texts: &[String],
+    exclude_change: Option<&str>,
+) -> Vec<StaleReferenceWarning> {
+    if !crate::usage::enabled(app_data, project) {
+        return Vec::new();
+    }
+    let project = Project::new(
+        crate::usage::folder(app_data, project),
+        executable.into(),
+        Some(Endpoint::new(endpoint)),
+    );
+    let action = Action::DispatchSignatureWarnings {
+        texts: texts.to_vec(),
+        exclude_change: exclude_change.map(str::to_owned),
+    };
+    project
+        .request(
+            Path::new("base"),
+            Vec::new(),
+            action,
+            SIGNATURE_QUERY_TIMEOUT,
+        )
+        .map(|reply| reply.signature_warnings)
+        .unwrap_or_default()
 }

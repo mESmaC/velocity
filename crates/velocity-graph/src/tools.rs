@@ -235,6 +235,9 @@ Most used: {}.",
             return Ok((within_budget(text), ToolOutcome::Other));
         }
         if name == "graph_overlaps" {
+            if self.index.is_rosen() {
+                let _ = self.refresh(&[]);
+            }
             let paths = arguments
                 .get("paths")
                 .cloned()

@@ -229,6 +229,8 @@ impl RosenLanding {
         if gate_started.elapsed() >= Duration::from_secs(5) {
             host.catch_up_before_land(id).await;
         }
+        self.warn_signature_references(host, server, id, change)
+            .await;
         let started = Instant::now();
         match landing::land(server, checker::CHECKER, change).await {
             Ok(LandOutcome::Landed { commit }) => {
@@ -246,6 +248,47 @@ impl RosenLanding {
             }
             Err(_) => {}
         }
+    }
+
+    /// Warns in the landing feed when `change` alters a public signature, IPC command, or
+    /// IPC event type referenced by another open or recently landed change (#542).
+    async fn warn_signature_references<Host: LandingHost>(
+        &self,
+        host: &Host,
+        server: &ProjectServer,
+        project: u32,
+        change: &str,
+    ) {
+        let Ok(executable) = std::env::current_exe() else {
+            return;
+        };
+        let app_data = self.app_data.clone();
+        let project_id = project.to_string();
+        let endpoint = server.endpoint().to_string();
+        let change_owned = change.to_owned();
+        let lookup = tokio::task::spawn_blocking(move || {
+            velocity_graph::change_signature_warnings(
+                &executable,
+                &app_data,
+                &project_id,
+                &endpoint,
+                &change_owned,
+            )
+        });
+        let Ok(Ok(warnings)) = tokio::time::timeout(Duration::from_secs(3), lookup).await else {
+            return;
+        };
+        if warnings.is_empty() {
+            return;
+        }
+        let short = change.get(..8).unwrap_or(change);
+        let summary = velocity_graph::signature_impact::format_warning_summary(&warnings);
+        host.activity(
+            project,
+            LANDER,
+            DutyEventKind::Wait,
+            format!("Change {short} · {summary}"),
+        );
     }
 
     fn report_refusal<Host: LandingHost>(

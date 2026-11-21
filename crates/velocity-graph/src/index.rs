@@ -228,7 +228,28 @@ impl Index {
             .rosen
             .as_ref()
             .ok_or_else(|| Error::Invalid("graph_overlaps requires a Rosen workspace".into()))?;
-        source.overlaps(&self.root, paths)
+        source.overlaps(&self.root, &self.graph, paths)
+    }
+
+    pub fn change_signature_warnings(
+        &self,
+        change: &str,
+    ) -> Result<Vec<crate::signature_impact::StaleReferenceWarning>, Error> {
+        let Some(source) = self.rosen.as_ref() else {
+            return Ok(Vec::new());
+        };
+        source.change_signature_warnings(&self.graph, change)
+    }
+
+    pub fn dispatch_signature_warnings(
+        &self,
+        texts: &[String],
+        exclude_change: Option<&str>,
+    ) -> Result<Vec<crate::signature_impact::StaleReferenceWarning>, Error> {
+        let Some(source) = self.rosen.as_ref() else {
+            return Ok(Vec::new());
+        };
+        source.dispatch_signature_warnings(&self.graph, texts, exclude_change)
     }
 
     /// Live piece claims from Rosen or the local AIRC channel, for §7 item claimed state.

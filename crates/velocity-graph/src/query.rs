@@ -390,6 +390,15 @@ pub fn short(graph: &Graph, index: usize) -> String {
     }
 }
 
+/// One dependent record found by [`impact_records`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImpactHit {
+    pub record: usize,
+    pub depth: usize,
+    pub sure: bool,
+    pub relation: Relation,
+}
+
 /// `graph_impact`: what depends on `targets`, transitively, split into links found in the
 /// source and leads to check (after Graphify's affected analysis).
 /// - A type's methods and a file's symbols are seeds too, so callers of a method are found
@@ -399,7 +408,29 @@ pub fn short(graph: &Graph, index: usize) -> String {
 /// - Hubs (heavily used records) are listed but not followed further, which keeps one common
 ///   helper from pulling in half the project.
 /// - Ambiguous and unconfirmed links are listed as direct leads and never followed.
+pub fn impact_records(graph: &Graph, targets: &[usize], depth_limit: usize) -> Vec<ImpactHit> {
+    let found = collect_impact(graph, targets, depth_limit);
+    found
+        .into_iter()
+        .map(|(record, (depth, sure, relation))| ImpactHit {
+            record,
+            depth,
+            sure,
+            relation,
+        })
+        .collect()
+}
+
 pub fn impact(graph: &Graph, targets: &[usize], depth_limit: usize) -> String {
+    let found = collect_impact(graph, targets, depth_limit);
+    render_impact(graph, targets, &found)
+}
+
+fn collect_impact(
+    graph: &Graph,
+    targets: &[usize],
+    depth_limit: usize,
+) -> BTreeMap<usize, (usize, bool, Relation)> {
     let seeds = impact_seeds(graph, targets);
     let hub = hub_threshold(graph);
     // record -> (depth, every hop extracted, relation of the hop that found it)
@@ -430,7 +461,7 @@ pub fn impact(graph: &Graph, targets: &[usize], depth_limit: usize) -> String {
             }
         }
     }
-    render_impact(graph, targets, &found)
+    found
 }
 
 fn impact_seeds(graph: &Graph, targets: &[usize]) -> Vec<usize> {

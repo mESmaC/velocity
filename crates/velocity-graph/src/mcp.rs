@@ -526,7 +526,7 @@ fn tool_list() -> Vec<Value> {
     vec![
         tool(
             "graph_overlaps",
-            "Live Rosen path overlaps, with the edited symbols in each change and any symbols edited by both. Empty paths checks this workspace's claims and edits.",
+            "Live Rosen path overlaps, edited symbols in each change, and stale-reference warnings when an altered public signature, IPC command, or event type is referenced by another open or recently landed change. Empty paths checks this workspace's claims and edits.",
             json!({"paths": {"type": "array", "items": {"type": "string"}}}),
             &[],
         ),

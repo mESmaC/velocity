@@ -232,6 +232,22 @@ async fn dispatch_selected_issue(
             .map_err(|error| error.to_string())?
             .map_err(|error| error.to_string())?;
     velocity_rosen::memory::require_headroom()?;
+    let rosen_project = {
+        let store = application.state::<ManagedStateStore>();
+        let store = lock(store.inner(), "persisted state")?;
+        store
+            .project(project_identifier)
+            .filter(|project| project.version_control == VersionControl::Rosen)
+            .cloned()
+    };
+    if let Some(project) = rosen_project {
+        let handle = application.clone();
+        let texts = vec![issue.title.clone(), issue.body.clone()];
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            crate::graph_access::warn_dispatch_signatures(&handle, &project, number, &texts);
+        })
+        .await;
+    }
     let (plan, thread) = {
         let store = application.state::<ManagedStateStore>();
         let mut store = lock(store.inner(), "persisted state")?;

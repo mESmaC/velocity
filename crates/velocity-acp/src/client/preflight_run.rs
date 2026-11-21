@@ -44,13 +44,18 @@ pub(super) struct PreflightRun {
     id: ToolCallId,
     pub log: PathBuf,
     endpoint: String,
+    graph_context: Option<(PathBuf, PathBuf, String)>,
     output: File,
 }
 
 impl PreflightRun {
     /// Admits a preflight request, verifying this session has a Rosen workspace and opening
     /// its log file outside the workspace.
-    pub fn admit(worktree: &Path, launch: &AgentLaunch) -> Result<Self, String> {
+    pub fn admit(
+        worktree: &Path,
+        launch: &AgentLaunch,
+        graph_context: Option<(PathBuf, PathBuf, String)>,
+    ) -> Result<Self, String> {
         let endpoint = launch
             .env
             .iter()
@@ -73,6 +78,7 @@ impl PreflightRun {
             id: ToolCallId::new(id),
             log,
             endpoint,
+            graph_context,
             output,
         })
     }
@@ -119,6 +125,8 @@ impl PreflightRun {
             rosen,
             worktree,
             launch,
+            endpoint: &self.endpoint,
+            graph_context: self.graph_context.as_ref(),
             clean_path: clean_toolchain_path(launch),
             log_path: &self.log,
             output: &mut self.output,
@@ -141,6 +149,8 @@ struct StepRunner<'a> {
     rosen: &'a Path,
     worktree: &'a Path,
     launch: &'a AgentLaunch,
+    endpoint: &'a str,
+    graph_context: Option<&'a (PathBuf, PathBuf, String)>,
     clean_path: OsString,
     log_path: &'a Path,
     output: &'a mut File,
@@ -158,6 +168,7 @@ impl StepRunner<'_> {
         let mut steps = Vec::new();
         record_snapshot_checks(snapshot, &mut steps);
         steps.push(check_overlaps(snapshot, self.output).await);
+        steps.push(self.check_signature_references(snapshot).await);
         if self.stop.is_cancelled() {
             return Err(Cancelled);
         }
@@ -166,6 +177,45 @@ impl StepRunner<'_> {
         steps.extend(self.check_lockfiles(&check_plan).await?);
         steps.extend(self.check_rust_and_bindings(&check_plan).await?);
         Ok(steps)
+    }
+
+    async fn check_signature_references(&mut self, snapshot: &PreflightSnapshot) -> StepOutcome {
+        let Some((executable, app_data, project)) = self.graph_context.cloned() else {
+            return StepOutcome::skipped("signature references", "code graph unavailable");
+        };
+        let endpoint = self.endpoint.to_owned();
+        let change = snapshot.change.clone();
+        let warnings = tokio::task::spawn_blocking(move || {
+            velocity_graph::change_signature_warnings(
+                &executable,
+                &app_data,
+                &project,
+                &endpoint,
+                &change,
+            )
+        })
+        .await
+        .unwrap_or_default();
+        if warnings.is_empty() {
+            let _ = writeln!(self.output, "\n=== signature references ===\nnone");
+            return StepOutcome::passed(
+                "signature references",
+                "no stale references in open or recent changes",
+            );
+        }
+        let lines: Vec<String> = warnings
+            .iter()
+            .map(|warning| {
+                format!(
+                    "- {}",
+                    velocity_graph::signature_impact::format_warning_line(warning)
+                )
+            })
+            .collect();
+        let detail = lines.join("\n");
+        let _ = writeln!(self.output, "\n=== signature references ===\n{detail}");
+        let summary = velocity_graph::signature_impact::format_warning_summary(&warnings);
+        StepOutcome::warned("signature references", summary, Some(detail))
     }
 
     async fn check_rustfmt(
