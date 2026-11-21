@@ -117,6 +117,47 @@ pub enum LaunchError {
     Provider(#[from] velocity_store::providers::ProviderUnavailable),
 }
 
+/// Everything a read-only question thread needs: no workspace, change, claim or landable status (#533).
+#[derive(Clone, Debug)]
+pub struct QuestionPlan {
+    pub project: u32,
+    pub prompt: String,
+    pub repository: PathBuf,
+    pub thread: NewThread,
+    pub agent: AgentLaunch,
+    pub bypass_modes: Vec<String>,
+    pub title: TitlePlan,
+}
+
+/// Plans a read-only question thread in the project repository with no workspace or change (#533).
+pub fn plan_question_launch(
+    project: &ProjectItem,
+    settings: &Settings,
+    prompt: &str,
+    model: ThreadModel,
+) -> Result<QuestionPlan, LaunchError> {
+    let repository = PathBuf::from(&project.repository_path);
+    let mut thread = NewThread::with_model(
+        fallback_title(prompt),
+        String::new(),
+        String::new(),
+        settings,
+        model,
+    );
+    thread.role = velocity_core::tool_policy::ThreadRole::Question;
+    settings.ensure_new_work(thread.provider)?;
+    let (agent, bypass_modes) = agent_launch(settings, thread.provider)?;
+    Ok(QuestionPlan {
+        project: project.id,
+        prompt: prompt.to_owned(),
+        repository: repository.clone(),
+        thread,
+        agent,
+        bypass_modes,
+        title: plan_title(settings, repository, prompt, fallback_title(prompt)),
+    })
+}
+
 /// Everything a new thread needs before anything runs.
 #[derive(Clone, Debug)]
 pub struct LaunchPlan {

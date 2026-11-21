@@ -59,12 +59,19 @@ fn configure_session(
         let thread = project.threads.iter().find(|item| item.id == key.1)?;
         let airc = crate::airc_access::for_thread(application, key, &setup.worktree, thread);
         let title = seed_from_title.then(|| thread.title.clone());
-        Some((velocity_threads::thread_run_settings(thread), airc, title))
+        Some((
+            velocity_threads::thread_run_settings(thread),
+            airc,
+            title,
+            thread.role,
+        ))
     });
-    let Some((settings, airc, title)) = configured else {
+    let Some((settings, airc, title, role)) = configured else {
         return setup;
     };
     let mut setup = setup.with_run_settings(settings);
+    setup.role = role;
+    setup.read_only = role.is_read_only();
     setup.airc = airc;
     setup.graph_task_title = title;
     if let Ok(app_data) = application.path().app_data_dir() {
@@ -218,6 +225,7 @@ pub fn handle_intent(
 ) -> Result<Option<LayoutSnapshot>, String> {
     match intent {
         LayoutIntent::StartPrompt(prompt) => start_thread(application, prompt).map(Some),
+        LayoutIntent::StartQuestion(prompt) => start_question_thread(application, prompt).map(Some),
         LayoutIntent::SteerThread {
             identifier, prompt, ..
         } => {
@@ -270,6 +278,90 @@ fn start_thread(application: &AppHandle, prompt: &str) -> Result<LayoutSnapshot,
         (plan, thread)
     };
     start_planned(application, plan, thread)
+}
+
+/// Read-only preface sent ahead of question threads (#533).
+pub(crate) const QUESTION_PREFACE: &str = "[Velocity] This is a read-only question thread in the project repository. It has no workspace, Rosen change, claim, or landable status. Answer from the codebase, code graph, spec, and read-only project history without editing files or running builds.";
+
+/// Records a read-only question thread with no workspace, change, or claim and starts its session (#533).
+fn start_question_thread(application: &AppHandle, prompt: &str) -> Result<LayoutSnapshot, String> {
+    let store_state = application.state::<ManagedStateStore>();
+    let (mut plan, thread) = {
+        let mut store = lock(store_state.inner(), "persisted state")?;
+        let project = store
+            .active_project()
+            .ok_or("Select or create a project first")?;
+        let plan = velocity_threads::plan_question_launch(
+            project,
+            &store.settings(),
+            prompt,
+            store.composer_thread_model(project.id),
+        )
+        .map_err(|error| error.to_string())?;
+        let thread = store
+            .add_question_thread(plan.project, plan.thread.clone())
+            .map_err(|error| error.to_string())?;
+        (plan, thread)
+    };
+    let key = (plan.project, thread);
+    let repository = plan.repository.display().to_string();
+    let inputs = {
+        let mut runtimes = lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )?;
+        let inputs = runtimes.start_question(key, &repository, &plan.prompt);
+        if plan.title.request.is_some() {
+            runtimes.set_titling(key, Some(plan.title.model_name.clone()));
+        }
+        inputs
+    };
+    let snapshot = refresh(application, key, true)?;
+    emit_status(application, key);
+    if let Some(request) = plan.title.request.take() {
+        let (handle, fallback) = (application.clone(), plan.title.fallback.clone());
+        tauri::async_runtime::spawn(async move {
+            settle_title(&handle, key, &fallback, request).await;
+        });
+    }
+    let handle = application.clone();
+    tauri::async_runtime::spawn(
+        async move { run_question_session(handle, key, plan, inputs).await },
+    );
+    Ok(snapshot)
+}
+
+async fn run_question_session(
+    application: AppHandle,
+    key: ThreadKey,
+    mut plan: velocity_threads::QuestionPlan,
+    inputs: SessionInputs,
+) {
+    if let Err(error) = bind_launch_account(&application, key, &mut plan.agent) {
+        return fail(&application, key, "Could not choose an account", &error);
+    }
+    report(refresh(&application, key, false));
+    if crate::rosen::uses_rosen(&application, key.0) {
+        plan.agent.env.push((
+            String::from(velocity_rosen::agent_run::BLOCK_VCS_ENV),
+            String::from("1"),
+        ));
+    }
+    let mut setup = configure_session(
+        &application,
+        key,
+        SessionSetup::new(plan.repository.clone(), plan.bypass_modes),
+        true,
+    );
+    setup.role = velocity_core::tool_policy::ThreadRole::Question;
+    setup.read_only = true;
+    setup.preface = Some(QUESTION_PREFACE.into());
+    if let Some(server) = crate::rosen::read_only_mcp_server(&application, key.0) {
+        setup.shared_servers.push(server);
+    }
+    setup.pause_on_subscription_limit = true;
+    let session = spawn_session(plan.agent, setup, inputs);
+    pump(&application, key, session).await;
 }
 
 /// F9 uses the same unrestricted worktree/session lifecycle after atomically
@@ -756,7 +848,8 @@ async fn run_thread_session(
         },
     });
     if rosen_change.is_some() {
-        let server = crate::rosen::mcp_server(&setup.worktree, &plan.agent.env);
+        let server =
+            crate::rosen::mcp_server_for_role(&setup.worktree, &plan.agent.env, setup.role);
         setup.shared_servers.extend(server);
     }
     if let Err(error) = crate::airc_claims::attach_with_prompt(
@@ -770,7 +863,13 @@ async fn run_thread_session(
     }
     add_work_handoff(&application, key, &mut setup);
     attach_task_brief(&application, key, &plan.prompt, &mut setup).await;
-    crate::browser::configure(&application, key, &mut setup);
+    crate::browser::configure_for_prompt(
+        &application,
+        key,
+        &plan.thread.title,
+        &plan.prompt,
+        &mut setup,
+    );
     setup.pause_on_subscription_limit = true;
     let session = spawn_session(plan.agent, setup, inputs);
     pump(&application, key, session).await;
@@ -1038,9 +1137,19 @@ fn goal_session_setup(
         ));
         setup
             .shared_servers
-            .extend(crate::rosen::mcp_server(&folder.path, &plan.agent.env));
+            .extend(crate::rosen::mcp_server_for_role(
+                &folder.path,
+                &plan.agent.env,
+                setup.role,
+            ));
     }
-    crate::browser::configure(application, key, &mut setup);
+    crate::browser::configure_for_prompt(
+        application,
+        key,
+        graph_title,
+        &plan.slot.prompt,
+        &mut setup,
+    );
     setup.pause_on_subscription_limit = true;
     setup
 }

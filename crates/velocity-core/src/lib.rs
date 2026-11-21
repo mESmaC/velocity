@@ -54,6 +54,7 @@ pub mod thread_menu;
 pub mod thread_titles;
 pub mod thread_view;
 pub mod thread_view_model;
+pub mod tool_policy;
 pub mod window;
 pub mod work_pool;
 pub mod workflow_dispatch;

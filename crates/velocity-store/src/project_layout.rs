@@ -220,6 +220,7 @@ fn thread_detail(thread: &ThreadItem, settings: &crate::Settings) -> ThreadDetai
             thread.activity,
             AgentActivity::Thinking | AgentActivity::Executing
         ),
+        read_only: thread.role.is_read_only(),
         no_change_reason: thread.no_change_reason.clone(),
         show_work: false,
         worked_summary: None,

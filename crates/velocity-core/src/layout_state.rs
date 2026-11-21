@@ -75,6 +75,8 @@ pub struct LayoutState {
     composer_text: String,
     /// Optional validated context for the unsent home draft (e.g. `"Land abc1234"`, #479).
     draft_context: Option<String>,
+    /// True when the unsent home draft starts a read-only question thread (#533).
+    draft_read_only: bool,
     /// The message as typed, restored to the composer if sending fails.
     /// One entry per send still on its way, oldest first: sends to one thread are
     /// delivered in order, so each answer belongs to the oldest matching entry.
@@ -170,6 +172,7 @@ impl Default for LayoutState {
             overlay_open: false,
             composer_text: String::new(),
             draft_context: None,
+            draft_read_only: false,
             sent_steering: Vec::new(),
             pending_sends: PendingSends::default(),
             task_text: String::new(),
@@ -242,6 +245,7 @@ impl LayoutState {
         self.overlay_open = false;
         self.composer_text.clear();
         self.draft_context = None;
+        self.draft_read_only = false;
         self.task_text.clear();
         self.show_numbers = false;
         self.selected_thread = None;
@@ -678,6 +682,7 @@ impl LayoutState {
         self.composer_text.clear();
         self.slash_selection = 0;
         self.draft_context = draft_context;
+        self.draft_read_only = false;
         self.changed();
     }
 
@@ -697,6 +702,7 @@ impl LayoutState {
             | LayoutAction::SlashPrevious
             | LayoutAction::SlashComplete
             | LayoutAction::ToggleShowWork
+            | LayoutAction::ToggleDraftReadOnly
             | LayoutAction::ClearDraftContext => {
                 self.edit_composer(action);
                 None
@@ -765,6 +771,7 @@ impl LayoutState {
             LayoutAction::SlashPrevious => self.move_slash(false),
             LayoutAction::SlashComplete => self.complete_slash(),
             LayoutAction::ToggleShowWork => self.toggle_show_work(),
+            LayoutAction::ToggleDraftReadOnly => self.draft_read_only = !self.draft_read_only,
             LayoutAction::ClearDraftContext => self.draft_context = None,
             _ => {}
         }
@@ -843,6 +850,7 @@ impl LayoutState {
             overlap_unread: self.airc_badge().alert,
             composer_text: self.composer_text.clone(),
             draft_context: self.draft_context.clone(),
+            draft_read_only: self.draft_read_only,
             task_text: self.task_text.clone(),
             build_allowed: self.build_block_reason().is_none(),
             build_block_reason: self.build_block_reason().map(str::to_owned),
@@ -857,11 +865,14 @@ impl LayoutState {
     }
 
     fn guard_intent(&mut self, intent: LayoutIntent) -> Option<LayoutIntent> {
-        let interview = match &intent {
-            LayoutIntent::SteerThread { identifier, .. } => self.is_interview_thread(*identifier),
+        let non_build_thread = match &intent {
+            LayoutIntent::SteerThread { identifier, .. } => {
+                self.is_interview_thread(*identifier) || self.is_read_only_thread(*identifier)
+            }
             _ => false,
         };
-        match crate::layout_guard::guard_intent(intent, self.project_spec_locked, interview) {
+        match crate::layout_guard::guard_intent(intent, self.project_spec_locked, non_build_thread)
+        {
             Ok(intent) => {
                 self.launch_notice = None;
                 Some(intent)
@@ -893,6 +904,16 @@ impl LayoutState {
         })
     }
 
+    fn is_read_only_thread(&self, identifier: usize) -> bool {
+        self.data.threads.iter().any(|thread| {
+            thread.policy.identifier == identifier
+                && thread
+                    .detail
+                    .as_ref()
+                    .is_some_and(|detail| detail.read_only)
+        })
+    }
+
     fn composer_block_reason(&self) -> Option<&'static str> {
         let is_draft = self.selected_thread.is_none() || matches!(self.view, NavigationView::Home);
         let (effect, _, _) =
@@ -900,10 +921,11 @@ impl LayoutState {
         if matches!(effect, ComposerSubmitEffect::AddTask) {
             return None;
         }
-        let kind = if self
-            .selected_thread
-            .is_some_and(|identifier| self.is_interview_thread(identifier))
-        {
+        let kind = if (is_draft
+            && (self.draft_read_only || strip_question_prefix(&self.composer_text).is_some()))
+            || self.selected_thread.is_some_and(|identifier| {
+                self.is_interview_thread(identifier) || self.is_read_only_thread(identifier)
+            }) {
             LaunchKind::Interview
         } else {
             LaunchKind::Build(BuildKind::Thread)
@@ -1197,11 +1219,18 @@ impl LayoutState {
             ComposerSubmitEffect::Nothing => return None,
             ComposerSubmitEffect::AddTask => LayoutIntent::AddTask(text.clone()),
             ComposerSubmitEffect::StartThreadFromDraft => {
+                let question = strip_question_prefix(&text);
+                let is_question = self.draft_read_only || question.is_some();
+                let body = question.unwrap_or(&text);
                 let prompt = match &self.draft_context {
-                    Some(context) => format!("{context}\n\n{text}"),
-                    None => text.clone(),
+                    Some(context) => format!("{context}\n\n{body}"),
+                    None => body.to_owned(),
                 };
-                LayoutIntent::StartPrompt(prompt)
+                if is_question {
+                    LayoutIntent::StartQuestion(prompt)
+                } else {
+                    LayoutIntent::StartPrompt(prompt)
+                }
             }
             ComposerSubmitEffect::SendPromptNow | ComposerSubmitEffect::QueueForNextStep => {
                 LayoutIntent::SteerThread {
@@ -1213,8 +1242,12 @@ impl LayoutState {
         };
         let intent = self.guard_intent(intent)?;
         self.composer_text.clear();
-        if matches!(intent, LayoutIntent::StartPrompt(_)) {
+        if matches!(
+            intent,
+            LayoutIntent::StartPrompt(_) | LayoutIntent::StartQuestion(_)
+        ) {
             self.draft_context = None;
+            self.draft_read_only = false;
         }
         self.slash_selection = 0;
         self.record_steering(&intent);
@@ -1392,6 +1425,7 @@ impl LayoutState {
                 self.selected_thread = None;
                 self.view = NavigationView::Home;
                 self.draft_context = None;
+                self.draft_read_only = false;
             }
             NavigationIntent::Board if !matches!(self.view, NavigationView::Board) => {
                 self.view = NavigationView::Board;
@@ -1889,4 +1923,18 @@ fn remove_last_message(blocks: &mut crate::thread_view_model::SharedBlocks, prom
     ) {
         std::sync::Arc::make_mut(blocks).remove(index);
     }
+}
+
+/// Strips `/ask ` or `/question ` from a home-draft prompt to start a read-only question thread (#533).
+fn strip_question_prefix(text: &str) -> Option<&str> {
+    let trimmed = text.trim();
+    for prefix in ["/ask ", "/question "] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            let rest = rest.trim();
+            if !rest.is_empty() {
+                return Some(rest);
+            }
+        }
+    }
+    None
 }

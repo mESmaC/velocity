@@ -219,6 +219,7 @@ impl ParkedReviews {
         let mut setup = SessionSetup::new(workspace.root.clone(), modes).with_run_settings(
             crate::titles::duty_run_settings(settings, &agent, settings.agents.review_effort(true)),
         );
+        setup.role = velocity_core::tool_policy::ThreadRole::Reviewer;
         setup.usage_role = Some(velocity_graph::token_usage::Role::Review);
         setup.shared_servers.push(McpServer::Stdio(
             McpServerStdio::new("velocity-parked-review", &self.executable).args(vec![

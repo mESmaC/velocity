@@ -256,8 +256,11 @@ fn agent_setup(
     defaults.model_name = settings.provider_model(defaults.provider);
     defaults.effort = settings.providers.default_effort;
     defaults.preferred_speed = settings.providers.default_speed;
+    let role = velocity_core::tool_policy::ThreadRole::parse(saved.job.role.label())
+        .unwrap_or(velocity_core::tool_policy::ThreadRole::Builder);
     let mut setup = SessionSetup::new(root.to_owned(), bypass)
         .with_run_settings(crate::titles::thread_run_settings(&defaults));
+    setup.role = role;
     setup.preface = Some(format!(
         "{}\nYour agent name is {agent}; your role is {}.\n",
         velocity_rosen::workspace_note(change),
@@ -266,21 +269,29 @@ fn agent_setup(
     if let Some(id) = &saved.session {
         setup.resume = Some(SessionResume::new(Some(id.clone()), String::new()));
     }
-    setup.shared_servers.extend(rosen_server(root, &launch.env));
-    setup.airc = Some(
-        velocity_acp::client::AircLaunch::new(std::env::current_exe()?, app_data.to_owned())
-            .duty(0, agent),
-    );
+    let executable = std::env::current_exe()?;
+    setup
+        .shared_servers
+        .extend(rosen_server(&executable, root, &launch.env, role));
+    setup.airc =
+        Some(velocity_acp::client::AircLaunch::new(executable, app_data.to_owned()).duty(0, agent));
     Ok((launch, setup))
 }
 
-fn rosen_server(root: &Path, environment: &[(String, String)]) -> Option<McpServer> {
-    let command = std::env::current_exe()
-        .ok()
-        .and_then(|executable| {
-            velocity_rosen::mcp_proxy::proxy_mcp_command(&executable, root, environment)
-        })
-        .or_else(|| velocity_rosen::mcp_command(root, environment))?;
+fn rosen_server(
+    executable: &Path,
+    root: &Path,
+    environment: &[(String, String)],
+    role: velocity_core::tool_policy::ThreadRole,
+) -> Option<McpServer> {
+    let command = velocity_rosen::mcp_proxy::proxy_mcp_command_for_role(
+        executable,
+        Some(root),
+        environment,
+        role,
+        false,
+    )
+    .or_else(|| velocity_rosen::mcp_command(root, environment))?;
     Some(McpServer::Stdio(
         McpServerStdio::new("rosen", command.program)
             .args(command.arguments)

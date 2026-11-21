@@ -88,6 +88,7 @@ pub struct NewThread {
     pub title: String,
     pub branch_name: String,
     pub worktree_path: String,
+    pub role: velocity_core::tool_policy::ThreadRole,
     pub provider: ProviderKind,
     pub model_name: String,
     pub model_supports_fast: bool,
@@ -122,6 +123,7 @@ impl NewThread {
             title,
             branch_name,
             worktree_path,
+            role: velocity_core::tool_policy::ThreadRole::Builder,
             provider: model.provider,
             model_supports_fast: settings.model_has_fast_mode(model.provider, &model.model),
             model_name: model.model,
@@ -224,6 +226,36 @@ impl StateStore {
             .get(&project)
             .and_then(|draft| draft.account);
         let identifier = self.add_linked_thread(project, thread, None, preferred)?;
+        self.composer_models.remove(&project);
+        Ok(identifier)
+    }
+
+    /// Records a read-only question thread with no workspace, change, claim or landable status (#533).
+    pub fn add_question_thread(
+        &mut self,
+        project: u32,
+        thread: NewThread,
+    ) -> Result<u32, ThreadError> {
+        let preferred = self
+            .composer_models
+            .get(&project)
+            .and_then(|draft| draft.account);
+        let mut next = self.state.clone();
+        let identifier = next_entry_identifier(&mut next, project)?;
+        next.thread_started_at
+            .entry(project)
+            .or_default()
+            .insert(identifier, thread_start_timestamp());
+        let item = next
+            .projects
+            .iter_mut()
+            .find(|item| item.id == project)
+            .ok_or(ThreadError::UnknownProject(project))?;
+        let mut record = ThreadItem::for_question(thread, identifier);
+        record.preferred_account = preferred;
+        item.threads.insert(0, record);
+        item.active_thread_id = Some(identifier);
+        self.commit(next)?;
         self.composer_models.remove(&project);
         Ok(identifier)
     }
@@ -451,4 +483,58 @@ pub(crate) fn thread_start_timestamp() -> String {
         .unwrap_or_default()
         .as_secs()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{NewProjectRecord, ProjectLocationKind, StateStore};
+    use velocity_core::tool_policy::ThreadRole;
+
+    // Risk (#533): a read-only question thread must persist its role with no workspace,
+    // Rosen change, or branch across save and reload.
+    #[test]
+    fn question_thread_persists_read_only_without_workspace_or_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "velocity-store-question-thread-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let mut store = StateStore::load_or_default(&root)?;
+        let project = store.commit_new_project(
+            NewProjectRecord {
+                name: "demo".into(),
+                location_kind: ProjectLocationKind::Local,
+                repository_path: root.display().to_string(),
+                default_branch: "master".into(),
+                github_remote: None,
+            },
+            None,
+            true,
+        )?;
+        let mut thread = NewThread::new(
+            "How does claim locking work?".into(),
+            String::new(),
+            String::new(),
+            &store.settings(),
+        );
+        thread.role = ThreadRole::Question;
+        let id = store.add_question_thread(project, thread)?;
+
+        let reloaded = StateStore::load_or_default(&root)?;
+        let saved = reloaded
+            .project(project)
+            .and_then(|item| item.threads.iter().find(|entry| entry.id == id))
+            .ok_or("saved question thread missing")?;
+        assert_eq!(saved.role, ThreadRole::Question);
+        assert!(saved.worktree_path.is_none());
+        assert!(saved.rosen_change.is_none());
+        assert!(saved.branch_name.is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
 }

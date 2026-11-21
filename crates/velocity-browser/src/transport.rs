@@ -18,6 +18,9 @@ use crate::{
 
 pub const SERVER: &str = "velocity-browser";
 pub const SWITCH: &str = "--browser-mcp";
+/// Load the 16 browser tools on demand instead of injecting all definitions up front (#533).
+pub const LAZY_FLAG: &str = "--lazy";
+pub const LOADER_TOOL: &str = "browser_tools";
 pub const PORT_ENV: &str = "VELOCITY_BROWSER_PORT";
 pub const TOKEN_ENV: &str = "VELOCITY_BROWSER_TOKEN";
 const REQUEST_BYTES: u64 = 64 * 1024;
@@ -93,6 +96,13 @@ fn contents(result: Result<Output>) -> Value {
 }
 
 pub fn serve_mcp() -> Result<()> {
+    let lazy = std::env::args_os()
+        .skip(2)
+        .any(|arg| arg.to_str() == Some(LAZY_FLAG));
+    serve_mcp_with_mode(lazy)
+}
+
+pub fn serve_mcp_with_mode(lazy: bool) -> Result<()> {
     let port = std::env::var(PORT_ENV)
         .ok()
         .and_then(|port| port.parse::<u16>().ok())
@@ -102,6 +112,7 @@ pub fn serve_mcp() -> Result<()> {
         .and_then(|token| Uuid::parse_str(&token).ok())
         .ok_or_else(|| error("Missing browser tool session"))?;
     let latency = LatencyRecorder::open(SERVER, None);
+    let mut loaded = !lazy;
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
     let mut line = Vec::new();
@@ -118,58 +129,140 @@ pub fn serve_mcp() -> Result<()> {
             return Err(error("Browser request exceeded its size limit"));
         }
         let request = serde_json::from_slice(&line)?;
-        if let Some(response) = reply(port, token, request, &latency) {
+        if let Some((response, list_changed)) =
+            reply(port, token, request, &latency, lazy, &mut loaded)
+        {
             writeln!(output, "{response}")?;
+            if list_changed {
+                writeln!(
+                    output,
+                    "{}",
+                    json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"})
+                )?;
+            }
             output.flush()?;
         }
     }
 }
 
-fn reply(port: u16, token: Uuid, request: Value, latency: &LatencyRecorder) -> Option<Value> {
+fn loader_definition() -> Value {
+    json!({
+        "name": LOADER_TOOL,
+        "description": "Load or call the 16 agent browser tools on demand (open, navigate, back, reload, tabs, snapshot, click, type, press, select, scroll, wait_for, screenshot, console, network_errors, evaluate). Call with action=\"list\" to inspect schemas and register all browser tools for this session, or action=\"call\" with tool and arguments to run one directly.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "call"], "default": "list"},
+                "tool": {"type": "string", "description": "Browser tool name (for action=\"call\")"},
+                "arguments": {"type": "object", "description": "Arguments for the browser tool (for action=\"call\")"}
+            }
+        }
+    })
+}
+
+fn reply(
+    port: u16,
+    token: Uuid,
+    request: Value,
+    latency: &LatencyRecorder,
+    lazy: bool,
+    loaded: &mut bool,
+) -> Option<(Value, bool)> {
     let id = request.get("id")?;
+    let mut list_changed = false;
     let result = match request["method"].as_str()? {
         // Shared browser guidance is published once in the session preface (src-tauri/src/browser.rs)
         // rather than repeated in MCP initialize instructions (#538).
         "initialize" => {
             latency.record("initialize", Duration::ZERO, Duration::ZERO, true);
+            let tools_cap = if lazy {
+                json!({"listChanged": true})
+            } else {
+                json!({})
+            };
             json!({
                 "protocolVersion": request["params"]["protocolVersion"].as_str().unwrap_or("2024-11-05"),
-                "capabilities":{"tools":{}},"serverInfo":{"name":SERVER,"version":"0.1.0"},
+                "capabilities":{"tools": tools_cap},"serverInfo":{"name":SERVER,"version":"0.1.0"},
             })
         }
         "ping" => json!({}),
-        "tools/list" => json!({"tools":tools::definitions()}),
+        "tools/list" => {
+            let tools = if lazy && !*loaded {
+                vec![loader_definition()]
+            } else {
+                tools::definitions()
+            };
+            json!({"tools": tools})
+        }
         "tools/call" => {
             let params = &request["params"];
             let name = params["name"].as_str().unwrap_or_default().to_owned();
             let arguments = params["arguments"].clone();
-            let started = Instant::now();
-            match forward(
-                port,
-                Request {
-                    token,
-                    name: name.clone(),
-                    arguments,
-                },
-            ) {
-                Ok((value, connect)) => {
-                    let ok = !value["isError"].as_bool().unwrap_or(false);
-                    latency.record(&name, connect, started.elapsed(), ok);
-                    value
+            if lazy && name == LOADER_TOOL {
+                let action = arguments["action"].as_str().unwrap_or("list");
+                match action {
+                    "list" => {
+                        list_changed = !*loaded;
+                        *loaded = true;
+                        let text =
+                            json!({"loaded": true, "tools": tools::definitions()}).to_string();
+                        json!({"content":[{"type":"text","text":text}]})
+                    }
+                    "call" => {
+                        let inner_name = arguments["tool"].as_str().unwrap_or_default().to_owned();
+                        let inner_args = arguments
+                            .get("arguments")
+                            .cloned()
+                            .unwrap_or_else(|| json!({}));
+                        forward_call(port, token, inner_name, inner_args, latency)
+                    }
+                    other => contents(Err(error(&format!(
+                        "Unsupported action `{other}`; use `list` or `call`"
+                    )))),
                 }
-                Err(error) => {
-                    latency.record(&name, Duration::ZERO, started.elapsed(), false);
-                    contents(Err(error))
-                }
+            } else {
+                forward_call(port, token, name, arguments, latency)
             }
         }
         _ => {
-            return Some(
+            return Some((
                 json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Method not found"}}),
-            );
+                false,
+            ));
         }
     };
-    Some(json!({"jsonrpc":"2.0","id":id,"result":result}))
+    Some((
+        json!({"jsonrpc":"2.0","id":id,"result":result}),
+        list_changed,
+    ))
+}
+
+fn forward_call(
+    port: u16,
+    token: Uuid,
+    name: String,
+    arguments: Value,
+    latency: &LatencyRecorder,
+) -> Value {
+    let started = Instant::now();
+    match forward(
+        port,
+        Request {
+            token,
+            name: name.clone(),
+            arguments,
+        },
+    ) {
+        Ok((value, connect)) => {
+            let ok = !value["isError"].as_bool().unwrap_or(false);
+            latency.record(&name, connect, started.elapsed(), ok);
+            value
+        }
+        Err(error) => {
+            latency.record(&name, Duration::ZERO, started.elapsed(), false);
+            contents(Err(error))
+        }
+    }
 }
 
 fn forward(port: u16, request: Request) -> Result<(Value, Duration)> {

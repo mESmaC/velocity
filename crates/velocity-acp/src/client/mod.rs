@@ -200,6 +200,7 @@ struct Shared {
     mode_selection: Mutex<Option<session::ModeSelection>>,
     provider: Option<crate::Provider>,
     account: u32,
+    read_only: bool,
     code_reads: Mutex<turn_usage::CodeReads>,
     token_capture: Mutex<token_usage::Capture>,
     handoff_text: Mutex<Option<String>>,
@@ -218,6 +219,7 @@ impl Shared {
             mode_selection: Mutex::default(),
             provider: None,
             account: 0,
+            read_only: false,
             code_reads: Mutex::default(),
             token_capture: Mutex::default(),
             handoff_text: Mutex::default(),
@@ -405,11 +407,17 @@ async fn run_admitted_session(
     events: UnboundedSender<AgentEvent>,
 ) -> Result<(), ClientError> {
     let mut setup = setup;
+    let effective_provider = launch.concurrency_provider.or(launch.own_config);
+    setup.lazy_tools = crate::providers::supports_lazy_tools(effective_provider);
     // Meter availability must never prevent starting an agent.
     let _ = live_limits::prepare(&mut launch).await;
     let restored = std::mem::take(&mut setup.restored_runs);
     let run_history = std::mem::take(&mut setup.run_history);
-    let (mut queue, results) =
+    let (mut queue, results) = if setup.read_only
+        || !velocity_core::tool_policy::allows_queued_runs(setup.role)
+    {
+        (None, RunResults::default())
+    } else {
         match RunQueue::start(&mut setup, &launch, restored.clone(), run_history.clone()).await {
             Ok(Some((queue, results))) => (Some(queue), results),
             unavailable => {
@@ -443,7 +451,8 @@ async fn run_admitted_session(
                 }
                 (None, results)
             }
-        };
+        }
+    };
     if let Some(note) = run_queue::provider_note(&launch) {
         if let Some(card) = setup.session_card.as_mut() {
             card.push_note(note);
@@ -479,6 +488,7 @@ async fn run_admitted_session(
         mode_selection: Mutex::default(),
         provider: launch.concurrency_provider.or(launch.own_config),
         account: launch.account,
+        read_only: setup.read_only,
         code_reads: Mutex::default(),
         token_capture: Mutex::default(),
         handoff_text: Mutex::default(),

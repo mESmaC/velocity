@@ -17,6 +17,8 @@ pub struct ThreadMenuFacts {
     pub agent_running: bool,
     /// A failed Rosen launch that can retry its workspace setup.
     pub retry_workspace: bool,
+    /// A read-only question thread has no workspace, change or claim (#533).
+    pub read_only: bool,
     /// Bytes on disk under the worktree, when it exists and could be measured.
     pub worktree_bytes: Option<u64>,
 }
@@ -30,6 +32,7 @@ impl ThreadMenuFacts {
             worktree_path: None,
             agent_running: false,
             retry_workspace: false,
+            read_only: false,
             worktree_bytes: None,
         }
     }
@@ -179,6 +182,8 @@ fn delete_detail(facts: &ThreadMenuFacts, worktree: bool) -> String {
     }
     if !parts.is_empty() {
         parts.join(" · ")
+    } else if facts.read_only {
+        "read-only · no workspace".into()
     } else if facts.state == ThreadState::Spec {
         "no workspace · SPEC.md stays".into()
     } else {

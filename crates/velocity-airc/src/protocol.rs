@@ -13,7 +13,10 @@ use velocity_core::issue_dependencies::{
     IssueReference, blocker_list, parse_blockers, with_declared_blockers,
 };
 use velocity_core::text_budget::tool_answer;
+use velocity_core::tool_policy::{McpToolServer, ThreadRole, ToolAccess, tool_access};
 use velocity_rosen::mcp_latency::LatencyRecorder;
+
+const LOADER_TOOL: &str = "airc_tools";
 
 #[derive(Default)]
 pub(crate) struct ToolOptions<'a> {
@@ -21,6 +24,8 @@ pub(crate) struct ToolOptions<'a> {
     issue_handler: Option<&'a IssueHandler<'a>>,
     app_data: Option<&'a Path>,
     next_work_handler: Option<&'a NextWorkHandler<'a>>,
+    role: Option<ThreadRole>,
+    lazy: bool,
 }
 
 impl<'a> ToolOptions<'a> {
@@ -34,11 +39,19 @@ impl<'a> ToolOptions<'a> {
             issue_handler,
             app_data,
             next_work_handler: None,
+            role: None,
+            lazy: false,
         }
     }
 
     pub(crate) fn with_next_work(mut self, handler: &'a NextWorkHandler<'a>) -> Self {
         self.next_work_handler = Some(handler);
+        self
+    }
+
+    pub(crate) fn with_role(mut self, role: ThreadRole, lazy: bool) -> Self {
+        self.role = Some(role);
+        self.lazy = lazy;
         self
     }
 }
@@ -93,6 +106,12 @@ pub(crate) fn serve_with_options(
             };
             if let Some(response) = response {
                 write_response(&output, &response)?;
+                if session.take_list_changed() {
+                    write_response(
+                        &output,
+                        &json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"}),
+                    )?;
+                }
             }
         }
         Ok(())
@@ -135,6 +154,14 @@ fn instructions(
 struct ToolSession {
     nick: Option<String>,
     messages: MessageReader,
+    occasional_loaded: bool,
+    list_changed: bool,
+}
+
+impl ToolSession {
+    fn take_list_changed(&mut self) -> bool {
+        std::mem::replace(&mut self.list_changed, false)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -164,7 +191,9 @@ fn respond(
         "ping" => json!({}),
         _ if session.nick.is_none() => return Some(failure(id, -32600, "Initialize first")),
         "tools/list" => match channel.is_rosen_project(member) {
-            Ok(rosen) => json!({"tools":tool_list(rosen, options)}),
+            Ok(rosen) => {
+                json!({"tools": filtered_tool_list(rosen, options, session.occasional_loaded)})
+            }
             Err(error) => return Some(failure(id, -32603, &error.to_string())),
         },
         "tools/call" => call_tool(
@@ -209,10 +238,15 @@ fn initialize_session(
                 let _ = remote.warm();
             });
     }
+    let tools_capability = if options.role.is_some() && options.lazy {
+        json!({"listChanged": true})
+    } else {
+        json!({})
+    };
     let rosen = channel.is_rosen_project(member)?;
     Ok(json!({
         "protocolVersion":"2025-11-25",
-        "capabilities":{"tools":{}},
+        "capabilities":{"tools":tools_capability},
         "serverInfo":{"name":"velocity-airc","version":env!("CARGO_PKG_VERSION")},
         "instructions":instructions(
             &nick,
@@ -265,8 +299,96 @@ fn call(
     options: &ToolOptions<'_>,
     session: &mut ToolSession,
 ) -> Result<Value, Error> {
+    let name = text(parameters, "name")?;
     let arguments = &parameters["arguments"];
-    match text(parameters, "name")? {
+    if let Some(role) = options.role {
+        if options.lazy && name == LOADER_TOOL {
+            return call_loader(
+                channel, member, nick, arguments, connected, options, session, role,
+            );
+        }
+        if !tool_access(role, McpToolServer::Airc, name).is_allowed() {
+            return Err(Error::Invalid(format!(
+                "Tool `airc.{name}` is not allowed for `{}` threads",
+                role.as_str()
+            )));
+        }
+    }
+    call_inner(
+        channel, member, nick, name, arguments, connected, options, session,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn call_loader(
+    channel: &Channel,
+    member: &str,
+    nick: &str,
+    arguments: &Value,
+    connected: &std::sync::atomic::AtomicBool,
+    options: &ToolOptions<'_>,
+    session: &mut ToolSession,
+    role: ThreadRole,
+) -> Result<Value, Error> {
+    let action = arguments["action"].as_str().unwrap_or("list");
+    match action {
+        "list" => {
+            let rosen = channel.is_rosen_project(member)?;
+            let schemas: Vec<Value> = tool_list(rosen, options)
+                .into_iter()
+                .filter(|tool| {
+                    tool["name"].as_str().is_some_and(|name| {
+                        tool_access(role, McpToolServer::Airc, name) == ToolAccess::Occasional
+                    })
+                })
+                .collect();
+            if !session.occasional_loaded {
+                session.occasional_loaded = true;
+                session.list_changed = true;
+            }
+            Ok(json!({"loaded": true, "tools": schemas}))
+        }
+        "call" => {
+            let tool_name = text(arguments, "tool")?;
+            if !tool_access(role, McpToolServer::Airc, tool_name).is_allowed() {
+                return Err(Error::Invalid(format!(
+                    "Tool `airc.{tool_name}` is not allowed for `{}` threads",
+                    role.as_str()
+                )));
+            }
+            let inner_args = arguments
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            call_inner(
+                channel,
+                member,
+                nick,
+                tool_name,
+                &inner_args,
+                connected,
+                options,
+                session,
+            )
+        }
+        other => Err(Error::Invalid(format!(
+            "Unsupported action `{other}`; use `list` or `call`"
+        ))),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn call_inner(
+    channel: &Channel,
+    member: &str,
+    nick: &str,
+    name: &str,
+    arguments: &Value,
+    connected: &std::sync::atomic::AtomicBool,
+    options: &ToolOptions<'_>,
+    session: &mut ToolSession,
+) -> Result<Value, Error> {
+    match name {
         name @ ("airc_claims" | "airc_claim" | "airc_release" | "airc_share") => {
             claim_call(channel, member, name, arguments)
         }
@@ -379,6 +501,47 @@ fn report_blockers(arguments: &Value, reported: bool) -> Result<Vec<IssueReferen
         ));
     }
     Ok(blockers)
+}
+
+fn filtered_tool_list(
+    rosen: bool,
+    options: &ToolOptions<'_>,
+    occasional_loaded: bool,
+) -> Vec<Value> {
+    let all = tool_list(rosen, options);
+    let Some(role) = options.role else {
+        return all;
+    };
+    let mut occasional_names = Vec::new();
+    let mut listed = Vec::new();
+    for entry in all {
+        let Some(name) = entry.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let access = tool_access(role, McpToolServer::Airc, name);
+        if access == ToolAccess::Occasional {
+            occasional_names.push(name.to_owned());
+        }
+        if access.is_listed(options.lazy, occasional_loaded) {
+            listed.push(entry);
+        }
+    }
+    if options.lazy && !occasional_loaded && !occasional_names.is_empty() {
+        listed.push(tool(
+            LOADER_TOOL,
+            &format!(
+                "Load or call occasional AIRC tools on demand ({}). Call with action=\"list\" to inspect schemas and register them for this session, or action=\"call\" with tool and arguments to run one directly.",
+                occasional_names.join(", ")
+            ),
+            json!({
+                "action": {"type": "string", "enum": ["list", "call"], "default": "list"},
+                "tool": {"type": "string", "description": "Occasional AIRC tool name (for action=\"call\")"},
+                "arguments": {"type": "object", "description": "Arguments for the tool (for action=\"call\")"}
+            }),
+            &[],
+        ));
+    }
+    listed
 }
 
 fn tool_list(rosen: bool, options: &ToolOptions<'_>) -> Vec<Value> {
@@ -736,6 +899,112 @@ mod tests {
                 .contains("rosen claim --exclusive <paths>")
         );
         assert_eq!(replies[3]["result"]["isError"], json!(true));
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    // Risk (#533): builder threads must not see or invoke `join`, `leave` or `task_delete`,
+    // and read-only question threads must not see or invoke AIRC write tools.
+    #[test]
+    fn role_policy_filters_builder_and_question_tools() -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "velocity-airc-role-filter-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let channel = Channel::open(&root, "1")?;
+
+        let run_for = |member: &str,
+                       role: ThreadRole,
+                       lazy: bool,
+                       requests: &[Value]|
+         -> Result<Vec<Value>, Error> {
+            let input = requests
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+            struct BufWrite(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+            impl Write for BufWrite {
+                fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                    let mut guard = self
+                        .0
+                        .lock()
+                        .map_err(|error| std::io::Error::other(error.to_string()))?;
+                    guard.extend_from_slice(buf);
+                    Ok(buf.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            serve_with_options(
+                &channel,
+                member,
+                member,
+                Cursor::new(input),
+                BufWrite(output.clone()),
+                ToolOptions::default().with_role(role, lazy),
+            )?;
+            let bytes = output
+                .lock()
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                .clone();
+            let text =
+                String::from_utf8(bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+            text.lines()
+                .map(|line| serde_json::from_str(line).map_err(Error::from))
+                .collect()
+        };
+
+        let builder = run_for(
+            "thread-1",
+            ThreadRole::Builder,
+            true,
+            &[
+                json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+                json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"task_delete","arguments":{"task":1}}}),
+            ],
+        )?;
+        let builder_tools: Vec<&str> = builder[1]["result"]["tools"]
+            .as_array()
+            .ok_or("missing builder tools")?
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        for forbidden in ["join", "leave", "task_delete"] {
+            assert!(!builder_tools.contains(&forbidden));
+        }
+        assert!(builder_tools.contains(&LOADER_TOOL));
+        assert_eq!(builder[2]["result"]["isError"], json!(true));
+
+        let question = run_for(
+            "thread-2",
+            ThreadRole::Question,
+            false,
+            &[
+                json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+                json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"append_ledger","arguments":{"ledger":"discovery","text":"nope"}}}),
+            ],
+        )?;
+        let question_tools: Vec<&str> = question[1]["result"]["tools"]
+            .as_array()
+            .ok_or("missing question tools")?
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(question_tools.contains(&"read_feed"));
+        assert!(question_tools.contains(&"read_ledger"));
+        for forbidden in ["append_ledger", "send_message", "task_add", "airc_claim"] {
+            assert!(!question_tools.contains(&forbidden));
+        }
+        assert_eq!(question[2]["result"]["isError"], json!(true));
+
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }

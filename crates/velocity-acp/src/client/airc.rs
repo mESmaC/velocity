@@ -4,7 +4,11 @@
 use std::path::{Path, PathBuf};
 
 use agent_client_protocol::v1::schema::{McpServer, McpServerStdio};
-use velocity_airc::{CONTINUOUS_DISPATCH_ARGUMENT, SERVER_NAME, SERVER_SWITCH, server_arguments};
+use velocity_airc::{
+    CONTINUOUS_DISPATCH_ARGUMENT, LAZY_ARGUMENT, ROLE_ARGUMENT, SERVER_NAME, SERVER_SWITCH,
+    server_arguments,
+};
+use velocity_core::tool_policy::ThreadRole;
 
 use super::session::SessionSetup;
 
@@ -75,12 +79,40 @@ pub(super) fn usage_thread(airc: &McpServerStdio) -> Option<String> {
     velocity_core::thread_titles::thread_id_from_member(member).map(|id| format!("thread-{id}"))
 }
 
+/// Applies `--role <role>` and optional `--lazy` to an AIRC stdio server made by [`AircLaunch`].
+pub(super) fn with_airc_policy(server: &McpServer, role: ThreadRole, lazy: bool) -> McpServer {
+    let McpServer::Stdio(stdio) = server else {
+        return server.clone();
+    };
+    if stdio.args.first().map(String::as_str) != Some(SERVER_SWITCH) {
+        return server.clone();
+    }
+    let mut updated = stdio.clone();
+    if !updated.args.iter().any(|arg| arg == ROLE_ARGUMENT) {
+        updated.args.push(ROLE_ARGUMENT.to_owned());
+        updated.args.push(role.as_str().to_owned());
+    }
+    if lazy && !updated.args.iter().any(|arg| arg == LAZY_ARGUMENT) {
+        updated.args.push(LAZY_ARGUMENT.to_owned());
+    }
+    McpServer::Stdio(updated)
+}
+
 /// The code graph server (F19) for a session that has AIRC: the same executable and project,
 /// over the session's worktree. Every session Velocity starts gets AIRC, so deriving the graph
 /// from it means no role can start without the graph. `None` for a server [`AircLaunch`]
 /// didn't make.
 /// While the project's code graph switch is off (F19), sessions start without it.
 pub fn graph_server(airc: &McpServer, worktree: &Path) -> Option<McpServer> {
+    graph_server_for_role(airc, worktree, None, false)
+}
+
+pub(super) fn graph_server_for_role(
+    airc: &McpServer,
+    worktree: &Path,
+    role: Option<ThreadRole>,
+    lazy: bool,
+) -> Option<McpServer> {
     let (airc, app_data, project) = airc_project(airc)?;
     if !velocity_graph::usage::enabled(Path::new(app_data), project) {
         return None;
@@ -92,6 +124,13 @@ pub fn graph_server(airc: &McpServer, worktree: &Path) -> Option<McpServer> {
         worktree,
     ));
     arguments.extend(usage_thread(airc));
+    if let Some(role) = role {
+        arguments.push(velocity_graph::ROLE_FLAG.to_owned());
+        arguments.push(role.as_str().to_owned());
+        if lazy {
+            arguments.push(velocity_graph::LAZY_FLAG.to_owned());
+        }
+    }
     Some(McpServer::Stdio(
         McpServerStdio::new(velocity_graph::SERVER_NAME, &airc.command).args(arguments),
     ))

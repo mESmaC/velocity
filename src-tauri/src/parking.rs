@@ -362,22 +362,43 @@ fn start_session(application: &AppHandle, key: ThreadKey, opening: Opening) -> R
         ),
     };
     thread.bind_provider_account(account);
-    let path = thread.worktree_path.as_deref().ok_or("Missing worktree")?;
+    let read_only = thread.role.is_read_only();
+    let path = if read_only {
+        project.repository_path.as_str()
+    } else {
+        thread.worktree_path.as_deref().ok_or("Missing worktree")?
+    };
     let (mut agent, bypass_modes) = agent_launch_for_account(&settings, thread.provider, account)
         .map_err(|error| error.to_string())?;
     let mut setup = SessionSetup::new(path.into(), bypass_modes)
         .with_run_settings(velocity_threads::thread_run_settings(&thread));
-    match crate::rosen::prepare_resume(application, key.0, &thread, &mut agent, &mut setup) {
-        Some(prepared) => prepared?,
-        None => velocity_git::verify_thread_worktree(
-            Path::new(&project.repository_path),
-            Path::new(path),
-            &thread.branch_name,
-        )
-        .map_err(|error| error.to_string())?,
+    setup.role = thread.role;
+    setup.read_only = read_only;
+    if read_only {
+        if crate::rosen::uses_rosen(application, key.0) {
+            agent.env.push((
+                String::from(velocity_rosen::agent_run::BLOCK_VCS_ENV),
+                String::from("1"),
+            ));
+            setup
+                .shared_servers
+                .extend(crate::rosen::read_only_mcp_server(application, key.0));
+        }
+        setup.preface = Some(crate::threads::QUESTION_PREFACE.into());
+        setup.airc = crate::airc_access::for_thread(application, key, Path::new(path), &thread);
+    } else {
+        match crate::rosen::prepare_resume(application, key.0, &thread, &mut agent, &mut setup) {
+            Some(prepared) => prepared?,
+            None => velocity_git::verify_thread_worktree(
+                Path::new(&project.repository_path),
+                Path::new(path),
+                &thread.branch_name,
+            )
+            .map_err(|error| error.to_string())?,
+        }
+        setup.airc = crate::airc_access::for_thread(application, key, Path::new(path), &thread);
+        crate::airc_claims::attach(application, key, &setup, &thread.branch_name)?;
     }
-    setup.airc = crate::airc_access::for_thread(application, key, Path::new(path), &thread);
-    crate::airc_claims::attach(application, key, &setup, &thread.branch_name)?;
     reset_supervision(application, key, &thread)?;
     setup.pause_on_subscription_limit = true;
     setup.run_history = thread.queued_run_history.clone();
@@ -386,9 +407,12 @@ fn start_session(application: &AppHandle, key: ThreadKey, opening: Opening) -> R
     crate::threads::refresh(application, key, false)?;
     crate::threads::emit_status(application, key);
     let handle = application.clone();
+    let title = thread.title.clone();
     tauri::async_runtime::spawn(async move {
-        crate::handoff::add_preface(&handle, key, &mut setup).await;
-        crate::browser::configure(&handle, key, &mut setup);
+        if !read_only {
+            crate::handoff::add_preface(&handle, key, &mut setup).await;
+            crate::browser::configure_for_prompt(&handle, key, &title, "", &mut setup);
+        }
         crate::threads::pump(&handle, key, spawn_session(agent, setup, inputs)).await;
     });
     Ok(())

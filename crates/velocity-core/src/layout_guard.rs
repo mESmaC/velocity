@@ -20,6 +20,8 @@ pub fn guard_intent(
 fn launch_kind(intent: &LayoutIntent, interview_thread: bool) -> Option<LaunchKind> {
     match intent {
         LayoutIntent::StartPrompt(_) => Some(LaunchKind::Build(BuildKind::Thread)),
+        // Read-only question threads do not build or edit files, so only require a project (#533).
+        LayoutIntent::StartQuestion(_) => Some(LaunchKind::Interview),
         LayoutIntent::DispatchIssue(_) => Some(LaunchKind::Build(BuildKind::IssueDispatch)),
         LayoutIntent::SteerThread { .. } => Some(if interview_thread {
             LaunchKind::Interview

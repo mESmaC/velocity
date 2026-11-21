@@ -28,6 +28,7 @@ pub mod lean_cache;
 mod light_target;
 pub mod machine_dispatch;
 pub mod machines;
+pub mod mcp_filter;
 pub mod mcp_latency;
 pub mod mcp_proxy;
 pub mod memory;
@@ -79,6 +80,7 @@ pub use rosen_core::claim::PathPattern;
 pub use server::{BINARY_FOLDER_ENV, ImportSource, ProjectServer, Servers, binary_folder};
 pub use server_update::{RosenBuild, ServerUpdate};
 pub use stack::stack_workspace;
+pub use velocity_core::tool_policy;
 pub use workspace::{
     AgentWorkspace, Watches, abandon_change, create_change, create_workspace,
     create_workspace_retaining_change, has_workspace, open_workspace_within, rebase_pending,

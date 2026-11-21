@@ -96,6 +96,7 @@ pub fn sweep_session(
 ) -> SessionSetup {
     let mut setup = SessionSetup::new(worktree.clone(), plan.bypass_modes.clone())
         .with_run_settings(plan.run_settings.clone());
+    setup.role = velocity_core::tool_policy::ThreadRole::Scout;
     setup.usage_role = Some(Role::DutySweep);
     let server = McpServerStdio::new("velocity-scout", scout_server).args(vec![
         SCOUT_SERVER_SWITCH.to_owned(),

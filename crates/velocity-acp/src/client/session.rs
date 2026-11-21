@@ -67,6 +67,12 @@ pub struct SessionSetup {
     pub restored_runs: Vec<velocity_core::queued_runs::QueuedRunRecord>,
     /// Recent finished queued runs persisted on this thread for `run_status` and restart recovery (#536).
     pub run_history: Vec<velocity_core::queued_runs::QueuedRunRecord>,
+    /// Thread role that determines which MCP tools this session receives (#533).
+    pub role: velocity_core::tool_policy::ThreadRole,
+    /// True for read-only question threads: disables file write capabilities and write tools (#533).
+    pub read_only: bool,
+    /// True when the provider harness supports on-demand occasional tool loading (#533).
+    pub lazy_tools: bool,
 }
 
 /// How a parked thread's agent picks up where it stopped: `session/load` of its earlier
@@ -127,6 +133,9 @@ impl SessionSetup {
             project_memory_dir: None,
             restored_runs: Vec::new(),
             run_history: Vec::new(),
+            role: velocity_core::tool_policy::ThreadRole::Builder,
+            read_only: false,
+            lazy_tools: false,
         }
     }
 
@@ -162,6 +171,10 @@ impl SessionSetup {
             );
             object.insert("autoMemoryEnabled".into(), serde_json::json!(true));
         }
+        let mut disallowed = vec!["mcp__computer-use"];
+        if self.read_only {
+            disallowed.extend(["Edit", "Write", "NotebookEdit"]);
+        }
         let agents_path = self.worktree.join("AGENTS.md");
         let instructions = match tokio::fs::read_to_string(&agents_path).await {
             Ok(instructions) => Some(instructions),
@@ -187,7 +200,7 @@ impl SessionSetup {
             serde_json::json!({
                 "options": {
                     "settings": settings,
-                    "disallowedTools": ["mcp__computer-use"]
+                    "disallowedTools": disallowed
                 }
             }),
         )]);
@@ -542,9 +555,13 @@ fn restricted_mode(shared: &Shared, mode: &str, reason: impl std::fmt::Display) 
 }
 
 pub(super) fn initialize_request() -> InitializeRequest {
+    initialize_request_with_write(true)
+}
+
+fn initialize_request_with_write(allow_write: bool) -> InitializeRequest {
     let files = FileSystemCapabilities::new()
         .read_text_file(true)
-        .write_text_file(true);
+        .write_text_file(allow_write);
     InitializeRequest::new(ProtocolVersion::V1)
         .client_capabilities(
             ClientCapabilities::new()
@@ -560,7 +577,7 @@ pub(super) fn initialize_request() -> InitializeRequest {
 /// codex-acp forwards a child thread's own items only to a client that declares them (§3.2
 /// Subagents). Every other agent keeps reporting subagents inside the parent session.
 fn thread_initialize_request(shared: &Shared) -> InitializeRequest {
-    let mut request = initialize_request();
+    let mut request = initialize_request_with_write(!shared.read_only);
     if shared.provider == Some(Provider::Codex) {
         request.client_capabilities = request
             .client_capabilities
@@ -570,18 +587,28 @@ fn thread_initialize_request(shared: &Shared) -> InitializeRequest {
 }
 
 /// AIRC, the code graph beside it (F19), then the shared servers, keeping the first server of
-/// each name.
+/// each name. Role and lazy-loading flags from `setup` are applied to Velocity's own servers (#533).
 pub fn session_servers(setup: &SessionSetup) -> Vec<McpServer> {
-    let graph = setup
+    let airc = setup
         .airc
         .as_ref()
-        .and_then(|airc| super::airc::graph_server(airc, &setup.worktree));
-    let servers: Vec<McpServer> = setup
-        .airc
+        .map(|airc| super::airc::with_airc_policy(airc, setup.role, setup.lazy_tools));
+    let graph = setup.airc.as_ref().and_then(|airc| {
+        super::airc::graph_server_for_role(
+            airc,
+            &setup.worktree,
+            Some(setup.role),
+            setup.lazy_tools,
+        )
+    });
+    let shared_servers = setup
+        .shared_servers
         .iter()
-        .cloned()
+        .map(|server| apply_rosen_lazy(server, setup.lazy_tools));
+    let servers: Vec<McpServer> = airc
+        .into_iter()
         .chain(graph)
-        .chain(setup.shared_servers.iter().cloned())
+        .chain(shared_servers)
         .collect();
     let keep: Vec<bool> = {
         let names: Vec<Option<&str>> = servers.iter().map(server_name).collect();
@@ -597,6 +624,30 @@ pub fn session_servers(setup: &SessionSetup) -> Vec<McpServer> {
         .zip(keep)
         .filter_map(|(server, keep)| keep.then_some(server))
         .collect()
+}
+
+fn apply_rosen_lazy(server: &McpServer, lazy: bool) -> McpServer {
+    if !lazy {
+        return server.clone();
+    }
+    let McpServer::Stdio(stdio) = server else {
+        return server.clone();
+    };
+    if stdio.args.first().map(String::as_str) != Some(velocity_rosen::mcp_proxy::SERVER_SWITCH) {
+        return server.clone();
+    }
+    if stdio
+        .args
+        .iter()
+        .any(|arg| arg == velocity_rosen::mcp_filter::LAZY_FLAG)
+    {
+        return server.clone();
+    }
+    let mut updated = stdio.clone();
+    updated
+        .args
+        .insert(1, velocity_rosen::mcp_filter::LAZY_FLAG.to_owned());
+    McpServer::Stdio(updated)
 }
 
 /// The servers the agent can reach: every agent speaks stdio, but HTTP and SSE servers go

@@ -31,11 +31,19 @@ impl ProviderAgent {
                 ] {
                     self.launch.set_env(name, value);
                 }
+                if std::env::var_os("ENABLE_TOOL_SEARCH").is_none() {
+                    self.launch.set_env("ENABLE_TOOL_SEARCH", "true");
+                }
             }
             Some(Provider::Codex) => trim_codex_context(&mut self.launch),
             _ => {}
         }
     }
+}
+
+/// Whether `provider`'s harness natively supports on-demand/deferred MCP tool loading (#533).
+pub const fn supports_lazy_tools(provider: Option<Provider>) -> bool {
+    matches!(provider, Some(Provider::Anthropic | Provider::Antigravity))
 }
 
 fn trim_codex_context(launch: &mut AgentLaunch) {

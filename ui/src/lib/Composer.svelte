@@ -15,6 +15,7 @@
     placeholder,
     modelPill,
     showWorktreePill = false,
+    draftReadOnly = false,
     draftContext = null,
     threadIdentifier,
   }: {
@@ -24,6 +25,7 @@
     placeholder: string;
     modelPill: ModelPillView;
     showWorktreePill?: boolean;
+    draftReadOnly?: boolean;
     draftContext?: string | null;
     /** A thread identifier edits that thread. `null` targets the home draft. */
     threadIdentifier?: number | null;
@@ -136,12 +138,23 @@
       ><Icon name="attach" /></button
     >
     {#if showWorktreePill}
+      {#if !draftReadOnly}
+        <button
+          class="pill"
+          type="button"
+          title="Workspace for this thread"
+          onclick={() => send({ Request: { SettingsTab: 'worktrees' } })}
+          ><Icon name="branch" /><i>new workspace</i></button
+        >
+      {/if}
       <button
         class="pill"
+        class:readonly-active={draftReadOnly}
         type="button"
-        title="Workspace for this thread"
-        onclick={() => send({ Request: { SettingsTab: 'worktrees' } })}
-        ><Icon name="branch" /><i>new workspace</i></button
+        aria-pressed={draftReadOnly}
+        title="Read-only question thread · no workspace, change or claim"
+        onclick={() => send('ToggleDraftReadOnly')}
+        ><Icon name="search" /><i>read-only</i></button
       >
     {/if}
     <span class="spacer"></span>
@@ -193,3 +206,10 @@
     >
   </div>
 </form>
+
+<style>
+  .pill.readonly-active {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+</style>

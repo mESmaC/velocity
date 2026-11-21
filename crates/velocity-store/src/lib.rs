@@ -798,6 +798,9 @@ pub struct ThreadItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(skip)]
     pub browser_location: Option<String>,
+    /// Operational role determining the session's MCP tool set (#533).
+    #[serde(default)]
+    pub role: velocity_core::tool_policy::ThreadRole,
     #[serde(default)]
     pub worktree_role: WorktreeRole,
     #[serde(default, skip_serializing)]
@@ -930,6 +933,7 @@ impl ThreadItem {
             branch_name: String::new(),
             worktree_path: None,
             browser_location: None,
+            role: velocity_core::tool_policy::ThreadRole::Builder,
             worktree_role: WorktreeRole::Thread,
             worktree_path_id: None,
             pull_request_number: None,
@@ -1002,6 +1006,7 @@ impl ThreadItem {
             branch_name: thread.branch_name,
             worktree_path: Some(thread.worktree_path),
             browser_location: None,
+            role: thread.role,
             // A thread started from the composer builds in its own worktree (F4, F5).
             worktree_role: WorktreeRole::Thread,
             worktree_path_id: None,
@@ -1055,6 +1060,20 @@ impl ThreadItem {
             rosen_issue: Default::default(),
         }
         .normalize()
+    }
+
+    /// A read-only question thread: no workspace, branch, change, claim or landable status (#533).
+    pub(crate) fn for_question(thread: threads::NewThread, identifier: u32) -> Self {
+        let mut item = Self::new(identifier, thread.title);
+        item.activity = AgentActivity::Thinking;
+        item.role = velocity_core::tool_policy::ThreadRole::Question;
+        item.provider = thread.provider;
+        item.model_name = thread.model_name;
+        item.effort = thread.effort;
+        item.preferred_speed = thread.preferred_speed;
+        item.effective_speed = thread.preferred_speed;
+        item.model_supports_fast = thread.model_supports_fast;
+        item.normalize()
     }
 
     /// One project-unique name for this thread across AIRC, Rosen and member labels (#532).

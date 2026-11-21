@@ -83,7 +83,7 @@ fn resolve_profile(application: &AppHandle, key: BrowserKey) -> Result<PathBuf, 
             .iter()
             .find(|thread| thread.id == key.1)
             .ok_or("The browser's thread no longer exists")?;
-        if thread.interview.is_some() {
+        if thread.interview.is_some() || thread.role.is_read_only() {
             return Err("The agent browser is available in implementation threads".into());
         }
         let saved = thread.browser_location.as_deref();
@@ -111,13 +111,35 @@ fn resolve_profile(application: &AppHandle, key: BrowserKey) -> Result<PathBuf, 
 }
 
 pub fn configure(application: &AppHandle, key: BrowserKey, setup: &mut SessionSetup) {
+    configure_for_prompt(application, key, "", "", setup);
+}
+
+/// Attaches `velocity-browser` eagerly on UI work, lazily behind `browser_tools` on
+/// non-UI builder work, or omits it for roles that never drive a browser (#533).
+pub fn configure_for_prompt(
+    application: &AppHandle,
+    key: BrowserKey,
+    title: &str,
+    prompt: &str,
+    setup: &mut SessionSetup,
+) {
+    let touches_ui = velocity_core::tool_policy::prompt_touches_ui(title, prompt);
+    let attachment = velocity_core::tool_policy::browser_attachment(setup.role, touches_ui);
+    if attachment == velocity_core::tool_policy::BrowserAttachment::Omitted {
+        return;
+    }
+    let lazy = attachment == velocity_core::tool_policy::BrowserAttachment::Lazy;
     let result = (|| -> Result<(), String> {
         let hub = application.state::<BrowserHub>();
         hub.register(key, resolve_profile(application, key));
         let route = hub.route(key).map_err(|error| error.to_string())?;
         let program = std::env::current_exe().map_err(|error| error.to_string())?;
+        let mut args = vec![velocity_browser::SWITCH.into()];
+        if lazy {
+            args.push(velocity_browser::LAZY_FLAG.into());
+        }
         let server = McpServerStdio::new(velocity_browser::SERVER, program)
-            .args(vec![velocity_browser::SWITCH.into()])
+            .args(args)
             .env(vec![
                 EnvVariable::new(velocity_browser::PORT_ENV, route.port.to_string()),
                 EnvVariable::new(velocity_browser::TOKEN_ENV, route.token.to_string()),

@@ -31,6 +31,8 @@ pub enum ClientError {
     Usage(String),
     #[error("unrecognized usage report: {0}")]
     UsageFormat(String),
+    #[error("{0}")]
+    ReadOnly(String),
     #[error("ACP: {0}")]
     Protocol(#[from] agent_client_protocol::Error),
 }
@@ -39,7 +41,9 @@ impl From<ClientError> for agent_client_protocol::Error {
     fn from(error: ClientError) -> Self {
         match error {
             ClientError::Protocol(error) => error,
-            ClientError::NonUtf8Path(_) | ClientError::UnknownTerminal(_) => {
+            ClientError::NonUtf8Path(_)
+            | ClientError::UnknownTerminal(_)
+            | ClientError::ReadOnly(_) => {
                 agent_client_protocol::Error::invalid_params().data(error.to_string())
             }
             other => agent_client_protocol::Error::internal_error().data(other.to_string()),

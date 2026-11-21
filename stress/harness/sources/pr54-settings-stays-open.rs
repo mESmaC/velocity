@@ -1,3 +1,4 @@
+// Adaptation (#533): populate the default `NewThread::role` field added for per-role tool sets.
 use std::path::PathBuf;
 use velocity_core::layout_state::LayoutState;
 use velocity_core::layout_view::{LayoutAction, LayoutIntent};
@@ -22,6 +23,7 @@ fn main() {
     let thread = store.add_thread(project, NewThread {
         title: "build thread".into(), branch_name: "vel/build-thread".into(),
         worktree_path: root.join("worktree").to_string_lossy().into_owned(),
+        role: Default::default(),
         provider: ProviderKind::Claude, model_name: "agent default".into(), model_supports_fast: false,
         effort: EffortLevel::High, preferred_speed: SpeedMode::Regular }).expect("thread");
     let mut layout = LayoutState::default();

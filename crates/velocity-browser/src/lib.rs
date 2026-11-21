@@ -12,7 +12,7 @@ pub use cdp::Frame;
 pub use engine::MEMORY_BUDGET;
 pub use hub::{BrowserHub, BrowserKey, BrowserView, Route};
 pub use input::BrowserInput;
-pub use transport::{PORT_ENV, SERVER, SWITCH, TOKEN_ENV, serve_mcp};
+pub use transport::{LAZY_FLAG, LOADER_TOOL, PORT_ENV, SERVER, SWITCH, TOKEN_ENV, serve_mcp};
 
 use serde_json::Value;
 

@@ -63,6 +63,7 @@ pub fn prepare_ci_repair(
     )
     .map_err(|error| error.to_string())?;
     plan.title.request = None;
+    plan.thread.role = velocity_core::tool_policy::ThreadRole::FollowUp;
     let thread = store
         .add_ci_repair(project, failure, plan.thread.clone(), &prompt)
         .map_err(|error| error.to_string())?;

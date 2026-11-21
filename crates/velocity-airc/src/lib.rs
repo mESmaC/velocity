@@ -33,8 +33,8 @@ pub use delivery::{
 };
 pub use issue_tools::{IssueCreate, IssueRead, IssueRequest, IssueUpdate, IssueUpdateKind};
 pub use launch::{
-    CONTINUOUS_DISPATCH_ARGUMENT, SERVER_NAME, SERVER_SWITCH, serve_stdio,
-    serve_stdio_with_handlers, serve_stdio_with_issues, server_arguments,
+    CONTINUOUS_DISPATCH_ARGUMENT, LAZY_ARGUMENT, ROLE_ARGUMENT, SERVER_NAME, SERVER_SWITCH,
+    serve_stdio, serve_stdio_with_handlers, serve_stdio_with_issues, server_arguments,
 };
 pub use next_work_tools::NextWorkRequest;
 pub use payload::{EventPayload, OverlapDetail, OverlapSymbols, WokenDetail};

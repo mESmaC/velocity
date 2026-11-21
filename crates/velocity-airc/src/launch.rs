@@ -16,8 +16,10 @@ pub const SERVER_SWITCH: &str = "--airc-mcp";
 pub const SERVER_NAME: &str = "airc";
 
 pub const CONTINUOUS_DISPATCH_ARGUMENT: &str = "--continuous-dispatch";
+pub const ROLE_ARGUMENT: &str = "--role";
+pub const LAZY_ARGUMENT: &str = "--lazy";
 
-const USAGE: &str = "Usage: <app-data> <project-id> <member-id> <worktree-leaf-or-duty-nick> [member-scope] [--continuous-dispatch]";
+const USAGE: &str = "Usage: <app-data> <project-id> <member-id> <worktree-leaf-or-duty-nick> [member-scope] [--continuous-dispatch] [--role <role>] [--lazy]";
 
 /// The arguments that follow the program (or [`SERVER_SWITCH`]) for one agent's connection.
 /// `member` names the agent's session for presence; `nick` is what the channel shows.
@@ -65,13 +67,7 @@ fn serve_stdio_inner(
     let [app_data, project, member, nick, options @ ..] = arguments else {
         return Err(Error::Invalid(USAGE.into()));
     };
-    let (scope, continuous_dispatch) = match options {
-        [scope @ .., marker] if marker == CONTINUOUS_DISPATCH_ARGUMENT => (scope, true),
-        _ => (options, false),
-    };
-    if scope.len() > 1 {
-        return Err(Error::Invalid(USAGE.into()));
-    }
+    let (scope, continuous_dispatch, role, lazy) = parse_options(options)?;
     let text = |value: &OsString, what: &str| {
         value
             .to_str()
@@ -84,12 +80,7 @@ fn serve_stdio_inner(
         Ok(endpoint) => Channel::at_endpoint(&app_data, &endpoint),
         Err(_) => Channel::open(&app_data, &project)?,
     }
-    .with_member_scope(
-        scope
-            .first()
-            .map(|scope| text(scope, "member scope"))
-            .transpose()?,
-    )?;
+    .with_member_scope(scope.map(|scope| text(scope, "member scope")).transpose()?)?;
     let handle_issue = |request: IssueRequest<'_>| {
         handler.ok_or_else(|| Error::Invalid("No GitHub issue transport".into()))?(
             &app_data, &project, request,
@@ -105,6 +96,9 @@ fn serve_stdio_inner(
         handler.map(|_| &handle_issue as &crate::issue_tools::IssueHandler<'_>),
         Some(&app_data),
     );
+    if let Some(role) = role {
+        options = options.with_role(role, lazy);
+    }
     if next_work.is_some() {
         options = options
             .with_next_work(&handle_next_work as &crate::next_work_tools::NextWorkHandler<'_>);
@@ -117,4 +111,51 @@ fn serve_stdio_inner(
         std::io::stdout(),
         options,
     )
+}
+
+fn parse_options(
+    options: &[OsString],
+) -> Result<
+    (
+        Option<&OsString>,
+        bool,
+        Option<velocity_core::tool_policy::ThreadRole>,
+        bool,
+    ),
+    Error,
+> {
+    let mut scope = None;
+    let mut continuous_dispatch = false;
+    let mut role = None;
+    let mut lazy = false;
+    let mut index = 0;
+    while let Some(option) = options.get(index) {
+        match option.to_str() {
+            Some(CONTINUOUS_DISPATCH_ARGUMENT) => {
+                continuous_dispatch = true;
+                index += 1;
+            }
+            Some(LAZY_ARGUMENT) => {
+                lazy = true;
+                index += 1;
+            }
+            Some(ROLE_ARGUMENT) => {
+                let value = options
+                    .get(index + 1)
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| Error::Invalid(USAGE.into()))?;
+                role = Some(
+                    velocity_core::tool_policy::ThreadRole::parse(value)
+                        .ok_or_else(|| Error::Invalid(format!("Unknown thread role: {value}")))?,
+                );
+                index += 2;
+            }
+            _ if scope.is_none() => {
+                scope = Some(option);
+                index += 1;
+            }
+            _ => return Err(Error::Invalid(USAGE.into())),
+        }
+    }
+    Ok((scope, continuous_dispatch, role, lazy))
 }

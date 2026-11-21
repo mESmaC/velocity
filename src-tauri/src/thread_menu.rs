@@ -142,6 +142,7 @@ pub async fn get_thread_menu(
     let message_mode = thread_message_mode(&application, project_identifier, &thread)?;
     let facts = ThreadMenuFacts {
         retry_workspace: thread.pending_rosen_launch.is_some(),
+        read_only: thread.role.is_read_only(),
         worktree_path: thread.worktree_path,
         agent_running,
         worktree_bytes,
@@ -221,13 +222,15 @@ pub(crate) fn delete_thread_now(
     thread_identifier: u32,
 ) -> Result<LayoutSnapshot, String> {
     let (_, thread) = find_thread(&application, project_identifier, thread_identifier)?;
-    let worktree = velocity_core::thread_menu::owns_worktree(
-        thread.state.into(),
-        thread.worktree_path.as_deref(),
-    ) && thread
-        .worktree_path
-        .as_deref()
-        .is_some_and(|path| std::path::Path::new(path).is_dir());
+    let worktree = !thread.role.is_read_only()
+        && velocity_core::thread_menu::owns_worktree(
+            thread.state.into(),
+            thread.worktree_path.as_deref(),
+        )
+        && thread
+            .worktree_path
+            .as_deref()
+            .is_some_and(|path| std::path::Path::new(path).is_dir());
     let message = format!(
         "Deleted “{}”{}",
         thread.title,

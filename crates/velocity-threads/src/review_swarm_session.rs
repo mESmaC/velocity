@@ -236,6 +236,12 @@ impl Job {
         let mut setup = SessionSetup::new(launch.workspace.clone(), modes).with_run_settings(
             crate::titles::duty_run_settings(settings, agent, settings.agents.review_effort(false)),
         );
+        let role = if launch.target.is_some() || launch.no_change_only {
+            velocity_core::tool_policy::ThreadRole::Reviewer
+        } else {
+            velocity_core::tool_policy::ThreadRole::Scout
+        };
+        setup.role = role;
         setup.airc = self
             .runner
             .airc
@@ -258,6 +264,7 @@ impl Job {
             &self.runner.executable,
             launch,
             &agent_launch.env,
+            role,
         ));
         Ok((agent_launch, setup))
     }
@@ -444,10 +451,16 @@ fn rosen_server(
     executable: &std::path::Path,
     launch: &SwarmLaunch,
     environment: &[(String, String)],
+    role: velocity_core::tool_policy::ThreadRole,
 ) -> Option<McpServer> {
-    let command =
-        velocity_rosen::mcp_proxy::proxy_mcp_command(executable, &launch.workspace, environment)
-            .or_else(|| velocity_rosen::mcp_command(&launch.workspace, environment))?;
+    let command = velocity_rosen::mcp_proxy::proxy_mcp_command_for_role(
+        executable,
+        Some(&launch.workspace),
+        environment,
+        role,
+        false,
+    )
+    .or_else(|| velocity_rosen::mcp_command(&launch.workspace, environment))?;
     Some(McpServer::Stdio(
         McpServerStdio::new("rosen", command.program)
             .args(command.arguments)

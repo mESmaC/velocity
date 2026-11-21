@@ -26,8 +26,13 @@ const RUST_COMMANDS: &[&str] = &[
     "cargo-tauri",
     "clippy-driver",
 ];
+const VCS_COMMANDS: &[&str] = &["git", "gh"];
+/// Set on Rosen agent processes so `git` and `gh` shims refuse immediately (#533).
+pub const BLOCK_VCS_ENV: &str = "VELOCITY_BLOCK_GIT_GH";
 const LAUNCHER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/agent-launcher.exe"));
 const REFUSAL: &str = "The integration build covers Rust compilation, lint and tests. Agents may run cargo fmt or queue cargo check -p <crate>.";
+const GIT_REFUSAL: &str = "Rosen manages this workspace, not git. Use the rosen MCP tools or CLI (rosen status, rosen diff, rosen log, rosen commit -m) instead.";
+const GH_REFUSAL: &str = "Agents do not call gh directly. Use AIRC issue tools (issue_read, issue_create, issue_comment, issue_ready_to_close) or velocity-run's workflow_run instead.";
 /// Light runs going at once on the machine. Each uses two Cargo jobs.
 pub(crate) const LIGHT_SLOTS: usize = 2;
 /// What a light run may use: two Cargo jobs plus the linker of a debug build.
@@ -48,6 +53,9 @@ pub enum AgentRun {
 
 pub fn policy(program: &str, arguments: &[String]) -> Result<AgentRun, &'static str> {
     let name = executable_name(program);
+    if let Some(refusal) = vcs_refusal(&name) {
+        return Err(refusal);
+    }
     if name == "pnpm" && runs_bindings_script(arguments) {
         return Ok(AgentRun::Bindings);
     }
@@ -167,6 +175,9 @@ fn create_commands(executable: &Path) -> io::Result<AgentCommands> {
     for name in &RUST_COMMANDS[1..] {
         copy_launcher(&cargo, &path.join(executable_file(name)))?;
     }
+    for name in VCS_COMMANDS {
+        copy_launcher(&cargo, &path.join(executable_file(name)))?;
+    }
     let rosen_name = executable_file("rosen");
     let rosen = if let Some(real_rosen) = crate::server::program_folder("rosen") {
         let program = std::path::absolute(real_rosen.join(&rosen_name))?;
@@ -279,6 +290,12 @@ fn run_direct(
     arguments: &[OsString],
     passthrough: &[String],
 ) -> io::Result<ExitStatus> {
+    if VCS_COMMANDS.contains(&name) {
+        if let Some(refusal) = vcs_refusal(name) {
+            return Err(io::Error::other(refusal));
+        }
+        return run_held(name, arguments, passthrough);
+    }
     if name != "cargo" {
         return Err(io::Error::other(REFUSAL));
     }
@@ -295,6 +312,34 @@ fn run_direct(
             passthrough,
         ),
         _ => Err(io::Error::other(REFUSAL)),
+    }
+}
+
+/// Returns the one-line refusal for `git` or `gh` when running inside a Rosen workspace or
+/// Rosen agent environment (#533), or `None` outside Rosen so legacy git projects keep working.
+pub fn vcs_refusal(name: &str) -> Option<&'static str> {
+    if !VCS_COMMANDS.contains(&name) {
+        return None;
+    }
+    let blocked = std::env::var_os(BLOCK_VCS_ENV).is_some_and(|value| value == "1")
+        || std::env::var_os("ROSEN_CHANGE").is_some()
+        || std::env::var_os("ROSEN_ENDPOINT").is_some()
+        || std::env::current_dir().ok().is_some_and(|directory| {
+            directory
+                .ancestors()
+                .any(|path| path.join(".rosen").exists())
+        });
+    if !blocked {
+        return None;
+    }
+    vcs_refusal_for(name)
+}
+
+fn vcs_refusal_for(name: &str) -> Option<&'static str> {
+    match name {
+        "git" => Some(GIT_REFUSAL),
+        "gh" => Some(GH_REFUSAL),
+        _ => None,
     }
 }
 
@@ -667,5 +712,22 @@ mod tests {
                 "Unexpected run policy for {arguments:?}"
             );
         }
+    }
+
+    #[test]
+    fn git_and_gh_refusals_are_single_line_with_alternatives() {
+        // Risk (#533): agents in a Rosen workspace must have git/gh refused with a crisp
+        // one-line explanation naming the allowed alternative.
+        let Some(git) = super::vcs_refusal_for("git") else {
+            panic!("git must have a refusal");
+        };
+        assert!(!git.contains('\n'));
+        assert!(git.contains("rosen"));
+        let Some(gh) = super::vcs_refusal_for("gh") else {
+            panic!("gh must have a refusal");
+        };
+        assert!(!gh.contains('\n'));
+        assert!(gh.contains("AIRC") || gh.contains("issue_"));
+        assert!(super::vcs_refusal_for("cargo").is_none());
     }
 }

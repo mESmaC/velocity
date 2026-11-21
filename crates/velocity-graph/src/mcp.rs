@@ -27,11 +27,14 @@ pub const SERVER_SWITCH: &str = "--graph-mcp";
 /// The switch that makes Velocity's executable fill a project's parse cache and exit
 /// (warming).
 pub const WARM_SWITCH: &str = "--graph-warm";
+pub const ROLE_FLAG: &str = "--role";
+pub const LAZY_FLAG: &str = "--lazy";
+const LOADER_TOOL: &str = "graph_tools";
 
 /// The MCP server name agents see.
 pub const SERVER_NAME: &str = "velocity-graph";
 
-const USAGE: &str = "Usage: <app-data> <project-id> <worktree>";
+const USAGE: &str = "Usage: <app-data> <project-id> <worktree> [thread] [--role <role>] [--lazy]";
 
 /// Folders whose changes never matter to the graph: build output and dependencies, which git
 /// ignores anyway. Skipping them here saves a listing per build.
@@ -62,14 +65,10 @@ pub fn server_arguments(app_data: &Path, project: &str, worktree: &Path) -> Vec<
 
 /// Serves one agent from [`server_arguments`] on stdin/stdout until input ends.
 pub fn serve_stdio(arguments: &[OsString]) -> Result<(), Error> {
-    let [app_data, project, worktree, optional_thread @ ..] = arguments else {
-        return Err(Error::Invalid(format!("{USAGE} [thread]")));
+    let [app_data, project, worktree, options @ ..] = arguments else {
+        return Err(Error::Invalid(USAGE.into()));
     };
-    let thread = match optional_thread {
-        [] => None,
-        [thread] => Some(thread.to_string_lossy().into_owned()),
-        _ => return Err(Error::Invalid(format!("{USAGE} [thread]"))),
-    };
+    let (thread, role, lazy) = parse_options(options)?;
     let project = project
         .to_str()
         .ok_or_else(|| Error::Invalid("Invalid project identity".into()))?;
@@ -87,9 +86,52 @@ pub fn serve_stdio(arguments: &[OsString]) -> Result<(), Error> {
         Some(app_data.to_path_buf()),
         backend,
         thread,
+        role,
+        lazy,
         std::io::BufReader::new(std::io::stdin()),
         std::io::stdout(),
     )
+}
+
+fn parse_options(
+    options: &[OsString],
+) -> Result<
+    (
+        Option<String>,
+        Option<velocity_rosen::tool_policy::ThreadRole>,
+        bool,
+    ),
+    Error,
+> {
+    let mut thread = None;
+    let mut role = None;
+    let mut lazy = false;
+    let mut index = 0;
+    while let Some(option) = options.get(index) {
+        match option.to_str() {
+            Some(LAZY_FLAG) => {
+                lazy = true;
+                index += 1;
+            }
+            Some(ROLE_FLAG) => {
+                let value = options
+                    .get(index + 1)
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| Error::Invalid(USAGE.into()))?;
+                role = Some(
+                    velocity_rosen::tool_policy::ThreadRole::parse(value)
+                        .ok_or_else(|| Error::Invalid(format!("Unknown thread role: {value}")))?,
+                );
+                index += 2;
+            }
+            _ if thread.is_none() => {
+                thread = Some(option.to_string_lossy().into_owned());
+                index += 1;
+            }
+            _ => return Err(Error::Invalid(USAGE.into())),
+        }
+    }
+    Ok((thread, role, lazy))
 }
 
 fn project_endpoint(app_data: &Path, project: &str) -> Option<Endpoint> {
@@ -158,6 +200,9 @@ struct Connection {
     status: WorkspaceStatus,
     latency: LatencyRecorder,
     usage_tx: Option<mpsc::SyncSender<UsageRecord>>,
+    role: Option<velocity_rosen::tool_policy::ThreadRole>,
+    lazy: bool,
+    occasional_loaded: std::sync::atomic::AtomicBool,
 }
 
 enum Backend {
@@ -182,15 +227,18 @@ pub fn serve(
         tools: Box::default(),
         endpoint,
     };
-    serve_connection(root, cache, None, backend, None, input, output)
+    serve_connection(root, cache, None, backend, None, None, false, input, output)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn serve_connection(
     root: PathBuf,
     cache: PathBuf,
     app_data: Option<PathBuf>,
     backend: Backend,
     thread: Option<String>,
+    role: Option<velocity_rosen::tool_policy::ThreadRole>,
+    lazy: bool,
     input: impl BufRead,
     mut output: impl Write,
 ) -> Result<(), Error> {
@@ -216,6 +264,9 @@ fn serve_connection(
         status,
         latency,
         usage_tx: Some(usage_tx),
+        role,
+        lazy,
+        occasional_loaded: std::sync::atomic::AtomicBool::new(false),
     });
     let (changes, pending) = mpsc::sync_channel(1);
     let watcher = watch(&connection, changes);
@@ -246,12 +297,19 @@ fn serve_requests(
 ) -> Result<(), Error> {
     for line in input.lines() {
         let line = line?;
-        let response = match serde_json::from_str::<Value>(&line) {
+        let (response, list_changed) = match serde_json::from_str::<Value>(&line) {
             Ok(request) => respond(&request, connection),
-            Err(_) => Some(failure(Value::Null, -32700, "Parse error")),
+            Err(_) => (Some(failure(Value::Null, -32700, "Parse error")), false),
         };
         if let Some(response) = response {
             writeln!(output, "{response}")?;
+            if list_changed {
+                writeln!(
+                    output,
+                    "{}",
+                    json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+                )?;
+            }
             output.flush()?;
         }
     }
@@ -394,14 +452,17 @@ fn catch_up(connection: &Connection, pending: mpsc::Receiver<()>) {
     }
 }
 
-fn respond(request: &Value, connection: &Connection) -> Option<Value> {
+fn respond(request: &Value, connection: &Connection) -> (Option<Value>, bool) {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = request.get("method").and_then(Value::as_str);
     if request.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || method.is_none() {
-        return Some(failure(id, -32600, "Invalid request"));
+        return (Some(failure(id, -32600, "Invalid request")), false);
     }
     // Notifications get no response.
-    request.get("id")?;
+    if request.get("id").is_none() {
+        return (None, false);
+    }
+    let mut list_changed = false;
     let result = match method.unwrap_or_default() {
         // Shared guidance and the workspace map are published once in the session preface
         // instead of MCP initialize instructions, which some harnesses copy onto every tool
@@ -410,18 +471,30 @@ fn respond(request: &Value, connection: &Connection) -> Option<Value> {
             connection
                 .latency
                 .record("initialize", Duration::ZERO, Duration::ZERO, true);
+            let tools_cap = if connection.role.is_some() && connection.lazy {
+                json!({"listChanged": true})
+            } else {
+                json!({})
+            };
             json!({
                 "protocolVersion": "2025-11-25",
-                "capabilities": {"tools": {}},
+                "capabilities": {"tools": tools_cap},
                 "serverInfo": {"name": "velocity-graph", "version": env!("CARGO_PKG_VERSION")},
             })
         }
         "ping" => json!({}),
-        "tools/list" => json!({"tools": tool_list()}),
-        "tools/call" => call(&request["params"], connection),
-        _ => return Some(failure(id, -32601, "Method not found")),
+        "tools/list" => json!({"tools": filtered_tool_list(connection)}),
+        "tools/call" => {
+            let (value, changed) = call(&request["params"], connection);
+            list_changed = changed;
+            value
+        }
+        _ => return (Some(failure(id, -32601, "Method not found")), false),
     };
-    Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+    (
+        Some(json!({"jsonrpc": "2.0", "id": id, "result": result})),
+        list_changed,
+    )
 }
 
 struct CallTiming {
@@ -429,11 +502,79 @@ struct CallTiming {
     work_ms: u64,
 }
 
-fn call(parameters: &Value, connection: &Connection) -> Value {
+fn call(parameters: &Value, connection: &Connection) -> (Value, bool) {
+    use velocity_rosen::tool_policy::{McpToolServer, ToolAccess, tool_access};
+
     let name = parameters["name"].as_str().unwrap_or_default();
+    let arguments = &parameters["arguments"];
+    if let Some(role) = connection.role {
+        if connection.lazy && name == LOADER_TOOL {
+            let action = arguments["action"].as_str().unwrap_or("list");
+            return match action {
+                "list" => {
+                    let schemas: Vec<Value> = tool_list()
+                        .into_iter()
+                        .filter(|entry| {
+                            entry["name"].as_str().is_some_and(|tool_name| {
+                                tool_access(role, McpToolServer::Graph, tool_name)
+                                    == ToolAccess::Occasional
+                            })
+                        })
+                        .collect();
+                    let changed = !connection
+                        .occasional_loaded
+                        .swap(true, std::sync::atomic::Ordering::AcqRel);
+                    let text = json!({"loaded": true, "tools": schemas}).to_string();
+                    (
+                        json!({"content": [{"type": "text", "text": text}]}),
+                        changed,
+                    )
+                }
+                "call" => {
+                    let inner_name = arguments["tool"].as_str().unwrap_or_default();
+                    if !tool_access(role, McpToolServer::Graph, inner_name).is_allowed() {
+                        let message = format!(
+                            "Tool `velocity-graph.{inner_name}` is not allowed for `{}` threads.",
+                            role.as_str()
+                        );
+                        return (
+                            json!({"isError": true, "content": [{"type": "text", "text": message}]}),
+                            false,
+                        );
+                    }
+                    let inner_args = arguments
+                        .get("arguments")
+                        .cloned()
+                        .unwrap_or_else(|| json!({}));
+                    (call_tool(inner_name, &inner_args, connection), false)
+                }
+                other => {
+                    let message = format!("Unsupported action `{other}`; use `list` or `call`.");
+                    (
+                        json!({"isError": true, "content": [{"type": "text", "text": message}]}),
+                        false,
+                    )
+                }
+            };
+        }
+        if !tool_access(role, McpToolServer::Graph, name).is_allowed() {
+            let message = format!(
+                "Tool `velocity-graph.{name}` is not allowed for `{}` threads.",
+                role.as_str()
+            );
+            return (
+                json!({"isError": true, "content": [{"type": "text", "text": message}]}),
+                false,
+            );
+        }
+    }
+    (call_tool(name, arguments, connection), false)
+}
+
+fn call_tool(name: &str, arguments: &Value, connection: &Connection) -> Value {
     let started = Instant::now();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        connection.call(name, &parameters["arguments"])
+        connection.call(name, arguments)
     }))
     .unwrap_or_else(|_| Err("the code graph failed on this request".into()));
     let total_ms = duration_ms(started.elapsed());
@@ -621,6 +762,48 @@ fn refresh(tools: &mut Tools, connection: &Connection) -> Result<(), CallError> 
 
 fn failure(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
+}
+
+fn filtered_tool_list(connection: &Connection) -> Vec<Value> {
+    use velocity_rosen::tool_policy::{McpToolServer, ToolAccess, tool_access};
+
+    let all = tool_list();
+    let Some(role) = connection.role else {
+        return all;
+    };
+    let loaded = connection
+        .occasional_loaded
+        .load(std::sync::atomic::Ordering::Acquire);
+    let mut occasional_names = Vec::new();
+    let mut listed = Vec::new();
+    for entry in all {
+        let Some(name) = entry.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let access = tool_access(role, McpToolServer::Graph, name);
+        if access == ToolAccess::Occasional {
+            occasional_names.push(name.to_owned());
+        }
+        if access.is_listed(connection.lazy, loaded) {
+            listed.push(entry);
+        }
+    }
+    if connection.lazy && !loaded && !occasional_names.is_empty() {
+        listed.push(tool(
+            LOADER_TOOL,
+            &format!(
+                "Load or call occasional code-graph tools on demand ({}). Call with action=\"list\" to inspect schemas and register them for this session, or action=\"call\" with tool and arguments to run one directly.",
+                occasional_names.join(", ")
+            ),
+            json!({
+                "action": {"type": "string", "enum": ["list", "call"], "default": "list"},
+                "tool": {"type": "string", "description": "Occasional graph tool name (for action=\"call\")"},
+                "arguments": {"type": "object", "description": "Arguments for the tool (for action=\"call\")"}
+            }),
+            &[],
+        ));
+    }
+    listed
 }
 
 fn tool_list() -> Vec<Value> {

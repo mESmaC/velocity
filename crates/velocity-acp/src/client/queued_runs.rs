@@ -128,8 +128,17 @@ fn attach_tool(setup: &mut SessionSetup, executable: &Path, port: u16, token: &s
                 .push(EnvVariable::new(QUEUED_RUN_TOKEN_ENV, token));
         }
     }
+    let mut arguments = vec![
+        queued_run_tool::QUEUED_RUN_SWITCH.into(),
+        port,
+        "--role".into(),
+        setup.role.as_str().into(),
+    ];
+    if setup.lazy_tools {
+        arguments.push("--lazy".into());
+    }
     let server = McpServerStdio::new(queued_run_tool::QUEUED_RUN_SERVER, executable)
-        .args(vec![queued_run_tool::QUEUED_RUN_SWITCH.into(), port])
+        .args(arguments)
         .env(vec![EnvVariable::new(QUEUED_RUN_TOKEN_ENV, token)]);
     setup.shared_servers.insert(0, McpServer::Stdio(server));
 }

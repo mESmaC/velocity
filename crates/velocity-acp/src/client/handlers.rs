@@ -85,6 +85,15 @@ fn with_file_handlers(
                         connection: ConnectionTo<Agent>| {
                 let shared = Arc::clone(&writer);
                 connection.spawn(async move {
+                    if shared.read_only {
+                        return respond(
+                            responder,
+                            Err(ClientError::ReadOnly(
+                                "This is a read-only question thread; file writes are not permitted."
+                                    .into(),
+                            )),
+                        );
+                    }
                     let written = files::write_text_file(&shared.worktree, request).await;
                     let response = written.map(|(response, path)| {
                         shared.emit(AgentEvent::FileWritten { path });

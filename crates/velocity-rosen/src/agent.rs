@@ -41,6 +41,11 @@ pub fn agent_environment(
             String::from("ROSEN_SERVER"),
             String::from("velocity-starts-the-rosen-server"),
         ),
+        // Refuse `git` and `gh` in Rosen agent shells with a one-line explanation (#533).
+        (
+            String::from(crate::agent_run::BLOCK_VCS_ENV),
+            String::from("1"),
+        ),
     ]);
     let existing = std::env::var_os("PATH").unwrap_or_default();
     if let Some(path) = path_with_rosen(&existing.to_string_lossy()) {

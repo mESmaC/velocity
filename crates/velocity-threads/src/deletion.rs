@@ -132,6 +132,7 @@ pub fn plan_deletion(repository: &Path, thread: &ThreadItem) -> DeletionPlan {
     let remove_worktree = thread
         .worktree_path
         .as_deref()
+        .filter(|_| !thread.role.is_read_only())
         .filter(|path| owns_worktree(state, Some(path)))
         // A Rosen workspace is Rosen's to delete: abandoning its change removes it under
         // Rosen's deletion guard (F5, Rosen R4).

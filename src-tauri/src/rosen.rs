@@ -144,13 +144,32 @@ pub(crate) struct ThreadWorkspace {
     pub setup: Result<(), String>,
 }
 
-/// Rosen's MCP server for the agent in workspace `root`, whose process has `environment`:
-/// the `rosen` commands as tools (Rosen R10). `None` when Rosen's CLI isn't installed.
+/// Rosen's MCP server for a builder agent in workspace `root` (Rosen R10).
 pub(crate) fn mcp_server(root: &Path, environment: &[(String, String)]) -> Option<McpServer> {
+    mcp_server_for_role(
+        root,
+        environment,
+        velocity_core::tool_policy::ThreadRole::Builder,
+    )
+}
+
+/// Rosen's role-filtered MCP server for workspace `root` (#531, #533).
+/// `None` when Rosen's CLI isn't installed.
+pub(crate) fn mcp_server_for_role(
+    root: &Path,
+    environment: &[(String, String)],
+    role: velocity_core::tool_policy::ThreadRole,
+) -> Option<McpServer> {
     let command = std::env::current_exe()
         .ok()
         .and_then(|executable| {
-            velocity_rosen::mcp_proxy::proxy_mcp_command(&executable, root, environment)
+            velocity_rosen::mcp_proxy::proxy_mcp_command_for_role(
+                &executable,
+                Some(root),
+                environment,
+                role,
+                false,
+            )
         })
         .or_else(|| velocity_rosen::mcp_command(root, environment))?;
     let variables = command
@@ -162,6 +181,38 @@ pub(crate) fn mcp_server(root: &Path, environment: &[(String, String)]) -> Optio
         .args(command.arguments)
         .env(variables);
     Some(McpServer::Stdio(server))
+}
+
+/// Read-only Rosen MCP server for question threads on a Rosen project, without a workspace
+/// or change (#533). Returns `None` for non-Rosen projects or when the Rosen CLI is absent.
+pub(crate) fn read_only_mcp_server(application: &AppHandle, project: u32) -> Option<McpServer> {
+    if !uses_rosen(application, project) {
+        return None;
+    }
+    let app_data = application.path().app_data_dir().ok()?;
+    let server = ProjectServer::new(&app_data, project);
+    let executable = std::env::current_exe().ok()?;
+    let environment = vec![(
+        String::from("ROSEN_ENDPOINT"),
+        server.endpoint().as_str().to_owned(),
+    )];
+    let command = velocity_rosen::mcp_proxy::proxy_mcp_command_for_role(
+        &executable,
+        None,
+        &environment,
+        velocity_core::tool_policy::ThreadRole::Question,
+        false,
+    )?;
+    let variables = command
+        .environment
+        .into_iter()
+        .map(|(name, value)| EnvVariable::new(name, value))
+        .collect();
+    Some(McpServer::Stdio(
+        McpServerStdio::new("rosen", command.program)
+            .args(command.arguments)
+            .env(variables),
+    ))
 }
 
 /// Whether `project`'s new threads work in Rosen workspaces.
@@ -818,7 +869,9 @@ pub(crate) fn prepare_resume(
     agent
         .env
         .extend(velocity_rosen::agent_environment(&server, &name, change));
-    setup.shared_servers.extend(mcp_server(root, &agent.env));
+    setup
+        .shared_servers
+        .extend(mcp_server_for_role(root, &agent.env, thread.role));
     setup.session_card = Some(crate::rosen_issue::session_card(
         application,
         (project, thread.id),

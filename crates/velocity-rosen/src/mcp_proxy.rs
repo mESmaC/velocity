@@ -19,8 +19,13 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::agent::McpCommand;
+use crate::mcp_filter::{
+    FilterPolicy, LAZY_FLAG, LOADER_TOOL, ROLE_FLAG, enable_list_changed, extract_occasional_tools,
+    filter_tools_list, parse_policy_args, refusal_text,
+};
 use crate::server::program_folder;
 use crate::{ProjectServer, RosenError};
+use velocity_core::tool_policy::{McpToolServer, ThreadRole, tool_access};
 
 pub const SERVER_SWITCH: &str = "--rosen-mcp";
 pub const WAIT_TOOL: &str = "wait";
@@ -42,20 +47,63 @@ const WAIT_DESCRIPTION: &str = "Wait until no other change claims the paths. Rec
     resumes it once all waited paths are free (applying any rebase before you continue). \
     Returns immediately with status \"free\" when nobody holds the paths.";
 
-/// Command specification to launch Velocity's `rosen` MCP proxy wrapping `rosen mcp`.
-/// Returns `None` when the `rosen` binary itself is unavailable.
+/// Command specification to launch Velocity's `rosen` MCP proxy wrapping `rosen mcp`
+/// for `ThreadRole::Builder`. Returns `None` when the `rosen` binary itself is unavailable.
 pub fn proxy_mcp_command(
     executable: &Path,
     root: &Path,
     environment: &[(String, String)],
 ) -> Option<McpCommand> {
-    let inner = crate::mcp_command(root, environment)?;
-    let mut arguments = vec![SERVER_SWITCH.to_owned()];
-    arguments.extend(inner.arguments);
+    proxy_mcp_command_for_role(
+        executable,
+        Some(root),
+        environment,
+        ThreadRole::Builder,
+        false,
+    )
+}
+
+/// Command specification to launch Velocity's role-filtered `rosen` MCP proxy (#531, #533).
+/// `workspace` is `None` for read-only question threads that have no workspace.
+pub fn proxy_mcp_command_for_role(
+    executable: &Path,
+    workspace: Option<&Path>,
+    environment: &[(String, String)],
+    role: ThreadRole,
+    lazy: bool,
+) -> Option<McpCommand> {
+    let (inner_args, inner_env) = match workspace {
+        Some(root) => {
+            let inner = crate::mcp_command(root, environment)?;
+            (inner.arguments, inner.environment)
+        }
+        None => {
+            let real_rosen =
+                program_folder("rosen")?.join(format!("rosen{}", std::env::consts::EXE_SUFFIX));
+            if !real_rosen.is_file() {
+                return None;
+            }
+            let env = environment
+                .iter()
+                .filter(|(name, _)| name.starts_with("ROSEN_"))
+                .cloned()
+                .collect();
+            (vec!["mcp".to_owned()], env)
+        }
+    };
+    let mut arguments = vec![
+        SERVER_SWITCH.to_owned(),
+        ROLE_FLAG.to_owned(),
+        role.as_str().to_owned(),
+    ];
+    if lazy {
+        arguments.push(LAZY_FLAG.to_owned());
+    }
+    arguments.extend(inner_args);
     Some(McpCommand {
         program: executable.to_owned(),
         arguments,
-        environment: inner.environment,
+        environment: inner_env,
     })
 }
 
@@ -102,12 +150,13 @@ pub async fn wait_holders(
 }
 
 /// Serves the `rosen` MCP stdio proxy, forwarding non-wait methods to `rosen mcp`.
-pub fn serve_stdio(rosen_args: &[String]) -> Result<(), RosenError> {
-    let workspace = workspace_arg(rosen_args);
-    let mut backend = ChildBackend::spawn(rosen_args, workspace)?;
+pub fn serve_stdio(raw_args: &[String]) -> Result<(), RosenError> {
+    let (policy, rosen_args) = parse_policy_args(raw_args);
+    let workspace = workspace_arg(&rosen_args);
+    let mut backend = ChildBackend::spawn(&rosen_args, workspace)?;
     let stdin = io::stdin();
     let stdout = io::stdout();
-    let result = serve_streams(stdin.lock(), stdout.lock(), &mut backend);
+    let result = serve_streams_with_policy(stdin.lock(), stdout.lock(), &mut backend, policy);
     backend.shutdown();
     result
 }
@@ -115,9 +164,20 @@ pub fn serve_stdio(rosen_args: &[String]) -> Result<(), RosenError> {
 /// Transport-agnostic JSON-RPC loop used by both [`serve_stdio`] and unit tests.
 pub fn serve_streams(
     input: impl BufRead,
-    mut output: impl Write,
+    output: impl Write,
     backend: &mut impl ProxyBackend,
 ) -> Result<(), RosenError> {
+    serve_streams_with_policy(input, output, backend, None)
+}
+
+/// Transport-agnostic JSON-RPC loop applying optional per-role filtering and lazy loading (#533).
+pub fn serve_streams_with_policy(
+    input: impl BufRead,
+    mut output: impl Write,
+    backend: &mut impl ProxyBackend,
+    policy: Option<FilterPolicy>,
+) -> Result<(), RosenError> {
+    let mut occasional_loaded = false;
     for line in input.lines() {
         let line = line.map_err(|source| io_error("read MCP request from", source))?;
         if line.trim().is_empty() {
@@ -130,8 +190,16 @@ pub fn serve_streams(
             )?;
             continue;
         };
-        if let Some(reply) = handle_request(&request, &line, backend)? {
+        let (reply, list_changed) =
+            handle_request(&request, &line, backend, policy, &mut occasional_loaded)?;
+        if let Some(reply) = reply {
             write_json(&mut output, &reply)?;
+        }
+        if list_changed {
+            write_json(
+                &mut output,
+                &json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}),
+            )?;
         }
     }
     Ok(())
@@ -151,32 +219,134 @@ fn handle_request(
     request: &Value,
     raw: &str,
     backend: &mut impl ProxyBackend,
-) -> Result<Option<Value>, RosenError> {
+    policy: Option<FilterPolicy>,
+    occasional_loaded: &mut bool,
+) -> Result<(Option<Value>, bool), RosenError> {
     let method = request.get("method").and_then(Value::as_str).unwrap_or("");
     let Some(id) = request.get("id") else {
         backend.forward_notification(raw)?;
-        return Ok(None);
+        return Ok((None, false));
     };
-    if method == "tools/call"
-        && request
-            .get("params")
-            .and_then(|params| params.get("name"))
-            .and_then(Value::as_str)
-            == Some(WAIT_TOOL)
-    {
-        return Ok(Some(handle_wait_call(
-            id,
-            &request["params"]["arguments"],
-            backend,
-        )));
+    if method == "tools/call" {
+        return handle_tool_call(request, raw, id, backend, policy, occasional_loaded);
     }
     let mut response = backend.forward_request(id, raw)?;
     match method {
-        "initialize" => augment_initialize(&mut response),
-        "tools/list" => augment_tools_list(&mut response),
+        "initialize" => {
+            augment_initialize(&mut response);
+            if policy.is_some_and(|item| item.lazy) {
+                enable_list_changed(&mut response);
+            }
+        }
+        "tools/list" => {
+            augment_tools_list(&mut response);
+            if let Some(policy) = policy {
+                filter_tools_list(&mut response, policy, *occasional_loaded);
+            }
+        }
         _ => {}
     }
-    Ok(Some(response))
+    Ok((Some(response), false))
+}
+
+fn handle_tool_call(
+    request: &Value,
+    raw: &str,
+    id: &Value,
+    backend: &mut impl ProxyBackend,
+    policy: Option<FilterPolicy>,
+    occasional_loaded: &mut bool,
+) -> Result<(Option<Value>, bool), RosenError> {
+    let name = request
+        .get("params")
+        .and_then(|params| params.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if let Some(policy) = policy {
+        if policy.lazy && name == LOADER_TOOL {
+            return handle_loader_call(
+                id,
+                &request["params"]["arguments"],
+                backend,
+                policy.role,
+                occasional_loaded,
+            );
+        }
+        if !tool_access(policy.role, McpToolServer::Rosen, name).is_allowed() {
+            return Ok((
+                Some(tool_result(id, &refusal_text(policy.role, name), true)),
+                false,
+            ));
+        }
+    }
+    if name == WAIT_TOOL {
+        return Ok((
+            Some(handle_wait_call(
+                id,
+                &request["params"]["arguments"],
+                backend,
+            )),
+            false,
+        ));
+    }
+    Ok((Some(backend.forward_request(id, raw)?), false))
+}
+
+fn handle_loader_call(
+    id: &Value,
+    arguments: &Value,
+    backend: &mut impl ProxyBackend,
+    role: ThreadRole,
+    occasional_loaded: &mut bool,
+) -> Result<(Option<Value>, bool), RosenError> {
+    let action = arguments["action"].as_str().unwrap_or("list");
+    match action {
+        "list" => {
+            let list_id = json!("__velocity_tools_list");
+            let list_raw =
+                json!({"jsonrpc": "2.0", "id": list_id, "method": "tools/list", "params": {}})
+                    .to_string();
+            let mut list_reply = backend.forward_request(&list_id, &list_raw)?;
+            augment_tools_list(&mut list_reply);
+            let schemas = extract_occasional_tools(&list_reply, role);
+            let changed = !*occasional_loaded;
+            *occasional_loaded = true;
+            let body = json!({"loaded": true, "tools": schemas}).to_string();
+            Ok((Some(tool_result(id, &body, false)), changed))
+        }
+        "call" => {
+            let tool = arguments["tool"].as_str().unwrap_or("");
+            if !tool_access(role, McpToolServer::Rosen, tool).is_allowed() {
+                return Ok((
+                    Some(tool_result(id, &refusal_text(role, tool), true)),
+                    false,
+                ));
+            }
+            let tool_args = arguments
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            if tool == WAIT_TOOL {
+                return Ok((Some(handle_wait_call(id, &tool_args, backend)), false));
+            }
+            let forwarded = json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": { "name": tool, "arguments": tool_args }
+            })
+            .to_string();
+            Ok((Some(backend.forward_request(id, &forwarded)?), false))
+        }
+        other => Ok((
+            Some(tool_result(
+                id,
+                &format!("Unsupported action `{other}`; use `list` or `call`."),
+                true,
+            )),
+            false,
+        )),
+    }
 }
 
 #[derive(Deserialize)]
@@ -616,6 +786,143 @@ mod tests {
         assert_eq!(wait_reply["status"], json!("waiting"));
         assert_eq!(backend.waits.len(), 1);
         assert_eq!(backend.waits[0].1, vec!["src/lib.rs".to_owned()]);
+        Ok(())
+    }
+
+    // Risk (#533): a builder thread's Rosen MCP server must hide and refuse destructive or
+    // reviewer-only tools (`workspace_delete`, `change_abandon`, `review_mark`, `review_landed`)
+    // while keeping occasional tools (including `wait`) behind `rosen_tools` when lazy.
+    #[test]
+    fn builder_policy_filters_forbidden_and_defers_occasional_tools()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct RichBackend {
+            waits: Vec<Vec<String>>,
+            forwarded: Vec<String>,
+        }
+        impl ProxyBackend for RichBackend {
+            fn forward_notification(&mut self, _raw: &str) -> Result<(), RosenError> {
+                Ok(())
+            }
+            fn forward_request(&mut self, id: &Value, raw: &str) -> Result<Value, RosenError> {
+                let request: Value = serde_json::from_str(raw)
+                    .map_err(|error| RosenError::StatusData(error.to_string()))?;
+                match request["method"].as_str() {
+                    Some("initialize") => Ok(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": { "capabilities": { "tools": {} }, "instructions": "Rosen." }
+                    })),
+                    Some("tools/list") => Ok(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "tools": [
+                                {"name": "status", "description": "status"},
+                                {"name": "commit", "description": "commit"},
+                                {"name": "claim", "description": "claim"},
+                                {"name": "review_list", "description": "review_list"},
+                                {"name": "workspace_delete", "description": "workspace_delete"},
+                                {"name": "change_abandon", "description": "change_abandon"},
+                                {"name": "review_mark", "description": "review_mark"},
+                                {"name": "review_landed", "description": "review_landed"}
+                            ]
+                        }
+                    })),
+                    Some("tools/call") => {
+                        let name = request["params"]["name"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned();
+                        self.forwarded.push(name.clone());
+                        Ok(tool_result(id, &name, false))
+                    }
+                    _ => Ok(json!({"jsonrpc": "2.0", "id": id, "result": {}})),
+                }
+            }
+            fn wait_paths(
+                &mut self,
+                _change: Option<&str>,
+                paths: Vec<String>,
+            ) -> Result<WaitOutcome, String> {
+                self.waits.push(paths.clone());
+                serde_json::from_value(json!({
+                    "change": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+                    "waiting_on": [],
+                    "free": paths,
+                    "cursor": 1
+                }))
+                .map_err(|error| error.to_string())
+            }
+        }
+        let mut backend = RichBackend {
+            waits: Vec::new(),
+            forwarded: Vec::new(),
+        };
+        let requests = [
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}).to_string(),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}).to_string(),
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"workspace_delete","arguments":{}}}).to_string(),
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"rosen_tools","arguments":{"action":"call","tool":"wait","arguments":{"paths":["src/lib.rs"]}}}}).to_string(),
+            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"rosen_tools","arguments":{"action":"list"}}}).to_string(),
+            json!({"jsonrpc":"2.0","id":6,"method":"tools/list","params":{}}).to_string(),
+        ]
+        .join("\n");
+        let mut out = Vec::new();
+        serve_streams_with_policy(
+            Cursor::new(requests),
+            &mut out,
+            &mut backend,
+            Some(FilterPolicy {
+                role: ThreadRole::Builder,
+                lazy: true,
+            }),
+        )?;
+        let lines: Vec<Value> = String::from_utf8(out)?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<Result<_, _>>()?;
+        assert_eq!(
+            lines[0]["result"]["capabilities"]["tools"]["listChanged"],
+            json!(true)
+        );
+        let initial: Vec<&str> = lines[1]["result"]["tools"]
+            .as_array()
+            .ok_or("missing tools")?
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(initial.contains(&"status"));
+        assert!(initial.contains(&"commit"));
+        assert!(initial.contains(&LOADER_TOOL));
+        for hidden in [
+            "workspace_delete",
+            "change_abandon",
+            "review_mark",
+            "review_landed",
+            "review_list",
+        ] {
+            assert!(
+                !initial.contains(&hidden),
+                "{hidden} should not be in initial builder list"
+            );
+        }
+        assert_eq!(lines[2]["result"]["isError"], json!(true));
+        assert!(backend.forwarded.is_empty());
+        assert_eq!(lines[3]["result"]["isError"], json!(false));
+        assert_eq!(backend.waits, vec![vec!["src/lib.rs".to_owned()]]);
+        assert_eq!(
+            lines[5]["method"],
+            json!("notifications/tools/list_changed")
+        );
+        let reloaded: Vec<&str> = lines[6]["result"]["tools"]
+            .as_array()
+            .ok_or("missing reloaded tools")?
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(reloaded.contains(&"review_list"));
+        assert!(reloaded.contains(&WAIT_TOOL));
+        assert!(!reloaded.contains(&"workspace_delete"));
         Ok(())
     }
 }

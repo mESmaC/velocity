@@ -358,6 +358,8 @@ pub enum LayoutIntent {
     Usage,
     Updates,
     StartPrompt(String),
+    /// Start a read-only question thread with no workspace, change or claim (#533).
+    StartQuestion(String),
     SteerThread {
         #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
         #[cfg_attr(feature = "bindings", specta(type = String))]
@@ -478,6 +480,7 @@ pub enum LayoutAction {
     SlashPrevious,
     SlashComplete,
     ToggleShowWork,
+    ToggleDraftReadOnly,
     ClearDraftContext,
     TaskText(String),
     SubmitComposer,
@@ -562,6 +565,8 @@ pub struct LayoutSnapshot {
     pub composer_text: String,
     /// Optional validated context attached to the unsent home draft (e.g. `"Land abc1234"`, #479).
     pub draft_context: Option<String>,
+    /// True when the home composer is toggled to read-only question mode (#533).
+    pub draft_read_only: bool,
     pub task_text: String,
     pub build_allowed: bool,
     pub build_block_reason: Option<String>,

@@ -348,7 +348,14 @@
       {/if}
     </h1>
     <div class="meta">
-      {#if change}
+      {#if thread.read_only}
+        <span
+          class="branch"
+          title="Read-only question thread · no workspace, change or claim"
+        >
+          <Icon name="search" /><span class="label">read-only</span>
+        </span>
+      {:else if change}
         <span class="branch mono" title={change.identifier}>
           <Icon name="branch" /><span class="label">{change.identifier}</span>
         </span>
@@ -377,8 +384,10 @@
             : 'workspace deleted'}
         </span>
       {/if}
-      <span class="add">+{thread.added}</span>
-      <span class="del">−{thread.deleted}</span>
+      {#if !thread.read_only}
+        <span class="add">+{thread.added}</span>
+        <span class="del">−{thread.deleted}</span>
+      {/if}
       {#if thread.elapsed_label}<span>{thread.elapsed_label}</span>{/if}
       {#if runningSubagentsCount > 0}
         <button
@@ -517,7 +526,7 @@
     <ChangeTrack steps={changeSteps(change)} />
   {/if}
 
-  {#if layout.project_identifier !== null}
+  {#if layout.project_identifier !== null && !thread.read_only}
     <div class="browser-tabs" role="group" aria-label="Thread view">
       <button
         class="tab"
@@ -533,7 +542,7 @@
       >
     </div>
   {/if}
-  {#if browserOpen && layout.project_identifier !== null}
+  {#if browserOpen && !thread.read_only && layout.project_identifier !== null}
     {#key `${layout.project_identifier}:${thread.identifier}`}
       <ThreadBrowser
         project={layout.project_identifier}

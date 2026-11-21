@@ -317,6 +317,41 @@ impl ThreadRuntimes {
         receiver
     }
 
+    /// Starts a read-only question thread directly in `repository` with no workspace setup step (#533).
+    pub fn start_question(
+        &mut self,
+        key: ThreadKey,
+        repository: &str,
+        prompt: &str,
+    ) -> UnboundedReceiver<AgentInput> {
+        self.retired.remove(&key);
+        self.shutdown_failures.remove(&key);
+        let (inputs, receiver) = unbounded_channel();
+        let _ = inputs.send(text_input(prompt));
+        self.threads.insert(
+            key,
+            ThreadRuntime {
+                phase: SessionPhase::Running,
+                session_identifier: uuid::Uuid::new_v4().to_string(),
+                follows_pull_request: false,
+                session_tool_start: 0,
+                deliveries: Deliveries::default(),
+                transcript: LiveTranscript::subagent(repository),
+                subagents: Subagents::new(repository),
+                inputs,
+                pending_inputs: VecDeque::from([PendingInput::Opening]),
+                replaying_history: false,
+                held_notices: Vec::new(),
+                busy: true,
+                log_tail: VecDeque::new(),
+                agent_commands: None,
+                titling_model: None,
+                heartbeat: crate::agent_activity::Heartbeat::default(),
+            },
+        );
+        receiver
+    }
+
     /// Ends a running session to park the thread (SPEC.md §2.2). Unlike [Self::stop], the
     /// thread is not retired and keeps its transcript and queued messages, so
     /// [Self::resume_parked] can start its next session. `None` when no session is running.

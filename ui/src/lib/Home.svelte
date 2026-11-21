@@ -27,9 +27,12 @@
     {layout}
     {send}
     id="home-composer"
-    placeholder="Ask anything. @ files, $ skills, / commands"
+    placeholder={layout.draft_read_only
+      ? 'Ask a question (read-only · no workspace, change or claim)'
+      : 'Ask anything. @ files, $ skills, / commands'}
     modelPill={layout.composer_model_pill}
     showWorktreePill={true}
+    draftReadOnly={layout.draft_read_only}
     draftContext={layout.draft_context}
     threadIdentifier={null}
   />

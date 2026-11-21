@@ -345,6 +345,8 @@ pub struct ThreadDetailSnapshot {
     pub pull_request_number: Option<usize>,
     pub has_ship_pr_button: bool,
     pub agent_busy: bool,
+    /// Read-only question thread: no workspace, change, claim or landable status (#533).
+    pub read_only: bool,
     pub no_change_reason: Option<String>,
     pub show_work: bool,
     pub transcript_mode: TranscriptModeView,
@@ -499,6 +501,8 @@ pub struct ThreadDetailEntry {
     pub elapsed_label: String,
     pub pull_request_number: Option<usize>,
     pub agent_busy: bool,
+    /// Read-only question thread: no workspace, change, claim or landable status (#533).
+    pub read_only: bool,
     pub no_change_reason: Option<String>,
     pub show_work: bool,
     pub worked_summary: Option<WorkedSummaryView>,
@@ -546,6 +550,7 @@ impl ThreadDetailEntry {
             elapsed_label: String::new(),
             pull_request_number: None,
             agent_busy: false,
+            read_only: false,
             no_change_reason: None,
             show_work: false,
             worked_summary: None,
@@ -720,24 +725,32 @@ pub fn initial_worktree_step_group(worktree_path: &str, base_branch: &str) -> Ve
 
 /// Projects a `ThreadDetailEntry` into a serializable `ThreadDetailSnapshot`.
 pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot {
-    let (chip, mode) = thread_presentation(entry);
+    let (chip, mode) = if entry.read_only {
+        (WorktreeChipView::Hidden, TranscriptModeView::FullTranscript)
+    } else {
+        thread_presentation(entry)
+    };
     let actions = thread_view::header_actions(entry.pull_request_number);
     let pill = thread_view::project_model_pill(entry.requested_fast, entry.model_has_fast_mode);
-    let placeholder = match (entry.pull_request_number, entry.lifecycle) {
-        (Some(_), ThreadLifecycle::Merged) => "Thread finished · change landed".into(),
-        (Some(_), ThreadLifecycle::Closed) => {
-            "change closed · tell the agent to reopen it, or carry on in this workspace".into()
+    let placeholder = if entry.read_only {
+        "Ask a follow-up question (read-only)".into()
+    } else {
+        match (entry.pull_request_number, entry.lifecycle) {
+            (Some(_), ThreadLifecycle::Merged) => "Thread finished · change landed".into(),
+            (Some(_), ThreadLifecycle::Closed) => {
+                "change closed · tell the agent to reopen it, or carry on in this workspace".into()
+            }
+            (Some(pr), _) => format!("Steer while it watches change #{pr}"),
+            (None, _)
+                if entry
+                    .rosen_change
+                    .as_ref()
+                    .is_some_and(|change| change.stage == RosenChangeStage::Reopened) =>
+            {
+                "Steer the reopened thread".into()
+            }
+            (None, _) => "Steer, queue a follow-up, or / for commands".into(),
         }
-        (Some(pr), _) => format!("Steer while it watches change #{pr}"),
-        (None, _)
-            if entry
-                .rosen_change
-                .as_ref()
-                .is_some_and(|change| change.stage == RosenChangeStage::Reopened) =>
-        {
-            "Steer the reopened thread".into()
-        }
-        (None, _) => "Steer, queue a follow-up, or / for commands".into(),
     };
     ThreadDetailSnapshot {
         identifier: entry.identifier,
@@ -752,11 +765,12 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
         added: entry.added,
         deleted: entry.deleted,
         elapsed_label: entry.elapsed_label.clone(),
-        has_diff_action: actions.has_diff_action,
-        has_editor_action: actions.has_editor_action,
+        has_diff_action: !entry.read_only && actions.has_diff_action,
+        has_editor_action: !entry.read_only && actions.has_editor_action,
         pull_request_number: actions.pr_number,
         has_ship_pr_button: actions.has_ship_pr_button,
         agent_busy: entry.agent_busy,
+        read_only: entry.read_only,
         no_change_reason: entry.no_change_reason.clone(),
         show_work: entry.show_work,
         transcript_mode: mode,
