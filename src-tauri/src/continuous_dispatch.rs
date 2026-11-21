@@ -15,7 +15,9 @@ use velocity_github::{
     REMOTE_PROGRESS_WINDOW_SECONDS,
 };
 use velocity_store::continuous_dispatch::has_capacity as project_has_capacity;
-use velocity_store::continuous_dispatch::{RemoteWorkHold, busy_count, can_finish_empty_dispatch};
+use velocity_store::continuous_dispatch::{
+    RemoteWorkHold, busy_count, can_finish_empty_dispatch, idle_nudge_exhausted,
+};
 use velocity_store::issues::ThreadIssue;
 use velocity_store::{ProjectItem, TaskAttribution, VersionControl};
 use velocity_threads::continuous_dispatch::{
@@ -1181,13 +1183,14 @@ fn finish_empty_thread(
     let Some(root) = thread.worktree_path.as_deref() else {
         return Ok(());
     };
-    let empty = tauri::async_runtime::block_on(async {
-        let server = crate::rosen::server(application, project).await?;
-        velocity_rosen::dispatch::ended_without_changes(&server, change, Path::new(root))
-            .await
-            .map_err(|error| error.to_string())
-    })?;
-    if empty && crate::threads::stop_idle_thread(application, key)? {
+    let finishable = should_finish_idle_change(
+        application,
+        project,
+        change,
+        Path::new(root),
+        idle_nudge_exhausted(&thread),
+    )?;
+    if finishable && crate::threads::stop_idle_thread(application, key)? {
         let nick = if thread.started_by_dispatch && thread.issue.is_some() {
             let member = format!("thread-{}", thread.id);
             dispatch_claims(application, project)?
@@ -1206,6 +1209,27 @@ fn finish_empty_thread(
         crate::threads::refresh(application, key, false)?;
     }
     Ok(())
+}
+
+fn should_finish_idle_change(
+    application: &AppHandle,
+    project: u32,
+    change: &str,
+    root: &Path,
+    exhausted: bool,
+) -> Result<bool, String> {
+    tauri::async_runtime::block_on(async {
+        let server = crate::rosen::server(application, project).await?;
+        if exhausted {
+            velocity_rosen::dispatch::is_unnamed_open_change(&server, change, None)
+                .await
+                .map_err(|error| error.to_string())
+        } else {
+            velocity_rosen::dispatch::ended_without_changes(&server, change, root)
+                .await
+                .map_err(|error| error.to_string())
+        }
+    })
 }
 
 fn report_no_change_issues(

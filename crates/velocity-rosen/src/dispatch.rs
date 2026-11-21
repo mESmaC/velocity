@@ -2,6 +2,32 @@
 use crate::{ProjectServer, RosenError};
 use rosen_client::{ChangeState, protocol::DiffRequest};
 
+/// Whether `change` is still open on Rosen with no named snapshot (#544).
+/// When `root` is supplied, snapshots final edits before inspecting the change.
+pub async fn is_unnamed_open_change(
+    server: &ProjectServer,
+    change: &str,
+    root: Option<&std::path::Path>,
+) -> Result<bool, RosenError> {
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let record = client.change_show(change).await?.change;
+    if record.state != ChangeState::Open {
+        return Ok(false);
+    }
+    if let Some(root) = root {
+        crate::workspace::session(server, &record.owner.to_string())
+            .await?
+            .snapshot(root, None)
+            .await?;
+    }
+    let record = client.change_show(change).await?.change;
+    Ok(record.state == ChangeState::Open
+        && !record
+            .snapshots
+            .iter()
+            .any(|snapshot| matches!(snapshot.kind, rosen_core::SnapshotKind::Named(_))))
+}
+
 /// Named work still belongs to the landing lifecycle, including a prose-only change.
 /// Snapshot the final files first: the watcher may still be uploading the last step.
 pub async fn ended_without_changes(
@@ -9,24 +35,10 @@ pub async fn ended_without_changes(
     change: &str,
     root: &std::path::Path,
 ) -> Result<bool, RosenError> {
+    if !is_unnamed_open_change(server, change, Some(root)).await? {
+        return Ok(false);
+    }
     let client = crate::connection::requests(server.endpoint()).await?;
-    let record = client.change_show(change).await?.change;
-    if record.state != ChangeState::Open {
-        return Ok(false);
-    }
-    crate::workspace::session(server, &record.owner.to_string())
-        .await?
-        .snapshot(root, None)
-        .await?;
-    let record = client.change_show(change).await?.change;
-    if record.state != ChangeState::Open
-        || record
-            .snapshots
-            .iter()
-            .any(|snapshot| matches!(snapshot.kind, rosen_core::SnapshotKind::Named(_)))
-    {
-        return Ok(false);
-    }
     let diff = client
         .diff(DiffRequest {
             to: Some(change.into()),

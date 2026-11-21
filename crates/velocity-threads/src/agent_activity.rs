@@ -109,9 +109,11 @@ pub fn observe(thread: &mut ThreadItem, event: &AgentEvent, now: u64) {
         AgentEvent::QueuedRunAdded(record) | AgentEvent::QueuedRunUpdated(record) => {
             checkpoint.last_wait = Some(format!("queued run: {}", record.title()));
             checkpoint.idle_nudged = false;
+            checkpoint.idle_nudge_turns = None;
         }
         AgentEvent::QueuedRunFinished(_) | AgentEvent::QueuedRunsDelivered { .. } => {
             checkpoint.idle_nudged = false;
+            checkpoint.idle_nudge_turns = None;
         }
         AgentEvent::Transcript {
             update: SessionUpdate::ToolCall(call),
@@ -195,7 +197,7 @@ pub fn decide_with_turn(
     if capped(thread, settings, now) {
         return if live { Action::Limit } else { Action::Nothing };
     }
-    if idle_working_due(thread, now, queued_build, turn_in_progress) {
+    if idle_working_due(thread, settings, now, queued_build, turn_in_progress) {
         return Action::IdleNudge;
     }
     if !live {
@@ -204,18 +206,36 @@ pub fn decide_with_turn(
     stalled(thread, settings, now, queued_build)
 }
 
+/// Whether `thread` is owned by continuous dispatch or works on a GitHub issue (#544).
+pub fn is_dispatch_or_issue(thread: &ThreadItem) -> bool {
+    thread.started_by_dispatch || thread.issue.is_some()
+}
+
+/// Idle working timeout in minutes: dispatch and issue threads use the stall timeout so a
+/// stuck autonomous turn does not hold a slot for 20 minutes (#544).
+pub fn idle_working_timeout_minutes(thread: &ThreadItem, settings: &AgentSettings) -> u64 {
+    if is_dispatch_or_issue(thread) {
+        u64::from(settings.stall_timeout_minutes)
+    } else {
+        IDLE_WORKING_TIMEOUT_MINUTES
+    }
+}
+
 fn idle_working_due(
     thread: &ThreadItem,
+    settings: &AgentSettings,
     now: u64,
     queued_build: bool,
     turn_in_progress: bool,
 ) -> bool {
     let checkpoint = &thread.supervision;
     let since = checkpoint.last_update.max(checkpoint.started);
+    let timeout = idle_working_timeout_minutes(thread, settings) * 60;
     thread.state == ThreadState::Working
         && thread.activity == AgentActivity::Idle
         && thread.interview.is_none()
         && thread.worktree_path.is_some()
+        && thread.dependency_wait.is_none()
         && !thread.startup_recovery_pending
         && !checkpoint.released
         && !checkpoint.idle_nudged
@@ -224,7 +244,7 @@ fn idle_working_due(
         && !queued_build
         && !turn_in_progress
         && since > 0
-        && now.saturating_sub(since) >= IDLE_WORKING_TIMEOUT_SECS
+        && now.saturating_sub(since) >= timeout
 }
 
 /// Identifies what an idle `working` thread last waited on, for its recovery nudge (#516).
@@ -307,6 +327,33 @@ pub fn idle_nudge_prompt(last_wait: Option<&str>) -> String {
             "This thread has been idle in working for {IDLE_WORKING_TIMEOUT_MINUTES} minutes \
              with no queued run or turn in progress. Continue your work, say what is blocking \
              you, or finish and name your change."
+        ),
+    }
+}
+
+/// Prompt delivered when `thread` stays idle in `working`. Dispatch and issue threads get
+/// explicit continue instructions for background shell commands and naming (#544).
+pub fn idle_nudge_prompt_for(
+    thread: &ThreadItem,
+    settings: &AgentSettings,
+    last_wait: Option<&str>,
+) -> String {
+    if !is_dispatch_or_issue(thread) {
+        return idle_nudge_prompt(last_wait);
+    }
+    let minutes = idle_working_timeout_minutes(thread, settings);
+    match last_wait {
+        Some(wait) => format!(
+            "This thread has been idle in working for {minutes} minutes with no queued run or \
+             turn in progress (last waited on: {wait}). Any commands you started have finished \
+             and their output is in the terminal. Check the results, finish the work, and name \
+             the change with `rosen commit`, or report a blocker with `issue_comment`."
+        ),
+        None => format!(
+            "This thread has been idle in working for {minutes} minutes with no queued run or \
+             turn in progress. Any commands you started have finished and their output is in \
+             the terminal. Check the results, finish the work, and name the change with \
+             `rosen commit`, or report a blocker with `issue_comment`."
         ),
     }
 }
@@ -671,5 +718,80 @@ mod trace_fixtures {
         assert_eq!(wait.as_deref(), Some("rosen run -- npm run check"));
         let prompt = idle_nudge_prompt(wait.as_deref());
         assert!(prompt.contains("rosen run -- npm run check"), "{prompt}");
+    }
+
+    // Risk (#544): a dispatch thread that ends its turn idle with unnamed edits must get one
+    // continue prompt after the 5-minute stall timeout, while staying exempt during a real
+    // queue_run wait or dependency wait.
+    #[test]
+    fn dispatch_idle_thread_nudges_after_stall_timeout() {
+        use super::{decide_with_turn, idle_nudge_prompt_for};
+        use velocity_core::queued_runs::{QueuedRunClass, QueuedRunRecord};
+
+        let settings = Settings::default().agents;
+        let mut thread = ThreadItem::new(52, "Issue #479".into());
+        thread.started_by_dispatch = true;
+        thread.state = ThreadState::Working;
+        thread.activity = AgentActivity::Idle;
+        thread.worktree_path = Some(r"Z:\velocity-work\velocity\issue-479".into());
+        thread.supervision.started = 1000;
+        thread.supervision.last_update = 1000;
+        let due = 1000 + u64::from(settings.stall_timeout_minutes) * 60;
+
+        assert_eq!(
+            decide_with_turn(&thread, &settings, due - 1, true, false, false),
+            Action::Nothing
+        );
+        thread.dependency_wait = Some("waiting for maple".into());
+        assert_eq!(
+            decide_with_turn(&thread, &settings, due, true, false, false),
+            Action::Nothing
+        );
+        thread.dependency_wait = None;
+        thread.queued_runs.push(QueuedRunRecord::new(
+            "velocity-run-1".into(),
+            "cargo".into(),
+            vec!["check".into()],
+            None,
+            QueuedRunClass::Build,
+        ));
+        assert_eq!(
+            decide_with_turn(&thread, &settings, due, true, false, false),
+            Action::Nothing
+        );
+        thread.queued_runs.clear();
+        assert_eq!(
+            decide_with_turn(&thread, &settings, due, true, false, false),
+            Action::IdleNudge
+        );
+        let prompt = idle_nudge_prompt_for(&thread, &settings, Some("rosen run -- cargo check"));
+        assert!(prompt.contains("rosen commit"), "{prompt}");
+        assert!(prompt.contains("issue_comment"), "{prompt}");
+        assert!(prompt.contains("terminal"), "{prompt}");
+    }
+
+    // Risk (#544): a shell `rosen run` tool row left running when the turn ends must be
+    // closed so `in_build_queue` does not permanently exempt the idle thread from supervision.
+    #[test]
+    fn turn_end_closes_stale_running_rosen_run_tool_row() {
+        use super::in_build_queue;
+        use crate::transcript_view::LiveTranscript;
+        use agent_client_protocol::v1::schema::{
+            SessionUpdate, ToolCall, ToolCallId, ToolCallStatus, ToolKind,
+        };
+        use velocity_acp::Placement;
+
+        let mut transcript = LiveTranscript::new(r"Z:\velocity-work\velocity\issue-479");
+        let call = ToolCall::new(
+            ToolCallId::new("call-1"),
+            "rosen run -- cargo check -p velocity-app",
+        )
+        .kind(ToolKind::Execute)
+        .status(ToolCallStatus::InProgress);
+        transcript.record(Placement::Added(0), &SessionUpdate::ToolCall(call));
+        assert!(in_build_queue(&transcript.blocks()));
+
+        transcript.finish_running_tools();
+        assert!(!in_build_queue(&transcript.blocks()));
     }
 }

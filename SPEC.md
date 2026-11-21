@@ -113,7 +113,10 @@ Both timeouts are set in Settings → Agents (F13).
 1. Velocity sends one prompt: "No output for 5 minutes. Continue, or say what is blocking you."
 2. If there is still no update after another 5 minutes, Velocity cancels the turn and restarts the session in the same workspace from its transcript. The agent keeps its claims.
 3. Each step posts a `stalled` event.
-4. A thread idle in `working` for 20 minutes with no queued run outstanding and no turn in progress gets a supervision nudge naming what it last waited on, resuming its session if needed (#516).
+4. A thread idle in `working` with no queued run, workflow wait or dependency wait gets a supervision nudge naming what it last waited on, resuming its session if needed: after 5 minutes (the stall timeout) for a dispatch or issue thread whose Rosen change is still open and unnamed (#544), or after 20 minutes for other threads (#516).
+   When a turn ends, tool rows left running by the agent are marked finished so stale shell `rosen run` rows never exempt an idle thread while live or persisted Velocity runs remain exempt (#544).
+   If a dispatch or issue thread's follow-up turn after that nudge also ends idle with an open unnamed Rosen change, Velocity stops the session and returns the issue to dispatch through the existing no-change and parked-review path so the slot frees (#544).
+   Antigravity sessions are told at launch that background shell commands still running when a turn ends will not wake the agent, and only `velocity-run` results return as a new turn (#544).
 
 **Limits and claim release:**
 - **Per-agent caps:** max turns and max duration, set in Settings → Agents (F13). Off by default.

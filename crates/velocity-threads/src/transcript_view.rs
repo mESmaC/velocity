@@ -252,6 +252,19 @@ impl LiveTranscript {
         })
     }
 
+    /// Marks tool calls left running by the agent as finished when its turn or session
+    /// ends (#544). Real Velocity runs (`queue_run`, `preflight`, `workflow_run`) keep the
+    /// logical turn open until they complete, so active Velocity waits are unaffected.
+    pub fn finish_running_tools(&mut self) {
+        for entry in &mut self.entries {
+            if let EntryView::Tool(tool) = entry
+                && is_running(tool.status)
+            {
+                tool.status = ToolCallStatus::Completed;
+            }
+        }
+    }
+
     /// `+added −deleted` across every edit the agent made, for the thread header (F4).
     pub fn line_counts(&self) -> (usize, usize) {
         let saved = self

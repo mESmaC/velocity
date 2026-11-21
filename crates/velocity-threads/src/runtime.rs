@@ -875,6 +875,7 @@ impl ThreadRuntimes {
         }
         if let Some(thread) = self.threads.get_mut(&key) {
             thread.phase = SessionPhase::Ended;
+            thread.transcript.finish_running_tools();
             thread.subagents.session_ended();
         }
         self.threads.contains_key(&key)
@@ -888,6 +889,7 @@ impl ThreadRuntimes {
                 text.push_str("\n\n");
                 text.push_str(&Vec::from(thread.log_tail.clone()).join("\n"));
             }
+            thread.transcript.finish_running_tools();
             thread.transcript.record_error(headline, &text);
             thread.phase = SessionPhase::Ended;
             thread.subagents.session_ended();
@@ -954,6 +956,7 @@ impl ThreadRuntimes {
                 return None;
             }
             AgentEvent::TurnEnded(outcome) => {
+                thread.transcript.finish_running_tools();
                 if let Err(error) = outcome {
                     thread
                         .transcript

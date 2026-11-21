@@ -9,7 +9,10 @@ use velocity_airc::{Channel, Event};
 use velocity_store::{AgentActivity, ProjectItem};
 use velocity_threads::{
     ThreadKey,
-    agent_activity::{Action, capped, decide_with_turn, idle_nudge_prompt, last_wait_description},
+    agent_activity::{
+        Action, capped, decide_with_turn, idle_nudge_prompt_for, is_dispatch_or_issue,
+        last_wait_description,
+    },
 };
 
 fn now() -> u64 {
@@ -51,8 +54,9 @@ pub fn observe(
             for event in batch {
                 velocity_threads::agent_activity::observe(thread, event, timestamp);
             }
-            if worked {
+            if worked && !is_dispatch_or_issue(thread) {
                 thread.supervision.idle_nudged = false;
+                thread.supervision.idle_nudge_turns = None;
             }
             if thread.supervision.retry_after != previous
                 && let Some(until) = thread
@@ -121,14 +125,17 @@ fn step(
             application.state::<ManagedThreads>().inner(),
             "thread sessions",
         )?;
+        let turn_in_progress = runtimes.has_turn_in_progress(key);
         (
             runtimes.is_live(key) && !runtimes.is_setting_up(key),
             // A subagent in the build queue keeps its parent out of the stall clock too.
-            runtimes
-                .view(key)
-                .is_some_and(|view| velocity_threads::agent_activity::in_build_queue(&view.blocks))
-                || runtimes.subagent_in_build_queue(key),
-            runtimes.has_turn_in_progress(key),
+            // Tool rows left running after a turn ends are stale and never exempt an idle
+            // thread; real queued runs are tracked in `thread.queued_runs` (#544).
+            turn_in_progress
+                && (runtimes.view(key).is_some_and(|view| {
+                    velocity_threads::agent_activity::in_build_queue(&view.blocks)
+                }) || runtimes.subagent_in_build_queue(key)),
+            turn_in_progress,
             runtimes.heartbeat(key),
         )
     };
@@ -157,7 +164,7 @@ fn step(
     if action == Action::Resume && current.supervision.retry_after.is_some() {
         return Ok(());
     }
-    execute(application, key, channel, action, live)
+    execute(application, key, channel, settings, action, live)
 }
 
 fn available_account(
@@ -207,6 +214,7 @@ fn execute(
     application: &AppHandle,
     key: ThreadKey,
     channel: &Channel,
+    settings: &velocity_store::AgentSettings,
     action: Action,
     live: bool,
 ) -> Result<(), String> {
@@ -223,7 +231,7 @@ fn execute(
             Ok(())
         }
         Action::Nudge => nudge(application, key, channel),
-        Action::IdleNudge => idle_nudge(application, key, channel, live),
+        Action::IdleNudge => idle_nudge(application, key, channel, settings, live),
         Action::Restart => restart(application, key, channel),
         Action::Limit => limit(application, key, channel),
         Action::Release => release(application, key, channel),
@@ -298,9 +306,17 @@ fn idle_nudge(
     application: &AppHandle,
     key: ThreadKey,
     channel: &Channel,
+    settings: &velocity_store::AgentSettings,
     live: bool,
 ) -> Result<(), String> {
     let thread = supervised_thread(application, key)?;
+    if is_dispatch_or_issue(&thread)
+        && let Some(change) = thread.rosen_change.as_deref()
+        && !unnamed_open_change(application, key.0, change)?
+    {
+        return Ok(());
+    }
+    let turns_before = thread.supervision.turns;
     let blocks = lock(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
@@ -309,7 +325,7 @@ fn idle_nudge(
     .map(|view| view.blocks)
     .unwrap_or_default();
     let last_wait = last_wait_description(&thread, &blocks);
-    let prompt = idle_nudge_prompt(last_wait.as_deref());
+    let prompt = idle_nudge_prompt_for(&thread, settings, last_wait.as_deref());
     let timestamp = now();
     if live {
         lock(
@@ -318,11 +334,11 @@ fn idle_nudge(
         )?
         .nudge(key, &prompt)
         .map_err(|error| error.to_string())?;
-        record_idle_nudge(application, key, timestamp)?;
+        record_idle_nudge(application, key, timestamp, turns_before)?;
         publish(application, key)?;
     } else {
         crate::parking::resume(application, key, &prompt)?;
-        record_idle_nudge(application, key, timestamp)?;
+        record_idle_nudge(application, key, timestamp, turns_before)?;
     }
     let note = match last_wait {
         Some(wait) => format!(
@@ -333,10 +349,24 @@ fn idle_nudge(
     post(channel, key, "stalled", &note)
 }
 
+fn unnamed_open_change(
+    application: &AppHandle,
+    project: u32,
+    change: &str,
+) -> Result<bool, String> {
+    tauri::async_runtime::block_on(async {
+        let server = crate::rosen::server(application, project).await?;
+        velocity_rosen::dispatch::is_unnamed_open_change(&server, change, None)
+            .await
+            .map_err(|error| error.to_string())
+    })
+}
+
 fn record_idle_nudge(
     application: &AppHandle,
     key: ThreadKey,
     timestamp: u64,
+    turns_before: u32,
 ) -> Result<(), String> {
     lock(
         application.state::<ManagedStateStore>().inner(),
@@ -344,6 +374,7 @@ fn record_idle_nudge(
     )?
     .update_thread(key.0, key.1, |saved| {
         saved.supervision.idle_nudged = true;
+        saved.supervision.idle_nudge_turns = Some(turns_before);
         saved.supervision.last_update = timestamp;
     })
     .map_err(|error| error.to_string())?;

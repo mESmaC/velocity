@@ -25,6 +25,11 @@ pub struct Supervision {
     #[serde(default)]
     #[specta(skip)]
     pub idle_nudged: bool,
+    /// Completed turn count when the last idle supervision nudge was sent (#544).
+    /// When a later turn ends still idle with an unnamed change, dispatch escalates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub idle_nudge_turns: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(skip)]
     pub last_wait: Option<String>,
@@ -72,6 +77,8 @@ impl crate::StateStore {
         thread.supervision.unavailable_since = None;
         thread.supervision.retry_after = None;
         thread.supervision.nudged = false;
+        thread.supervision.idle_nudged = false;
+        thread.supervision.idle_nudge_turns = None;
         self.commit(next)?;
         Ok(())
     }

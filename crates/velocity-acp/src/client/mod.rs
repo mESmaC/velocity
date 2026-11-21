@@ -436,6 +436,7 @@ async fn run_admitted_session(
                 (None, results)
             }
         };
+    setup.preface = run_queue::append_provider_preface(&launch, setup.preface.take());
     // Velocity's own servers come first in the setup, so a clash keeps them (session_servers).
     setup
         .shared_servers

@@ -427,6 +427,7 @@ pub fn can_finish_empty_dispatch(thread: &crate::ThreadItem) -> bool {
     thread.interview.is_none()
         && thread.state == ThreadState::Working
         && thread.activity == crate::AgentActivity::Idle
+        && thread.dependency_wait.is_none()
         && !thread.startup_recovery_pending
         && thread.queued_runs.is_empty()
         && !thread.queued_run_history.iter().any(|run| !run.delivered)
@@ -437,6 +438,17 @@ pub fn can_finish_empty_dispatch(thread: &crate::ThreadItem) -> bool {
                 velocity_core::thread_view_model::TranscriptBlock::UserMessage { queued: true, .. }
             )
         })
+}
+
+/// A dispatch or issue thread that already received an idle continue prompt and ended a
+/// subsequent turn idle again (#544).
+pub fn idle_nudge_exhausted(thread: &crate::ThreadItem) -> bool {
+    (thread.started_by_dispatch || thread.issue.is_some())
+        && thread.supervision.idle_nudged
+        && thread
+            .supervision
+            .idle_nudge_turns
+            .is_some_and(|nudged_at| thread.supervision.turns > nudged_at)
 }
 
 fn same_issue(left: &ThreadIssue, right: &ThreadIssue) -> bool {
@@ -868,6 +880,19 @@ fn no_change_reason(thread: &crate::ThreadItem) -> String {
         .unwrap_or_else(|| "The agent left no final message.".into())
 }
 
+fn dispatch_end_reason(thread: &crate::ThreadItem) -> String {
+    let last = no_change_reason(thread);
+    if idle_nudge_exhausted(thread) {
+        format!(
+            "The agent stayed idle with an unnamed change after a supervision continue prompt, \
+             so Velocity stopped the session and returned the issue to dispatch.\n\nLast agent \
+             message:\n{last}"
+        )
+    } else {
+        last
+    }
+}
+
 impl StateStore {
     pub fn finish_empty_dispatch(
         &mut self,
@@ -903,7 +928,7 @@ impl StateStore {
             ));
         }
         thread.state = ThreadState::Done;
-        let reason = no_change_reason(thread);
+        let reason = dispatch_end_reason(thread);
         thread.no_change_reason = Some(reason.clone());
         if thread.started_by_dispatch {
             if let (Some(issue), Some(change)) = (&thread.issue, &thread.rosen_change) {
@@ -1168,6 +1193,59 @@ mod tests {
         );
         loaded.finish_no_change_report(1, identifier)?;
         loaded.record_continuous_dispatch(1, thread, issue, "version-1".into())?;
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#544): an idle supervision nudge turn count must survive save and load so a
+    // dispatch thread whose follow-up turn also ends idle with unnamed work still escalates,
+    // frees its slot, and returns the issue to dispatch.
+    #[test]
+    fn idle_nudge_escalation_survives_save_and_load() -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, mut store) = legacy_store()?;
+        store.set_continuous_dispatch(1, 2, false)?;
+        let thread = NewThread::new(
+            "Issue #479".into(),
+            "vel/issue-479".into(),
+            directory.join("agent").display().to_string(),
+            &store.settings(),
+        );
+        let issue = ThreadIssue::new("owner/repo".into(), 479);
+        let identifier =
+            store.record_continuous_dispatch(1, thread, issue.clone(), "version-1".into())?;
+        store.update_thread(1, identifier, |item| {
+            item.activity = AgentActivity::Idle;
+            item.rosen_change = Some("unnamed-change".into());
+            item.supervision.turns = 1;
+            item.supervision.idle_nudged = true;
+            item.supervision.idle_nudge_turns = Some(1);
+            std::sync::Arc::make_mut(&mut item.transcript).push(
+                velocity_core::thread_view_model::TranscriptBlock::AgentMessage {
+                    paragraphs: vec!["Waiting for cargo check to complete.".into()],
+                },
+            );
+        })?;
+        drop(store);
+
+        let mut loaded = StateStore::load_or_default(&directory)?;
+        let thread = &loaded.project(1).ok_or("missing project")?.threads[0];
+        assert!(!idle_nudge_exhausted(thread));
+        loaded.update_thread(1, identifier, |item| {
+            item.supervision.turns = 2;
+        })?;
+        let thread = &loaded.project(1).ok_or("missing project")?.threads[0];
+        assert!(idle_nudge_exhausted(thread));
+        loaded.finish_empty_dispatch_with_nick(1, identifier, Some("issue-479".into()))?;
+        let project = loaded.project(1).ok_or("missing project")?;
+        assert_eq!(project.threads[0].state, ThreadState::Done);
+        let report = &project.continuous_dispatch.no_change_reports[&identifier];
+        assert_eq!(report.issue, issue);
+        assert!(report.reason.contains("supervision continue prompt"));
+        assert!(
+            report
+                .reason
+                .contains("Waiting for cargo check to complete.")
+        );
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }
