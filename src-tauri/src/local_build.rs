@@ -1,9 +1,12 @@
-//! Velocity on its own landed fixes (SPEC.md F1 "Local builds", #512). When the project
-//! that is Velocity's own repository has a new green integration commit, a release of that
-//! commit is built in the background, and the title bar offers a restart into it.
-//! `velocity-updates` holds the builds and what is offered, `velocity-threads` runs the
-//! build, and the restart takes the update's path, so state is kept and threads resume.
-//! Nothing here is published: releases stay on CI, which alone holds the updater key.
+//! Velocity on its own landed fixes (SPEC.md F1 "Local builds", #512, #551). When the
+//! project that is Velocity's own repository has caught up with its mirror and has a new
+//! green integration commit that strictly descends from the running build's commit, a
+//! release of that commit is built in the background, and the title bar offers a restart
+//! into it. `velocity-updates` holds the builds and what is offered, `velocity-threads`
+//! runs the build, and the restart takes the update's path, so state is kept and threads
+//! resume. Nothing here is published: releases stay on CI, which alone holds the updater
+//! key.
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
@@ -11,13 +14,20 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use velocity_github::velocity_reports::VELOCITY_REPOSITORY;
+use velocity_rosen::ProjectServer;
+use velocity_rosen::post_land::{CommitAncestry, compare_commits};
 use velocity_store::duty::LandingProject;
 use velocity_threads::local_release::{self, LocalRelease};
 use velocity_updates::local_build::{
-    FailedBuild, LocalBuild, LocalBuildPhase, LocalBuildState, LocalBuildView, LocalBuilds,
+    CommitRelation, FailedBuild, InstallDecision, LocalBuild, LocalBuildPhase, LocalBuildState,
+    LocalBuildView, LocalBuilds,
 };
 
+use crate::rosen_mirror::CatchUpCheck;
 use crate::state::ManagedStateStore;
+
+/// Commit embedded at compile time by `src-tauri/build.rs` (empty when unknown).
+const BUILD_COMMIT: &str = env!("VELOCITY_BUILD_COMMIT");
 
 /// The first look waits until startup work and resumed threads settle.
 const FIRST_LOOK: Duration = Duration::from_secs(90);
@@ -51,7 +61,8 @@ pub fn initialize(application: &AppHandle) {
     };
     let builds = LocalBuilds::new(&app_data);
     let version = application.package_info().version.to_string();
-    let known = LocalBuildState::new(&version, builds.list(), builds.failure());
+    let build_commit = (!BUILD_COMMIT.is_empty()).then_some(BUILD_COMMIT);
+    let known = LocalBuildState::new(&version, build_commit, builds.list(), builds.failure());
     application.manage(ManagedLocalBuilds {
         state: Mutex::new(known),
         builds,
@@ -77,13 +88,26 @@ pub fn get_local_build_status(application: AppHandle) -> LocalBuildView {
     view(&application)
 }
 
-/// Restarts Velocity into the kept local build of `commit`. A failure shows in the title
-/// bar's status line, never as an error the window keeps showing.
+/// Restarts Velocity into the kept local build of `commit` (#512, #551). Never installs an
+/// ancestor on a forward restart; asks first when the running build's commit or ancestry
+/// is unknown unless `confirmed` is true. Explicit rollback (`rollback = true`) is only
+/// permitted for the kept previous build while running the newest local build.
 #[tauri::command]
 #[specta::specta]
-pub async fn restart_into_local_build(application: AppHandle, commit: String) -> LocalBuildView {
-    // A refusal changes nothing: the title bar already shows why its buttons are off.
-    if let Some(build) = begin_restart(&application, &commit)
+pub async fn restart_into_local_build(
+    application: AppHandle,
+    commit: String,
+    confirmed: bool,
+    rollback: bool,
+) -> LocalBuildView {
+    let Some(local) = application.try_state::<ManagedLocalBuilds>() else {
+        return view(&application);
+    };
+    let Some(build) = target_build(&local, &commit) else {
+        return view(&application);
+    };
+    let relation = live_relation(&application, &local, &build.commit).await;
+    if begin_restart(&application, &build, relation, confirmed, rollback)
         && let Err(message) = restart(&application, &build).await
     {
         change(&application, |state| {
@@ -93,34 +117,150 @@ pub async fn restart_into_local_build(application: AppHandle, commit: String) ->
     view(&application)
 }
 
-/// Builds the project's last green commit when this copy neither runs it nor has it.
+/// Dismisses a pending unknown-commit confirmation prompt without restarting (#551).
+#[tauri::command]
+#[specta::specta]
+pub fn cancel_local_build_restart(application: AppHandle) -> LocalBuildView {
+    change(&application, |state| {
+        if matches!(state.phase, LocalBuildPhase::ConfirmRestart(_)) {
+            state.phase = LocalBuildPhase::Idle;
+        }
+    });
+    view(&application)
+}
+
+/// Catches the Velocity project up from its mirror, refreshes kept-build ancestry, and
+/// builds the project's last green commit only when it strictly descends from the running
+/// build's commit (#551).
 async fn look(application: &AppHandle) {
+    if crate::rosen::paused(application) {
+        return;
+    }
     let Some(local) = application.try_state::<ManagedLocalBuilds>() else {
         return;
     };
     let Some(project) = velocity_project(application) else {
         return;
     };
-    let server = velocity_rosen::ProjectServer::new(&local.app_data, project.project.id);
+    // Catch up sequentially before choosing a commit so a stale server never builds an old green.
+    let caught_up = crate::rosen_mirror::ensure_caught_up(application, project.project.id).await;
+    let Ok(server) = crate::rosen::observation_server(application, project.project.id) else {
+        return;
+    };
+    refresh_relations(application, &local, &server).await;
+    if caught_up != CatchUpCheck::Current {
+        clear_waiting_for_memory(application);
+        return;
+    }
+    let green_server = server.clone();
     let observed = tauri::async_runtime::spawn_blocking(move || {
-        let green = velocity_rosen::integration::last_green(&server);
+        let green = velocity_rosen::integration::last_green(&green_server);
         (green, velocity_rosen::memory::has_headroom(BUILD_MEMORY))
     })
     .await;
     let Ok((Ok(green), headroom)) = observed else {
         return;
     };
-    let wanted = state(&local).wanted(green.as_deref());
+    let relation = match green.as_deref() {
+        Some(commit) => commit_relation(&local, &server, commit).await,
+        None => CommitRelation::Unknown,
+    };
+    let wanted = state(&local).wanted(green.as_deref(), relation);
     match wanted {
-        Some(commit) if headroom => build(application, &local, &project, &commit).await,
+        Some(commit) if headroom => build(application, &local, &project, &server, &commit).await,
         Some(commit) => change(application, |state| {
             state.phase = LocalBuildPhase::WaitingForMemory(commit);
         }),
-        None => change(application, |state| {
-            if matches!(state.phase, LocalBuildPhase::WaitingForMemory(_)) {
-                state.phase = LocalBuildPhase::Idle;
-            }
-        }),
+        None => clear_waiting_for_memory(application),
+    }
+}
+
+fn clear_waiting_for_memory(application: &AppHandle) {
+    change(application, |state| {
+        if matches!(state.phase, LocalBuildPhase::WaitingForMemory(_)) {
+            state.phase = LocalBuildPhase::Idle;
+        }
+    });
+}
+
+async fn refresh_relations(
+    application: &AppHandle,
+    local: &ManagedLocalBuilds,
+    server: &ProjectServer,
+) {
+    let builds = state(local).builds().to_vec();
+    let relations = compute_relations(local, server, &builds).await;
+    change(application, |state| state.set_relations(relations));
+}
+
+async fn compute_relations(
+    local: &ManagedLocalBuilds,
+    server: &ProjectServer,
+    builds: &[LocalBuild],
+) -> BTreeMap<String, CommitRelation> {
+    let mut relations = BTreeMap::new();
+    for build in builds {
+        let relation = commit_relation(local, server, &build.commit).await;
+        relations.insert(build.commit.clone(), relation);
+    }
+    relations
+}
+
+async fn commit_relation(
+    local: &ManagedLocalBuilds,
+    server: &ProjectServer,
+    candidate: &str,
+) -> CommitRelation {
+    let running = state(local).running_commit().map(str::to_owned);
+    let Some(running) = running else {
+        return CommitRelation::Unknown;
+    };
+    match compare_commits(server, &running, candidate).await {
+        Ok(ancestry) => map_ancestry(ancestry),
+        Err(error) => {
+            crate::diagnostics::record("local build", &format!("Ancestry check failed: {error}"));
+            CommitRelation::Unknown
+        }
+    }
+}
+
+async fn live_relation(
+    application: &AppHandle,
+    local: &ManagedLocalBuilds,
+    candidate: &str,
+) -> CommitRelation {
+    let running = state(local).running_commit().map(str::to_owned);
+    let Some(running) = running else {
+        return CommitRelation::Unknown;
+    };
+    if candidate.eq_ignore_ascii_case(&running) || candidate.starts_with(&running) {
+        return CommitRelation::Same;
+    }
+    if crate::rosen::paused(application) {
+        return CommitRelation::Unknown;
+    }
+    let Some(project) = velocity_project(application) else {
+        return CommitRelation::Unknown;
+    };
+    let Ok(server) = crate::rosen::observation_server(application, project.project.id) else {
+        return CommitRelation::Unknown;
+    };
+    match compare_commits(&server, &running, candidate).await {
+        Ok(ancestry) => map_ancestry(ancestry),
+        Err(error) => {
+            crate::diagnostics::record("local build", &format!("Ancestry check failed: {error}"));
+            CommitRelation::Unknown
+        }
+    }
+}
+
+fn map_ancestry(ancestry: CommitAncestry) -> CommitRelation {
+    match ancestry {
+        CommitAncestry::Descendant => CommitRelation::Descendant,
+        CommitAncestry::Same => CommitRelation::Same,
+        CommitAncestry::Ancestor => CommitRelation::Ancestor,
+        CommitAncestry::Diverged => CommitRelation::Diverged,
+        CommitAncestry::Unknown => CommitRelation::Unknown,
     }
 }
 
@@ -145,6 +285,7 @@ async fn build(
     application: &AppHandle,
     local: &ManagedLocalBuilds,
     project: &LandingProject,
+    server: &ProjectServer,
     commit: &str,
 ) {
     let version = state(local).version_for(commit);
@@ -169,7 +310,11 @@ async fn build(
             .map_err(|error| error.to_string())
     });
     match finished {
-        Ok(_) => change(application, |state| state.built(local.builds.list())),
+        Ok(_) => {
+            let builds = local.builds.list();
+            let relations = compute_relations(local, server, &builds).await;
+            change(application, |state| state.built(builds, relations));
+        }
         Err(reason) => {
             let failure = FailedBuild {
                 commit: commit.to_owned(),
@@ -185,21 +330,48 @@ async fn build(
     }
 }
 
-/// Claims the restart, so a second click does nothing. `None` when the build is no longer
-/// offered, or a build or another restart is under way.
-fn begin_restart(application: &AppHandle, commit: &str) -> Option<LocalBuild> {
-    let local = application.try_state::<ManagedLocalBuilds>()?;
-    let build = {
+fn target_build(local: &ManagedLocalBuilds, commit: &str) -> Option<LocalBuild> {
+    let state = state(local);
+    if state.busy() {
+        return None;
+    }
+    state.kept_build(commit).cloned()
+}
+
+/// Applies the install-time ancestry guard and claims the restart atomically.
+fn begin_restart(
+    application: &AppHandle,
+    build: &LocalBuild,
+    relation: CommitRelation,
+    confirmed: bool,
+    rollback: bool,
+) -> bool {
+    let Some(local) = application.try_state::<ManagedLocalBuilds>() else {
+        return false;
+    };
+    let proceed = {
         let mut state = state(&local);
         if state.busy() {
-            return None;
+            return false;
         }
-        let build = state.offer(commit)?.clone();
-        state.phase = LocalBuildPhase::Restarting(commit.to_owned());
-        build
+        match state.install_decision(&build.commit, relation, confirmed, rollback) {
+            InstallDecision::Allow => {
+                state.phase = LocalBuildPhase::Restarting(build.commit.clone());
+                true
+            }
+            InstallDecision::Confirm(prompt) => {
+                state.phase = LocalBuildPhase::ConfirmRestart(prompt);
+                false
+            }
+            InstallDecision::Refuse(reason) => {
+                crate::diagnostics::record("local build", &reason);
+                state.phase = LocalBuildPhase::RestartFailed(reason);
+                false
+            }
+        }
     };
     publish(application);
-    Some(build)
+    proceed
 }
 
 async fn restart(application: &AppHandle, build: &LocalBuild) -> Result<(), String> {

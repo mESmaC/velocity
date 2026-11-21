@@ -351,6 +351,9 @@ jobs:
       - name: Build
         shell: pwsh
         run: |
+          $buildCommit = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($buildCommit -cnotmatch '^[0-9a-f]{40}$') { throw "Could not determine release commit: $buildCommit" }
+          $env:VELOCITY_BUILD_COMMIT = $buildCommit
           $bundles = if ('${{ steps.version.outputs.prerelease }}' -eq 'true') { 'nsis' } else { 'nsis,msi' }
           npx -y $env:TAURI_CLI build --ci --bundles $bundles --features bundled-rosen --config "$env:RUNNER_TEMP\version.json"
           if ($LASTEXITCODE -ne 0) { throw "tauri build failed" }

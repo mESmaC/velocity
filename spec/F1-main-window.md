@@ -23,16 +23,19 @@ There are two views of the same work, switched from the title bar or with `B`:
   - changes watched
   - failed
   - landed today: changes that landed since local midnight, counted as each land arrives and kept across a restart
-- **Local build** (#512): Velocity running its own landed fixes, shown only where a Rosen project's GitHub repository is Velocity's own (`mESmaC/velocity`).
-  - Once a minute Velocity reads that project's last green integration commit.
-    When the running copy is not that commit and has no build of it, Velocity stages the commit in the project's `local-release` folder, beside its workspaces, and runs `pnpm -C ui install --frozen-lockfile` and `scripts/release-local.ps1` there.
+- **Local build** (#512, #551): Velocity running its own landed fixes, shown only where a Rosen project's GitHub repository is Velocity's own (`mESmaC/velocity`).
+  - Once a minute Velocity first catches that project up from its mirror (sequentially, not in parallel) and then reads its last green integration commit.
+    Every release build (`release.yml`, `scripts/release-local.ps1` and local builds) embeds its commit in build metadata (`VELOCITY_BUILD_COMMIT`).
+    Velocity builds and offers a commit only when it strictly descends from the running build's commit in Rosen's history.
+    When that commit is not built yet and has not failed, Velocity stages it in the project's `local-release` folder, beside its workspaces, and runs `pnpm -C ui install --frozen-lockfile` and `scripts/release-local.ps1` there.
     The build takes one background turn in the machine's run queue, at low process priority behind landing checks and agents' own builds.
     It starts only when 4 GB of memory is free beyond the usual reserve; until then the title bar says it is waiting for memory.
   - A build's version sorts above the release the running copy was built on and below the next one: `0.1.0-beta.13.local.g<commit>` on `0.1.0-beta.13`, and `0.2.1-local.g<commit>` on `0.2.0`.
     The update check therefore still offers the next published release, and never the one a local build already contains.
   - The newest two builds are kept in `local-builds` in the app data folder, one folder per commit, with the executable, the setup and a record.
-  - **Restart into `<commit>`** shows when the newest build is not the running copy.
-    **Restart into previous** shows while the running copy is the newest build and the build before it is kept.
+  - **Restart into `<commit>`** shows only when the newest build strictly descends from the running copy.
+    Installing never replaces Velocity with an ancestor of the running build; if the running build's commit or ancestry is unknown, Velocity asks first and names both commits.
+    **Restart into previous** shows while the running copy is the newest build and the build before it is kept, as an explicit rollback.
     Either one saves state, stops the Rosen servers, replaces the running executable with the build's and starts it, as a portable update does, so stopped turns continue by themselves (§3.2 Resume after a restart).
     Both wait while a build is running.
   - A failed build shows "Build of `<commit>` failed" with the reason in its tooltip.

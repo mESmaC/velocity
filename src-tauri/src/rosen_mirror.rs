@@ -67,30 +67,54 @@ pub(crate) fn check_soon(application: &AppHandle, project: u32) {
     });
 }
 
+/// Whether a project's Rosen base is caught up with its Git mirror (#520, #551).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CatchUpCheck {
+    /// No mirror is configured, the base matches or leads the mirror, or catch-up just
+    /// fast-forwarded it to the mirror tip.
+    Current,
+    /// The project is paused, not using Rosen, diverged, still behind after an error or
+    /// timeout, or its mirror could not be checked.
+    NotReady,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CatchUpProgress {
+    moved: bool,
+    diverged: bool,
+}
+
 /// Checks `project`'s mirror tip and fast-forwards its base when another machine landed
 /// ahead of it (#520). Safe to call before every land: up-to-date projects run only a
 /// lightweight `ls-remote`, and network errors never block local landing.
 pub(crate) async fn check_and_catch_up(application: &AppHandle, project: u32) {
+    let _ = ensure_caught_up(application, project).await;
+}
+
+/// Serialized mirror catch-up that also reports whether the project's base is current
+/// with its mirror, so local builds never pick a stale commit before catch-up (#551).
+pub(crate) async fn ensure_caught_up(application: &AppHandle, project: u32) -> CatchUpCheck {
     if crate::rosen::paused(application) || !crate::rosen::rosen_in_use(application, project) {
-        return;
+        return CatchUpCheck::NotReady;
     }
     let Ok(server) = crate::rosen::observation_server(application, project) else {
-        return;
+        return CatchUpCheck::NotReady;
     };
     if !server.data_dir().join("metadata.sqlite").is_file() {
-        return;
+        return CatchUpCheck::NotReady;
     }
-    let moved = check_and_catch_up_server(application, project, &server).await;
+    let (moved, status) = check_and_catch_up_server(application, project, &server).await;
     if moved {
         let _ = refresh(application, project).await;
     }
+    status
 }
 
 async fn check_and_catch_up_server(
     application: &AppHandle,
     project: u32,
     server: &ProjectServer,
-) -> bool {
+) -> (bool, CatchUpCheck) {
     let gate = application
         .state::<crate::rosen::ManagedRosen>()
         .catch_up_lock(project);
@@ -98,63 +122,93 @@ async fn check_and_catch_up_server(
     match velocity_rosen::probe_mirror_tip(server).await {
         Ok(MirrorTip::NotConfigured) => {
             set_mirror_behind(application, project, None);
-            false
+            (false, CatchUpCheck::Current)
         }
         Ok(MirrorTip::UpToDate | MirrorTip::Ahead) => {
             set_mirror_behind(application, project, None);
             let _ = publish_divergence(application, project, None, None);
-            false
+            (false, CatchUpCheck::Current)
         }
         Ok(MirrorTip::Behind {
             commits,
             base_commit,
             mirror_commit,
         }) => {
-            set_mirror_behind(
+            catch_up_behind_server(
                 application,
                 project,
-                Some(MirrorBehind::new(
-                    commits,
-                    base_commit.clone(),
-                    mirror_commit.clone(),
-                    true,
-                    None,
-                )),
-            );
-            match catch_up_within_wait_locked(application, project, server, false).await {
-                Ok(moved) => moved,
-                Err(error) => {
-                    set_mirror_behind(
-                        application,
-                        project,
-                        Some(MirrorBehind::new(
-                            commits,
-                            base_commit,
-                            mirror_commit,
-                            false,
-                            Some(error.clone()),
-                        )),
-                    );
-                    crate::diagnostics::record(
-                        "rosen mirror",
-                        &format!("Catch-up from the mirror for project {project}: {error}"),
-                    );
-                    false
-                }
-            }
+                server,
+                commits,
+                base_commit,
+                mirror_commit,
+            )
+            .await
         }
         Ok(MirrorTip::Diverged { .. }) => {
             set_mirror_behind(application, project, None);
-            catch_up_within_wait_locked(application, project, server, false)
-                .await
-                .unwrap_or(false)
+            match catch_up_within_wait_locked(application, project, server, false).await {
+                Ok(progress) => (progress.moved, progress.check()),
+                Err(_) => (false, CatchUpCheck::NotReady),
+            }
         }
         Err(error) => {
             crate::diagnostics::record(
                 "rosen mirror",
                 &format!("Mirror tip check for project {project}: {error}"),
             );
-            false
+            (false, CatchUpCheck::NotReady)
+        }
+    }
+}
+
+async fn catch_up_behind_server(
+    application: &AppHandle,
+    project: u32,
+    server: &ProjectServer,
+    commits: u32,
+    base_commit: String,
+    mirror_commit: String,
+) -> (bool, CatchUpCheck) {
+    set_mirror_behind(
+        application,
+        project,
+        Some(MirrorBehind::new(
+            commits,
+            base_commit.clone(),
+            mirror_commit.clone(),
+            true,
+            None,
+        )),
+    );
+    match catch_up_within_wait_locked(application, project, server, false).await {
+        Ok(progress) => (progress.moved, progress.check()),
+        Err(error) => {
+            set_mirror_behind(
+                application,
+                project,
+                Some(MirrorBehind::new(
+                    commits,
+                    base_commit,
+                    mirror_commit,
+                    false,
+                    Some(error.clone()),
+                )),
+            );
+            crate::diagnostics::record(
+                "rosen mirror",
+                &format!("Catch-up from the mirror for project {project}: {error}"),
+            );
+            (false, CatchUpCheck::NotReady)
+        }
+    }
+}
+
+impl CatchUpProgress {
+    fn check(self) -> CatchUpCheck {
+        if self.diverged {
+            CatchUpCheck::NotReady
+        } else {
+            CatchUpCheck::Current
         }
     }
 }
@@ -491,7 +545,7 @@ async fn catch_up_within_wait_locked(
     project: u32,
     server: &ProjectServer,
     asked: bool,
-) -> Result<bool, String> {
+) -> Result<CatchUpProgress, String> {
     let caught_up = catch_up_locked(application, project, server, asked);
     match tokio::time::timeout(CATCH_UP_WAIT, caught_up).await {
         Ok(result) => result,
@@ -708,13 +762,13 @@ pub async fn adopt_mirror_tip(
 }
 
 /// Catches up while holding `catch_up_lock`, clears `MirrorBehind`, saves or clears the
-/// divergence, and toasts what changed. Returns whether the base moved.
+/// divergence, and toasts what changed. Returns whether the base moved or diverged.
 async fn catch_up_locked(
     application: &AppHandle,
     project: u32,
     server: &ProjectServer,
     asked: bool,
-) -> Result<bool, String> {
+) -> Result<CatchUpProgress, String> {
     let outcome = velocity_rosen::catch_up_from_mirror(server)
         .await
         .map_err(|error| error.to_string())?;
@@ -727,7 +781,7 @@ fn record_catch_up_outcome(
     project: u32,
     outcome: CatchUp,
     asked: bool,
-) -> Result<bool, String> {
+) -> Result<CatchUpProgress, String> {
     // Rosen answered, so a catch-up that failed on start needs no further tries, and the
     // owner who was told it failed is told how it ended.
     let asked = application
@@ -742,14 +796,18 @@ fn record_catch_up_outcome(
     }
     let (divergence, message, moved) = describe(&name, outcome);
     let diverged = divergence.clone();
+    let is_diverged = diverged.is_some();
     let changed = publish_divergence(application, project, divergence, None)?;
-    if asked || moved || (diverged.is_some() && changed) {
+    if asked || moved || (is_diverged && changed) {
         toast(application, message)?;
     }
     if let Some(divergence) = diverged.filter(|_| changed) {
         crate::diagnostics::record("rosen mirror", &format!("{name}: {}", divergence.detail));
     }
-    Ok(moved)
+    Ok(CatchUpProgress {
+        moved,
+        diverged: is_diverged,
+    })
 }
 
 async fn probe_and_show_behind(

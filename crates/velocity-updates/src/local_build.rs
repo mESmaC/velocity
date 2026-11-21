@@ -1,7 +1,9 @@
-//! Local builds of Velocity's own landed commits (SPEC.md F1 "Local builds", #512): the
-//! version a build gets, the builds kept on disk for a restart or a rollback, and what the
-//! title bar offers. `src-tauri` runs the build and the restart; nothing here is published,
-//! and no build made this way is signed with the release key.
+//! Local builds of Velocity's own landed commits (SPEC.md F1 "Local builds", #512, #551):
+//! the version a build gets, the builds kept on disk for a restart or a rollback, ancestry
+//! checks preventing downgrades, and what the title bar offers. `src-tauri` runs the build
+//! and the restart; nothing here is published, and no build made this way is signed with
+//! the release key.
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -45,13 +47,18 @@ pub fn short_commit(commit: &str) -> &str {
     commit.get(..SHORT_COMMIT).unwrap_or(commit)
 }
 
-/// The published release `version` was built on, and the short commit when `version` is a
-/// local build's. `0.1.0-beta.13.local.gabc1234` was built on `0.1.0-beta.13`, and
+/// The published release `version` was built on, and the commit when `version` carries one
+/// (a `.local.g<commit>` prerelease or `+g<commit>`/`+<40-hex>` build metadata).
+/// `0.1.0-beta.13.local.gabc1234` was built on `0.1.0-beta.13`, and
 /// `0.2.1-local.gabc1234` on `0.2.0`.
 pub fn release_base(version: &str) -> (String, Option<String>) {
-    let version = version.split('+').next().unwrap_or(version);
-    let published = || (version.to_owned(), None);
-    let Some((core, prerelease)) = version.split_once('-') else {
+    let (without_meta, metadata) = match version.split_once('+') {
+        Some((head, meta)) => (head, Some(meta)),
+        None => (version, None),
+    };
+    let meta_commit = metadata.and_then(metadata_commit);
+    let published = || (without_meta.to_owned(), meta_commit.clone());
+    let Some((core, prerelease)) = without_meta.split_once('-') else {
         return published();
     };
     let identifiers: Vec<&str> = prerelease.split('.').collect();
@@ -66,7 +73,22 @@ pub fn release_base(version: &str) -> (String, Option<String>) {
     } else {
         format!("{core}-{}", earlier.join("."))
     };
-    (base, Some(commit.to_owned()))
+    (base, Some(commit.to_ascii_lowercase()))
+}
+
+fn metadata_commit(metadata: &str) -> Option<String> {
+    for part in metadata.split('.') {
+        if let Some(hex) = part.strip_prefix('g')
+            && (SHORT_COMMIT..=40).contains(&hex.len())
+            && is_commit(hex)
+        {
+            return Some(hex.to_ascii_lowercase());
+        }
+        if part.len() == 40 && is_commit(part) {
+            return Some(part.to_ascii_lowercase());
+        }
+    }
+    None
 }
 
 /// The version a local build of `commit` gets when the running copy has `running_version`.
@@ -92,6 +114,28 @@ fn with_patch(core: &str, change: impl FnOnce(u64) -> Option<u64>) -> Option<Str
 
 fn is_commit(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn normalize_commit(text: &str) -> Option<String> {
+    let trimmed = text.trim().to_ascii_lowercase();
+    let valid_len = (SHORT_COMMIT..=40).contains(&trimmed.len());
+    (valid_len && is_commit(&trimmed)).then_some(trimmed)
+}
+
+/// How a candidate local-build commit relates to the running build's commit (#551).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CommitRelation {
+    /// The candidate strictly descends from the running build's commit.
+    Descendant,
+    /// The candidate is the same commit as the running build.
+    Same,
+    /// The candidate is a strict ancestor of the running build (a downgrade).
+    Ancestor,
+    /// Both commits are known, and neither is an ancestor of the other.
+    Diverged,
+    /// The running build's commit is unknown, or Rosen could not verify ancestry.
+    #[default]
+    Unknown,
 }
 
 /// A finished local build, as its folder's record holds it.
@@ -270,12 +314,38 @@ fn unix_seconds() -> u64 {
         .as_secs()
 }
 
+/// A confirmation prompt shown when installing a local build whose ancestry against the
+/// running build cannot be verified (for example when the running build's commit is
+/// unknown) (#551).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct LocalBuildConfirm {
+    pub commit: String,
+    /// The running build's commit, or `"unknown (<version>)"` when unrecorded.
+    pub running_commit: String,
+    /// The target build's short commit and version.
+    pub target_commit: String,
+    /// Explanation naming both commits before asking whether to restart anyway.
+    pub message: String,
+}
+
+/// Whether an install/restart request for a local build should proceed, ask first, or
+/// refuse (#551).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InstallDecision {
+    Allow,
+    Confirm(LocalBuildConfirm),
+    Refuse(String),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LocalBuildPhase {
     Idle,
     /// The commit is green, and its build starts once the machine has memory to spare.
     WaitingForMemory(String),
     Building(String),
+    /// Waiting for confirmation because the running build's commit or ancestry is unknown.
+    ConfirmRestart(LocalBuildConfirm),
     /// The build's executable is being put in place; Velocity is about to exit.
     Restarting(String),
     RestartFailed(String),
@@ -285,46 +355,72 @@ pub enum LocalBuildPhase {
 /// [`LocalBuildState::view`] turns it into what the title bar shows.
 #[derive(Clone, Debug)]
 pub struct LocalBuildState {
+    /// The running binary's version string, shown if its commit is unknown.
+    running_version: String,
     /// The published release the running copy was built on.
     running_base: String,
-    /// The short commit of the running copy, when it is a local build.
+    /// The commit of the running copy (from build metadata or its local-build version).
     running_commit: Option<String>,
     pub phase: LocalBuildPhase,
     builds: Vec<LocalBuild>,
+    /// Verified ancestry of each kept build against `running_commit`.
+    relations: BTreeMap<String, CommitRelation>,
     failed: Option<FailedBuild>,
 }
 
 impl LocalBuildState {
     pub fn new(
         running_version: &str,
+        build_commit: Option<&str>,
         builds: Vec<LocalBuild>,
         failed: Option<FailedBuild>,
     ) -> Self {
-        let (running_base, running_commit) = release_base(running_version);
+        let (running_base, version_commit) = release_base(running_version);
+        let running_commit = build_commit.and_then(normalize_commit).or(version_commit);
         Self {
+            running_version: running_version.to_owned(),
             running_base,
             running_commit,
             phase: LocalBuildPhase::Idle,
             builds,
+            relations: BTreeMap::new(),
             failed,
         }
+    }
+
+    pub fn running_commit(&self) -> Option<&str> {
+        self.running_commit.as_deref()
+    }
+
+    pub fn builds(&self) -> &[LocalBuild] {
+        &self.builds
     }
 
     pub fn version_for(&self, commit: &str) -> String {
         local_version(&self.running_base, commit)
     }
 
-    /// The commit to build now, given the project's last green commit: one this copy isn't
-    /// running, that isn't built yet and whose build hasn't failed. `None` while a build or
-    /// a restart is under way.
-    pub fn wanted(&self, green: Option<&str>) -> Option<String> {
+    pub fn set_relations(&mut self, relations: BTreeMap<String, CommitRelation>) {
+        self.relations = relations;
+    }
+
+    /// The commit to build now, given the project's last green commit and its verified
+    /// ancestry against the running build (#551): only a commit that strictly descends
+    /// from the running build's commit, is not built yet and whose build hasn't failed.
+    /// `None` while a build, restart or confirmation prompt is under way.
+    pub fn wanted(&self, green: Option<&str>, relation: CommitRelation) -> Option<String> {
+        if relation != CommitRelation::Descendant {
+            return None;
+        }
         let green = green.filter(|commit| is_commit(commit))?;
-        let built = self.offered().any(|build| build.commit == green);
+        let built = self.same_base_builds().any(|build| build.commit == green);
         let failed = self
             .failed
             .as_ref()
             .is_some_and(|failed| failed.commit == green);
-        (!self.busy() && !built && !failed && !self.runs(green)).then(|| green.to_owned())
+        let confirming = matches!(self.phase, LocalBuildPhase::ConfirmRestart(_));
+        (!self.busy() && !confirming && !built && !failed && !self.runs(green))
+            .then(|| green.to_owned())
     }
 
     /// A build or a restart is under way. Neither starts over the other: a restart would
@@ -336,8 +432,9 @@ impl LocalBuildState {
         )
     }
 
-    pub fn built(&mut self, builds: Vec<LocalBuild>) {
+    pub fn built(&mut self, builds: Vec<LocalBuild>, relations: BTreeMap<String, CommitRelation>) {
         self.builds = builds;
+        self.relations = relations;
         self.failed = None;
         self.phase = LocalBuildPhase::Idle;
     }
@@ -347,20 +444,110 @@ impl LocalBuildState {
         self.phase = LocalBuildPhase::Idle;
     }
 
-    /// A build the title bar offers, by its commit.
-    pub fn offer(&self, commit: &str) -> Option<&LocalBuild> {
-        self.offered().find(|build| build.commit == commit)
+    /// Any kept build on the running release base matching `commit`.
+    pub fn kept_build(&self, commit: &str) -> Option<&LocalBuild> {
+        self.same_base_builds().find(|build| build.commit == commit)
+    }
+
+    /// Whether `commit` is the kept previous local build offered for explicit rollback
+    /// while this copy is running the newest local build.
+    pub fn is_previous_offer(&self, commit: &str) -> bool {
+        let mut builds = self.same_base_builds();
+        let Some(newest) = builds.next() else {
+            return false;
+        };
+        if !self.runs(&newest.commit) {
+            return false;
+        }
+        builds
+            .next()
+            .is_some_and(|previous| previous.commit == commit && previous.commit != newest.commit)
+    }
+
+    /// Decides whether installing `commit` is permitted (#551). Never installs an ancestor
+    /// (or the same/diverged commit) on a forward restart. When the running build's commit
+    /// or ancestry is unknown, asks first and names both commits.
+    pub fn install_decision(
+        &self,
+        commit: &str,
+        relation: CommitRelation,
+        confirmed: bool,
+        rollback: bool,
+    ) -> InstallDecision {
+        let Some(build) = self.kept_build(commit) else {
+            return InstallDecision::Refuse(format!(
+                "Local build {} is no longer available.",
+                short_commit(commit)
+            ));
+        };
+        if rollback && self.is_previous_offer(commit) {
+            return InstallDecision::Allow;
+        }
+        let target_short = short_commit(&build.commit);
+        let running_label = self.running_commit_label();
+        match relation {
+            CommitRelation::Descendant => InstallDecision::Allow,
+            CommitRelation::Ancestor => InstallDecision::Refuse(format!(
+                "Refused to install {target_short}: it is an ancestor of the running build {running_label}."
+            )),
+            CommitRelation::Same => InstallDecision::Refuse(format!(
+                "Refused to install {target_short}: Velocity is already running {running_label}."
+            )),
+            CommitRelation::Diverged => InstallDecision::Refuse(format!(
+                "Refused to install {target_short}: it does not descend from the running build {running_label}."
+            )),
+            CommitRelation::Unknown if confirmed => InstallDecision::Allow,
+            CommitRelation::Unknown => {
+                let target_commit = format!("{target_short} ({})", build.version);
+                let message = if self.running_commit.is_none() {
+                    format!(
+                        "The running build's commit is {running_label}, so Velocity cannot verify \
+                         that {target_commit} is newer. Installing an older build can downgrade \
+                         Velocity. Restart into {target_short} anyway?"
+                    )
+                } else {
+                    format!(
+                        "Velocity could not verify whether {target_commit} descends from the \
+                         running build {running_label} in Rosen history. Installing an older \
+                         build can downgrade Velocity. Restart into {target_short} anyway?"
+                    )
+                };
+                InstallDecision::Confirm(LocalBuildConfirm {
+                    commit: build.commit.clone(),
+                    running_commit: running_label,
+                    target_commit,
+                    message,
+                })
+            }
+        }
+    }
+
+    fn running_commit_label(&self) -> String {
+        match &self.running_commit {
+            Some(commit) => short_commit(commit).to_owned(),
+            None => format!("unknown ({})", self.running_version),
+        }
     }
 
     fn runs(&self, commit: &str) -> bool {
-        self.running_commit
-            .as_deref()
-            .is_some_and(|running| commit.starts_with(running))
+        self.running_commit.as_deref().is_some_and(|running| {
+            commit.eq_ignore_ascii_case(running) || commit.starts_with(running)
+        })
+    }
+
+    fn relation_of(&self, commit: &str) -> CommitRelation {
+        if self.runs(commit) {
+            return CommitRelation::Same;
+        }
+        self.relations
+            .get(commit)
+            .copied()
+            .unwrap_or(CommitRelation::Unknown)
     }
 
     /// Builds made on the release this copy runs, newest first. After a published update
     /// the older builds may hold less than the running copy, so they are no longer offered.
-    fn offered(&self) -> impl Iterator<Item = &LocalBuild> {
+    fn same_base_builds(&self) -> impl Iterator<Item = &LocalBuild> {
         self.builds
             .iter()
             .filter(|build| release_base(&build.version).0 == self.running_base)
@@ -382,10 +569,13 @@ pub struct LocalBuildOffer {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 pub struct LocalBuildView {
-    /// "Restart into <commit>": the newest build, unless this copy already runs it.
+    /// "Restart into <commit>": the newest build, only when it strictly descends from the
+    /// running build's commit.
     pub restart: Option<LocalBuildOffer>,
     /// "Restart into previous": the build before the one this copy runs.
     pub previous: Option<LocalBuildOffer>,
+    /// Confirmation prompt when installing a build whose ancestry could not be verified.
+    pub confirm: Option<LocalBuildConfirm>,
     /// One line on a build or restart under way, or the last failure.
     pub status: String,
     /// The whole reason behind a failure, for the status line's tooltip.
@@ -399,35 +589,47 @@ const RESTART_NOTE: &str = "Running turns stop and continue by themselves when V
 
 impl LocalBuildState {
     pub fn view(&self) -> LocalBuildView {
-        let mut offered = self.offered();
-        let newest = offered.next();
+        let mut builds = self.same_base_builds();
+        let newest = builds.next();
         let running_newest = newest.is_some_and(|build| self.runs(&build.commit));
-        let restart = newest.filter(|_| !running_newest).map(|build| {
-            let short = short_commit(&build.commit);
-            LocalBuildOffer {
-                commit: build.commit.clone(),
-                label: format!("Restart into {short}"),
-                title: format!(
-                    "Restart Velocity into its local build of {short}, built {}. {RESTART_NOTE}",
-                    built_clock(build.built_at)
-                ),
-            }
-        });
-        let previous = offered.next().filter(|_| running_newest).map(|build| {
-            let short = short_commit(&build.commit);
-            LocalBuildOffer {
-                commit: build.commit.clone(),
-                label: "Restart into previous".to_owned(),
-                title: format!(
-                    "Go back to the local build of {short}, built {}. {RESTART_NOTE}",
-                    built_clock(build.built_at)
-                ),
-            }
-        });
+        let restart = newest
+            .filter(|build| self.relation_of(&build.commit) == CommitRelation::Descendant)
+            .map(|build| {
+                let short = short_commit(&build.commit);
+                LocalBuildOffer {
+                    commit: build.commit.clone(),
+                    label: format!("Restart into {short}"),
+                    title: format!(
+                        "Restart Velocity into its local build of {short}, built {}. {RESTART_NOTE}",
+                        built_clock(build.built_at)
+                    ),
+                }
+            });
+        let previous = builds
+            .next()
+            .filter(|build| {
+                running_newest && newest.is_some_and(|current| current.commit != build.commit)
+            })
+            .map(|build| {
+                let short = short_commit(&build.commit);
+                LocalBuildOffer {
+                    commit: build.commit.clone(),
+                    label: "Restart into previous".to_owned(),
+                    title: format!(
+                        "Go back to the local build of {short}, built {}. {RESTART_NOTE}",
+                        built_clock(build.built_at)
+                    ),
+                }
+            });
+        let confirm = match &self.phase {
+            LocalBuildPhase::ConfirmRestart(prompt) => Some(prompt.clone()),
+            _ => None,
+        };
         let (status, detail, failed) = self.status();
         LocalBuildView {
             restart,
             previous,
+            confirm,
             status,
             detail,
             failed,
@@ -445,6 +647,7 @@ impl LocalBuildState {
             (LocalBuildPhase::Building(commit), _) => {
                 plain(format!("Building {}…", short_commit(commit)))
             }
+            (LocalBuildPhase::ConfirmRestart(_), _) => plain(String::new()),
             (LocalBuildPhase::Restarting(commit), _) => {
                 plain(format!("Restarting into {}…", short_commit(commit)))
             }
@@ -515,5 +718,61 @@ mod tests {
         assert_eq!(bytes, vec![7; 3]);
         assert!(!oldest_left, "the build before the last two was kept");
         Ok(())
+    }
+
+    // Risk (#551): a stale local Rosen server or a running release without an embedded
+    // commit could cause Velocity to build, offer or install an ancestor commit and
+    // downgrade itself over a newer build.
+    #[test]
+    fn local_builds_never_build_offer_or_install_ancestors_and_ask_when_running_commit_unknown() {
+        let running = "954c50a".to_owned() + &"0".repeat(33);
+        let older = "4a126a1".to_owned() + &"0".repeat(33);
+        let newer = "def5678".to_owned() + &"0".repeat(33);
+        let older_build = LocalBuild {
+            commit: older.clone(),
+            version: local_version("0.1.0-beta.19", &older),
+            built_at: 100,
+            executable_bytes: 12,
+        };
+        let mut state = LocalBuildState::new(
+            "0.1.0-beta.19",
+            Some(&running),
+            vec![older_build.clone()],
+            None,
+        );
+        assert_eq!(state.running_commit(), Some(running.as_str()));
+        assert_eq!(state.wanted(Some(&older), CommitRelation::Ancestor), None);
+        assert_eq!(state.wanted(Some(&running), CommitRelation::Same), None);
+        assert_eq!(state.wanted(Some(&newer), CommitRelation::Unknown), None);
+        assert_eq!(state.wanted(Some(&newer), CommitRelation::Diverged), None);
+        assert_eq!(
+            state.wanted(Some(&newer), CommitRelation::Descendant),
+            Some(newer.clone())
+        );
+
+        state.set_relations(BTreeMap::from([(older.clone(), CommitRelation::Ancestor)]));
+        assert!(state.view().restart.is_none());
+        assert!(matches!(
+            state.install_decision(&older, CommitRelation::Ancestor, true, false),
+            InstallDecision::Refuse(message)
+                if message.contains("4a126a1") && message.contains("954c50a")
+        ));
+
+        let unknown = LocalBuildState::new("0.1.0-beta.19", None, vec![older_build], None);
+        assert_eq!(unknown.running_commit(), None);
+        assert!(unknown.view().restart.is_none());
+        assert!(matches!(
+            unknown.install_decision(&older, CommitRelation::Unknown, false, false),
+            InstallDecision::Confirm(prompt)
+                if prompt.running_commit.contains("unknown")
+                    && prompt.running_commit.contains("0.1.0-beta.19")
+                    && prompt.target_commit.contains("4a126a1")
+                    && prompt.message.contains("unknown")
+                    && prompt.message.contains("4a126a1")
+        ));
+        assert_eq!(
+            unknown.install_decision(&older, CommitRelation::Unknown, true, false),
+            InstallDecision::Allow
+        );
     }
 }

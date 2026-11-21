@@ -122,6 +122,7 @@ fn bindings() -> Builder<tauri::Wry> {
         layout::dispatch_layout,
         local_build::get_local_build_status,
         local_build::restart_into_local_build,
+        local_build::cancel_local_build_restart,
         machines::get_machines,
         machines::enable_machine_listener,
         machines::create_machine_join_key,

@@ -405,6 +405,99 @@ pub struct OrphanedBatch {
     pub covered: Vec<String>,
 }
 
+/// How a candidate commit relates to the running build's commit in Rosen's history (#551).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitAncestry {
+    /// `candidate` strictly descends from `running`.
+    Descendant,
+    /// `candidate` and `running` are the same commit.
+    Same,
+    /// `candidate` is a strict ancestor of `running`.
+    Ancestor,
+    /// Both commits exist in history, and neither is an ancestor of the other.
+    Diverged,
+    /// Either commit could not be resolved or is absent from this server's history.
+    Unknown,
+}
+
+/// Compares `candidate` against `running` in this project's Rosen history (#551).
+/// Accepts a 40-character commit ID or an unambiguous short prefix for `running` (older
+/// local builds embedded only a 7-character commit in their version string).
+pub async fn compare_commits(
+    server: &ProjectServer,
+    running: &str,
+    candidate: &str,
+) -> Result<CommitAncestry, RosenError> {
+    let running_lower = running.trim().to_ascii_lowercase();
+    let candidate_lower = candidate.trim().to_ascii_lowercase();
+    let Ok(candidate_id) = crate::policy::object(&candidate_lower) else {
+        return Ok(CommitAncestry::Unknown);
+    };
+    let Some(running_full) = resolve_commit_prefix(server, &running_lower).await? else {
+        return Ok(CommitAncestry::Unknown);
+    };
+    let Ok(running_id) = crate::policy::object(&running_full) else {
+        return Ok(CommitAncestry::Unknown);
+    };
+    if running_id == candidate_id {
+        return Ok(CommitAncestry::Same);
+    }
+    let client = server.connect().await?;
+    match client.merge_base(&running_full, &candidate_lower).await {
+        Ok(answer) => Ok(match answer.merge_base {
+            Some(base) if base == running_id => CommitAncestry::Descendant,
+            Some(base) if base == candidate_id => CommitAncestry::Ancestor,
+            Some(_) => CommitAncestry::Diverged,
+            None => CommitAncestry::Unknown,
+        }),
+        Err(rosen_client::Error::Server(_)) => Ok(CommitAncestry::Unknown),
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn resolve_commit_prefix(
+    server: &ProjectServer,
+    prefix: &str,
+) -> Result<Option<String>, RosenError> {
+    if prefix.len() == 40 && prefix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Ok(Some(prefix.to_owned()));
+    }
+    if !(7..=40).contains(&prefix.len()) || !prefix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Ok(None);
+    }
+    let metadata = server.data_dir().join("metadata.sqlite");
+    let prefix = prefix.to_owned();
+    tokio::task::spawn_blocking(move || read_unique_history_prefix(&metadata, &prefix))
+        .await
+        .map_err(|error| RosenError::StatusData(error.to_string()))?
+}
+
+fn read_unique_history_prefix(metadata: &Path, prefix: &str) -> Result<Option<String>, RosenError> {
+    use rusqlite::{Connection, OpenFlags};
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    let connection = Connection::open_with_flags(metadata, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(std::time::Duration::from_secs(2))?;
+    let has_history: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'base_history')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_history {
+        return Ok(None);
+    }
+    let pattern = format!("{prefix}%");
+    let mut statement = connection
+        .prepare("SELECT DISTINCT commit_id FROM base_history WHERE commit_id LIKE ?1 LIMIT 2")?;
+    let matches: Vec<String> = statement
+        .query_map([pattern], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    Ok((matches.len() == 1)
+        .then(|| matches.into_iter().next())
+        .flatten())
+}
+
 /// Whether `commit` is already in this server's local base history (#519).
 pub async fn base_contains_commit(
     server: &ProjectServer,

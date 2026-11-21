@@ -6,6 +6,7 @@ import {
 } from '../bindings';
 
 export type {
+  LocalBuildConfirm,
   LocalBuildOffer,
   LocalBuildStatusChanged,
   LocalBuildView,
@@ -15,6 +16,7 @@ export type {
 export const localBuildCommands = {
   status: commands.getLocalBuildStatus,
   restart: commands.restartIntoLocalBuild,
+  cancelRestart: commands.cancelLocalBuildRestart,
 };
 
 export const onLocalBuildStatus = (

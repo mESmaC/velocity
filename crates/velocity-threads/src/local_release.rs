@@ -57,8 +57,8 @@ fn commands(release: &LocalRelease) -> Vec<String> {
     vec![
         "pnpm -C ui install --frozen-lockfile".to_owned(),
         format!(
-            "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\\release-local.ps1 -Version {} -OutDir \"{out_dir}\"",
-            release.version
+            "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\\release-local.ps1 -Version {} -Commit {} -OutDir \"{out_dir}\"",
+            release.version, release.commit
         ),
     ]
 }

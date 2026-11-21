@@ -31,6 +31,8 @@ param(
     [string]$Version,
     # Where the installer, portable executable and checksums are copied.
     [string]$OutDir = '',
+    # Commit recorded in the build metadata (40 hex). Defaults to git HEAD when available.
+    [string]$Commit = '',
     # Upload the local build to GitHub as a draft unsigned release (--latest=false).
     [switch]$Publish,
     # GitHub repository (owner/name) for -Publish. Empty uses the checkout's default.
@@ -92,6 +94,23 @@ function Build-Ui {
 $rosen = Get-RosenBinaries
 Build-Ui
 Write-Step 'Building the app'
+$buildCommit = $Commit.Trim().ToLowerInvariant()
+if (-not $buildCommit -and $env:VELOCITY_BUILD_COMMIT) {
+    $buildCommit = $env:VELOCITY_BUILD_COMMIT.Trim().ToLowerInvariant()
+}
+if (-not $buildCommit -and (Test-Path (Join-Path $root '.git'))) {
+    $head = (git rev-parse HEAD 2>$null | Out-String).Trim().ToLowerInvariant()
+    if ($LASTEXITCODE -eq 0 -and $head -cmatch '^[0-9a-f]{40}$') {
+        $buildCommit = $head
+    }
+    $global:LASTEXITCODE = 0
+}
+if ($buildCommit) {
+    if ($buildCommit -cnotmatch '^[0-9a-f]{40}$') {
+        throw "Commit $buildCommit is not a 40-character hex commit ID"
+    }
+    $env:VELOCITY_BUILD_COMMIT = $buildCommit
+}
 $env:VELOCITY_ROSEN_SERVER_EXE = Join-Path $rosen 'rosen-server.exe'
 $env:VELOCITY_ROSEN_CLI_EXE = Join-Path $rosen 'rosen.exe'
 $config = Join-Path $target "release-local-$Version.json"

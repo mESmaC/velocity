@@ -119,6 +119,24 @@
 .local-build-status.failed {
   color: var(--err);
 }
+.local-build-confirm-commits {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--sp-2) var(--sp-5);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.local-build-confirm-commits b {
+  font-family: var(--mono);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+}
+.local-build-confirm-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+  padding-top: var(--sp-3);
+}
 .view-switch {
   border-radius: var(--r-pill);
 }

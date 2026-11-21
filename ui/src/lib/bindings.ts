@@ -93,10 +93,14 @@ export const commands = {
 	dispatchLayout: (action: LayoutAction_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_layout", { action }),
 	getLocalBuildStatus: () => __TAURI_INVOKE<LocalBuildView_Serialize>("get_local_build_status"),
 	/**
-	 *  Restarts Velocity into the kept local build of `commit`. A failure shows in the title
-	 *  bar's status line, never as an error the window keeps showing.
+	 *  Restarts Velocity into the kept local build of `commit` (#512, #551). Never installs an
+	 *  ancestor on a forward restart; asks first when the running build's commit or ancestry
+	 *  is unknown unless `confirmed` is true. Explicit rollback (`rollback = true`) is only
+	 *  permitted for the kept previous build while running the newest local build.
 	 */
-	restartIntoLocalBuild: (commit: string) => __TAURI_INVOKE<LocalBuildView_Serialize>("restart_into_local_build", { commit }),
+	restartIntoLocalBuild: (commit: string, confirmed: boolean, rollback: boolean) => __TAURI_INVOKE<LocalBuildView_Serialize>("restart_into_local_build", { commit, confirmed, rollback }),
+	/**  Dismisses a pending unknown-commit confirmation prompt without restarting (#551). */
+	cancelLocalBuildRestart: () => __TAURI_INVOKE<LocalBuildView_Serialize>("cancel_local_build_restart"),
 	getMachines: (projectIdentifier: number) => __TAURI_INVOKE<MachinesView_Serialize>("get_machines", { projectIdentifier }),
 	enableMachineListener: (projectIdentifier: number, address: string) => __TAURI_INVOKE<null>("enable_machine_listener", { projectIdentifier, address }),
 	createMachineJoinKey: (projectIdentifier: number, address: string, expiresInSeconds: number, uses: number, role: Role) => __TAURI_INVOKE<string>("create_machine_join_key", { projectIdentifier, address, expiresInSeconds, uses, role }),
@@ -2647,6 +2651,21 @@ export type LintKind =
 /**  A word with no standard an agent can check ("clean", "good"). */
 "Vague";
 
+/**
+ *  A confirmation prompt shown when installing a local build whose ancestry against the
+ *  running build cannot be verified (for example when the running build's commit is
+ *  unknown) (#551).
+ */
+export type LocalBuildConfirm = {
+	commit: string,
+	/**  The running build's commit, or `"unknown (<version>)"` when unrecorded. */
+	running_commit: string,
+	/**  The target build's short commit and version. */
+	target_commit: string,
+	/**  Explanation naming both commits before asking whether to restart anyway. */
+	message: string,
+};
+
 /**  One restart the title bar offers. */
 export type LocalBuildOffer = {
 	commit: string,
@@ -2676,10 +2695,15 @@ export type LocalBuildView = LocalBuildView_Serialize | LocalBuildView_Deseriali
  *  local build and isn't making one.
  */
 export type LocalBuildView_Deserialize = {
-	/**  "Restart into <commit>": the newest build, unless this copy already runs it. */
+	/**
+	 *  "Restart into <commit>": the newest build, only when it strictly descends from the
+	 *  running build's commit.
+	 */
 	restart?: LocalBuildOffer | null,
 	/**  "Restart into previous": the build before the one this copy runs. */
 	previous?: LocalBuildOffer | null,
+	/**  Confirmation prompt when installing a build whose ancestry could not be verified. */
+	confirm?: LocalBuildConfirm | null,
 	/**  One line on a build or restart under way, or the last failure. */
 	status: string,
 	/**  The whole reason behind a failure, for the status line's tooltip. */
@@ -2694,10 +2718,15 @@ export type LocalBuildView_Deserialize = {
  *  local build and isn't making one.
  */
 export type LocalBuildView_Serialize = {
-	/**  "Restart into <commit>": the newest build, unless this copy already runs it. */
+	/**
+	 *  "Restart into <commit>": the newest build, only when it strictly descends from the
+	 *  running build's commit.
+	 */
 	restart: LocalBuildOffer | null,
 	/**  "Restart into previous": the build before the one this copy runs. */
 	previous: LocalBuildOffer | null,
+	/**  Confirmation prompt when installing a build whose ancestry could not be verified. */
+	confirm: LocalBuildConfirm | null,
 	/**  One line on a build or restart under way, or the last failure. */
 	status: string,
 	/**  The whole reason behind a failure, for the status line's tooltip. */
