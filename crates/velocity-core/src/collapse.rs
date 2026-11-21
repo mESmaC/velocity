@@ -48,6 +48,28 @@ pub fn repository_from_remote(remote: &str) -> Option<String> {
     (valid_segment(owner) && valid_segment(repository)).then(|| format!("{owner}/{repository}"))
 }
 
+/// Parses a Collapse `owner/repository` or recognized Collapse URL into `(owner, name)` (#575).
+/// Rejects credentials, query strings, fragments and non-Collapse hosts.
+pub fn parse_repository(input: &str) -> Option<(String, String)> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = REMOTE_HOSTS
+        .iter()
+        .find_map(|host| strip_prefix_ignoring_case(trimmed, host))
+        .or_else(|| strip_prefix_ignoring_case(trimmed, "collapse.sh/"))
+        .or_else(|| strip_prefix_ignoring_case(trimmed, "api.collapse.sh/"))
+        .unwrap_or(trimmed);
+    if path.contains([':', '@', '?', '#', '\\']) {
+        return None;
+    }
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, name) = path.split_once('/')?;
+    (valid_segment(owner) && valid_segment(name)).then(|| (owner.to_owned(), name.to_owned()))
+}
+
 /// The repository's page, for a value `repository_from_remote` returned.
 pub fn repository_page(repository: &str) -> Option<String> {
     let (owner, name) = repository.split_once('/')?;
@@ -110,6 +132,13 @@ pub fn land_context_label(commit: &str) -> Option<String> {
 pub fn unmatched_project_notice(repository: &str) -> String {
     format!(
         "No project matches {repository}. Enroll this machine with a join key from the project's owner (Settings → Workspaces → Machines)."
+    )
+}
+
+/// The notice shown when a Collapse repository already has a linked Rosen server (#575).
+pub fn enrollment_notice(repository: &str) -> String {
+    format!(
+        "{repository} already has a linked Rosen server. Enroll this machine with a join key from the project's owner (Settings → Workspaces → Machines)."
     )
 }
 
@@ -290,7 +319,32 @@ fn is_commit(commit: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{github_repository_from_remote, land_page};
+    use super::{enrollment_notice, github_repository_from_remote, land_page, parse_repository};
+
+    /// Risk (#575): Open from Collapse must accept plain `owner/name` and Collapse URLs
+    /// while rejecting credentials, query strings and non-Collapse hosts.
+    #[test]
+    fn parse_repository_accepts_collapse_names_and_urls() {
+        assert_eq!(
+            parse_repository("mESmaC/velocity"),
+            Some(("mESmaC".into(), "velocity".into()))
+        );
+        assert_eq!(
+            parse_repository("https://collapse.sh/mESmaC/velocity/"),
+            Some(("mESmaC".into(), "velocity".into()))
+        );
+        assert_eq!(
+            parse_repository("https://api.collapse.sh/mESmaC/velocity.git"),
+            Some(("mESmaC".into(), "velocity".into()))
+        );
+        assert_eq!(parse_repository("https://github.com/mESmaC/velocity"), None);
+        assert_eq!(
+            parse_repository("https://token@api.collapse.sh/mESmaC/velocity.git"),
+            None
+        );
+        assert_eq!(parse_repository("mESmaC/velocity?x=1"), None);
+        assert!(enrollment_notice("mESmaC/velocity").contains("Enroll this machine"));
+    }
 
     #[test]
     fn github_repository_from_remote_accepts_github_urls_and_names() {

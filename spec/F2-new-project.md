@@ -41,6 +41,11 @@ New projects still start with a single `SPEC.md`.
   The clone destination is `<clone to>/<name>` and defaults to the dedicated `Projects` folder under your home folder.
   To reuse a matching checkout, enter its parent folder in **Clone to** or choose the checkout with **Open folder…**.
   Velocity imports a new or matching existing checkout into Rosen and uses GitHub as its mirror.
+- **Open from Collapse…** lists the signed-in Collapse account's repositories from Collapse's dashboard read (#575).
+  Search filters the list by name and description, and typing an unlisted `owner/name` adds an exact choice.
+  For a repository with no linked Rosen server (such as one created empty or imported from Git on Collapse's web), Velocity mints a push token, configures `http.https://api.collapse.sh/.proactiveAuth` (`basic`) and per-path credentials, clones into `<clone to>/<name>` (or reuses a matching checkout when its parent is entered in **Clone to**), imports it into Rosen, sets `[mirror] remote` and the top-level `collapse` root in `rosen.toml`, and applies the relay allow-list.
+  For a repository that already has a linked Rosen server, Velocity offers machine enrollment instead of cloning a second server.
+  Opening an unlinked Collapse repository via a `velocity://collapse/<owner>/<name>` deep link uses the same path.
 - A spec already on the Rosen base opens locked, including split specs under `spec/`.
   A project without a spec starts the interview in a Rosen workspace with Settings' default model, effort and speed.
   The interview waits for a provider sign-in when needed.

@@ -66,9 +66,20 @@ pub struct RepositoryActivity {
     pub owner: String,
     pub name: String,
     #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub visibility: Option<String>,
+    #[serde(default)]
+    pub private: Option<bool>,
+    #[serde(default)]
+    pub default_branch: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
     pub archived_at: Option<String>,
     #[serde(default)]
     pub last_land: Option<LastLand>,
+    #[serde(default)]
     pub forward: Forward,
     #[serde(default)]
     pub downstream: Option<DownstreamRef>,
@@ -78,6 +89,36 @@ pub struct RepositoryActivity {
     pub downstream_url: Option<String>,
     #[serde(default)]
     pub downstream_repository: Option<String>,
+    #[serde(default)]
+    pub linked_server: Option<bool>,
+    #[serde(default)]
+    pub has_linked_server: Option<bool>,
+    #[serde(default)]
+    pub server_linked: Option<bool>,
+    #[serde(default)]
+    pub rosen_linked: Option<bool>,
+    #[serde(default)]
+    pub has_server: Option<bool>,
+    #[serde(default)]
+    pub server_id: Option<String>,
+    #[serde(default)]
+    pub rosen_server_id: Option<String>,
+    #[serde(default)]
+    pub state_feed_at: Option<String>,
+    #[serde(default)]
+    pub live_state_at: Option<String>,
+    #[serde(default)]
+    pub rosen_state_at: Option<String>,
+    #[serde(default)]
+    pub last_state_at: Option<String>,
+    #[serde(default)]
+    pub rosen: Option<serde_json::Value>,
+    #[serde(default)]
+    pub server: Option<serde_json::Value>,
+    #[serde(default)]
+    pub live_state: Option<serde_json::Value>,
+    #[serde(default)]
+    pub state_feed: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -87,9 +128,10 @@ pub struct LastLand {
     pub agent: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct Forward {
     /// `unconfigured`, `synced`, `catching_up`, `retrying`, `stopped` or `unavailable`.
+    #[serde(default)]
     pub state: String,
     #[serde(default)]
     pub behind: i64,
@@ -149,6 +191,70 @@ impl Forward {
 }
 
 impl RepositoryActivity {
+    /// `owner/name` for this repository row.
+    pub fn full_name(&self) -> String {
+        format!("{}/{}", self.owner, self.name)
+    }
+
+    /// Whether this repository is private; Collapse repositories default to private.
+    pub fn is_private(&self) -> bool {
+        self.private.unwrap_or_else(|| {
+            self.visibility
+                .as_deref()
+                .is_none_or(|visibility| !visibility.eq_ignore_ascii_case("public"))
+        })
+    }
+
+    /// Whether this repository is archived on Collapse.
+    pub fn is_archived(&self) -> bool {
+        self.archived_at.is_some()
+    }
+
+    /// Whether Collapse's dashboard reports a linked Rosen server for this repository (#575).
+    /// Explicit server-link flags win when present; otherwise a live-state/server block,
+    /// server identifier, state-feed timestamp or recorded Rosen land indicates a server.
+    pub fn has_linked_server(&self) -> bool {
+        if let Some(flag) = [
+            self.linked_server,
+            self.has_linked_server,
+            self.server_linked,
+            self.rosen_linked,
+            self.has_server,
+        ]
+        .into_iter()
+        .flatten()
+        .next()
+        {
+            return flag;
+        }
+        if first_non_empty([
+            self.server_id.as_deref(),
+            self.rosen_server_id.as_deref(),
+            self.state_feed_at.as_deref(),
+            self.live_state_at.as_deref(),
+            self.rosen_state_at.as_deref(),
+            self.last_state_at.as_deref(),
+        ])
+        .is_some()
+        {
+            return true;
+        }
+        for nested in [
+            self.rosen.as_ref(),
+            self.server.as_ref(),
+            self.live_state.as_ref(),
+            self.state_feed.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if linked_from_value(nested) == Some(true) {
+                return true;
+            }
+        }
+        self.last_land.is_some()
+    }
+
     /// Whether this row is `owner/name`; Collapse names are unique ignoring case.
     pub fn is(&self, repository: &str) -> bool {
         repository.split_once('/').is_some_and(|(owner, name)| {
@@ -168,6 +274,82 @@ impl RepositoryActivity {
                     self.downstream_repository.as_deref(),
                 ])
             })
+    }
+}
+
+fn linked_from_value(value: &serde_json::Value) -> Option<bool> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::Bool(flag) => Some(*flag),
+        serde_json::Value::String(text) => linked_from_status(text),
+        serde_json::Value::Array(items) => (!items.is_empty()).then_some(true),
+        serde_json::Value::Number(number) => (number.as_u64().unwrap_or(0) > 0).then_some(true),
+        serde_json::Value::Object(map) => linked_from_object(map),
+    }
+}
+
+fn linked_from_object(map: &serde_json::Map<String, serde_json::Value>) -> Option<bool> {
+    for key in ["linked", "has_server", "connected", "active"] {
+        if let Some(flag) = map.get(key).and_then(serde_json::Value::as_bool) {
+            return Some(flag);
+        }
+    }
+    for key in ["state", "status"] {
+        if let Some(text) = map.get(key).and_then(serde_json::Value::as_str)
+            && let Some(flag) = linked_from_status(text)
+        {
+            return Some(flag);
+        }
+    }
+    let metadata_present = [
+        "server_id",
+        "identity",
+        "last_seen_at",
+        "updated_at",
+        "received_at",
+        "sent_at",
+        "at",
+        "state_at",
+    ]
+    .into_iter()
+    .any(|key| {
+        map.get(key)
+            .and_then(serde_json::Value::as_str)
+            .and_then(non_empty)
+            .is_some()
+    });
+    if metadata_present {
+        return Some(true);
+    }
+    let count_present = [
+        "event_sequence",
+        "sequence",
+        "open_changes",
+        "changes",
+        "machines",
+    ]
+    .into_iter()
+    .any(|key| match map.get(key) {
+        Some(serde_json::Value::Array(items)) => !items.is_empty(),
+        Some(serde_json::Value::Number(number)) => number.as_u64().unwrap_or(0) > 0,
+        _ => false,
+    });
+    count_present.then_some(true)
+}
+
+fn linked_from_status(text: &str) -> Option<bool> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Some(false);
+    }
+    match trimmed.to_ascii_lowercase().as_str() {
+        "none" | "unlinked" | "unconfigured" | "disconnected" | "absent" | "not_linked" => {
+            Some(false)
+        }
+        "linked" | "connected" | "online" | "offline" | "stale" | "live" | "synced" | "active" => {
+            Some(true)
+        }
+        _ => None,
     }
 }
 
@@ -280,6 +462,55 @@ mod tests {
                 .as_deref(),
             Some("mESmaC/rosen")
         );
+        Ok(())
+    }
+
+    /// Risk (#575): Open from Collapse must distinguish repositories created on the web
+    /// (empty or imported from Git, no linked server) from repositories that already have
+    /// a linked Rosen server so Velocity never spins up a competing server.
+    #[test]
+    fn detects_linked_server_from_dashboard_shapes() -> Result<(), Box<dyn std::error::Error>> {
+        let imported: RepositoryActivity = serde_json::from_str(
+            r#"{
+                "owner": "me",
+                "name": "web-import",
+                "visibility": "private",
+                "forward": { "state": "unconfigured", "behind": 0 }
+            }"#,
+        )?;
+        assert!(!imported.has_linked_server());
+        assert!(imported.is_private());
+
+        let landed: RepositoryActivity = serde_json::from_str(
+            r#"{
+                "owner": "me",
+                "name": "active-project",
+                "last_land": { "time": "2026-11-21T10:00:00Z", "agent": "issue-1@server" },
+                "forward": { "state": "unconfigured", "behind": 0 }
+            }"#,
+        )?;
+        assert!(landed.has_linked_server());
+
+        let live_state: RepositoryActivity = serde_json::from_str(
+            r#"{
+                "owner": "me",
+                "name": "live-project",
+                "rosen": { "state": "connected", "open_changes": 1 },
+                "forward": { "state": "unconfigured", "behind": 0 }
+            }"#,
+        )?;
+        assert!(live_state.has_linked_server());
+
+        let explicit_unlinked: RepositoryActivity = serde_json::from_str(
+            r#"{
+                "owner": "me",
+                "name": "unlinked-again",
+                "linked_server": false,
+                "last_land": { "time": "2026-11-21T10:00:00Z", "agent": "issue-1@server" },
+                "forward": { "state": "unconfigured", "behind": 0 }
+            }"#,
+        )?;
+        assert!(!explicit_unlinked.has_linked_server());
         Ok(())
     }
 }

@@ -10,6 +10,7 @@
 //! stored under each (#517).
 
 use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::CollapseError;
@@ -274,6 +275,79 @@ pub fn check_proactive_auth(mirror_url: Option<&str>) -> ProactiveAuthStatus {
             current: Some(error.to_string()),
         },
     }
+}
+
+/// Clones a Collapse repository into `target` using proactive Basic auth, per-path
+/// credentials and Windows long-path support (#571, #575).
+pub fn clone_repository(mirror_url: &str, target: &Path) -> Result<(), CollapseError> {
+    if mirror_url.contains(['\n', '\r', '\0']) {
+        return Err(CollapseError::Git(
+            "Collapse returned a mirror URL git cannot clone".into(),
+        ));
+    }
+    ensure_proactive_auth()?;
+    ensure_path_specific_credentials()?;
+    let path_key = format!("credential.{HOST_SCOPE}.useHttpPath=true");
+    let auth_key = format!("{PROACTIVE_AUTH_KEY}={PROACTIVE_AUTH_VALUE}");
+    let output = hidden_git()
+        .args([
+            "-c",
+            "core.longpaths=true",
+            "-c",
+            &path_key,
+            "-c",
+            &auth_key,
+            "clone",
+            "--quiet",
+            "--config",
+            "core.longpaths=true",
+            "--",
+            mirror_url,
+        ])
+        .arg(target)
+        .output()
+        .map_err(|error| CollapseError::Git(format!("Could not run git: {error}")))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(CollapseError::Git(format!(
+            "Could not clone {mirror_url}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
+}
+
+/// The Collapse `owner/repository` that `folder`'s `origin` remote points to, or `None`
+/// when `folder` is not a Collapse checkout (#575).
+pub fn checkout_repository(folder: &Path) -> Option<String> {
+    let output = hidden_git()
+        .arg("-C")
+        .arg(folder)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let remote = String::from_utf8_lossy(&output.stdout);
+    let trimmed = remote.trim();
+    for host in [
+        "https://api.collapse.sh/",
+        "https://collapse.sh/",
+        "https://git.collapse.sh/",
+    ] {
+        if let Some(head) = trimmed.get(..host.len())
+            && head.eq_ignore_ascii_case(host)
+        {
+            let rest = trimmed[host.len()..].trim_end_matches('/');
+            let rest = rest.strip_suffix(".git").unwrap_or(rest);
+            let (owner, name) = rest.split_once('/')?;
+            if !owner.is_empty() && !name.is_empty() && !name.contains('/') {
+                return Some(format!("{owner}/{name}"));
+            }
+        }
+    }
+    None
 }
 
 /// Standard output of a git query; an unset key (exit status 1) reads as empty.

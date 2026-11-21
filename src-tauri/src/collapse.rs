@@ -18,22 +18,26 @@ use crate::layout::MainLayout;
 use crate::state::ManagedStateStore;
 use crate::threads::{lock, report};
 
-/// `collapse://link` (§3.1): emitted when a `velocity://collapse/...` deep link arrives (#479).
+/// `collapse://link` (§3.1): emitted when a `velocity://collapse/...` deep link arrives (#479, #575).
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type, Event,
 )]
 #[tauri_specta(event_name = "collapse://link")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CollapseLinkOpened {
-    /// Matched a local project whose Collapse mirror is `repository`; Rust focused that
-    /// project and opened an unsent draft thread.
+    /// Matched a local project whose Collapse mirror is `repository`, or opened an unlinked
+    /// Collapse repository locally. When `open_draft` is true the window focuses the draft
+    /// composer; otherwise the new project's spec interview is already active.
     Opened {
         project_identifier: u32,
         repository: String,
         draft_context: Option<String>,
+        open_draft: bool,
     },
-    /// No local project mirrors `repository`; Rust changed nothing and the window shows
-    /// `notice`, offering nothing else.
+    /// The Collapse repository already has a linked Rosen server on another machine; Rust
+    /// changed nothing and offers machine enrollment (#575).
+    NeedsEnrollment { repository: String, notice: String },
+    /// No local project matches `repository` and it could not be opened automatically.
     Unmatched { repository: String, notice: String },
 }
 
@@ -140,9 +144,9 @@ fn handle_link(application: &AppHandle, link: CollapseDeepLink) -> Result<(), St
     let Some(store_state) = application.try_state::<ManagedStateStore>() else {
         return Ok(());
     };
-    let (event, publish_bundle) = {
+    let matched = {
         let mut store = lock(store_state.inner(), "persisted state")?;
-        let matched = store
+        let found = store
             .state()
             .projects
             .iter()
@@ -153,26 +157,39 @@ fn handle_link(application: &AppHandle, link: CollapseDeepLink) -> Result<(), St
                     .is_some_and(|saved| saved.eq_ignore_ascii_case(&link.repository))
             })
             .map(|project| project.id);
-        match matched {
-            Some(project_identifier) => {
-                let (event, snapshot, selection) =
-                    open_matched_project(application, &mut store, project_identifier, link)?;
-                (event, Some((snapshot, selection)))
-            }
-            None => (
-                CollapseLinkOpened::Unmatched {
-                    notice: velocity_core::collapse::unmatched_project_notice(&link.repository),
-                    repository: link.repository,
-                },
-                None,
-            ),
+        match found {
+            Some(project_identifier) => Some(open_matched_project(
+                application,
+                &mut store,
+                project_identifier,
+                link.clone(),
+            )?),
+            None => None,
         }
     };
-    if let Some((snapshot, selection)) = publish_bundle {
-        crate::layout::publish(&window, &snapshot, None)?;
-        if let Some((projects, selection)) = selection {
-            crate::projects::publish_selection(&window.as_ref().window(), projects, selection)?;
-        }
+    let Some((event, snapshot, selection)) = matched else {
+        let handle = application.clone();
+        tauri::async_runtime::spawn(async move {
+            report(handle_unmatched_link(&handle, link).await);
+        });
+        return Ok(());
+    };
+    publish_matched_link(application, &window, event, snapshot, selection)
+}
+
+fn publish_matched_link(
+    application: &AppHandle,
+    window: &WebviewWindow,
+    event: CollapseLinkOpened,
+    snapshot: velocity_core::layout_view::LayoutSnapshot,
+    selection: Option<(
+        velocity_store::projects::ProjectList,
+        velocity_store::projects::ProjectSelectionView,
+    )>,
+) -> Result<(), String> {
+    crate::layout::publish(window, &snapshot, None)?;
+    if let Some((projects, selection)) = selection {
+        crate::projects::publish_selection(&window.as_ref().window(), projects, selection)?;
     }
     if let CollapseLinkOpened::Opened {
         project_identifier, ..
@@ -184,8 +201,109 @@ fn handle_link(application: &AppHandle, link: CollapseDeepLink) -> Result<(), St
             crate::skills::SuggestionCheck::Opened,
         );
     }
-    deliver_link_event(application, &window, event)?;
-    focus_window(&window)
+    deliver_link_event(application, window, event)?;
+    focus_window(window)
+}
+
+/// Checks Collapse's dashboard for an unmatched `velocity://collapse/<owner>/<name>` link (#575):
+/// unlinked repositories open through the same path as Open from Collapse…, while repositories
+/// that already have a linked server offer machine enrollment instead.
+async fn handle_unmatched_link(
+    application: &AppHandle,
+    link: CollapseDeepLink,
+) -> Result<(), String> {
+    let Some(window) = application.get_webview_window("main") else {
+        return Ok(());
+    };
+    let Some(credentials) = crate::collapse_mirror::load_credentials().await? else {
+        let event = CollapseLinkOpened::Unmatched {
+            notice: velocity_core::collapse::unmatched_project_notice(&link.repository),
+            repository: link.repository,
+        };
+        deliver_link_event(application, &window, event)?;
+        return focus_window(&window);
+    };
+    let rows = match velocity_collapse::repository_activity(&credentials).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            let event = CollapseLinkOpened::Unmatched {
+                notice: format!("Could not check {} on Collapse: {error}", link.repository),
+                repository: link.repository,
+            };
+            deliver_link_event(application, &window, event)?;
+            return focus_window(&window);
+        }
+    };
+    let Some(row) = rows.iter().find(|row| row.is(&link.repository)) else {
+        let event = CollapseLinkOpened::Unmatched {
+            notice: velocity_core::collapse::unmatched_project_notice(&link.repository),
+            repository: link.repository,
+        };
+        deliver_link_event(application, &window, event)?;
+        return focus_window(&window);
+    };
+    let repository = row.full_name();
+    if row.has_linked_server() {
+        let event = CollapseLinkOpened::NeedsEnrollment {
+            notice: velocity_core::collapse::enrollment_notice(&repository),
+            repository,
+        };
+        deliver_link_event(application, &window, event)?;
+        return focus_window(&window);
+    }
+    open_unlinked_collapse_link(application, &window, repository, link.commit).await
+}
+
+async fn open_unlinked_collapse_link(
+    application: &AppHandle,
+    window: &WebviewWindow,
+    repository: String,
+    commit: Option<String>,
+) -> Result<(), String> {
+    let request = velocity_new_project::OpenProjectRequest::Collapse {
+        repository: repository.clone(),
+        clone_to: String::new(),
+    };
+    let created = match crate::new_project::open_project_request(application.clone(), request).await
+    {
+        Ok(created) => created,
+        Err(error) => {
+            let event = CollapseLinkOpened::Unmatched {
+                notice: format!("Could not open {repository}: {error}"),
+                repository,
+            };
+            deliver_link_event(application, window, event)?;
+            return focus_window(window);
+        }
+    };
+    let spec_locked = {
+        let store_state = application.state::<ManagedStateStore>();
+        let store = lock(store_state.inner(), "persisted state")?;
+        store
+            .project(created.identifier)
+            .is_some_and(|project| project.spec_locked)
+    };
+    if !spec_locked {
+        let event = CollapseLinkOpened::Opened {
+            project_identifier: created.identifier,
+            repository,
+            draft_context: None,
+            open_draft: false,
+        };
+        deliver_link_event(application, window, event)?;
+        return focus_window(window);
+    }
+    let (event, snapshot, selection) = {
+        let store_state = application.state::<ManagedStateStore>();
+        let mut store = lock(store_state.inner(), "persisted state")?;
+        open_matched_project(
+            application,
+            &mut store,
+            created.identifier,
+            CollapseDeepLink { repository, commit },
+        )?
+    };
+    publish_matched_link(application, window, event, snapshot, selection)
 }
 
 type MatchedProjectPublication = (
@@ -229,6 +347,7 @@ fn open_matched_project(
             project_identifier,
             repository: link.repository,
             draft_context,
+            open_draft: true,
         },
         snapshot,
         selection,

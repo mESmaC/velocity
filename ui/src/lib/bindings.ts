@@ -293,10 +293,15 @@ export const commands = {
 	/**  Create a Rosen project and start its spec interview. */
 	createProject: (request: NewProjectRequest_Deserialize) => __TAURI_INVOKE<CreatedProject>("create_project", { request }),
 	/**
-	 *  Open project: a folder or one of your GitHub repositories. Cloning runs off the
-	 *  UI thread. A project without SPEC.md starts its spec interview straight away.
+	 *  Open project: a folder, GitHub repository or unlinked Collapse repository. Cloning runs
+	 *  off the UI thread. A project without SPEC.md starts its spec interview straight away.
 	 */
 	openProject: (request: OpenProjectRequest) => __TAURI_INVOKE<CreatedProject>("open_project", { request }),
+	/**
+	 *  Your Collapse repositories matching `query`, read from Collapse's dashboard on first
+	 *  open and when `refresh` is set; every other keystroke searches the cached list (#575).
+	 */
+	getCollapseRepositories: (query: string, refresh: boolean) => __TAURI_INVOKE<CollapseRepositoryPickerView_Serialize>("get_collapse_repositories", { query, refresh }),
 	/**
 	 *  Your repositories matching `query`. `gh` is asked only on the first call and when
 	 *  `refresh` is set; every other keystroke searches the list already read.
@@ -884,33 +889,39 @@ export type CollapseConnection_Serialize = {
 	url: string,
 };
 
-/**  `collapse://link` (§3.1): emitted when a `velocity://collapse/...` deep link arrives (#479). */
+/**  `collapse://link` (§3.1): emitted when a `velocity://collapse/...` deep link arrives (#479, #575). */
 export type CollapseLinkOpened = CollapseLinkOpened_Serialize | CollapseLinkOpened_Deserialize;
 
-/**  `collapse://link` (§3.1): emitted when a `velocity://collapse/...` deep link arrives (#479). */
+/**  `collapse://link` (§3.1): emitted when a `velocity://collapse/...` deep link arrives (#479, #575). */
 export type CollapseLinkOpened_Deserialize = 
 /**
- *  Matched a local project whose Collapse mirror is `repository`; Rust focused that
- *  project and opened an unsent draft thread.
+ *  Matched a local project whose Collapse mirror is `repository`, or opened an unlinked
+ *  Collapse repository locally. When `open_draft` is true the window focuses the draft
+ *  composer; otherwise the new project's spec interview is already active.
  */
-{ kind: "opened"; project_identifier: number; repository: string; draft_context?: string | null } | 
+{ kind: "opened"; project_identifier: number; repository: string; draft_context?: string | null; open_draft: boolean } | 
 /**
- *  No local project mirrors `repository`; Rust changed nothing and the window shows
- *  `notice`, offering nothing else.
+ *  The Collapse repository already has a linked Rosen server on another machine; Rust
+ *  changed nothing and offers machine enrollment (#575).
  */
+{ kind: "needs_enrollment"; repository: string; notice: string } | 
+/**  No local project matches `repository` and it could not be opened automatically. */
 { kind: "unmatched"; repository: string; notice: string };
 
-/**  `collapse://link` (§3.1): emitted when a `velocity://collapse/...` deep link arrives (#479). */
+/**  `collapse://link` (§3.1): emitted when a `velocity://collapse/...` deep link arrives (#479, #575). */
 export type CollapseLinkOpened_Serialize = 
 /**
- *  Matched a local project whose Collapse mirror is `repository`; Rust focused that
- *  project and opened an unsent draft thread.
+ *  Matched a local project whose Collapse mirror is `repository`, or opened an unlinked
+ *  Collapse repository locally. When `open_draft` is true the window focuses the draft
+ *  composer; otherwise the new project's spec interview is already active.
  */
-{ kind: "opened"; project_identifier: number; repository: string; draft_context: string | null } | 
+{ kind: "opened"; project_identifier: number; repository: string; draft_context: string | null; open_draft: boolean } | 
 /**
- *  No local project mirrors `repository`; Rust changed nothing and the window shows
- *  `notice`, offering nothing else.
+ *  The Collapse repository already has a linked Rosen server on another machine; Rust
+ *  changed nothing and offers machine enrollment (#575).
  */
+{ kind: "needs_enrollment"; repository: string; notice: string } | 
+/**  No local project matches `repository` and it could not be opened automatically. */
 { kind: "unmatched"; repository: string; notice: string };
 
 /**
@@ -965,6 +976,58 @@ export type CollapseMirrorHealth_Serialize = {
 	 *  GitHub, suggested in project settings (#574).
 	 */
 	downstream_github: string | null,
+};
+
+/**  One repository from the signed-in Collapse account's dashboard (#575). */
+export type CollapseRepository = CollapseRepository_Serialize | CollapseRepository_Deserialize;
+
+/**  What the Collapse picker shows for the current search (#575). */
+export type CollapseRepositoryPickerView = CollapseRepositoryPickerView_Serialize | CollapseRepositoryPickerView_Deserialize;
+
+/**  What the Collapse picker shows for the current search (#575). */
+export type CollapseRepositoryPickerView_Deserialize = {
+	rows: CollapseRepository_Deserialize[],
+	hidden: number,
+	typed?: string | null,
+};
+
+/**  What the Collapse picker shows for the current search (#575). */
+export type CollapseRepositoryPickerView_Serialize = {
+	rows: CollapseRepository_Serialize[],
+	hidden: number,
+	typed: string | null,
+};
+
+/**  One repository from the signed-in Collapse account's dashboard (#575). */
+export type CollapseRepository_Deserialize = {
+	/**  `owner/name`. */
+	full_name: string,
+	description?: string | null,
+	private: boolean,
+	archived: boolean,
+	/**
+	 *  True when Collapse reports a linked Rosen server; Velocity offers machine
+	 *  enrollment instead of cloning a second independent server.
+	 */
+	has_linked_server: boolean,
+	/**  RFC 3339 time of the last land, when Collapse has recorded one. */
+	last_land_at?: string | null,
+};
+
+/**  One repository from the signed-in Collapse account's dashboard (#575). */
+export type CollapseRepository_Serialize = {
+	/**  `owner/name`. */
+	full_name: string,
+	description: string | null,
+	private: boolean,
+	archived: boolean,
+	/**
+	 *  True when Collapse reports a linked Rosen server; Velocity offers machine
+	 *  enrollment instead of cloning a second independent server.
+	 */
+	has_linked_server: boolean,
+	/**  RFC 3339 time of the last land, when Collapse has recorded one. */
+	last_land_at: string | null,
 };
 
 export type CommandLatencyRow = {
@@ -3306,7 +3369,7 @@ export type OpenProjectRequest =
 /**  An existing Rosen project or a Git checkout to import. */
 ({ LocalFolder: {
 	path: string,
-} }) & { GitHub?: never } | 
+} }) & { Collapse?: never; GitHub?: never } | 
 /**
  *  One of your GitHub repositories, cloned to `<clone_to>/<name>`, or opened
  *  there when that folder is already its clone.
@@ -3314,7 +3377,16 @@ export type OpenProjectRequest =
 ({ GitHub: {
 	repository: string,
 	clone_to: string,
-} }) & { LocalFolder?: never };
+} }) & { Collapse?: never; LocalFolder?: never } | 
+/**
+ *  One of your Collapse repositories with no linked server, cloned to
+ *  `<clone_to>/<name>` with proactive auth and its push token, or opened
+ *  there when that folder is already its clone (#575).
+ */
+({ Collapse: {
+	repository: string,
+	clone_to: string,
+} }) & { GitHub?: never; LocalFolder?: never };
 
 export type OutlineAction = OutlineAction_Serialize | OutlineAction_Deserialize;
 

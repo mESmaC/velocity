@@ -2,6 +2,7 @@ use std::io;
 use std::path::PathBuf;
 
 use thiserror::Error;
+use velocity_collapse::CollapseError;
 use velocity_git::GitError;
 use velocity_github::GitHubError;
 use velocity_store::StoreError;
@@ -23,6 +24,8 @@ pub enum NewProjectError {
     /// A refusal from the plan. Nothing has been created.
     #[error("{0}")]
     Refused(String),
+    #[error(transparent)]
+    Collapse(#[from] CollapseError),
     #[error(transparent)]
     GitHub(#[from] GitHubError),
     #[error(transparent)]

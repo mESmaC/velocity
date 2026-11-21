@@ -8,9 +8,10 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tauri_specta::Event;
 use velocity_new_project::{
-    CreatedProject, NewProjectDefaults, NewProjectRequest, OpenProjectRequest,
-    ProjectLocationRequest, ProjectMirror, Publication, RepositoryPicker, RepositoryPickerView,
-    new_project_defaults, projects_directory, validate_project_root,
+    CollapseRepository, CollapseRepositoryPicker, CollapseRepositoryPickerView, CreatedProject,
+    NewProjectDefaults, NewProjectRequest, OpenProjectRequest, ProjectLocationRequest,
+    ProjectMirror, Publication, RepositoryPicker, RepositoryPickerView, new_project_defaults,
+    projects_directory, validate_project_root,
 };
 
 use crate::layout::{LayoutStateChanged, MainLayout};
@@ -108,14 +109,23 @@ pub async fn create_project(
     Ok(created)
 }
 
-/// Open project: a folder or one of your GitHub repositories. Cloning runs off the
-/// UI thread. A project without SPEC.md starts its spec interview straight away.
+/// Open project: a folder, GitHub repository or unlinked Collapse repository. Cloning runs
+/// off the UI thread. A project without SPEC.md starts its spec interview straight away.
 #[tauri::command]
 #[specta::specta]
 pub async fn open_project(
     application: AppHandle,
     request: OpenProjectRequest,
 ) -> Result<CreatedProject, String> {
+    open_project_request(application, request).await
+}
+
+/// Shared open-project flow used by the switcher and `velocity://collapse/...` deep links (#575).
+pub(crate) async fn open_project_request(
+    application: AppHandle,
+    mut request: OpenProjectRequest,
+) -> Result<CreatedProject, String> {
+    let collapse_repository = crate::collapse_mirror::prepare_open_project(&mut request).await?;
     let host = application.clone();
     let opened = tauri::async_runtime::spawn_blocking(move || {
         let opened = velocity_new_project::open_project(
@@ -130,6 +140,15 @@ pub async fn open_project(
     .await
     .map_err(|error| format!("Open project stopped: {error}"))??;
     crate::rosen::server(&host, opened.identifier).await?;
+    if let Some(repository) = collapse_repository {
+        crate::collapse_mirror::finalize_opened_collapse_project(
+            &host,
+            opened.identifier,
+            &repository,
+        )
+        .await?;
+    }
+    crate::base_ci::wake(&host);
     crate::interview::start(&host);
     Ok(opened)
 }
@@ -137,6 +156,40 @@ pub async fn open_project(
 /// The switcher's cached list of your GitHub repositories.
 #[derive(Default)]
 pub struct ManagedRepositoryPicker(Mutex<RepositoryPicker>);
+
+/// The switcher's cached list of your Collapse repositories (#575).
+#[derive(Default)]
+pub struct ManagedCollapseRepositoryPicker(Mutex<CollapseRepositoryPicker>);
+
+/// Your Collapse repositories matching `query`, read from Collapse's dashboard on first
+/// open and when `refresh` is set; every other keystroke searches the cached list (#575).
+#[tauri::command]
+#[specta::specta]
+pub async fn get_collapse_repositories(
+    application: AppHandle,
+    query: String,
+    refresh: bool,
+) -> Result<CollapseRepositoryPickerView, String> {
+    let lock_failed = || String::from("Collapse repository picker lock is poisoned");
+    let needs_fetch = {
+        let picker = &application.state::<ManagedCollapseRepositoryPicker>().0;
+        let guard = picker.lock().map_err(|_| lock_failed())?;
+        guard.needs_fetch(refresh)
+    };
+    if needs_fetch {
+        let rows = crate::collapse_mirror::list_dashboard_repositories().await?;
+        let repositories: Vec<CollapseRepository> =
+            rows.iter().map(CollapseRepository::from_activity).collect();
+        let picker = &application.state::<ManagedCollapseRepositoryPicker>().0;
+        picker
+            .lock()
+            .map_err(|_| lock_failed())?
+            .replace(repositories);
+    }
+    let picker = &application.state::<ManagedCollapseRepositoryPicker>().0;
+    let view = picker.lock().map_err(|_| lock_failed())?.view(&query);
+    Ok(view)
+}
 
 /// Your repositories matching `query`. `gh` is asked only on the first call and when
 /// `refresh` is set; every other keystroke searches the list already read.

@@ -128,6 +128,32 @@ pub async fn provision_mirror(
     Ok(mirror)
 }
 
+/// Verifies an existing Collapse repository is ready, mints a push token for it and stores
+/// the token in git's credential helper with proactive HTTP auth enabled (#575). Unlike
+/// [`provision_mirror`], this never creates a missing repository.
+pub async fn prepare_existing_mirror(
+    credentials: &CollapseCredentials,
+    owner: &str,
+    name: &str,
+) -> Result<ProvisionedMirror, CollapseError> {
+    tokio::task::spawn_blocking(crate::git_credential::check_git_version)
+        .await
+        .map_err(|error| CollapseError::Git(error.to_string()))??;
+    let client = Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(failed)?;
+    let mut mirror = existing(owner, name);
+    wait_until_ready(&client, credentials, &mut mirror).await?;
+    let secret = mint_push_token(&client, credentials, &mirror).await?;
+    let mut urls = vec![mirror.mirror_url.clone()];
+    urls.extend(feed_urls(&mirror.collapse_root()));
+    tokio::task::spawn_blocking(move || crate::git_credential::store_push_secret(&urls, &secret))
+        .await
+        .map_err(|error| CollapseError::Git(error.to_string()))??;
+    Ok(mirror)
+}
+
 /// A repository Velocity did not create; its exact name comes from the ready check.
 fn existing(owner: &str, name: &str) -> ProvisionedMirror {
     ProvisionedMirror {
@@ -205,6 +231,12 @@ async fn wait_until_ready(
             .send()
             .await
             .map_err(failed)?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err(CollapseError::Api(format!(
+                "{}/{} was not found on Collapse, or your account cannot see it",
+                mirror.owner, mirror.name
+            )));
+        }
         let reply: RepositoryReply = success(response, "read the repository")
             .await?
             .json()

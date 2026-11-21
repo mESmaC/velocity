@@ -243,9 +243,17 @@ fn seed_checkout(root: &Path, seed: &Path, branch: &str) -> Result<(), ProjectEr
     let remote = format!("refs/remotes/origin/{branch}");
     let local = format!("refs/heads/{branch}");
     let reference = if git(root, seed, &["rev-parse", "--verify", &local]).is_ok() {
-        &local
+        Some(&local)
+    } else if git(root, seed, &["rev-parse", "--verify", &remote]).is_ok() {
+        Some(&remote)
     } else {
-        &remote
+        None
+    };
+    let Some(reference) = reference else {
+        // An empty repository (such as a brand-new Collapse web repo) has no commits yet;
+        // seed its initial base commit with rosen.toml and AGENTS.md (#575).
+        fs::remove_dir_all(seed)?;
+        return seed_new(root, seed, branch);
     };
     let tip = git(root, seed, &["rev-parse", "--verify", reference])?;
     git(root, seed, &["update-ref", &local, tip.trim()])?;

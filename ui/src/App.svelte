@@ -94,6 +94,7 @@
   let openPane = $state<'threads' | 'activity' | null>(null);
   let requestedBrowser = $state('');
   let collapseNotice = $state('');
+  let collapseNoticeEnrollment = $state(false);
   const intents: LayoutIntent[] = [];
   const shortcutKeys = new Set([
     'k',
@@ -490,6 +491,7 @@
         return;
       if (collapseNotice) {
         collapseNotice = '';
+        collapseNoticeEnrollment = false;
         return;
       }
       if (dismissCompactPane(layout)) return;
@@ -578,11 +580,15 @@
         if (!active) return;
         if (event.payload.kind === 'opened') {
           collapseNotice = '';
-          intents.push({ Navigation: 'NewThread' });
-          flush();
+          collapseNoticeEnrollment = false;
+          if (event.payload.open_draft) {
+            intents.push({ Navigation: 'NewThread' });
+            flush();
+          }
           return;
         }
         collapseNotice = event.payload.notice;
+        collapseNoticeEnrollment = event.payload.kind === 'needs_enrollment';
       });
       if (!active) {
         stopCollapseLink();
@@ -801,11 +807,25 @@
     aria-label="Collapse link notice"
   >
     <span>{collapseNotice}</span>
+    {#if collapseNoticeEnrollment}
+      <button
+        type="button"
+        class="mini"
+        onclick={() => {
+          collapseNotice = '';
+          collapseNoticeEnrollment = false;
+          send({ Request: { Navigation: 'Settings' } });
+        }}>Open Settings</button
+      >
+    {/if}
     <button
       type="button"
       class="mini"
       aria-label="Dismiss notice"
-      onclick={() => (collapseNotice = '')}>Dismiss</button
+      onclick={() => {
+        collapseNotice = '';
+        collapseNoticeEnrollment = false;
+      }}>Dismiss</button
     >
   </div>
 {/if}

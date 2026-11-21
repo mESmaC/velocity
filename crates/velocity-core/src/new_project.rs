@@ -5,6 +5,7 @@ pub enum NewProjectLocation {
     NewFolder,
     OpenFolder,
     OpenGitHub,
+    OpenCollapse,
 }
 
 impl NewProjectLocation {
@@ -42,11 +43,21 @@ pub fn should_clone(
         NewProjectLocation::NewFolder => Ok(false),
         NewProjectLocation::OpenFolder if observation.is_repository => Ok(false),
         NewProjectLocation::OpenFolder => Err(Refusal::NotARepository),
-        NewProjectLocation::OpenGitHub if observation.target_is_checkout => Ok(false),
-        NewProjectLocation::OpenGitHub if observation.target_occupied => {
+        NewProjectLocation::OpenGitHub | NewProjectLocation::OpenCollapse
+            if observation.target_is_checkout =>
+        {
+            Ok(false)
+        }
+        NewProjectLocation::OpenGitHub | NewProjectLocation::OpenCollapse
+            if observation.target_occupied =>
+        {
             Err(Refusal::TargetOccupied)
         }
-        NewProjectLocation::OpenGitHub if !observation.remote_exists => Err(Refusal::RemoteMissing),
-        NewProjectLocation::OpenGitHub => Ok(true),
+        NewProjectLocation::OpenGitHub | NewProjectLocation::OpenCollapse
+            if !observation.remote_exists =>
+        {
+            Err(Refusal::RemoteMissing)
+        }
+        NewProjectLocation::OpenGitHub | NewProjectLocation::OpenCollapse => Ok(true),
     }
 }

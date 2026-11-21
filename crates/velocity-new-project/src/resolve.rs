@@ -15,6 +15,7 @@ pub(crate) struct ResolvedRequest {
     pub(crate) path: PathBuf,
     pub(crate) name: String,
     pub(crate) repository: Option<RepositoryName>,
+    pub(crate) collapse_repository: Option<String>,
     pub(crate) github_repository: Option<RepositoryName>,
     pub(crate) mirror: Option<String>,
     pub(crate) explicit_destination: bool,
@@ -85,6 +86,39 @@ fn mirror_url(mirror: &ProjectMirror) -> Result<Option<String>, NewProjectError>
     Ok(Some(format!("{host}{}.git", repository.full_name())))
 }
 
+/// Validates the Collapse repository name and destination folder before calling Collapse (#575).
+pub fn validate_open_collapse(
+    repository: &str,
+    clone_to: &str,
+) -> Result<(String, String), NewProjectError> {
+    let (owner, name) = parse_collapse_repository(repository)?;
+    let _ = resolve_clone_destination(&name, clone_to)?;
+    Ok((owner, name))
+}
+
+fn parse_collapse_repository(repository: &str) -> Result<(String, String), NewProjectError> {
+    velocity_core::collapse::parse_repository(repository).ok_or_else(|| {
+        NewProjectError::Refused(format!(
+            "{repository:?} is not a Collapse repository name; use owner/name"
+        ))
+    })
+}
+
+fn resolve_clone_destination(
+    name: &str,
+    clone_to: &str,
+) -> Result<(PathBuf, bool), NewProjectError> {
+    let explicit_destination = !clone_to.trim().is_empty();
+    let parent = if explicit_destination {
+        absolute_folder(clone_to)?
+    } else {
+        projects_directory(&std::env::home_dir().ok_or(NewProjectError::NoFolder)?)
+    };
+    let path = parent.join(name);
+    validate_project_root(&path)?;
+    Ok((path, explicit_destination))
+}
+
 pub(crate) fn resolve_open(
     request: &OpenProjectRequest,
 ) -> Result<ResolvedRequest, NewProjectError> {
@@ -97,21 +131,39 @@ pub(crate) fn resolve_open(
             clone_to,
         } => {
             let repository = RepositoryName::parse(repository)?;
-            let explicit_destination = !clone_to.trim().is_empty();
-            let parent = if explicit_destination {
-                absolute_folder(clone_to)?
-            } else {
-                projects_directory(&std::env::home_dir().ok_or(NewProjectError::NoFolder)?)
-            };
-            let path = parent.join(repository.name());
-            validate_project_root(&path)?;
+            let (path, explicit_destination) =
+                resolve_clone_destination(repository.name(), clone_to)?;
             Ok(ResolvedRequest {
                 location: NewProjectLocation::OpenGitHub,
                 path,
                 name: repository.name().to_owned(),
                 repository: Some(repository),
+                collapse_repository: None,
                 github_repository: None,
                 mirror: None,
+                explicit_destination,
+            })
+        }
+        OpenProjectRequest::Collapse {
+            repository,
+            clone_to,
+        } => {
+            let (owner, name) = parse_collapse_repository(repository)?;
+            let full_name = format!("{owner}/{name}");
+            let mirror = velocity_core::collapse::mirror_remote(&full_name).ok_or_else(|| {
+                NewProjectError::Refused(format!(
+                    "{repository:?} is not a Collapse repository name; use owner/name"
+                ))
+            })?;
+            let (path, explicit_destination) = resolve_clone_destination(&name, clone_to)?;
+            Ok(ResolvedRequest {
+                location: NewProjectLocation::OpenCollapse,
+                path,
+                name,
+                repository: None,
+                collapse_repository: Some(full_name),
+                github_repository: None,
+                mirror: Some(mirror),
                 explicit_destination,
             })
         }
@@ -132,6 +184,7 @@ fn folder(
         path,
         name,
         repository: None,
+        collapse_repository: None,
         github_repository: None,
         mirror,
         explicit_destination: true,
@@ -158,22 +211,27 @@ fn folder_name(path: &Path) -> Result<String, NewProjectError> {
 
 pub(crate) fn refusal_message(refusal: Refusal, resolved: &ResolvedRequest) -> String {
     let path = resolved.path.display();
-    let repository = resolved
-        .repository
-        .as_ref()
-        .map(RepositoryName::full_name)
-        .unwrap_or_default();
+    let (host, repository) = match (&resolved.repository, &resolved.collapse_repository) {
+        (_, Some(collapse)) => ("collapse.sh", collapse.clone()),
+        (Some(github), None) => ("github.com", github.full_name()),
+        (None, None) => ("github.com", String::new()),
+    };
     match refusal {
         Refusal::NotARepository => format!(
             "{path} has no Rosen project or Git checkout. Use New project to set up the folder."
         ),
         Refusal::TargetOccupied => format!(
-            "{path} already exists and is not a clone of github.com/{repository}. Choose another clone folder."
+            "{path} already exists and is not a clone of {host}/{repository}. Choose another clone folder."
         ),
         Refusal::AlreadyAProject => format!("{path} is already a project. Switch to it instead."),
-        Refusal::RemoteMissing => {
-            format!("github.com/{repository} was not found, or your gh account cannot see it.")
-        }
+        Refusal::RemoteMissing => match resolved.location {
+            NewProjectLocation::OpenCollapse => {
+                format!(
+                    "{host}/{repository} was not found, or your Collapse account cannot see it."
+                )
+            }
+            _ => format!("{host}/{repository} was not found, or your gh account cannot see it."),
+        },
     }
 }
 

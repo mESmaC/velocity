@@ -21,7 +21,9 @@ use velocity_collapse::{CollapseCredentials, MirrorRequest, RepositoryActivity};
 use velocity_core::collapse::{
     CollapseMirrorHealth, ForwarderState, dashboard_poll_active, dashboard_poll_delay,
 };
-use velocity_new_project::{NewProjectRequest, ProjectLocationRequest, ProjectMirror};
+use velocity_new_project::{
+    NewProjectRequest, OpenProjectRequest, ProjectLocationRequest, ProjectMirror,
+};
 use velocity_rosen::collapse_link::{CollapseLink, allow_collapse_relay, propose_collapse_link};
 use velocity_rosen::landing::{LandOutcome, LandRefusal};
 use velocity_rosen::workspace_settings::SETTINGS_AGENT;
@@ -31,15 +33,95 @@ use crate::state::ManagedStateStore;
 use crate::threads::lock;
 
 const NOT_CONNECTED: &str = "Connect Collapse in Settings → Agents → Shared MCP servers first, so Velocity can create the repository";
+const NOT_CONNECTED_OPEN: &str = "Connect Collapse in Settings → Agents → Shared MCP servers first, so Velocity can read and open your Collapse repositories";
 const NO_PUSH_TOKEN: &str = "Git's credential helper holds no push token for this project's Collapse mirror. Connect Collapse in Settings → Agents → Shared MCP servers so Velocity can create one";
 /// New projects start their Rosen base on `main` (F2).
 const NEW_PROJECT_BRANCH: &str = "main";
 
-async fn load_credentials() -> Result<Option<CollapseCredentials>, String> {
+pub(crate) async fn load_credentials() -> Result<Option<CollapseCredentials>, String> {
     tauri::async_runtime::spawn_blocking(velocity_collapse::load_credentials)
         .await
         .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())
+}
+
+/// Lists the connected Collapse account's repositories from Collapse's dashboard (#575).
+pub(crate) async fn list_dashboard_repositories() -> Result<Vec<RepositoryActivity>, String> {
+    let credentials = load_credentials().await?.ok_or(NOT_CONNECTED_OPEN)?;
+    velocity_collapse::repository_activity(&credentials)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Prepares an `OpenProjectRequest::Collapse` before cloning (#575): validates the folder
+/// and repository name, refuses repositories that already have a linked Rosen server
+/// (offering machine enrollment instead), verifies the repository is ready, mints a push
+/// token and configures proactive auth in git's credential helper.
+pub(crate) async fn prepare_open_project(
+    request: &mut OpenProjectRequest,
+) -> Result<Option<String>, String> {
+    let OpenProjectRequest::Collapse {
+        repository,
+        clone_to,
+    } = request
+    else {
+        return Ok(None);
+    };
+    let (owner, name) = velocity_new_project::validate_open_collapse(repository, clone_to)
+        .map_err(|error| error.to_string())?;
+    let requested = format!("{owner}/{name}");
+    let credentials = load_credentials().await?.ok_or(NOT_CONNECTED_OPEN)?;
+    let rows = velocity_collapse::repository_activity(&credentials)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(row) = rows.iter().find(|row| row.is(&requested))
+        && row.has_linked_server()
+    {
+        return Err(velocity_core::collapse::enrollment_notice(&row.full_name()));
+    }
+    let mirror = velocity_collapse::prepare_existing_mirror(&credentials, &owner, &name)
+        .await
+        .map_err(|error| error.to_string())?;
+    let canonical = mirror.repository();
+    *repository = canonical.clone();
+    Ok(Some(canonical))
+}
+
+/// After cloning and importing an unlinked Collapse repository into Rosen (#575): ensures
+/// `rosen.toml` names `[mirror] remote` and the `collapse` root (handling imported Git
+/// repositories that already had a `rosen.toml`), applies the relay allow-list and
+/// refreshes the saved mirror state.
+pub(crate) async fn finalize_opened_collapse_project(
+    application: &AppHandle,
+    project: u32,
+    repository: &str,
+) -> Result<(), String> {
+    let mirror_url = velocity_core::collapse::mirror_remote(repository)
+        .ok_or("That is not a Collapse repository")?;
+    let root = velocity_core::collapse::collapse_root(repository)
+        .ok_or("That is not a Collapse repository")?;
+    let server = crate::rosen::server(application, project).await?;
+    let link = CollapseLink {
+        remote: Some(&mirror_url),
+        root: &root,
+    };
+    if let Some(change) = propose_collapse_link(&server, &link)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        let outcome = velocity_rosen::landing::land(&server, SETTINGS_AGENT, &change)
+            .await
+            .map_err(|error| error.to_string())?;
+        if let LandOutcome::Refused(refusal) = outcome {
+            return Err(format!(
+                "Could not land Collapse mirror configuration ({change}): {}",
+                refusal_reason(refusal)
+            ));
+        }
+    }
+    allow_relay_after_create(application, project).await;
+    crate::rosen_mirror::refresh(application, project).await?;
+    Ok(())
 }
 
 async fn ensure_proactive_auth() -> Result<(), String> {

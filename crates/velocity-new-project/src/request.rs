@@ -41,6 +41,13 @@ pub enum OpenProjectRequest {
         repository: String,
         clone_to: String,
     },
+    /// One of your Collapse repositories with no linked server, cloned to
+    /// `<clone_to>/<name>` with proactive auth and its push token, or opened
+    /// there when that folder is already its clone (#575).
+    Collapse {
+        repository: String,
+        clone_to: String,
+    },
 }
 
 #[derive(Clone, Debug, serde::Deserialize, specta::Type)]

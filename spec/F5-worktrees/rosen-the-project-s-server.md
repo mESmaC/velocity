@@ -46,7 +46,9 @@
   In the reverse direction, Velocity registers the `velocity://` scheme on install and keeps a single running instance so links from Collapse reach the running window (#479).
   Opening `velocity://collapse/<owner>/<name>` focuses the local project whose Collapse mirror matches `<owner>/<name>` and opens an unsent draft thread in it.
   Opening `velocity://collapse/<owner>/<name>/land/<commit>` does the same and attaches `Land <short commit>` as dismissible context on that draft.
-  When no local project matches, Velocity changes nothing and shows a notice naming the repository that instructs the user to enroll this machine with a join key from the project's owner (Settings → Workspaces → Machines), offering nothing else.
+  When no local project matches, Velocity checks the connected Collapse account's dashboard (#575).
+  An unlinked repository opens through the same Open from Collapse path (F2), cloning with its push token and proactive auth, importing into Rosen, setting `[mirror]` and the `collapse` root, and applying the relay allow-list.
+  When the repository already has a linked server (or is unavailable from the connected account), Velocity changes nothing and shows a notice naming the repository that offers machine enrollment with a join key from the project's owner (Settings → Workspaces → Machines).
   Rust parses every link, ignores unknown paths and query parameters, and never sends a message, starts an agent, runs a command or passes link text into a prompt or a shell.
   A Rosen project without a Collapse mirror offers Mirror to Collapse in the project switcher menu (#427).
   It provisions a Collapse repository named after the project on the project's base branch as Create does (F2), then proposes and lands one `rosen.toml` change setting `[mirror] remote` to `https://api.collapse.sh/<owner>/<repository>.git` and the top-level `collapse` root to `https://api.collapse.sh/<owner>/<repository>` (#517).

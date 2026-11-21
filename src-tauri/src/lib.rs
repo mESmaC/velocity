@@ -213,6 +213,7 @@ fn bindings() -> Builder<tauri::Wry> {
         new_project::pick_project_folder,
         new_project::create_project,
         new_project::open_project,
+        new_project::get_collapse_repositories,
         new_project::get_github_repositories,
         build_gate::get_launch_eligibility,
     ]);
@@ -391,6 +392,7 @@ pub fn run() -> anyhow::Result<()> {
         .manage(collapse::PendingCollapseLink::default())
         .manage(goal_swarm::GoalSwarmPool::default())
         .manage(layout::MainLayout::default())
+        .manage(new_project::ManagedCollapseRepositoryPicker::default())
         .manage(new_project::ManagedRepositoryPicker::default())
         .manage(providers::ManagedProviders::default())
         .manage(airc_modal::ManagedAircModal::default())

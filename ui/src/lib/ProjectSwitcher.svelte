@@ -11,6 +11,8 @@
     rosenMirrorCommands,
   } from './ipc';
   import type {
+    CollapseRepository,
+    CollapseRepositoryPickerView,
     LayoutAction,
     OpenProjectRequest,
     ProjectList,
@@ -45,12 +47,14 @@
   let error = $state('');
   let generation = 0;
   let active = false;
-  // Open from GitHub swaps the project list for a repository picker in the same menu.
-  let showing = $state<'projects' | 'github'>('projects');
+  // Open from GitHub / Collapse swaps the project list for a repository picker in the same menu.
+  let showing = $state<'projects' | 'github' | 'collapse'>('projects');
   let query = $state('');
   let cloneTo = $state('');
   let defaultCloneTo = $state('');
   let picker = $state<RepositoryPickerView | null>(null);
+  let collapsePicker = $state<CollapseRepositoryPickerView | null>(null);
+  let enrollRepository = $state<string | null>(null);
   let reading = $state(false);
   let opening = $state('');
   let search = $state<HTMLInputElement | null>(null);
@@ -199,11 +203,26 @@
     }
   }
 
-  async function showGitHub() {
-    showing = 'github';
-    error = '';
-    await tick();
-    search?.focus();
+  async function searchCollapseRepositories(refresh: boolean) {
+    const request = ++searchGeneration;
+    reading = collapsePicker === null;
+    try {
+      const result = await openProjectCommands.collapseRepositories(
+        query,
+        refresh,
+      );
+      if (active && request === searchGeneration) {
+        collapsePicker = result;
+        error = '';
+      }
+    } catch (reason) {
+      report(reason);
+    } finally {
+      if (active && request === searchGeneration) reading = false;
+    }
+  }
+
+  function ensureDefaultCloneTo() {
     if (!defaultCloneTo) {
       void newProjectCommands
         .defaults()
@@ -212,9 +231,31 @@
         })
         .catch(report);
     }
+  }
+
+  async function showGitHub() {
+    showing = 'github';
+    enrollRepository = null;
+    query = '';
+    error = '';
+    await tick();
+    search?.focus();
+    ensureDefaultCloneTo();
     // Show the list read earlier at once, then read it again for new repositories.
     await searchRepositories(false);
     await searchRepositories(true);
+  }
+
+  async function showCollapse() {
+    showing = 'collapse';
+    enrollRepository = null;
+    query = '';
+    error = '';
+    await tick();
+    search?.focus();
+    ensureDefaultCloneTo();
+    await searchCollapseRepositories(false);
+    await searchCollapseRepositories(true);
   }
 
   function openRepository(repository: string) {
@@ -224,9 +265,40 @@
     );
   }
 
+  function chooseCollapseRepository(repository: CollapseRepository) {
+    if (repository.has_linked_server) {
+      error = '';
+      enrollRepository = repository.full_name;
+      return;
+    }
+    openCollapseRepository(repository.full_name);
+  }
+
+  function openCollapseRepository(repository: string) {
+    enrollRepository = null;
+    void open(
+      { Collapse: { repository, clone_to: cloneTo } },
+      `Opening ${repository}…`,
+    );
+  }
+
+  function openMachinesSettings() {
+    enrollRepository = null;
+    showing = 'projects';
+    menu.hidePopover();
+    send({ Request: { Navigation: 'Settings' } });
+  }
+
   function openFirstMatch(event: KeyboardEvent) {
     if (event.key !== 'Enter') return;
     event.preventDefault();
+    if (showing === 'collapse') {
+      const firstRow = collapsePicker?.rows[0];
+      if (firstRow) chooseCollapseRepository(firstRow);
+      else if (collapsePicker?.typed)
+        openCollapseRepository(collapsePicker.typed);
+      return;
+    }
     const first = picker?.rows[0]?.full_name ?? picker?.typed;
     if (first) openRepository(first);
   }
@@ -288,7 +360,7 @@
   bind:this={menu}
   id="project-menu"
   class="project-menu"
-  class:github={showing === 'github'}
+  class:github={showing === 'github' || showing === 'collapse'}
   popover="auto"
   role="menu"
   aria-label="Switch project"
@@ -296,10 +368,120 @@
   onkeydown={focusKey}
   ontoggle={(event) => {
     if (event.newState === 'open') void refresh(true).catch(report);
-    else showing = 'projects';
+    else {
+      showing = 'projects';
+      enrollRepository = null;
+    }
   }}
 >
-  {#if showing === 'github'}
+  {#if showing === 'collapse'}
+    <div class="menu-head">
+      <button
+        role="menuitem"
+        onclick={async () => {
+          if (enrollRepository) {
+            enrollRepository = null;
+            await tick();
+            search?.focus();
+            return;
+          }
+          showing = 'projects';
+          await tick();
+          menu.querySelector<HTMLElement>('button')?.focus();
+        }}>‹ Back</button
+      >{enrollRepository ? 'Enroll this machine' : 'Collapse repositories'}
+    </div>
+    {#if enrollRepository}
+      <div class="enroll-offer">
+        <p class="menu-note" role="status">
+          <strong>{enrollRepository}</strong> already has a linked Rosen server. Enroll
+          this machine with a join key from the project's owner (Settings → Workspaces
+          → Machines) instead of starting a second server.
+        </p>
+        <button role="menuitem" onclick={openMachinesSettings}
+          ><Icon name="settings" />Open Settings…</button
+        >
+        <button
+          role="menuitem"
+          onclick={async () => {
+            enrollRepository = null;
+            await tick();
+            search?.focus();
+          }}>Choose another repository</button
+        >
+      </div>
+    {:else}
+      <label class="inp"
+        ><input
+          bind:this={search}
+          bind:value={query}
+          placeholder="Search, or type owner/name"
+          spellcheck="false"
+          aria-label="Search your Collapse repositories"
+          oninput={() => void searchCollapseRepositories(false)}
+          onkeydown={openFirstMatch}
+        /></label
+      >
+      <div class="repository-list">
+        {#each collapsePicker?.rows ?? [] as repository (repository.full_name)}
+          <button
+            role="menuitem"
+            title={repository.has_linked_server
+              ? `${repository.full_name} already has a linked Rosen server — enroll this machine`
+              : (repository.description ?? repository.full_name)}
+            disabled={opening !== ''}
+            onclick={() => chooseCollapseRepository(repository)}
+            ><span class="repository-name">{repository.full_name}</span><span
+              class="sub"
+              >{repository.has_linked_server
+                ? 'linked · enroll'
+                : repository.archived
+                  ? 'archived'
+                  : repository.private
+                    ? 'private'
+                    : 'public'}</span
+            ></button
+          >
+        {/each}
+        {#if collapsePicker?.typed}
+          <button
+            role="menuitem"
+            disabled={opening !== ''}
+            onclick={() =>
+              collapsePicker?.typed &&
+              openCollapseRepository(collapsePicker.typed)}
+            ><span class="repository-name">Open {collapsePicker.typed}</span
+            ></button
+          >
+        {/if}
+        {#if opening}<p class="menu-note" role="status">{opening}</p>
+        {:else if reading}<p class="menu-note" role="status">
+            Reading your Collapse repositories…
+          </p>
+        {:else if collapsePicker && collapsePicker.rows.length === 0 && !collapsePicker.typed}<p
+            class="menu-note"
+            role="status"
+          >
+            No repositories match.
+          </p>
+        {:else if collapsePicker && collapsePicker.hidden > 0}<p
+            class="menu-note"
+          >
+            {collapsePicker.hidden} more · keep typing to narrow the list
+          </p>{/if}
+      </div>
+      <div class="clone-row">
+        <span>Clone to</span><label class="inp"
+          ><input
+            bind:value={cloneTo}
+            placeholder={defaultCloneTo}
+            spellcheck="false"
+            aria-label="Clone to folder"
+          /></label
+        >
+      </div>
+    {/if}
+  {:else if showing === 'github'}
     <div class="menu-head">
       <button
         role="menuitem"
@@ -389,6 +571,9 @@
     >
     <button role="menuitem" onclick={() => void showGitHub()}
       ><Icon name="github" />Open from GitHub…</button
+    >
+    <button role="menuitem" onclick={() => void showCollapse()}
+      ><Icon name="collapse" />Open from Collapse…</button
     >
     {#if collapse && project !== null}
       {@const identifier = project}

@@ -60,13 +60,28 @@ pub(crate) fn set_up(
         ));
     }
     let _setup = lock(&SETUP, "Rosen project setup")?;
-    let already_a_project =
-        lock(store, "Persisted state store")?.has_project_at(&resolved.path_text());
+    let already_a_project = {
+        let store = lock(store, "Persisted state store")?;
+        store.has_project_at(&resolved.path_text())
+            || resolved.collapse_repository.as_deref().is_some_and(|repo| {
+                store.state().projects.iter().any(|item| {
+                    item.collapse_repository
+                        .as_deref()
+                        .is_some_and(|saved| saved.eq_ignore_ascii_case(repo))
+                })
+            })
+    };
     let observation = observe(resolved, already_a_project)?;
     let clone = should_clone(resolved.location, observation)
         .map_err(|refusal| NewProjectError::Refused(refusal_message(refusal, resolved)))?;
-    if clone && let Some(repository) = &resolved.repository {
-        velocity_github::clone_repository(repository, &resolved.path)?;
+    if clone {
+        if let Some(repository) = &resolved.repository {
+            velocity_github::clone_repository(repository, &resolved.path)?;
+        } else if resolved.location == NewProjectLocation::OpenCollapse
+            && let Some(mirror) = resolved.mirror.as_deref()
+        {
+            velocity_collapse::clone_repository(mirror, &resolved.path)?;
+        }
     }
     let runtime = tokio::runtime::Runtime::new().map_err(project::ProjectError::from)?;
     let base = runtime.block_on(project::prepare(
@@ -135,6 +150,20 @@ fn observe(
             if !observation.target_occupied {
                 observation.remote_exists = velocity_github::repository_exists(repository)?;
             }
+        }
+    } else if let Some(repository) = &resolved.collapse_repository {
+        observation.target_is_checkout = observation.is_repository
+            && velocity_collapse::checkout_repository(&resolved.path)
+                .is_some_and(|origin| origin.eq_ignore_ascii_case(repository));
+        if observation.target_is_checkout && !resolved.explicit_destination {
+            return Err(NewProjectError::Refused(format!(
+                "{} already contains this checkout. Enter its parent in the Clone to field.",
+                resolved.path.display()
+            )));
+        }
+        if !observation.target_is_checkout {
+            observation.target_occupied = velocity_git::folder_is_occupied(&resolved.path)?;
+            observation.remote_exists = !observation.target_occupied;
         }
     }
     Ok(observation)
