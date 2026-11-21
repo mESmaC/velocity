@@ -394,7 +394,7 @@ fn ordered_spec_files(graph: &Graph, root_spec: Option<&str>) -> Vec<usize> {
         .filter(|(path, _)| !seen.contains(**path))
         .map(|(&path, &index)| (path, index))
         .collect();
-    remaining.sort_by(|(left, _), (right, _)| spec_path_key(left).cmp(&spec_path_key(right)));
+    remaining.sort_by_key(|(path, _)| spec_path_key(path));
     ordered.extend(remaining.into_iter().map(|(_, index)| index));
     ordered
 }

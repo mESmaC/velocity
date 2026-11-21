@@ -191,15 +191,13 @@ fn checklist_item(trimmed: &str) -> Option<(bool, &str)> {
         .or_else(|| trimmed.strip_prefix("* [ ] "))
     {
         (false, rest)
-    } else if let Some(rest) = trimmed
-        .strip_prefix("- [x] ")
-        .or_else(|| trimmed.strip_prefix("- [X] "))
-        .or_else(|| trimmed.strip_prefix("* [x] "))
-        .or_else(|| trimmed.strip_prefix("* [X] "))
-    {
-        (true, rest)
     } else {
-        return None;
+        let rest = trimmed
+            .strip_prefix("- [x] ")
+            .or_else(|| trimmed.strip_prefix("- [X] "))
+            .or_else(|| trimmed.strip_prefix("* [x] "))
+            .or_else(|| trimmed.strip_prefix("* [X] "))?;
+        (true, rest)
     };
     let title = rest.trim();
     (!title.is_empty()).then_some((done, title))
