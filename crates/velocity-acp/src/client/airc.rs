@@ -103,10 +103,7 @@ pub(super) fn with_airc_policy(server: &McpServer, role: ThreadRole, lazy: bool)
 /// from it means no role can start without the graph. `None` for a server [`AircLaunch`]
 /// didn't make.
 /// While the project's code graph switch is off (F19), sessions start without it.
-pub fn graph_server(airc: &McpServer, worktree: &Path) -> Option<McpServer> {
-    graph_server_for_role(airc, worktree, None, false)
-}
-
+/// `role` and `lazy` pick the thread role's tool set (#533).
 pub(super) fn graph_server_for_role(
     airc: &McpServer,
     worktree: &Path,

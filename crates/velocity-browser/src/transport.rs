@@ -216,7 +216,7 @@ fn reply(
                             .unwrap_or_else(|| json!({}));
                         forward_call(port, token, inner_name, inner_args, latency)
                     }
-                    other => contents(Err(error(&format!(
+                    other => contents(Err(error(format!(
                         "Unsupported action `{other}`; use `list` or `call`"
                     )))),
                 }

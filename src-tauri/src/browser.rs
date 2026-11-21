@@ -110,10 +110,6 @@ fn resolve_profile(application: &AppHandle, key: BrowserKey) -> Result<PathBuf, 
     Ok(velocity_store::extended_windows_path(&profile(&root, key)))
 }
 
-pub fn configure(application: &AppHandle, key: BrowserKey, setup: &mut SessionSetup) {
-    configure_for_prompt(application, key, "", "", setup);
-}
-
 /// Attaches `velocity-browser` eagerly on UI work, lazily behind `browser_tools` on
 /// non-UI builder work, or omits it for roles that never drive a browser (#533).
 pub fn configure_for_prompt(

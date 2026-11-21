@@ -719,9 +719,10 @@ mod tests {
         let channel = Channel::open(&directory, "project")?;
         let first = channel.join("i-d-like-your-honest-49", "i-d-like-your-honest-49")?;
         let second = channel.join("i-d-like-your-honest-50", "i-d-like-your-honest-50")?;
-        assert_eq!(first.nick, "i-d-like-your-honest-49");
-        assert_eq!(second.nick, "i-d-like-your-honest-50");
-        assert_ne!(first.nick, second.nick);
+        // `join` returns the granted nick.
+        assert_eq!(first, "i-d-like-your-honest-49");
+        assert_eq!(second, "i-d-like-your-honest-50");
+        assert_ne!(first, second);
         let event_one = Event::claimed(
             "i-d-like-your-honest-49",
             "I'd like your honest feedback on the architecture",
@@ -798,15 +799,15 @@ mod tests {
             "vel/honest-feedback-50",
             vec!["crates/velocity-airc/src/module_with_long_name_00.rs".into()],
         )?;
-        let _ = channel.share(
+        channel.share(
             "honest-feedback-50",
             "honest-feedback-49",
             "crates/velocity-airc/src/module_with_long_name_00.rs",
         )?;
         let failed_event =
-            Event::agent_failed("honest-feedback-49", "check failed")?.for_change(change_a);
+            Event::thread_failed("honest-feedback-49", "check failed")?.for_change(change_a);
         channel.post_event(failed_event)?;
-        let _ = channel.release("honest-feedback-49", "issue:532")?;
+        channel.release("honest-feedback-49", "issue:532")?;
 
         let entries = channel.read(0)?;
         for kind in ["checkout", "claim", "failed", "released"] {

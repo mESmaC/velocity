@@ -500,6 +500,8 @@ mod tests {
             path: path.to_owned(),
             start_line: 1,
             end_line: 10,
+            start_byte: 0,
+            end_byte: 0,
             signature: format!("pub fn {name}()"),
             doc: doc.to_owned(),
             aliases: Vec::new(),
@@ -507,12 +509,23 @@ mod tests {
             test: false,
             up: None,
             down: Vec::new(),
+            subsystem: 0,
+            container: None,
+            trait_name: None,
+            command: false,
+            level: 0,
+            done: None,
         }
+    }
+
+    /// Graph has no Default; an empty build gives these tests a graph to push records into.
+    fn empty_graph() -> Graph {
+        Graph::build(&[], Vec::new(), &std::collections::HashMap::new())
     }
 
     #[test]
     fn conversational_prompts_never_seed_graph_matches() {
-        let mut graph = Graph::default();
+        let mut graph = empty_graph();
         graph.records.push(sample_record(
             "1.aaaa1",
             "honest_feedback_helper",
@@ -540,7 +553,7 @@ mod tests {
 
     #[test]
     fn task_seeding_keeps_relevant_matches_and_drops_weak_incidental_hits() {
-        let mut graph = Graph::default();
+        let mut graph = empty_graph();
         graph.records.push(sample_record(
             "1.aaaa1",
             "load_claude_project_instructions",

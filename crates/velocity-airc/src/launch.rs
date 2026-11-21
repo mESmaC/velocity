@@ -113,17 +113,15 @@ fn serve_stdio_inner(
     )
 }
 
-fn parse_options(
-    options: &[OsString],
-) -> Result<
-    (
-        Option<&OsString>,
-        bool,
-        Option<velocity_core::tool_policy::ThreadRole>,
-        bool,
-    ),
-    Error,
-> {
+/// Parsed launch options: scope, continuous dispatch, thread role and lazy tools.
+type LaunchOptions<'a> = (
+    Option<&'a OsString>,
+    bool,
+    Option<velocity_core::tool_policy::ThreadRole>,
+    bool,
+);
+
+fn parse_options(options: &[OsString]) -> Result<LaunchOptions<'_>, Error> {
     let mut scope = None;
     let mut continuous_dispatch = false;
     let mut role = None;
