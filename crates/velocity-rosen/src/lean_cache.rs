@@ -131,6 +131,7 @@ pub(crate) fn run_lake(arguments: &[OsString], passthrough: &[String]) -> io::Re
             .current_dir(&pending.project)
             .args(["exe", "cache", "get"])
             .env("PATH", &path)
+            .env_remove(crate::agent_run::BLOCK_VCS_ENV)
             .status()?;
         if !status.success() {
             return Ok(status);
@@ -139,7 +140,11 @@ pub(crate) fn run_lake(arguments: &[OsString], passthrough: &[String]) -> io::Re
     }
     let mut command = background_command(program);
     filter_environment(&mut command, passthrough);
-    command.args(arguments).env("PATH", path).status()
+    command
+        .args(arguments)
+        .env("PATH", path)
+        .env_remove(crate::agent_run::BLOCK_VCS_ENV)
+        .status()
 }
 
 fn is_lake_project(directory: &Path) -> bool {

@@ -21,7 +21,7 @@ use velocity_core::queued_runs::{
     MAX_RUN_HISTORY, QueuedRunPhase, QueuedRunRecord, continue_after_restart_prompt,
     lost_runs_prompt, lost_runs_prompt_with_results, restarted_runs_notice,
 };
-use velocity_rosen::agent_run::AgentRun;
+use velocity_rosen::agent_run::{AgentRun, BLOCK_VCS_ENV};
 use velocity_rosen::queued_turn::{QUEUE_ENV, QueueEstimate, estimate};
 
 use super::preflight_run::PreflightRun;
@@ -607,7 +607,7 @@ impl QueueHost {
         record: &QueuedRunRecord,
         runs: &mut JoinSet<RunResult>,
     ) -> Result<(), String> {
-        let policy = velocity_rosen::agent_run::policy(&record.program, &record.arguments)?;
+        let policy = self.command_policy(&record.program, &record.arguments)?;
         let directory =
             resolve_directory(&self.worktree, record.directory.as_deref().map(Path::new));
         if !directory.is_dir() {
@@ -738,7 +738,7 @@ impl QueueHost {
         command: RunCommand,
         runs: &mut JoinSet<RunResult>,
     ) -> Result<QueuedRunAccepted, String> {
-        let policy = velocity_rosen::agent_run::policy(&command.program, &command.arguments)?;
+        let policy = self.command_policy(&command.program, &command.arguments)?;
         let pending_ahead = self
             .registry
             .lock()
@@ -832,9 +832,7 @@ impl QueueHost {
             QueuedRunPhase::WaitingForTurnEnd | QueuedRunPhase::Queued
         ) {
             policy
-                .or_else(|| {
-                    velocity_rosen::agent_run::policy(&record.program, &record.arguments).ok()
-                })
+                .or_else(|| self.command_policy(&record.program, &record.arguments).ok())
                 .map(|policy| self.estimate_queue(policy, record.class, pending_ahead))
         } else {
             None
@@ -872,6 +870,14 @@ impl QueueHost {
             })
             .collect();
         json!({ "runs": list })
+    }
+
+    fn command_policy(
+        &self,
+        program: &str,
+        arguments: &[String],
+    ) -> Result<AgentRun, &'static str> {
+        session_command_policy(&self.launch, &self.worktree, program, arguments)
     }
 
     fn cancel(&self, query: RunCancelRequest) -> Result<Value, String> {
@@ -993,4 +999,74 @@ async fn read_request(socket: &mut TcpStream) -> io::Result<Request> {
         return Err(io::Error::other("Missing or oversized queued run request"));
     }
     Ok(serde_json::from_slice(&line)?)
+}
+
+fn session_blocks_vcs(launch: &AgentLaunch, worktree: &Path) -> bool {
+    launch
+        .env_value(BLOCK_VCS_ENV)
+        .is_some_and(|value| value == "1")
+        || launch.env_value("ROSEN_CHANGE").is_some()
+        || launch.env_value("ROSEN_ENDPOINT").is_some()
+        || worktree
+            .ancestors()
+            .any(|path| path.join(".rosen").exists())
+}
+
+fn session_command_policy(
+    launch: &AgentLaunch,
+    worktree: &Path,
+    program: &str,
+    arguments: &[String],
+) -> Result<AgentRun, &'static str> {
+    velocity_rosen::agent_run::policy_with_vcs_blocked(
+        program,
+        arguments,
+        session_blocks_vcs(launch, worktree),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Risk (#563): queue_run executes inside Velocity's app process, so policy admission must
+    // inspect the session's Rosen launch env / worktree to refuse direct `git`/`gh` while
+    // admitting ordinary test commands (such as `go -C server test .`).
+    #[test]
+    fn session_policy_refuses_direct_vcs_in_rosen_and_admits_go_tests() -> io::Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "velocity-queued-runs-policy-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir)?;
+
+        let mut rosen_launch = AgentLaunch::new(PathBuf::from("agent"));
+        rosen_launch.set_env(BLOCK_VCS_ENV, "1");
+        let status = vec!["status".to_owned()];
+        let go_args = vec![
+            "-C".to_owned(),
+            "server".to_owned(),
+            "test".to_owned(),
+            ".".to_owned(),
+        ];
+
+        assert!(session_command_policy(&rosen_launch, &dir, "git", &status).is_err());
+        assert!(session_command_policy(&rosen_launch, &dir, "gh", &status).is_err());
+        assert_eq!(
+            session_command_policy(&rosen_launch, &dir, "go", &go_args),
+            Ok(AgentRun::Ordinary)
+        );
+
+        let plain_launch = AgentLaunch::new(PathBuf::from("agent"));
+        assert_eq!(
+            session_command_policy(&plain_launch, &dir, "git", &status),
+            Ok(AgentRun::Ordinary)
+        );
+
+        std::fs::create_dir_all(dir.join(".rosen"))?;
+        assert!(session_command_policy(&plain_launch, &dir, "git", &status).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
 }

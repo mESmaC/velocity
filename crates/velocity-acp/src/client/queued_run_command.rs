@@ -13,16 +13,14 @@ use agent_client_protocol::v1::schema::{
 };
 use tokio_util::sync::CancellationToken;
 use velocity_core::queued_runs::{QueuedRunPhase, QueuedRunRecord};
-use velocity_rosen::agent_run::{AgentRun, toolchain_path_from};
+use velocity_rosen::agent_run::{AgentRun, BLOCK_VCS_ENV, toolchain_path_from};
 use velocity_rosen::queued_turn::{
     DEFAULT_WAIT_TIMEOUT, HELD_ENV, QUEUE_ENV, QueueTimeoutReport, QueuedTurn, QueuedTurnError,
     QueuedTurnRequest, THREAD_VARIABLES, acquire_with_progress, workspace_head,
 };
 
 use super::AgentLaunch;
-use super::process::{
-    hidden_command, spawn_owned_command, spawn_owned_toolchain_command, stop_owned_process,
-};
+use super::process::{hidden_command, spawn_owned_toolchain_command, stop_owned_process};
 use super::program_path::{find_program_on_path, search_path};
 use super::queued_run_tool::RunCommand;
 use super::queued_runs::RunStatusSink;
@@ -218,7 +216,7 @@ impl QueuedRun {
             Ok(command) => command,
             Err(error) => return ExecutionOutcome::Failed(error),
         };
-        let mut child = match self.spawn_command(command, &turn) {
+        let mut child = match self.spawn_command(command) {
             Ok(child) => child,
             Err(error) => return ExecutionOutcome::Failed(error),
         };
@@ -278,26 +276,7 @@ impl QueuedRun {
     ) -> io::Result<tokio::process::Command> {
         let mut command = match turn {
             QueuedTurn::Rosen(rosen_turn) => {
-                let mut command = hidden_command(rosen);
-                launch.apply_environment(&mut command);
-                command
-                    .args([
-                        "run",
-                        "--class",
-                        self.command.class(),
-                        "--",
-                        &self.command.program,
-                    ])
-                    .args(&self.command.arguments)
-                    .env(HELD_ENV, self.command.class());
-                let jobs = rosen_turn.budget().jobs.to_string();
-                for variable in THREAD_VARIABLES {
-                    command.env(variable, &jobs);
-                }
-                if velocity_rosen::lean_cache::is_lake(&self.command.program) {
-                    command.env("PATH", clean_toolchain_path(launch)?);
-                }
-                command
+                self.build_rosen_command(rosen, launch, rosen_turn.budget().jobs)?
             }
             QueuedTurn::Light { target, .. } => {
                 let mut command = hidden_command(rosen);
@@ -306,6 +285,7 @@ impl QueuedRun {
                     .args(["run", "--class", "build", "--", &self.command.program])
                     .args(&self.command.arguments)
                     .env("PATH", clean_toolchain_path(launch)?)
+                    .env_remove(BLOCK_VCS_ENV)
                     .env(HELD_ENV, "build")
                     .env("CARGO_BUILD_JOBS", "2")
                     .env("CARGO_INCREMENTAL", "1")
@@ -321,7 +301,8 @@ impl QueuedRun {
                 launch.apply_environment(&mut command);
                 command
                     .args(&self.command.arguments)
-                    .env("PATH", clean_path);
+                    .env("PATH", clean_path)
+                    .env_remove(BLOCK_VCS_ENV);
                 command
             }
         };
@@ -334,25 +315,40 @@ impl QueuedRun {
         Ok(command)
     }
 
-    fn uses_toolchain_path(&self, turn: &QueuedTurn) -> bool {
-        match turn {
-            QueuedTurn::Light { .. } | QueuedTurn::Utility { .. } => true,
-            QueuedTurn::Rosen(_) => velocity_rosen::lean_cache::is_lake(&self.command.program),
+    fn build_rosen_command(
+        &self,
+        rosen: &Path,
+        launch: &AgentLaunch,
+        jobs: usize,
+    ) -> io::Result<tokio::process::Command> {
+        let mut command = hidden_command(rosen);
+        launch.apply_environment(&mut command);
+        // Drop Velocity's agent shims and VCS block once the top-level command passed policy
+        // so test suites and tools (e.g. Go tests invoking `git` in temp dirs or
+        // `git check-ref-format`) reach the host tools (#563).
+        command
+            .args([
+                "run",
+                "--class",
+                self.command.class(),
+                "--",
+                &self.command.program,
+            ])
+            .args(&self.command.arguments)
+            .env("PATH", clean_toolchain_path(launch)?)
+            .env_remove(BLOCK_VCS_ENV)
+            .env(HELD_ENV, self.command.class());
+        let jobs = jobs.to_string();
+        for variable in THREAD_VARIABLES {
+            command.env(variable, &jobs);
         }
+        Ok(command)
     }
 
-    fn spawn_command(
-        &self,
-        command: tokio::process::Command,
-        turn: &QueuedTurn,
-    ) -> io::Result<super::AgentProcess> {
-        if self.uses_toolchain_path(turn) {
-            // Keep clean_toolchain_path intact so Light, Utility and lake runs never
-            // re-prepend Velocity's agent shims onto PATH and deadlock (#548).
-            spawn_owned_toolchain_command(command)
-        } else {
-            spawn_owned_command(command)
-        }
+    fn spawn_command(&self, command: tokio::process::Command) -> io::Result<super::AgentProcess> {
+        // Keep clean_toolchain_path intact so queued runs never re-prepend Velocity's agent
+        // shims onto PATH (#548, #563).
+        spawn_owned_toolchain_command(command)
     }
 
     /// Unpacks Mathlib's prebuilt cache on demand before running `lake` so a fresh workspace
@@ -427,6 +423,7 @@ impl QueuedRun {
                 "get",
             ])
             .env("PATH", clean_toolchain_path(launch)?)
+            .env_remove(BLOCK_VCS_ENV)
             .env(HELD_ENV, self.command.class());
         if let QueuedTurn::Rosen(rosen_turn) = turn {
             let jobs = rosen_turn.budget().jobs.to_string();
@@ -706,8 +703,8 @@ mod tests {
             .and_then(|(_, value)| value.map(OsStr::to_owned))
     }
 
-    fn resolve_cargo_on(path: &OsStr) -> Option<PathBuf> {
-        let exe = format!("cargo{}", std::env::consts::EXE_SUFFIX);
+    fn resolve_program_on(program: &str, path: &OsStr) -> Option<PathBuf> {
+        let exe = format!("{program}{}", std::env::consts::EXE_SUFFIX);
         std::env::split_paths(path)
             .map(|folder| folder.join(&exe))
             .find(|candidate| candidate.is_file())
@@ -738,6 +735,7 @@ mod tests {
         toolchain: PathBuf,
         worktree: PathBuf,
         cargo: String,
+        git: String,
         launch: AgentLaunch,
     }
 
@@ -749,19 +747,24 @@ mod tests {
         std::fs::create_dir_all(&toolchain)?;
         std::fs::create_dir_all(&worktree)?;
         let cargo = format!("cargo{}", std::env::consts::EXE_SUFFIX);
+        let git = format!("git{}", std::env::consts::EXE_SUFFIX);
         std::fs::write(shim.join("velocity-program"), b"velocity")?;
         std::fs::write(shim.join(&cargo), b"shim")?;
+        std::fs::write(shim.join(&git), b"shim")?;
         std::fs::write(toolchain.join(&cargo), b"real")?;
+        std::fs::write(toolchain.join(&git), b"real")?;
         let joined = std::env::join_paths([&shim, &toolchain]).map_err(io::Error::other)?;
         let mut launch = AgentLaunch::new(PathBuf::from("agent"));
         launch
             .env
             .push(("Path".into(), joined.to_string_lossy().into_owned()));
+        launch.env.push((BLOCK_VCS_ENV.into(), "1".into()));
         Ok(TestEnv {
             shim,
             toolchain,
             worktree,
             cargo,
+            git,
             launch,
         })
     }
@@ -771,6 +774,17 @@ mod tests {
             "run-test".into(),
             "cargo".into(),
             vec!["check".into(), "-p".into(), "velocity-app".into()],
+            None,
+            QueuedRunClass::Build,
+        );
+        RunCommand::from_record(&record)
+    }
+
+    fn go_test_command() -> RunCommand {
+        let record = QueuedRunRecord::new(
+            "run-go-test".into(),
+            "go".into(),
+            vec!["-C".into(), "server".into(), "test".into(), ".".into()],
             None,
             QueuedRunClass::Build,
         );
@@ -790,7 +804,6 @@ mod tests {
         let rosen = dir.path().join("rosen");
 
         for run in [&fresh, &restored] {
-            assert!(run.uses_toolchain_path(&turn));
             let built = run.build_command(&rosen, &env.worktree, &env.launch, &turn)?;
             let child_path = command_path_env(&built)
                 .ok_or_else(|| io::Error::other("Light command missing PATH"))?;
@@ -800,7 +813,7 @@ mod tests {
                 "shim survived on PATH: {entries:?}"
             );
             assert_eq!(
-                resolve_cargo_on(&child_path),
+                resolve_program_on("cargo", &child_path),
                 Some(env.toolchain.join(&env.cargo)),
                 "cargo did not resolve to real toolchain"
             );
@@ -809,14 +822,50 @@ mod tests {
         Ok(())
     }
 
-    // Risk (#548): spawning a Light queued run must preserve `clean_toolchain_path` and never
-    // run `extend_search_path` (which would re-prepend Velocity's agent shim folder to PATH).
-    #[tokio::test]
-    async fn spawn_command_keeps_shim_off_light_run_path() -> io::Result<()> {
+    // Risk (#563): ordinary queued runs (such as `go -C server test .`) must drop Velocity's
+    // agent shim folder and VELOCITY_BLOCK_GIT_GH so child tests invoking `git` reach the
+    // host git binary instead of failing with the Rosen git shim refusal.
+    #[test]
+    fn ordinary_rosen_queued_run_resolves_git_to_real_toolchain() -> io::Result<()> {
         let dir = TempFolder::new()?;
         let env = setup_shim_and_toolchain(dir.path())?;
-        let run = QueuedRun::new(cargo_check_command(), &env.worktree, &env.launch)?;
-        let turn = make_light_turn(dir.path())?;
+        let fresh = QueuedRun::new(go_test_command(), &env.worktree, &env.launch)?;
+        let restored = QueuedRun::restored(&fresh.record(), &env.worktree, &env.launch)?;
+        let rosen = dir.path().join("rosen");
+
+        for run in [&fresh, &restored] {
+            let built = run.build_rosen_command(&rosen, &env.launch, 2)?;
+            let child_path = command_path_env(&built)
+                .ok_or_else(|| io::Error::other("Rosen command missing PATH"))?;
+            let entries: Vec<PathBuf> = std::env::split_paths(&child_path).collect();
+            assert!(
+                !entries.contains(&env.shim),
+                "shim survived on PATH: {entries:?}"
+            );
+            assert_eq!(
+                resolve_program_on("git", &child_path),
+                Some(env.toolchain.join(&env.git)),
+                "git did not resolve to real host binary"
+            );
+            assert!(
+                built
+                    .as_std()
+                    .get_envs()
+                    .any(|(name, value)| name == BLOCK_VCS_ENV && value.is_none()),
+                "VELOCITY_BLOCK_GIT_GH was not removed"
+            );
+            let _ = std::fs::remove_file(&run.log);
+        }
+        Ok(())
+    }
+
+    // Risk (#548, #563): spawning any queued run must preserve `clean_toolchain_path` and
+    // never run `extend_search_path` (which would re-prepend Velocity's agent shim folder).
+    #[tokio::test]
+    async fn spawn_command_keeps_shim_off_queued_run_path() -> io::Result<()> {
+        let dir = TempFolder::new()?;
+        let env = setup_shim_and_toolchain(dir.path())?;
+        let run = QueuedRun::new(go_test_command(), &env.worktree, &env.launch)?;
         let clean_path = clean_toolchain_path(&env.launch)?;
         let mut probe = if cfg!(windows) {
             let shell = std::env::var_os("COMSPEC")
@@ -835,7 +884,7 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
 
-        let mut child = run.spawn_command(probe, &turn)?;
+        let mut child = run.spawn_command(probe)?;
         let mut stdout = child
             .stdout()
             .take()
@@ -852,9 +901,14 @@ mod tests {
             "shim survived on child PATH: {entries:?}"
         );
         assert_eq!(
-            resolve_cargo_on(&observed),
+            resolve_program_on("cargo", &observed),
             Some(env.toolchain.join(&env.cargo)),
             "spawned child PATH did not resolve cargo to real toolchain: {observed:?}"
+        );
+        assert_eq!(
+            resolve_program_on("git", &observed),
+            Some(env.toolchain.join(&env.git)),
+            "spawned child PATH did not resolve git to real toolchain: {observed:?}"
         );
         Ok(())
     }

@@ -54,8 +54,19 @@ pub enum AgentRun {
 }
 
 pub fn policy(program: &str, arguments: &[String]) -> Result<AgentRun, &'static str> {
+    policy_with_vcs_blocked(program, arguments, vcs_blocked_in_process())
+}
+
+/// Classifies a queued or managed command against Velocity's Rust and VCS policy.
+/// Callers running inside Velocity itself (such as `velocity-run`'s queue host) pass
+/// `block_vcs` for the owning session rather than reading Velocity's own process env (#563).
+pub fn policy_with_vcs_blocked(
+    program: &str,
+    arguments: &[String],
+    block_vcs: bool,
+) -> Result<AgentRun, &'static str> {
     let name = executable_name(program);
-    if let Some(refusal) = vcs_refusal(&name) {
+    if block_vcs && let Some(refusal) = vcs_refusal_for(&name) {
         return Err(refusal);
     }
     if name == "pnpm" && runs_bindings_script(arguments) {
@@ -398,21 +409,21 @@ fn run_direct(
 /// Returns the one-line refusal for `git` or `gh` when running inside a Rosen workspace or
 /// Rosen agent environment (#533), or `None` outside Rosen so legacy git projects keep working.
 pub fn vcs_refusal(name: &str) -> Option<&'static str> {
-    if !VCS_COMMANDS.contains(&name) {
+    if !VCS_COMMANDS.contains(&name) || !vcs_blocked_in_process() {
         return None;
     }
-    let blocked = std::env::var_os(BLOCK_VCS_ENV).is_some_and(|value| value == "1")
+    vcs_refusal_for(name)
+}
+
+fn vcs_blocked_in_process() -> bool {
+    std::env::var_os(BLOCK_VCS_ENV).is_some_and(|value| value == "1")
         || std::env::var_os("ROSEN_CHANGE").is_some()
         || std::env::var_os("ROSEN_ENDPOINT").is_some()
         || std::env::current_dir().ok().is_some_and(|directory| {
             directory
                 .ancestors()
                 .any(|path| path.join(".rosen").exists())
-        });
-    if !blocked {
-        return None;
-    }
-    vcs_refusal_for(name)
+        })
 }
 
 fn vcs_refusal_for(name: &str) -> Option<&'static str> {
@@ -446,13 +457,20 @@ fn run_rosen(
         return command
             .args(arguments)
             .env("PATH", toolchain_path()?)
+            .env_remove(BLOCK_VCS_ENV)
             .status();
     }
     match run {
         AgentRun::Ordinary => {
-            let mut command = hidden_command(program);
-            filter_environment(&mut command, passthrough);
-            command.args(arguments).env_remove(HELD_ENV).status()
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            ordinary_command(
+                program,
+                arguments,
+                run_arguments.get(program_at),
+                &path,
+                passthrough,
+            )?
+            .status()
         }
         AgentRun::RustUtility => run_utility(
             &run_arguments[program_at],
@@ -467,6 +485,31 @@ fn run_rosen(
             passthrough,
         ),
     }
+}
+
+fn ordinary_command(
+    program: &Path,
+    arguments: &[OsString],
+    target_program: Option<&OsString>,
+    path: &OsStr,
+    passthrough: &[String],
+) -> io::Result<Command> {
+    let is_lake_run = target_program
+        .and_then(|value| value.to_str())
+        .is_some_and(crate::lean_cache::is_lake);
+    let mut command = hidden_command(program);
+    filter_environment(&mut command, passthrough);
+    command.args(arguments).env_remove(HELD_ENV);
+    if !is_lake_run {
+        // Drop Velocity's agent shims once the top-level command passed policy so child
+        // tests and tools (e.g. Go tests invoking `git` in temp dirs or
+        // `git check-ref-format`) reach host tools (#563). `lake` keeps its shim so
+        // `lean_cache::run_lake` unpacks Mathlib inside the turn before stripping shims.
+        command
+            .env("PATH", toolchain_path_from(path)?)
+            .env_remove(BLOCK_VCS_ENV);
+    }
+    Ok(command)
 }
 
 /// Whether this process already runs inside a turn that Velocity or `rosen run` holds. A
@@ -487,7 +530,11 @@ fn run_held(name: &str, arguments: &[OsString], passthrough: &[String]) -> io::R
     })?;
     let mut command = background_command(program);
     filter_environment(&mut command, passthrough);
-    command.args(arguments).env("PATH", path).status()
+    command
+        .args(arguments)
+        .env("PATH", path)
+        .env_remove(BLOCK_VCS_ENV)
+        .status()
 }
 
 /// The first `name` executable on `path` outside a managed command folder, falling back
@@ -531,7 +578,11 @@ fn run_utility(
     let resolved = resolve_utility_program(program, &path);
     let mut command = background_command(resolved);
     filter_environment(&mut command, passthrough);
-    command.args(arguments).env("PATH", path).status()
+    command
+        .args(arguments)
+        .env("PATH", path)
+        .env_remove(BLOCK_VCS_ENV)
+        .status()
 }
 
 fn resolve_utility_program(program: &OsStr, path: &OsStr) -> PathBuf {
@@ -630,6 +681,7 @@ fn light_command(
         .args(["run", "--class", RunClass::Build.name(), "--"])
         .arg(program)
         .env("PATH", toolchain_path()?)
+        .env_remove(BLOCK_VCS_ENV)
         .env(HELD_ENV, RunClass::Build.name())
         .env("CARGO_BUILD_JOBS", "2")
         .env("CARGO_INCREMENTAL", "1")
@@ -1083,5 +1135,79 @@ mod tests {
         assert!(!gh.contains('\n'));
         assert!(gh.contains("AIRC") || gh.contains("issue_"));
         assert!(super::vcs_refusal_for("cargo").is_none());
+    }
+
+    #[test]
+    fn policy_with_vcs_blocked_enforces_rosen_vcs_refusal() {
+        // Risk (#563): queue_run runs inside Velocity where process env/cwd are not the agent
+        // workspace, so policy must take the session's Rosen state explicitly to refuse
+        // direct git/gh while still admitting ordinary build/test tools such as `go`.
+        let status = vec!["status".to_owned()];
+        let go_test = vec![
+            "-C".to_owned(),
+            "server".to_owned(),
+            "test".to_owned(),
+            ".".to_owned(),
+        ];
+        assert!(super::policy_with_vcs_blocked("git", &status, true).is_err());
+        assert!(super::policy_with_vcs_blocked("gh", &status, true).is_err());
+        assert_eq!(
+            super::policy_with_vcs_blocked("go", &go_test, true),
+            Ok(AgentRun::Ordinary)
+        );
+        assert_eq!(
+            super::policy_with_vcs_blocked("git", &status, false),
+            Ok(AgentRun::Ordinary)
+        );
+    }
+
+    #[test]
+    fn ordinary_rosen_run_drops_agent_shims_and_vcs_block() -> std::io::Result<()> {
+        // Risk (#563): foreground `rosen run -- go -C server test .` must drop Velocity's
+        // managed shim folder and VELOCITY_BLOCK_GIT_GH so child Go tests invoking `git`
+        // reach the host binary, while `rosen run -- lake build` keeps its cache shim.
+        let shim = tempfile::tempdir()?;
+        let toolchain = tempfile::tempdir()?;
+        let git = super::executable_file("git");
+        std::fs::write(shim.path().join(super::APP_RECORD), b"velocity")?;
+        std::fs::write(shim.path().join(&git), b"shim")?;
+        std::fs::write(toolchain.path().join(&git), b"real")?;
+        let path =
+            std::env::join_paths([shim.path(), toolchain.path()]).map_err(std::io::Error::other)?;
+        let rosen = toolchain.path().join(super::executable_file("rosen"));
+
+        let go_args =
+            ["run", "--", "go", "-C", "server", "test", "."].map(std::ffi::OsString::from);
+        let go_cmd = super::ordinary_command(&rosen, &go_args, Some(&go_args[2]), &path, &[])?;
+        let child_path = go_cmd
+            .get_envs()
+            .find(|(name, _)| name.eq_ignore_ascii_case("PATH"))
+            .and_then(|(_, value)| value.map(std::ffi::OsStr::to_owned))
+            .ok_or_else(|| std::io::Error::other("ordinary command missing PATH"))?;
+        let entries: Vec<std::path::PathBuf> = std::env::split_paths(&child_path).collect();
+        assert!(
+            !entries.contains(&shim.path().to_path_buf()),
+            "shim survived on PATH: {entries:?}"
+        );
+        assert_eq!(
+            super::real_program("git", &child_path),
+            Some(toolchain.path().join(&git))
+        );
+        assert!(
+            go_cmd
+                .get_envs()
+                .any(|(name, value)| name == super::BLOCK_VCS_ENV && value.is_none())
+        );
+
+        let lake_args = ["run", "--", "lake", "build"].map(std::ffi::OsString::from);
+        let lake_cmd =
+            super::ordinary_command(&rosen, &lake_args, Some(&lake_args[2]), &path, &[])?;
+        assert!(
+            !lake_cmd
+                .get_envs()
+                .any(|(name, _)| name.eq_ignore_ascii_case("PATH")),
+            "lake run should keep its shim PATH so lean_cache::run_lake prepares Mathlib"
+        );
+        Ok(())
     }
 }

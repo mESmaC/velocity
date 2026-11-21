@@ -239,8 +239,8 @@ pub fn spawn_owned_command(mut command: Command) -> std::io::Result<AgentProcess
 }
 
 /// Like [`spawn_owned_command`], but keeps the caller's `PATH` without prepending
-/// Velocity's agent shims. Used by Velocity-owned checks (`preflight`) and queued
-/// toolchain runs (`Light`, `Utility`, `lake`) that invoke real toolchain binaries directly.
+/// Velocity's agent shims. Used by Velocity-owned checks (`preflight`) and queued runs
+/// (`velocity-run`) that invoke real toolchain and host binaries directly (#548, #563).
 pub(super) fn spawn_owned_toolchain_command(command: Command) -> std::io::Result<AgentProcess> {
     wrap_owned_command(command)
 }
