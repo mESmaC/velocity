@@ -969,6 +969,7 @@ impl StateStore {
                     });
                 let thread = &mut item.threads[index];
                 thread.state = ThreadState::Done;
+                crate::rosen::drop_pending_deliveries(thread);
                 thread.kept_work_reason = Some(reason);
                 let issue_to_reopen = if thread.started_by_dispatch && !already_handed_off {
                     thread.issue.clone()
@@ -1030,6 +1031,7 @@ impl StateStore {
                     ));
                 }
                 thread.state = ThreadState::Done;
+                crate::rosen::drop_pending_deliveries(thread);
                 let reason = dispatch_end_reason(thread);
                 thread.no_change_reason = Some(reason.clone());
                 if thread.started_by_dispatch {

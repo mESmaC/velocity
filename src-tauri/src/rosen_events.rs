@@ -895,6 +895,14 @@ async fn follow_up_once(
             let Some(change) = change else {
                 return FollowUpStep::Finished;
             };
+            match non_resumable_follow_up_error(application, key) {
+                Ok(Some(error)) => {
+                    crate::parking::drop_non_resumable_delivery(application, key, &error);
+                    return FollowUpStep::Finished;
+                }
+                Ok(None) => {}
+                Err(error) => return FollowUpStep::Failed(error),
+            }
             match reopen_reverted(application, key, change).await {
                 Ok(()) => {
                     let message =
@@ -914,6 +922,28 @@ async fn follow_up_once(
         Ok(()) => FollowUpStep::Finished,
         Err(error) => FollowUpStep::Failed(error),
     }
+}
+
+fn non_resumable_follow_up_error(
+    application: &AppHandle,
+    key: ThreadKey,
+) -> Result<Option<velocity_threads::parking::ResumeError>, String> {
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let Some(thread) = store
+        .project(key.0)
+        .and_then(|project| project.threads.iter().find(|item| item.id == key.1))
+    else {
+        return Ok(None);
+    };
+    Ok(velocity_threads::parking::check_resumable(
+        key,
+        thread.state,
+        velocity_threads::parking::ResumeOpeningKind::Message,
+    )
+    .err())
 }
 
 /// Recheck current server state, since a queued event may already have been resolved.
@@ -936,6 +966,14 @@ async fn deliver_rebase_notice(
             return FollowUpStep::Finished;
         }
         Ok(_) => {}
+        Err(error) => return FollowUpStep::Failed(error),
+    }
+    match non_resumable_follow_up_error(application, key) {
+        Ok(Some(error)) => {
+            crate::parking::drop_non_resumable_delivery(application, key, &error);
+            return FollowUpStep::Finished;
+        }
+        Ok(None) => {}
         Err(error) => return FollowUpStep::Failed(error),
     }
     let server = match crate::rosen::server(application, key.0).await {
@@ -1001,7 +1039,14 @@ fn deliver(
     if delivered {
         return Ok(());
     }
-    crate::threads::steer(application, key, message).map(|_| ())
+    match crate::threads::steer_checked(application, key, message) {
+        Ok(_) => Ok(()),
+        Err(error) if error.is_non_resumable() => {
+            crate::parking::drop_non_resumable_delivery(application, key, &error);
+            Ok(())
+        }
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 fn finish(application: &AppHandle, key: ThreadKey, done: &RosenFollowUp) -> Result<(), String> {

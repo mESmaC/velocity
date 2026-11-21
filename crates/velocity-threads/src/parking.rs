@@ -6,7 +6,84 @@
 use velocity_airc::waits::{WaitEnded, WaitState};
 use velocity_core::thread_view_model::TranscriptBlock;
 use velocity_store::rosen::{RosenOverlapWait, RosenPathWait};
-use velocity_store::{AgentActivity, ThreadState};
+use velocity_store::{AgentActivity, ThreadItem, ThreadState};
+
+use crate::ThreadKey;
+
+/// Whether `state` is allowed to resume a build session (#585).
+/// Merged, Done, Spec and Draft are final or non-build states and can never resume.
+pub const fn can_resume_build_session(state: ThreadState) -> bool {
+    velocity_store::rosen::can_receive_follow_up(state)
+}
+
+/// Opening mode passed to a session resume, included in non-resumable diagnostics (#585).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResumeOpeningKind {
+    Prompt,
+    RestoredRuns,
+    Handoff,
+    AfterLimit,
+    Message,
+}
+
+impl ResumeOpeningKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Prompt => "Prompt",
+            Self::RestoredRuns => "RestoredRuns",
+            Self::Handoff => "Handoff",
+            Self::AfterLimit => "AfterLimit",
+            Self::Message => "Message",
+        }
+    }
+}
+
+/// Error returned when starting or resuming a build session fails (#585).
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ResumeError {
+    #[error(
+        "Thread {}/{} cannot resume a build session ({}, state: {:?})",
+        key.0,
+        key.1,
+        opening.label(),
+        state
+    )]
+    NonResumable {
+        key: ThreadKey,
+        state: ThreadState,
+        opening: ResumeOpeningKind,
+    },
+    #[error("{0}")]
+    Other(String),
+}
+
+impl ResumeError {
+    pub const fn is_non_resumable(&self) -> bool {
+        matches!(self, Self::NonResumable { .. })
+    }
+}
+
+/// Checks whether `key` in `state` may resume a build session for `opening` (#585).
+pub fn check_resumable(
+    key: ThreadKey,
+    state: ThreadState,
+    opening: ResumeOpeningKind,
+) -> Result<(), ResumeError> {
+    if can_resume_build_session(state) {
+        Ok(())
+    } else {
+        Err(ResumeError::NonResumable {
+            key,
+            state,
+            opening,
+        })
+    }
+}
+
+/// Drops pending deliveries on a thread that reached a final non-resumable state (#585).
+pub fn drop_pending_deliveries(thread: &mut ThreadItem) -> bool {
+    velocity_store::rosen::drop_pending_deliveries(thread)
+}
 
 /// The transcript a new session is sent is cut to its newest characters, so a long thread
 /// does not fill the agent's context before it reads what to do next.
@@ -310,5 +387,149 @@ mod tests {
         assert!(prompt.contains("issue-130-178"), "{prompt}");
         assert!(prompt.contains("landed"), "{prompt}");
         assert!(prompt.contains("preflight"), "{prompt}");
+    }
+
+    // Risk (#585): a queued run result or startup recovery pending for a thread that merged
+    // in the meantime must fail with the thread key and opening kind, mark history delivered
+    // after end, and stop retrying after one attempt.
+    #[test]
+    fn queued_run_result_for_merged_thread_is_dropped_after_one_attempt() {
+        use velocity_core::queued_runs::{QueuedRunClass, QueuedRunPhase, QueuedRunRecord};
+
+        let key = (1, 207);
+        let mut thread = ThreadItem::new(207, "Issue #436".into());
+        thread.agent_session = Some("session-207".into());
+        thread.worktree_path = Some(r"Z:\velocity-work\velocity\issue-436".into());
+        thread.state = ThreadState::Working;
+        thread.activity = AgentActivity::Idle;
+        thread.startup_recovery_pending = true;
+        thread.queued_runs.push(QueuedRunRecord::new(
+            "velocity-run-1".into(),
+            "cargo".into(),
+            vec!["check".into()],
+            None,
+            QueuedRunClass::Build,
+        ));
+        let mut finished = QueuedRunRecord::new(
+            "velocity-run-0".into(),
+            "cargo".into(),
+            vec!["check".into()],
+            None,
+            QueuedRunClass::Build,
+        );
+        finished.phase = QueuedRunPhase::Completed;
+        finished.exit_code = Some(0);
+        finished.delivered = false;
+        thread.queued_run_history.push(finished);
+        assert!(crate::restart::turn_interrupted(&thread));
+
+        // Thread lands and transitions to Merged before the resume runs.
+        thread.state = ThreadState::Merged;
+        let error = check_resumable(key, thread.state, ResumeOpeningKind::RestoredRuns)
+            .err()
+            .unwrap_or(ResumeError::Other(String::new()));
+        assert!(error.is_non_resumable());
+        let message = error.to_string();
+        assert!(message.contains("1/207"), "{message}");
+        assert!(message.contains("RestoredRuns"), "{message}");
+        assert!(message.contains("Merged"), "{message}");
+
+        assert!(drop_pending_deliveries(&mut thread));
+        assert!(thread.queued_runs.is_empty());
+        assert_eq!(thread.queued_run_history.len(), 1);
+        assert!(thread.queued_run_history[0].delivered);
+        assert!(!thread.startup_recovery_pending);
+        assert!(!crate::restart::turn_interrupted(&thread));
+        assert!(!drop_pending_deliveries(&mut thread));
+    }
+
+    // Risk (#585): supervision nudges, after-limit retries, handoffs, and Rosen follow-ups
+    // must treat Merged, Done, Spec and Draft as final, name the thread and opening kind on
+    // the first refusal, drop pending deliveries, and never schedule a second attempt.
+    #[test]
+    fn supervision_nudge_and_pending_resumes_for_final_thread_stop_after_one_attempt() {
+        use crate::agent_activity::{Action, IDLE_WORKING_TIMEOUT_SECS, decide_with_turn};
+        use velocity_store::Settings;
+        use velocity_store::handoff::Note;
+        use velocity_store::rosen::{RosenFollowUp, RosenResolutionStatus};
+
+        let settings = Settings::default().agents;
+        let key = (1, 207);
+        let due = 1000 + IDLE_WORKING_TIMEOUT_SECS;
+
+        for (final_state, opening, expected_label) in [
+            (ThreadState::Merged, ResumeOpeningKind::Message, "Message"),
+            (ThreadState::Done, ResumeOpeningKind::Handoff, "Handoff"),
+            (
+                ThreadState::Spec,
+                ResumeOpeningKind::AfterLimit,
+                "AfterLimit",
+            ),
+            (ThreadState::Draft, ResumeOpeningKind::Prompt, "Prompt"),
+        ] {
+            let mut thread = ThreadItem::new(207, "Issue #436".into());
+            thread.state = ThreadState::Working;
+            thread.activity = AgentActivity::Idle;
+            thread.worktree_path = Some(r"Z:\velocity-work\velocity\issue-436".into());
+            thread.supervision.started = 1000;
+            thread.supervision.last_update = 1000;
+            assert_eq!(
+                decide_with_turn(&thread, &settings, due, false, false, false),
+                Action::IdleNudge
+            );
+
+            thread.state = final_state;
+            thread.activity = AgentActivity::AtLimit;
+            thread.supervision.retry_after = Some(900);
+            thread.dependency_wait = Some("waiting on path".into());
+            thread.rosen_path_wait = Some(RosenPathWait::new(vec!["src/lib.rs".into()], vec![]));
+            thread.context_handoff = Some(Note {
+                change: "a4d9b88".into(),
+                text: "handoff".into(),
+                pending: true,
+            });
+            thread.rosen_follow_ups = vec![
+                RosenFollowUp::Deliver {
+                    message: "fix review".into(),
+                    mark: 0,
+                },
+                RosenFollowUp::FinishLanded,
+            ];
+            thread.rosen_follow_up_error = Some("prior error".into());
+            thread.rosen_resolution_status =
+                Some(RosenResolutionStatus::new("queued".into(), false));
+
+            let error = check_resumable(key, thread.state, opening)
+                .err()
+                .unwrap_or(ResumeError::Other(String::new()));
+            assert!(error.is_non_resumable());
+            let text = error.to_string();
+            assert!(text.contains("1/207"), "{text}");
+            assert!(text.contains(expected_label), "{text}");
+
+            assert!(drop_pending_deliveries(&mut thread));
+            assert_eq!(thread.activity, AgentActivity::Idle);
+            assert_eq!(thread.supervision.retry_after, None);
+            assert_eq!(thread.dependency_wait, None);
+            assert_eq!(thread.rosen_path_wait, None);
+            assert!(
+                thread
+                    .context_handoff
+                    .as_ref()
+                    .is_some_and(|note| !note.pending)
+            );
+            assert_eq!(thread.rosen_follow_ups, vec![RosenFollowUp::FinishLanded]);
+            assert_eq!(thread.rosen_follow_up_error, None);
+            assert_eq!(thread.rosen_resolution_status, None);
+            assert_eq!(
+                decide_with_turn(&thread, &settings, due, false, false, false),
+                Action::Nothing
+            );
+            assert_eq!(
+                decide_with_turn(&thread, &settings, due, true, false, false),
+                Action::Nothing
+            );
+            assert!(!drop_pending_deliveries(&mut thread));
+        }
     }
 }

@@ -73,8 +73,14 @@ pub(crate) fn continue_wait(
         saved.dependency_wait = None;
     })
     .map_err(|error| error.to_string())?;
-    crate::parking::resume(application, key, &message)?;
-    Ok(true)
+    match crate::parking::resume(application, key, &message) {
+        Ok(()) => Ok(true),
+        Err(error) if error.is_non_resumable() => {
+            crate::parking::drop_non_resumable_delivery(application, key, &error);
+            Ok(true)
+        }
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 fn rosen_wait_parent(

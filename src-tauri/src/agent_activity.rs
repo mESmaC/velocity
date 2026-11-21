@@ -156,8 +156,19 @@ fn step(
         )
         && let Some(account) = available_account(application, &current)?
     {
-        if let Err(error) = crate::parking::resume_after_limit(application, key, account) {
-            crate::threads::fail(application, key, "Could not resume the agent", &error);
+        match crate::parking::resume_after_limit(application, key, account) {
+            Ok(()) => {}
+            Err(error) if error.is_non_resumable() => {
+                crate::parking::drop_non_resumable_delivery(application, key, &error);
+            }
+            Err(error) => {
+                crate::threads::fail(
+                    application,
+                    key,
+                    "Could not resume the agent",
+                    &error.to_string(),
+                );
+            }
         }
         return Ok(());
     }
@@ -221,12 +232,23 @@ fn execute(
     match action {
         Action::Nothing => Ok(()),
         Action::Resume => {
-            if let Err(error) = crate::parking::resume(
+            match crate::parking::resume(
                 application,
                 key,
                 "Retry after the provider usage limit. Reclaim the piece before continuing.",
             ) {
-                crate::threads::fail(application, key, "Could not resume the agent", &error);
+                Ok(()) => {}
+                Err(error) if error.is_non_resumable() => {
+                    crate::parking::drop_non_resumable_delivery(application, key, &error);
+                }
+                Err(error) => {
+                    crate::threads::fail(
+                        application,
+                        key,
+                        "Could not resume the agent",
+                        &error.to_string(),
+                    );
+                }
             }
             Ok(())
         }
@@ -378,8 +400,14 @@ fn idle_nudge(
         record_idle_nudge(application, key, timestamp, turns_before)?;
         publish(application, key)?;
     } else {
-        crate::parking::resume(application, key, &prompt)?;
-        record_idle_nudge(application, key, timestamp, turns_before)?;
+        match crate::parking::resume(application, key, &prompt) {
+            Ok(()) => record_idle_nudge(application, key, timestamp, turns_before)?,
+            Err(error) if error.is_non_resumable() => {
+                crate::parking::drop_non_resumable_delivery(application, key, &error);
+                return Ok(());
+            }
+            Err(error) => return Err(error.to_string()),
+        }
     }
     let note = match last_wait {
         Some(wait) => format!(
@@ -449,6 +477,15 @@ fn end(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
 
 fn restart(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<(), String> {
     end(application, key)?;
+    let current = supervised_thread(application, key)?;
+    if let Err(error) = velocity_threads::parking::check_resumable(
+        key,
+        current.state,
+        velocity_threads::parking::ResumeOpeningKind::Prompt,
+    ) {
+        crate::parking::drop_non_resumable_delivery(application, key, &error);
+        return Ok(());
+    }
     post(
         application,
         channel,
@@ -456,11 +493,18 @@ fn restart(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result
         "stalled",
         "Still silent after nudge; restarting in the same workspace",
     )?;
-    crate::parking::resume(
+    match crate::parking::resume(
         application,
         key,
         "You were restarted after remaining silent. Continue from your transcript and retained claims.",
-    )
+    ) {
+        Ok(()) => Ok(()),
+        Err(error) if error.is_non_resumable() => {
+            crate::parking::drop_non_resumable_delivery(application, key, &error);
+            Ok(())
+        }
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 fn limit(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<(), String> {

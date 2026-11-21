@@ -631,11 +631,22 @@ pub(crate) fn steer(
     key: ThreadKey,
     prompt: &str,
 ) -> Result<LayoutSnapshot, String> {
+    steer_checked(application, key, prompt).map_err(|error| error.to_string())
+}
+
+/// Like [`steer`], preserving [`velocity_threads::parking::ResumeError::NonResumable`] so
+/// background callers drop stale deliveries for settled threads instead of retrying (#585).
+pub(crate) fn steer_checked(
+    application: &AppHandle,
+    key: ThreadKey,
+    prompt: &str,
+) -> Result<LayoutSnapshot, velocity_threads::parking::ResumeError> {
     let parked = {
         let mut runtimes = lock(
             application.state::<ManagedThreads>().inner(),
             "thread sessions",
-        )?;
+        )
+        .map_err(velocity_threads::parking::ResumeError::Other)?;
         if !runtimes.is_live(key) && !runtimes.is_parked(key) {
             drop(runtimes);
             return resume_message(application, key, prompt);
@@ -661,7 +672,8 @@ pub(crate) fn steer(
         });
     }
     report(save_activity(application, key, activity, None));
-    let snapshot = delivered_snapshot(application, key);
+    let snapshot =
+        delivered_snapshot(application, key).map_err(velocity_threads::parking::ResumeError::Other);
     emit_status(application, key);
     snapshot
 }
@@ -684,26 +696,30 @@ fn resume_message(
     application: &AppHandle,
     key: ThreadKey,
     prompt: &str,
-) -> Result<LayoutSnapshot, String> {
-    let lease = action_lock(application, key)?;
-    let _guard = lease
-        .try_lock()
-        .map_err(|_| "The thread is still changing sessions; retry the message".to_owned())?;
+) -> Result<LayoutSnapshot, velocity_threads::parking::ResumeError> {
+    use velocity_threads::parking::{ResumeError, ResumeOpeningKind, check_resumable};
+
+    let lease = action_lock(application, key).map_err(ResumeError::Other)?;
+    let _guard = lease.try_lock().map_err(|_| {
+        ResumeError::Other("The thread is still changing sessions; retry the message".to_owned())
+    })?;
     let store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
-    )?;
+    )
+    .map_err(ResumeError::Other)?;
     let (_, thread) = store
         .follow_through_thread(key.0, key.1)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| ResumeError::Other(error.to_string()))?;
     drop(store);
+    check_resumable(key, thread.state, ResumeOpeningKind::Message)?;
     if thread.activity == AgentActivity::AtLimit {
-        return hold_until_reset(application, key, prompt);
+        return hold_until_reset(application, key, prompt).map_err(ResumeError::Other);
     }
     // The message is queued in the runtime, behind any messages queued before, and the
     // session opens with that queue; nothing is lost if it ends before the agent reads it.
     crate::parking::resume_with_message(application, key, prompt)?;
-    delivered_snapshot(application, key)
+    delivered_snapshot(application, key).map_err(ResumeError::Other)
 }
 
 /// An agent at its limit resumes on its own at the reset (§2.2), so a message for it, from

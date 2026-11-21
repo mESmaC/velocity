@@ -10,8 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Manager};
-use velocity_store::ThreadState;
 use velocity_threads::ThreadKey;
+use velocity_threads::parking::can_resume_build_session;
 
 use crate::state::ManagedStateStore;
 use crate::threads::{ManagedThreads, lock};
@@ -52,7 +52,7 @@ pub(crate) async fn rebased(
             .and_then(|item| {
                 item.threads.iter().find(|thread| {
                     thread.rosen_change.as_deref() == Some(change_owned.as_str())
-                        && thread.state != ThreadState::Merged
+                        && can_resume_build_session(thread.state)
                 })
             })
             .map(|thread| (project, thread.id)))
@@ -244,7 +244,7 @@ async fn open_threads(application: &AppHandle) -> Vec<ThreadKey> {
                     .threads
                     .iter()
                     .filter(|thread| {
-                        thread.rosen_change.is_some() && thread.state != ThreadState::Merged
+                        thread.rosen_change.is_some() && can_resume_build_session(thread.state)
                     })
                     .map(move |thread| (project.id, thread.id))
             })
@@ -267,7 +267,7 @@ async fn workspace_path(application: &AppHandle, key: ThreadKey) -> WorkspaceLoo
             project.threads.iter().find(|thread| {
                 thread.id == key.1
                     && thread.rosen_change.is_some()
-                    && thread.state != ThreadState::Merged
+                    && can_resume_build_session(thread.state)
             })
         }) else {
             return WorkspaceLookup::NotOpen;

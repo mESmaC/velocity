@@ -546,7 +546,7 @@ impl StateStore {
             item.rosen_event_cursor = seq;
             if let Some(thread) = item.threads.iter_mut().find(|thread| {
                 thread.rosen_change.as_deref() == Some(change)
-                    && thread.state != ThreadState::Merged
+                    && can_receive_follow_up(thread.state)
             }) {
                 if seq <= item.rosen_replay_through && notice_handled(thread, message) {
                     return (true, ());
@@ -1087,6 +1087,77 @@ fn notice_handled(thread: &ThreadItem, message: &str) -> bool {
         )
 }
 
+/// Whether `state` can still receive resumed deliveries or Rosen change follow-ups (#585).
+pub const fn can_receive_follow_up(state: ThreadState) -> bool {
+    !matches!(
+        state,
+        ThreadState::Merged | ThreadState::Done | ThreadState::Spec | ThreadState::Draft
+    )
+}
+
+/// Clears pending deliveries, waits, and retry state once a thread reaches a final state (#585).
+/// Finished `queued_run_history` entries are kept on the thread and marked delivered-after-end,
+/// and `FinishLanded`/`FinishAbandoned` cleanup follow-ups are preserved.
+pub fn drop_pending_deliveries(thread: &mut ThreadItem) -> bool {
+    let mut changed = false;
+    if !thread.queued_runs.is_empty() {
+        thread.queued_runs.clear();
+        changed = true;
+    }
+    for run in &mut thread.queued_run_history {
+        if !run.delivered {
+            run.delivered = true;
+            changed = true;
+        }
+    }
+    if thread.startup_recovery_pending {
+        thread.startup_recovery_pending = false;
+        changed = true;
+    }
+    if thread.supervision.retry_after.take().is_some() {
+        changed = true;
+    }
+    if matches!(
+        thread.activity,
+        AgentActivity::AtLimit | AgentActivity::Parked
+    ) {
+        thread.activity = AgentActivity::Idle;
+        changed = true;
+    }
+    if thread.rosen_path_wait.take().is_some() {
+        changed = true;
+    }
+    if thread.rosen_overlap_wait.take().is_some() {
+        changed = true;
+    }
+    if thread.dependency_wait.take().is_some() {
+        changed = true;
+    }
+    if let Some(note) = &mut thread.context_handoff
+        && note.pending
+    {
+        note.pending = false;
+        changed = true;
+    }
+    let before = thread.rosen_follow_ups.len();
+    thread.rosen_follow_ups.retain(|item| {
+        matches!(
+            item,
+            RosenFollowUp::FinishLanded | RosenFollowUp::FinishAbandoned
+        )
+    });
+    if thread.rosen_follow_ups.len() != before {
+        changed = true;
+    }
+    if thread.rosen_follow_up_error.take().is_some() {
+        changed = true;
+    }
+    if thread.rosen_resolution_status.take().is_some() {
+        changed = true;
+    }
+    changed
+}
+
 /// Records what `progress` leaves to do. A land ends the thread's work, so it replaces
 /// anything still waiting: a revert's message must not resume an agent the land stopped.
 fn queue_follow_up(thread: &mut ThreadItem, progress: RosenProgress, message: &str) {
@@ -1109,8 +1180,8 @@ fn queue_follow_up(thread: &mut ThreadItem, progress: RosenProgress, message: &s
             message: message.to_owned(),
             mark,
         },
-        // A request for changes on a merged thread is stale: the land stopped its agent.
-        RosenProgress::ChangesRequested if thread.state == ThreadState::Merged => return,
+        // A request for changes on a settled or non-resumable thread is stale (#585).
+        RosenProgress::ChangesRequested if !can_receive_follow_up(thread.state) => return,
         RosenProgress::ChangesRequested => RosenFollowUp::Deliver {
             message: message.to_owned(),
             mark,
@@ -1132,7 +1203,7 @@ fn apply_progress(thread: &mut ThreadItem, progress: RosenProgress, message: &st
             }
             RosenProgress::Abandoned => RosenChangeStage::Abandoned,
             RosenProgress::Reverted => RosenChangeStage::Reopened,
-            RosenProgress::ChangesRequested if thread.state != ThreadState::Merged => {
+            RosenProgress::ChangesRequested if can_receive_follow_up(thread.state) => {
                 RosenChangeStage::Editing
             }
             _ => view.stage,
@@ -1154,6 +1225,7 @@ fn apply_progress(thread: &mut ThreadItem, progress: RosenProgress, message: &st
             thread.state = ThreadState::Merged;
             thread.review_stage = Some(ReviewStage::Approved);
             thread.activity = AgentActivity::Idle;
+            drop_pending_deliveries(thread);
             landed
         }
         RosenProgress::Abandoned => {
@@ -1162,6 +1234,7 @@ fn apply_progress(thread: &mut ThreadItem, progress: RosenProgress, message: &st
             thread.review_stage = None;
             thread.spec_section = None;
             thread.task_ids.clear();
+            drop_pending_deliveries(thread);
             false
         }
         RosenProgress::Reverted => {
@@ -1169,7 +1242,7 @@ fn apply_progress(thread: &mut ThreadItem, progress: RosenProgress, message: &st
             thread.review_stage = Some(ReviewStage::Fixing);
             false
         }
-        RosenProgress::ChangesRequested if thread.state != ThreadState::Merged => {
+        RosenProgress::ChangesRequested if can_receive_follow_up(thread.state) => {
             thread.state = ThreadState::Working;
             thread.review_stage = None;
             false

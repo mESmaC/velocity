@@ -170,6 +170,9 @@ pub fn decide_with_turn(
     queued_build: bool,
     turn_in_progress: bool,
 ) -> Action {
+    if !crate::parking::can_resume_build_session(thread.state) {
+        return Action::Nothing;
+    }
     let checkpoint = &thread.supervision;
     let unavailable =
         thread.state == ThreadState::Error || thread.activity == AgentActivity::AtLimit;

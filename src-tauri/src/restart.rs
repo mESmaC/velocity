@@ -78,10 +78,18 @@ async fn attempt_resume(
             )
         })
         .unwrap_or_default();
-        if queued_runs.is_empty() && !has_undelivered_results {
+        let resumed = if queued_runs.is_empty() && !has_undelivered_results {
             crate::parking::resume(&application, key, CONTINUE_PROMPT)
         } else {
             crate::parking::resume_restored_runs(&application, key, queued_runs)
+        };
+        match resumed {
+            Ok(()) => Ok(()),
+            Err(error) if error.is_non_resumable() => {
+                crate::parking::drop_non_resumable_delivery(&application, key, &error);
+                Ok(())
+            }
+            Err(error) => Err(error.to_string()),
         }
     })
     .await

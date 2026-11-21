@@ -284,7 +284,13 @@ fn resume_if_current(application: &AppHandle, key: ThreadKey) -> Result<(), Stri
             )
     };
     if should_resume {
-        crate::parking::resume_handoff(application, key)?;
+        match crate::parking::resume_handoff(application, key) {
+            Ok(()) => {}
+            Err(error) if error.is_non_resumable() => {
+                crate::parking::drop_non_resumable_delivery(application, key, &error);
+            }
+            Err(error) => return Err(error.to_string()),
+        }
     }
     Ok(())
 }

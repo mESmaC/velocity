@@ -7,8 +7,9 @@ use velocity_acp::client::SessionSetup;
 use velocity_airc::Channel;
 use velocity_store::{AgentActivity, ProjectItem, ThreadItem, ThreadState};
 use velocity_threads::parking::{
-    ParkingAction, ParkingInput, RosenParkingAction, RosenParkingInput, parking_action,
-    resume_prompt, rosen_parking_action, rosen_wait_resume_prompt,
+    ParkingAction, ParkingInput, ResumeError, ResumeOpeningKind, RosenParkingAction,
+    RosenParkingInput, can_resume_build_session, check_resumable, drop_pending_deliveries,
+    parking_action, resume_prompt, rosen_parking_action, rosen_wait_resume_prompt,
     should_break_mutual_overlap_wait,
 };
 use velocity_threads::{ThreadKey, agent_launch_for_account, spawn_session};
@@ -513,13 +514,17 @@ fn wake_rosen(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
     };
     tauri::async_runtime::block_on(crate::rosen_rebase::apply_at_boundary(application, key));
     let prompt = rosen_wait_resume_prompt(waits.path.as_ref(), waits.overlap.as_ref());
-    if let Err(error) = resume(application, key, &prompt) {
-        crate::threads::fail(
+    match resume(application, key, &prompt) {
+        Ok(()) => {}
+        Err(error) if error.is_non_resumable() => {
+            drop_non_resumable_delivery(application, key, &error);
+        }
+        Err(error) => crate::threads::fail(
             application,
             key,
             "Could not resume the parked agent",
-            &error,
-        );
+            &error.to_string(),
+        ),
     }
     Ok(())
 }
@@ -535,13 +540,17 @@ fn continue_live_rosen(application: &AppHandle, key: ThreadKey) -> Result<(), St
     tauri::async_runtime::block_on(crate::rosen_rebase::apply_at_boundary(application, key));
     crate::threads::refresh(application, key, false)?;
     let prompt = rosen_wait_resume_prompt(waits.path.as_ref(), waits.overlap.as_ref());
-    if let Err(error) = crate::threads::steer(application, key, &prompt) {
-        crate::threads::fail(
+    match crate::threads::steer_checked(application, key, &prompt) {
+        Ok(_) => {}
+        Err(error) if error.is_non_resumable() => {
+            drop_non_resumable_delivery(application, key, &error);
+        }
+        Err(error) => crate::threads::fail(
             application,
             key,
             "Could not continue the waiting agent",
-            &error,
-        );
+            &error.to_string(),
+        ),
     }
     Ok(())
 }
@@ -598,13 +607,17 @@ fn wake(
     // A Rosen dependency must be visible before the agent starts its next step.
     // The server's rebase may have arrived while this session was parked.
     tauri::async_runtime::block_on(crate::rosen_rebase::apply_at_boundary(application, key));
-    if let Err(error) = resume(application, key, &resume_prompt(ended.as_ref())) {
-        crate::threads::fail(
+    match resume(application, key, &resume_prompt(ended.as_ref())) {
+        Ok(()) => {}
+        Err(error) if error.is_non_resumable() => {
+            drop_non_resumable_delivery(application, key, &error);
+        }
+        Err(error) => crate::threads::fail(
             application,
             key,
             "Could not resume the parked agent",
-            &error,
-        );
+            &error.to_string(),
+        ),
     }
     Ok(())
 }
@@ -622,7 +635,52 @@ enum Opening<'a> {
     Message(&'a str),
 }
 
-pub(crate) fn resume(application: &AppHandle, key: ThreadKey, prompt: &str) -> Result<(), String> {
+impl Opening<'_> {
+    const fn kind(&self) -> ResumeOpeningKind {
+        match self {
+            Self::Prompt(_) => ResumeOpeningKind::Prompt,
+            Self::RestoredRuns(_) => ResumeOpeningKind::RestoredRuns,
+            Self::Handoff => ResumeOpeningKind::Handoff,
+            Self::AfterLimit(_) => ResumeOpeningKind::AfterLimit,
+            Self::Message(_) => ResumeOpeningKind::Message,
+        }
+    }
+}
+
+/// Records one diagnostic line naming the thread and opening kind, then drops any pending
+/// deliveries so a Merged, Done, Spec or Draft thread is never retried (#585).
+pub(crate) fn drop_non_resumable_delivery(
+    application: &AppHandle,
+    key: ThreadKey,
+    error: &ResumeError,
+) {
+    crate::diagnostics::record("thread runtime", &error.to_string());
+    let updated = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .ok()
+    .and_then(|mut store| {
+        let mut changed = false;
+        let saved = store.update_thread(key.0, key.1, |thread| {
+            if !can_resume_build_session(thread.state) {
+                changed = drop_pending_deliveries(thread);
+            }
+        });
+        saved.ok().map(|_| changed)
+    })
+    .unwrap_or(false);
+    if updated {
+        let _ = crate::threads::refresh(application, key, false);
+        crate::threads::emit_status(application, key);
+    }
+}
+
+pub(crate) fn resume(
+    application: &AppHandle,
+    key: ThreadKey,
+    prompt: &str,
+) -> Result<(), ResumeError> {
     start_session(application, key, Opening::Prompt(prompt))
 }
 
@@ -630,7 +688,7 @@ pub(crate) fn resume_restored_runs(
     application: &AppHandle,
     key: ThreadKey,
     runs: Vec<velocity_core::queued_runs::QueuedRunRecord>,
-) -> Result<(), String> {
+) -> Result<(), ResumeError> {
     start_session(application, key, Opening::RestoredRuns(runs))
 }
 
@@ -639,11 +697,11 @@ pub(crate) fn resume_with_message(
     application: &AppHandle,
     key: ThreadKey,
     message: &str,
-) -> Result<(), String> {
+) -> Result<(), ResumeError> {
     start_session(application, key, Opening::Message(message))
 }
 
-pub(crate) fn resume_handoff(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
+pub(crate) fn resume_handoff(application: &AppHandle, key: ThreadKey) -> Result<(), ResumeError> {
     start_session(application, key, Opening::Handoff)
 }
 
@@ -651,27 +709,39 @@ pub(crate) fn resume_after_limit(
     application: &AppHandle,
     key: ThreadKey,
     account: u32,
-) -> Result<(), String> {
+) -> Result<(), ResumeError> {
     start_session(application, key, Opening::AfterLimit(account))
 }
 
-fn start_session(application: &AppHandle, key: ThreadKey, opening: Opening) -> Result<(), String> {
-    let (project, mut thread, settings) = {
+fn start_session(
+    application: &AppHandle,
+    key: ThreadKey,
+    opening: Opening,
+) -> Result<(), ResumeError> {
+    let (project, thread, settings) = {
         let store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
-        )?;
+        )
+        .map_err(ResumeError::Other)?;
         let (project, thread) = store
             .follow_through_thread(key.0, key.1)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| ResumeError::Other(error.to_string()))?;
         (project, thread, store.settings())
     };
-    if matches!(
-        thread.state,
-        ThreadState::Merged | ThreadState::Done | ThreadState::Spec | ThreadState::Draft
-    ) {
-        return Err("This thread cannot resume a build session".into());
-    }
+    check_resumable(key, thread.state, opening.kind())?;
+    launch_resumed_session(application, key, project, thread, settings, opening)
+        .map_err(ResumeError::Other)
+}
+
+fn launch_resumed_session(
+    application: &AppHandle,
+    key: ThreadKey,
+    project: ProjectItem,
+    mut thread: ThreadItem,
+    settings: velocity_store::Settings,
+    opening: Opening,
+) -> Result<(), String> {
     let account = match opening {
         Opening::AfterLimit(account) => account,
         _ => settings.launch_account(
