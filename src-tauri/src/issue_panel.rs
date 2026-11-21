@@ -9,6 +9,7 @@ use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
 use velocity_core::work_pool::WorkKey;
 use velocity_github::{
     GitHubCommandError, IssueClient, IssueDiscussion, IssuePanelCache, IssuePanelSnapshot,
+    OPEN_ISSUES_REFRESH,
 };
 use velocity_store::VersionControl;
 use velocity_store::issues::{ThreadIssue, issue_thread};
@@ -63,12 +64,17 @@ fn selected_project(application: &AppHandle) -> Result<Option<ProjectContext>, S
 #[specta::specta]
 pub async fn get_issue_panel(application: AppHandle) -> Result<IssuePanelSnapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let project = selected_project(&application)?;
         let panel = application.state::<IssuePanel>();
-        refresh(
-            &application,
-            selected_project(&application)?,
-            &mut IssueReader::default(),
-        )?;
+        {
+            let snapshot = lock(panel.inner(), "issues")?;
+            let matches_project =
+                snapshot.project_identifier == project.as_ref().map(|project| project.identifier);
+            if matches_project && !snapshot.loading && snapshot.error.is_none() {
+                return Ok(snapshot.clone());
+            }
+        }
+        refresh(&application, project, &mut IssueReader::default())?;
         Ok(lock(panel.inner(), "issues")?.clone())
     })
     .await
@@ -443,18 +449,29 @@ struct IssueReader {
 fn monitor(application: AppHandle) {
     let mut previous = None;
     let mut refreshed = None::<Instant>;
+    let mut cache_version = None::<u64>;
     let mut revision = None;
     let mut reader = IssueReader::default();
     loop {
         if let Ok(project) = selected_project(&application) {
+            let shared_version = reader
+                .client
+                .as_ref()
+                .and_then(|client| IssueClient::open_issues_version(client.repository()));
+            let cache_updated = shared_version.is_some() && shared_version != cache_version;
             if previous != project
-                || refreshed.is_none_or(|time| time.elapsed() >= Duration::from_secs(30))
+                || cache_updated
+                || refreshed.is_none_or(|time| time.elapsed() >= OPEN_ISSUES_REFRESH)
             {
                 if previous != project {
                     reader = IssueReader::default();
                 }
                 previous = project.clone();
                 report(refresh(&application, project, &mut reader));
+                cache_version = reader
+                    .client
+                    .as_ref()
+                    .and_then(|client| IssueClient::open_issues_version(client.repository()));
                 refreshed = Some(Instant::now());
             }
             let next = application

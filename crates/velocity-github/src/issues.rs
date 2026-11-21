@@ -1,20 +1,26 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::commit_cache::{self, CommitStatusEntry};
+use crate::issue_cache::{self, OPEN_ISSUES_REFRESH};
 use crate::issue_types::IssueState;
 use crate::repository_client::{Connection, RepositoryClient};
+use crate::rosen_issue::{INTEGRATION_CONTEXT, unix_seconds};
 use crate::{GitHubCommandError, GitHubIssue, IssueInventory};
 
 pub(crate) const ISSUE_FIELDS: &str = "id number title body url state author { login }
     createdAt updatedAt closedAt milestone { number } labels(first:100) { nodes { name } totalCount }";
 pub(crate) const BLOCKER_FIELDS: &str = "number state repository { nameWithOwner }";
+/// How many commits of the default branch history are bundled with the open-issues query
+/// so integration status checks need no separate ref or commit-status polling (#556).
+pub(crate) const BRANCH_HISTORY_COUNT: usize = 20;
 
-/// Reads and writes one repository's issues through the signed-in gh transport, with
-/// long-path repository discovery. No credential, shell, or provider-specific path is
-/// introduced here.
+/// Reads and writes one repository's issues through the signed-in GitHub transport, with
+/// long-path repository discovery.
 pub struct IssueClient {
     pub(crate) transport: RepositoryClient,
     pub(crate) directory: PathBuf,
@@ -34,6 +40,55 @@ struct IssueWithDependencies {
     node: IssueNode,
     issue_dependencies_summary: IssueDependenciesSummary,
     blocked_by: Connection<Option<Blocker>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CombinedOpenIssues {
+    issues: Connection<IssueWithDependencies>,
+    #[serde(default)]
+    default_branch_ref: Option<DefaultBranchRefNode>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct DefaultBranchRefNode {
+    pub(crate) name: String,
+    pub(crate) target: Option<BranchTargetCommit>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct BranchTargetCommit {
+    #[serde(default)]
+    pub(crate) oid: Option<String>,
+    #[serde(default)]
+    pub(crate) history: Option<CommitHistoryNodes>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CommitHistoryNodes {
+    #[serde(default)]
+    pub(crate) nodes: Vec<Option<HistoryCommitNode>>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct HistoryCommitNode {
+    pub(crate) oid: String,
+    #[serde(default)]
+    pub(crate) status: Option<CommitStatusNode>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CommitStatusNode {
+    #[serde(default)]
+    pub(crate) context: Option<StatusContextNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StatusContextNode {
+    pub(crate) state: String,
+    #[serde(default)]
+    pub(crate) created_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -62,6 +117,46 @@ fn dependency_fields() -> String {
     )
 }
 
+pub(crate) fn branch_history_selection() -> String {
+    format!(
+        "target {{ ... on Commit {{ oid history(first:{BRANCH_HISTORY_COUNT}) {{
+          nodes {{ oid status {{ context(name:\"{INTEGRATION_CONTEXT}\") {{ state createdAt }} }} }}
+        }} }} }}"
+    )
+}
+
+pub(crate) fn record_branch_ref(repository: &str, branch_ref: DefaultBranchRefNode) {
+    let Some(target) = branch_ref.target else {
+        return;
+    };
+    let Some(tip) = target.oid.filter(|oid| !oid.is_empty()) else {
+        return;
+    };
+    RepositoryClient::update_default_branch(repository, &branch_ref.name);
+    let history = target
+        .history
+        .map(|history| {
+            history
+                .nodes
+                .into_iter()
+                .flatten()
+                .map(|node| CommitStatusEntry {
+                    sha: node.oid,
+                    integration_green: node.status.and_then(|status| status.context).and_then(
+                        |context| {
+                            context
+                                .state
+                                .eq_ignore_ascii_case("SUCCESS")
+                                .then(|| context.created_at.as_deref().and_then(unix_seconds))
+                        },
+                    ),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    commit_cache::record_branch_snapshot(repository, tip, history);
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Labels {
@@ -80,6 +175,7 @@ impl IssueClient {
             .map_err(|error| GitHubCommandError::Invalid(error.to_string()))?;
         Ok(repository.find_remote("origin").is_ok())
     }
+
     /// See `RepositoryClient::is_current`.
     pub fn is_current(&self, directory: &Path) -> bool {
         self.transport.is_current(directory)
@@ -89,15 +185,89 @@ impl IssueClient {
         &self.transport.repository
     }
 
+    /// Invalidates the shared open-issues cache for `repository` after a write.
+    pub fn invalidate_open_issues(repository: &str) {
+        issue_cache::invalidate(repository);
+    }
+
+    /// Monotonic version of the shared open-issues cache for `repository`, if loaded.
+    pub fn open_issues_version(repository: &str) -> Option<u64> {
+        issue_cache::version(repository)
+    }
+
+    /// Returns the repository's open issues from the shared single-flight cache, refreshing
+    /// at most once per [`OPEN_ISSUES_REFRESH`] across dispatch, the issue panel and Work (#556).
     pub fn open_issues(&self) -> Result<Vec<GitHubIssue>, GitHubCommandError> {
-        let query = format!(
+        self.cached_open_issues(OPEN_ISSUES_REFRESH)
+    }
+
+    /// Returns the repository's open issues from the shared single-flight cache when younger
+    /// than `max_age`, otherwise fetches them once and updates the shared cache.
+    pub fn cached_open_issues(
+        &self,
+        max_age: Duration,
+    ) -> Result<Vec<GitHubIssue>, GitHubCommandError> {
+        if let Some(cached) = issue_cache::get_fresh(self.repository(), max_age) {
+            return Ok(cached);
+        }
+        let lock = issue_cache::fetch_lock(self.repository());
+        let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(cached) = issue_cache::get_fresh(self.repository(), max_age) {
+            return Ok(cached);
+        }
+        let issues = self.fetch_open_issues()?;
+        issue_cache::store(self.repository(), &issues);
+        Ok(issues)
+    }
+
+    /// Forces an immediate read of open issues and refreshes the shared cache (for example,
+    /// right before duplicate-checking a newly filed issue).
+    pub(crate) fn open_issues_fresh(&self) -> Result<Vec<GitHubIssue>, GitHubCommandError> {
+        let lock = issue_cache::fetch_lock(self.repository());
+        let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let issues = self.fetch_open_issues()?;
+        issue_cache::store(self.repository(), &issues);
+        Ok(issues)
+    }
+
+    fn fetch_open_issues(&self) -> Result<Vec<GitHubIssue>, GitHubCommandError> {
+        let page_query = format!(
             "query($owner:String!,$name:String!,$cursor:String) {{ repository(owner:$owner,name:$name) {{ issues(first:100,after:$cursor,states:OPEN,orderBy:{{field:CREATED_AT,direction:ASC}}) {{ nodes {{ {ISSUE_FIELDS} {} }} pageInfo {{ hasNextPage endCursor }} }} }} }}",
             dependency_fields(),
         );
-        let issues: Vec<IssueWithDependencies> = self.transport.connection(
-            &query,
-            self.transport.variables(0),
+        let combined_query = format!(
+            "query($owner:String!,$name:String!,$cursor:String) {{ repository(owner:$owner,name:$name) {{ defaultBranchRef {{ name {} }} issues(first:100,after:$cursor,states:OPEN,orderBy:{{field:CREATED_AT,direction:ASC}}) {{ nodes {{ {ISSUE_FIELDS} {} }} pageInfo {{ hasNextPage endCursor }} }} }} }}",
+            branch_history_selection(),
+            dependency_fields(),
+        );
+        let variables = self.transport.variables(0);
+        let first_page = match self.transport.graphql_at::<CombinedOpenIssues>(
+            &combined_query,
+            variables.clone(),
+            "/data/repository",
+        ) {
+            Ok(combined) => {
+                if let Some(branch_ref) = combined.default_branch_ref {
+                    record_branch_ref(self.repository(), branch_ref);
+                }
+                combined.issues
+            }
+            Err(GitHubCommandError::Invalid(message))
+                if message.contains("GitHub GraphQL errors") =>
+            {
+                self.transport.graphql_at(
+                    &page_query,
+                    variables.clone(),
+                    "/data/repository/issues",
+                )?
+            }
+            Err(error) => return Err(error),
+        };
+        let issues = self.transport.complete_connection(
+            &page_query,
+            variables,
             "/data/repository/issues",
+            first_page,
         )?;
         issues
             .into_iter()
@@ -115,7 +285,9 @@ impl IssueClient {
             self.transport.variables(number),
             "/data/repository/issue",
         )?;
-        self.decode_issue_with_dependencies(issue)
+        let decoded = self.decode_issue_with_dependencies(issue)?;
+        issue_cache::upsert_issue(self.repository(), &decoded);
+        Ok(decoded)
     }
 
     #[track_caller]
@@ -191,7 +363,9 @@ impl IssueClient {
             json!({"input":{"repositoryId":repository,"title":title,"body":body,"labelIds":labels}}),
             "/data/createIssue/issue",
         )?;
-        self.decode_issue(issue)
+        let created = self.decode_issue(issue)?;
+        issue_cache::invalidate(self.repository());
+        Ok(created)
     }
 
     pub(crate) fn decode_issue(

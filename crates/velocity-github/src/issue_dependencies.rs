@@ -90,6 +90,9 @@ impl IssueClient {
             .cloned()
             .collect();
         self.add_blocked_by(&subject, &self.resolve_blockers(&missing)?)?;
+        if !missing.is_empty() {
+            crate::issue_cache::invalidate(self.repository());
+        }
         Ok(blockers
             .iter()
             .map(|blocker| blocker.relative_to(home))
@@ -220,6 +223,7 @@ impl IssueClient {
             json!({"input": {"id": issue.id, "body": hold.rewritten(&issue.body)}}),
             "/data/updateIssue/issue",
         )?;
+        crate::issue_cache::invalidate(self.repository());
         Ok(Some(linked))
     }
 }

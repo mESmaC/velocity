@@ -68,7 +68,8 @@
     }
     if (refresh > 0) commentError = '';
     void load();
-    const timer = window.setInterval(load, 30_000);
+    // Backend caches discussions by issue updated_at; keep a slow fallback poll.
+    const timer = window.setInterval(load, 120_000);
     return () => {
       stopped = true;
       window.clearInterval(timer);

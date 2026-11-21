@@ -219,6 +219,7 @@ impl IssueClient {
         if cleaned != issue.body {
             self.update_issue_body(&issue.id, &cleaned)?;
         }
+        crate::issue_cache::invalidate(self.repository());
         Ok(true)
     }
 
@@ -245,6 +246,7 @@ impl IssueClient {
             self.add_issue_comment(&issue.id, &body)?;
         }
         self.close_issue_with_reason(number, "completed")?;
+        crate::issue_cache::invalidate(self.repository());
         Ok(true)
     }
 
@@ -272,7 +274,9 @@ impl IssueClient {
             reason.trim(),
             target.marker()
         );
-        self.add_issue_comment(&issue.id, &comment)
+        let url = self.add_issue_comment(&issue.id, &comment)?;
+        crate::issue_cache::invalidate(self.repository());
+        Ok(url)
     }
 
     /// Records a visible person hold on `number` with its release action (#526).
@@ -302,7 +306,9 @@ impl IssueClient {
             hold.release_action,
             hold.marker()
         );
-        self.add_issue_comment(&issue.id, &comment)
+        let url = self.add_issue_comment(&issue.id, &comment)?;
+        crate::issue_cache::invalidate(self.repository());
+        Ok(url)
     }
 
     /// Releases a person hold (including any legacy retired hold label) from the Work view (#526).
@@ -318,6 +324,8 @@ impl IssueClient {
             &issue.id,
             "Hold released from Velocity's Work view. Returning this issue to dispatch.\n\n<!-- velocity-hold-released -->",
         )?;
+        crate::issue_cache::invalidate(self.repository());
+        crate::issue_cache::invalidate_discussion(self.repository(), number);
         Ok(())
     }
 
@@ -351,6 +359,7 @@ impl IssueClient {
         self.remove_present_labels(&issue, &[Self::NO_CHANGE_LABEL, HOLD_LABEL])?;
         self.remove_retired_hold_labels(&issue)?;
         self.close_issue_with_reason(number, "not_planned")?;
+        crate::issue_cache::invalidate(self.repository());
         Ok(url)
     }
 

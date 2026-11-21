@@ -16,10 +16,7 @@ const OVERLAP_ATTEMPT: &str = "overlap:";
 /// A land can change hundreds of files; the comment names the first of them.
 const LISTED_LAND_FILES: usize = 40;
 /// The status context Velocity posts on a commit its integration build passed.
-const INTEGRATION_CONTEXT: &str = "velocity/integration";
-/// How many commits between a landed commit and the default branch tip are checked for a
-/// green `velocity/integration` status when neither endpoint carries one (#519).
-const INTEGRATION_STATUS_LOOKBACK: usize = 10;
+pub(crate) const INTEGRATION_CONTEXT: &str = "velocity/integration";
 /// How long another machine's recent starting/progress comment keeps an issue out of
 /// dispatch before a stalled remote run is retried (#519).
 pub const REMOTE_PROGRESS_WINDOW_SECONDS: u64 = 2 * 60 * 60;
@@ -141,7 +138,13 @@ impl IssueClient {
             self.label_issue(number, READY_LABEL)?;
         }
         let heading = if ready { "Ready to close · " } else { "" };
-        self.add_issue_comment(&issue.id, &format!("{heading}{byline}\n\n{body}{waits}"))
+        let url =
+            self.add_issue_comment(&issue.id, &format!("{heading}{byline}\n\n{body}{waits}"))?;
+        crate::issue_cache::invalidate_discussion(self.repository(), number);
+        if ready {
+            crate::issue_cache::invalidate(self.repository());
+        }
+        Ok(url)
     }
 
     /// An issue that waits on open blockers gets the comment without the `no-change`
@@ -275,6 +278,7 @@ impl IssueClient {
                 &reason[..end]
             ),
         )?;
+        crate::issue_cache::invalidate_discussion(self.repository(), number);
         Ok(())
     }
 
@@ -411,6 +415,7 @@ impl IssueClient {
             .transport
             .command
             .api("POST", &endpoint, &json!({"labels": [name]}))?;
+        crate::issue_cache::invalidate(self.repository());
         Ok(())
     }
 
@@ -423,6 +428,7 @@ impl IssueClient {
         self.transport
             .command
             .text(&["api", "--method", "DELETE", &endpoint])?;
+        crate::issue_cache::invalidate(self.repository());
         Ok(())
     }
 
@@ -473,24 +479,15 @@ impl IssueClient {
 
     /// Publishes a pass on the exact mirrored base tested by Velocity.
     pub fn publish_integration_success(&self, commit: &str) -> Result<bool, GitHubCommandError> {
+        validate_commit_sha(commit)?;
+        if crate::commit_cache::is_known_green(self.repository(), commit) {
+            return Ok(true);
+        }
         if !self.rosen_commit_mirrored(commit)? {
             return Ok(false);
         }
-        #[derive(Deserialize)]
-        struct Status {
-            context: String,
-            state: String,
-        }
-        let statuses = format!(
-            "repos/{}/commits/{commit}/statuses?per_page=100",
-            self.repository()
-        );
-        let existing: Vec<Status> = self.transport.command.read(&["api", &statuses])?;
-        if existing
-            .iter()
-            .find(|status| status.context == INTEGRATION_CONTEXT)
-            .is_some_and(|status| status.state == "success")
-        {
+        if let Some(passed_at) = self.integration_status_at(commit)? {
+            crate::commit_cache::record_green(self.repository(), commit, passed_at);
             return Ok(true);
         }
         let endpoint = format!("repos/{}/statuses/{commit}", self.repository());
@@ -503,55 +500,128 @@ impl IssueClient {
                 "description": "Velocity integration build passed"
             }),
         )?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|elapsed| elapsed.as_secs());
+        crate::commit_cache::record_green(self.repository(), commit, now);
         Ok(true)
     }
 
     /// Returns false while the mirror's default branch has not caught up to the land.
     pub fn rosen_commit_mirrored(&self, commit: &str) -> Result<bool, GitHubCommandError> {
         validate_commit_sha(commit)?;
-        let tip = self.default_branch_tip()?;
-        Ok(self.compare_to_tip(commit, &tip)?.is_some())
+        if crate::commit_cache::is_mirrored(self.repository(), commit) {
+            return Ok(true);
+        }
+        let snapshot = self.branch_tip_snapshot()?;
+        if snapshot.position(commit).is_some() {
+            crate::commit_cache::record_mirrored(self.repository(), commit);
+            return Ok(true);
+        }
+        self.is_ancestor_of(commit, &snapshot.tip)
     }
 
     /// Whether any machine has already posted a green `velocity/integration` commit status
-    /// on `commit` or a newer commit on the mirror's default branch (#519).
+    /// on `commit` or a newer commit on the mirror's default branch (#519, #556).
+    ///
+    /// Uses the cached default-branch snapshot (populated by the shared open-issues query
+    /// or one GraphQL read per 2 min) and records green, covered and settled non-green
+    /// commits so old commits are never polled repeatedly.
     pub fn integration_status_covering(
         &self,
         commit: &str,
     ) -> Result<Option<IntegrationCoverage>, GitHubCommandError> {
         validate_commit_sha(commit)?;
-        let tip = self.default_branch_tip()?;
-        let Some(descendants) = self.compare_to_tip(commit, &tip)? else {
-            return Ok(None);
-        };
-        if let Some(passed_at) = self.integration_status_at(&tip)? {
-            return Ok(Some(IntegrationCoverage {
-                commit: tip,
-                passed_at,
-            }));
+        if let Some(coverage) = crate::commit_cache::covered(self.repository(), commit) {
+            return Ok(Some(coverage));
         }
-        if commit != tip
-            && let Some(passed_at) = self.integration_status_at(commit)?
+        let snapshot = self.branch_tip_snapshot()?;
+        if let Some(index) = snapshot.position(commit) {
+            let coverage = snapshot.green_covering_index(index);
+            if let Some(coverage) = &coverage {
+                crate::commit_cache::record_covered(self.repository(), commit, coverage.clone());
+            }
+            return Ok(coverage);
+        }
+        if let Some(green) = snapshot.newest_green()
+            && self.is_ancestor_of(commit, &green.commit)?
         {
+            crate::commit_cache::record_covered(self.repository(), commit, green.clone());
+            return Ok(Some(green));
+        }
+        if crate::commit_cache::is_settled_non_green(self.repository(), commit) {
+            return Ok(None);
+        }
+        if !self.is_ancestor_of(commit, &snapshot.tip)? {
+            return Ok(None);
+        }
+        if let Some(passed_at) = self.integration_status_at(commit)? {
+            crate::commit_cache::record_green(self.repository(), commit, passed_at);
             return Ok(Some(IntegrationCoverage {
                 commit: commit.to_owned(),
                 passed_at,
             }));
         }
-        for sha in descendants
-            .into_iter()
-            .rev()
-            .filter(|sha| sha != &tip && sha != commit)
-            .take(INTEGRATION_STATUS_LOOKBACK)
-        {
-            if let Some(passed_at) = self.integration_status_at(&sha)? {
-                return Ok(Some(IntegrationCoverage {
-                    commit: sha,
-                    passed_at,
-                }));
-            }
-        }
+        // `commit` is already behind the newest commits on the default branch and has no
+        // green status of its own. Future green builds will cover it through `snapshot`.
+        crate::commit_cache::record_settled_non_green(self.repository(), commit);
         Ok(None)
+    }
+
+    /// Returns a recent snapshot of the default branch tip and the integration statuses of
+    /// its newest commits, reusing the snapshot populated by the shared open-issues read.
+    pub(crate) fn branch_tip_snapshot(
+        &self,
+    ) -> Result<crate::commit_cache::BranchTipSnapshot, GitHubCommandError> {
+        let ttl = crate::commit_cache::BRANCH_SNAPSHOT_TTL;
+        if let Some(snapshot) = crate::commit_cache::fresh_branch_snapshot(self.repository(), ttl) {
+            return Ok(snapshot);
+        }
+        let lock = crate::commit_cache::branch_fetch_lock(self.repository());
+        let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(snapshot) = crate::commit_cache::fresh_branch_snapshot(self.repository(), ttl) {
+            return Ok(snapshot);
+        }
+        let branch = self
+            .transport
+            .default_branch
+            .as_deref()
+            .ok_or_else(|| GitHubCommandError::Missing("default branch".into()))?;
+        let mut variables = self.transport.variables(0);
+        variables["branch"] = format!("refs/heads/{branch}").into();
+        let query = format!(
+            "query($owner:String!,$name:String!,$branch:String!) {{
+              repository(owner:$owner,name:$name) {{ ref(qualifiedName:$branch) {{
+                name {} }} }} }}",
+            crate::issues::branch_history_selection(),
+        );
+        match self
+            .transport
+            .graphql_at::<crate::issues::DefaultBranchRefNode>(
+                &query,
+                variables.clone(),
+                "/data/repository/ref",
+            ) {
+            Ok(branch_ref) => {
+                crate::issues::record_branch_ref(self.repository(), branch_ref);
+                if let Some(snapshot) =
+                    crate::commit_cache::fresh_branch_snapshot(self.repository(), ttl)
+                {
+                    return Ok(snapshot);
+                }
+            }
+            Err(GitHubCommandError::Invalid(message))
+                if message.contains("GitHub GraphQL errors") => {}
+            Err(error) => return Err(error),
+        }
+        // Fallback for servers/mocks without commit history status selection.
+        let tip = self.default_branch_tip()?;
+        Ok(crate::commit_cache::record_branch_snapshot(
+            self.repository(),
+            tip,
+            Vec::new(),
+        ))
     }
 
     fn default_branch_tip(&self) -> Result<String, GitHubCommandError> {
@@ -569,6 +639,21 @@ impl IssueClient {
             variables,
             "/data/repository/ref/target/oid",
         )
+    }
+
+    /// Cached check of whether `commit` is an ancestor of (or identical to) `target`.
+    fn is_ancestor_of(&self, commit: &str, target: &str) -> Result<bool, GitHubCommandError> {
+        if commit.eq_ignore_ascii_case(target) {
+            crate::commit_cache::record_mirrored(self.repository(), commit);
+            return Ok(true);
+        }
+        if let Some(known) = crate::commit_cache::cached_ancestry(self.repository(), commit, target)
+        {
+            return Ok(known);
+        }
+        let is_ancestor = self.compare_to_tip(commit, target)?.is_some();
+        crate::commit_cache::record_ancestry(self.repository(), commit, target, is_ancestor);
+        Ok(is_ancestor)
     }
 
     /// Returns `Some(descendant_shas)` when `commit` is an ancestor of (or identical to)
@@ -661,6 +746,7 @@ impl IssueClient {
             .any(|existing| comment_matches_marker(existing, marker))
         {
             self.add_issue_comment(&issue.id, &format_marked_comment(body, marker))?;
+            crate::issue_cache::invalidate_discussion(self.repository(), number);
         }
         if state.is_some()
             && issue
@@ -687,6 +773,8 @@ impl IssueClient {
         let _: Value =
             self.transport
                 .graphql_at(mutation, json!({"input":{"issueId":issue.id}}), path)?;
+        crate::issue_cache::invalidate(self.repository());
+        crate::issue_cache::invalidate_discussion(self.repository(), number);
         Ok(())
     }
 
@@ -806,7 +894,7 @@ fn report_attempt(body: &str) -> Option<&str> {
 }
 
 /// GitHub's `2026-11-19T16:31:00Z` as Unix seconds.
-fn unix_seconds(timestamp: &str) -> Option<u64> {
+pub(crate) fn unix_seconds(timestamp: &str) -> Option<u64> {
     let (date, time) = timestamp.strip_suffix('Z')?.split_once('T')?;
     let mut date = date.split('-').map(|part| part.parse::<i64>().ok());
     let (year, month, day) = (date.next()??, date.next()??, date.next()??);

@@ -7,8 +7,11 @@
 mod agent_issues;
 pub mod base_ci;
 mod command;
+mod commit_cache;
 mod dependency_graph;
 mod gh_command;
+mod http_transport;
+mod issue_cache;
 mod issue_dependencies;
 mod issue_holds;
 mod issue_panel;
@@ -40,6 +43,7 @@ pub use agent_issues::{
 };
 pub use dependency_graph::DependencyGraph;
 pub use gh_command::GitHubCommandError;
+pub use issue_cache::OPEN_ISSUES_REFRESH;
 pub use issue_holds::UpstreamStatus;
 pub use issue_panel::{
     IssueDiscussion, IssueHold, IssuePanelCache, IssuePanelRow, IssuePanelSnapshot, SpecQuestion,

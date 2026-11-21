@@ -12,11 +12,13 @@ workspace = true
 [dependencies]
 gix = { version = "0.90.0", default-features = false, features = ["sha1", "sha256"] }
 jiff = "0.2"
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
 tempfile = "3.27"
 thiserror.workspace = true
+tokio.workspace = true
 velocity-core = { workspace = true, features = ["bindings"] }
 
 [target.'cfg(windows)'.dependencies]

@@ -1,5 +1,4 @@
 //! The F9 rail and spec-question projection. Refreshing never opens a browser.
-use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -257,13 +256,13 @@ impl IssuePanelSnapshot {
 /// Characters of an issue body an expanded row shows before it truncates.
 const SUMMARY_LIMIT: usize = 280;
 
-#[derive(Debug, Serialize, Type)]
+#[derive(Clone, Debug, Serialize, Type)]
 pub struct IssueDiscussion {
     pub summary: String,
     pub comments: Vec<IssueAgentComment>,
 }
 
-#[derive(Debug, Serialize, Type)]
+#[derive(Clone, Debug, Serialize, Type)]
 pub struct IssueAgentComment {
     pub id: String,
     pub author: String,
@@ -325,23 +324,72 @@ fn truncate(text: String) -> String {
     }
 }
 
-/// The open issues are read in full at least this often, even when the probe saw no change.
-/// Renaming a repository label, for one, changes what the rail shows without moving any
-/// issue's `updatedAt`.
-pub const ISSUE_FULL_REFRESH: Duration = Duration::from_secs(10 * 60);
-
-/// The last full read of the open issues and what the probe showed just before it, kept
-/// between refreshes so unchanged issues only need a lightweight probe (#228).
+/// The last panel projection read from the shared open-issues cache (#228, #556).
 #[derive(Default)]
 pub struct IssuePanelCache {
-    probe: Option<Vec<serde_json::Value>>,
-    read_at: Option<Instant>,
+    version: Option<u64>,
     panel: Option<(String, Vec<IssuePanelRow>)>,
 }
 
 impl IssueClient {
     /// Read discussion on demand so comment latency stays outside the work inventory.
+    /// Reuses cached discussions when the issue's `updated_at` in the shared open-issues
+    /// cache has not moved, and reads comments via conditional REST (`If-None-Match`) when
+    /// the summary is already known from the shared cache (#556).
     pub fn discussion(&self, number: u32) -> Result<IssueDiscussion, GitHubCommandError> {
+        if let Some(cached) = crate::issue_cache::get_discussion(self.repository(), number) {
+            return Ok(cached);
+        }
+        let cached_issue = crate::issue_cache::cached_issue(self.repository(), number);
+        let discussion = if let Some(issue) = &cached_issue {
+            self.discussion_via_rest(number, &issue.body)?
+        } else {
+            self.discussion_via_graphql(number)?
+        };
+        crate::issue_cache::store_discussion(
+            self.repository(),
+            number,
+            cached_issue.map(|issue| issue.updated_at),
+            &discussion,
+        );
+        Ok(discussion)
+    }
+
+    fn discussion_via_rest(
+        &self,
+        number: u32,
+        body: &str,
+    ) -> Result<IssueDiscussion, GitHubCommandError> {
+        #[derive(Deserialize)]
+        struct RestComment {
+            node_id: String,
+            #[serde(default)]
+            body: String,
+        }
+        let endpoint = format!(
+            "repos/{}/issues/{number}/comments?per_page=100",
+            self.repository()
+        );
+        let comments: Vec<RestComment> = self.transport.command.get_paginated(&endpoint)?;
+        Ok(IssueDiscussion {
+            summary: body_summary(body),
+            comments: comments
+                .into_iter()
+                .rev()
+                .filter_map(|comment| {
+                    let (author, body) = agent_comment(&comment.body)?;
+                    Some(IssueAgentComment {
+                        id: comment.node_id,
+                        author,
+                        body,
+                    })
+                })
+                .take(5)
+                .collect(),
+        })
+    }
+
+    fn discussion_via_graphql(&self, number: u32) -> Result<IssueDiscussion, GitHubCommandError> {
         #[derive(Deserialize)]
         struct Comment {
             id: String,
@@ -385,48 +433,36 @@ impl IssueClient {
         })
     }
 
-    /// GitHub can close a blocker in another repository without editing the dependent issue.
-    /// The probe includes the open blocker counts so the rail picks up those changes.
-    /// Periodic full reads also catch changes that leave the timestamps and counts unchanged.
+    /// Reads the panel rows from the shared per-repository open-issues cache (#556),
+    /// skipping row reconstruction when the shared cache version is unchanged.
     pub fn cached_panel(
         &self,
         cache: &mut IssuePanelCache,
     ) -> Result<(String, Vec<IssuePanelRow>), GitHubCommandError> {
-        let probe = self.probe_open_issues()?;
-        let fresh = cache
-            .read_at
-            .is_some_and(|read_at| read_at.elapsed() < ISSUE_FULL_REFRESH);
+        let issues = self.open_issues()?;
+        let version = crate::issue_cache::version(self.repository());
         if let Some(panel) = &cache.panel
-            && fresh
-            && cache.probe.as_ref() == Some(&probe)
+            && version.is_some()
+            && cache.version == version
         {
             return Ok(panel.clone());
         }
-        // The probe was taken before this read, so a change in between is read again next time.
-        let panel = self.panel()?;
+        let panel = self.project_panel(issues);
         *cache = IssuePanelCache {
-            probe: Some(probe),
-            read_at: Some(Instant::now()),
+            version,
             panel: Some(panel.clone()),
         };
         Ok(panel)
     }
 
-    fn probe_open_issues(&self) -> Result<Vec<serde_json::Value>, GitHubCommandError> {
-        self.transport.connection(
-            "query($owner:String!,$name:String!,$cursor:String) { repository(owner:$owner,name:$name) {
-              issues(states:OPEN,first:100,after:$cursor,orderBy:{field:CREATED_AT,direction:ASC}) {
-                nodes { number updatedAt issueDependenciesSummary { blockedBy } }
-                pageInfo { hasNextPage endCursor } } } }",
-            self.transport.variables(0),
-            "/data/repository/issues",
-        )
+    pub fn panel(&self) -> Result<(String, Vec<IssuePanelRow>), GitHubCommandError> {
+        let issues = self.open_issues()?;
+        Ok(self.project_panel(issues))
     }
 
-    pub fn panel(&self) -> Result<(String, Vec<IssuePanelRow>), GitHubCommandError> {
+    fn project_panel(&self, issues: Vec<GitHubIssue>) -> (String, Vec<IssuePanelRow>) {
         let repository = self.transport.repository.clone();
-        let mut rows: Vec<_> = self
-            .open_issues()?
+        let mut rows: Vec<_> = issues
             .into_iter()
             .map(|issue| IssuePanelRow::from_issue_for_repository(Some(&repository), issue))
             .collect();
@@ -441,7 +477,7 @@ impl IssueClient {
                 row.number,
             )
         });
-        Ok((self.transport.repository.clone(), rows))
+        (repository, rows)
     }
 
     pub fn get(&self, number: u32) -> Result<GitHubIssue, GitHubCommandError> {

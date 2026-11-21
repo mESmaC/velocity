@@ -177,7 +177,7 @@ impl IssueClient {
         let _guard = lock
             .lock()
             .map_err(|error| GitHubCommandError::Invalid(error.to_string()))?;
-        let open = self.open_issues()?;
+        let open = self.open_issues_fresh()?;
         if let Some(existing) = find_matching_open_issue(title, body, &open, mentioned_paths) {
             return Ok(AgentIssueOutcome::Duplicate {
                 reason: format!(

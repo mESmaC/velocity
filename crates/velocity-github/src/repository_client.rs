@@ -1,16 +1,35 @@
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use std::path::Path;
 
-use crate::GitHubCommandError;
 use crate::gh_command::GitHubCommand;
+use crate::http_transport::TransportAttempt;
+use crate::{GitHubCommandError, RepositoryName};
 
-/// How long a kept client's repository identity is trusted. Re-reading it costs one request,
-/// so this is one request per kept client per half hour.
-const IDENTITY_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// How long a repository's resolved identity (`nameWithOwner`, `defaultBranch`) is kept in
+/// the session-wide cache (#556). Effectively once per repository per session.
+const IDENTITY_LIFETIME: Duration = Duration::from_secs(6 * 60 * 60);
 
-/// One GitHub repository's identity and its `gh` transport, shared by the issue reads and
+#[derive(Clone)]
+struct CachedIdentity {
+    repository: String,
+    owner: String,
+    name: String,
+    default_branch: Option<String>,
+    fetched_at: Instant,
+}
+
+static IDENTITY_CACHE: LazyLock<Mutex<HashMap<String, CachedIdentity>>> =
+    LazyLock::new(Mutex::default);
+static IDENTITY_LOCKS: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
+    LazyLock::new(Mutex::default);
+
+/// One GitHub repository's identity and its transport, shared by the issue reads and
 /// writes (F9) and the Rosen issue and status mirrors.
 pub struct RepositoryClient {
     pub(crate) command: GitHubCommand,
@@ -30,6 +49,12 @@ struct RepositoryIdentity {
 #[derive(Deserialize)]
 struct DefaultBranch {
     name: String,
+}
+
+#[derive(Deserialize)]
+struct RestRepositoryIdentity {
+    full_name: String,
+    default_branch: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -54,52 +79,95 @@ struct PageInfo {
 }
 
 impl RepositoryClient {
-    /// Reads the repository's identity once. Keep the client for repeated reads: every
-    /// `discover` is a GitHub request.
+    /// Resolves `directory`'s repository identity, reusing the session cache so `repo view`
+    /// runs at most once per repository (#556).
     #[track_caller]
     pub fn discover(directory: &Path) -> Result<Self, GitHubCommandError> {
         let (command, repository) = GitHubCommand::new(directory)?;
-        Self::read_identity(command, &repository)
+        let parsed = parse_github_origin(&repository);
+        Self::resolve_identity(command, &repository, parsed.as_ref())
     }
 
+    /// Resolves `repository`'s identity, reusing the session cache so repeated client
+    /// construction across dispatch, project health and UI never repeats `repo view` (#556).
     #[track_caller]
     pub fn for_repository(repository: &str) -> Result<Self, GitHubCommandError> {
-        let repository = crate::RepositoryName::parse(repository)
+        let parsed = RepositoryName::parse(repository)
             .map_err(|error| GitHubCommandError::Invalid(error.to_string()))?;
-        let command = GitHubCommand::for_repository(&repository);
-        Self::read_identity(command, &repository.full_name())
+        let command = GitHubCommand::for_repository(&parsed);
+        let full = parsed.full_name();
+        Self::resolve_identity(command, &full, Some(&parsed))
     }
 
-    fn read_identity(command: GitHubCommand, repository: &str) -> Result<Self, GitHubCommandError> {
+    fn resolve_identity(
+        command: GitHubCommand,
+        raw_repository: &str,
+        parsed: Option<&RepositoryName>,
+    ) -> Result<Self, GitHubCommandError> {
+        let cache_key = parsed
+            .map(|name| name.full_name().to_ascii_lowercase())
+            .unwrap_or_else(|| raw_repository.to_ascii_lowercase());
+        if let Some(cached) = cached_identity(&cache_key) {
+            return Ok(Self::from_cached(command, cached));
+        }
+        let lock = identity_lock(&cache_key);
+        let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(cached) = cached_identity(&cache_key) {
+            return Ok(Self::from_cached(command, cached));
+        }
+        let identity = Self::fetch_identity(&command, raw_repository, parsed)?;
+        store_identity(&cache_key, &identity);
+        Ok(Self::from_cached(command, identity))
+    }
+
+    fn fetch_identity(
+        command: &GitHubCommand,
+        raw_repository: &str,
+        parsed: Option<&RepositoryName>,
+    ) -> Result<CachedIdentity, GitHubCommandError> {
+        if let Some(parsed) = parsed
+            && command.is_github_com()
+        {
+            let endpoint = format!("repos/{}", parsed.full_name());
+            if let TransportAttempt::Handled(result) =
+                command.try_http_get::<RestRepositoryIdentity>(&endpoint)
+            {
+                let rest = result?;
+                return build_identity(rest.full_name, rest.default_branch);
+            }
+        }
         let identity: RepositoryIdentity = command.read(&[
             "repo",
             "view",
             "--json",
             "nameWithOwner,defaultBranchRef",
             "--",
-            repository,
+            raw_repository,
         ])?;
-        let (owner, name) = identity
-            .name_with_owner
-            .split_once('/')
-            .ok_or_else(|| GitHubCommandError::Invalid("Invalid GitHub repository name".into()))?;
-        if [owner, name].iter().any(|part| {
-            part.is_empty()
-                || !part
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
-        }) {
-            return Err(GitHubCommandError::Invalid(
-                "Invalid GitHub repository name".into(),
-            ));
-        }
-        Ok(Self {
-            owner: owner.into(),
-            name: name.into(),
-            default_branch: identity.default_branch_ref.map(|branch| branch.name),
-            repository: identity.name_with_owner,
+        build_identity(
+            identity.name_with_owner,
+            identity.default_branch_ref.map(|branch| branch.name),
+        )
+    }
+
+    fn from_cached(command: GitHubCommand, identity: CachedIdentity) -> Self {
+        Self {
+            owner: identity.owner,
+            name: identity.name,
+            default_branch: identity.default_branch,
+            repository: identity.repository,
             command,
-        })
+        }
+    }
+
+    /// Updates the cached default branch when a combined GraphQL query returns it.
+    pub(crate) fn update_default_branch(repository: &str, branch: &str) {
+        let mut cache = IDENTITY_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(entry) = cache.get_mut(&repository.to_ascii_lowercase()) {
+            entry.default_branch = Some(branch.to_owned());
+        }
     }
 
     /// Whether this client still describes `directory`'s repository. Callers that keep a client
@@ -172,4 +240,69 @@ impl RepositoryClient {
             page = self.graphql_at(query, variables.clone(), path)?;
         }
     }
+}
+
+fn build_identity(
+    name_with_owner: String,
+    default_branch: Option<String>,
+) -> Result<CachedIdentity, GitHubCommandError> {
+    let (owner, name) = name_with_owner
+        .split_once('/')
+        .ok_or_else(|| GitHubCommandError::Invalid("Invalid GitHub repository name".into()))?;
+    if [owner, name].iter().any(|part| {
+        part.is_empty()
+            || !part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+    }) {
+        return Err(GitHubCommandError::Invalid(
+            "Invalid GitHub repository name".into(),
+        ));
+    }
+    Ok(CachedIdentity {
+        owner: owner.into(),
+        name: name.into(),
+        default_branch,
+        repository: name_with_owner,
+        fetched_at: Instant::now(),
+    })
+}
+
+fn parse_github_origin(origin: &str) -> Option<RepositoryName> {
+    let trimmed = origin.trim();
+    let rest = trimmed
+        .strip_prefix("https://github.com/")
+        .or_else(|| trimmed.strip_prefix("http://github.com/"))
+        .or_else(|| trimmed.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| trimmed.strip_prefix("ssh://github.com/"))
+        .or_else(|| trimmed.strip_prefix("git@github.com:"))?;
+    RepositoryName::parse(rest).ok()
+}
+
+fn cached_identity(key: &str) -> Option<CachedIdentity> {
+    let cache = IDENTITY_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache
+        .get(key)
+        .filter(|entry| entry.fetched_at.elapsed() < IDENTITY_LIFETIME)
+        .cloned()
+}
+
+fn store_identity(request_key: &str, identity: &CachedIdentity) {
+    let mut cache = IDENTITY_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.insert(request_key.to_owned(), identity.clone());
+    let canonical = identity.repository.to_ascii_lowercase();
+    if canonical != request_key {
+        cache.insert(canonical, identity.clone());
+    }
+}
+
+fn identity_lock(key: &str) -> Arc<Mutex<()>> {
+    let mut locks = IDENTITY_LOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Arc::clone(locks.entry(key.to_owned()).or_default())
 }

@@ -95,11 +95,19 @@ impl RosenPinWatch {
     /// Whether the signed-in account may push to the repository. Only its maintainers keep
     /// the issue, so a copy of Velocity that merely cloned the repository files nothing.
     pub fn can_maintain(&self) -> Result<bool, GitHubCommandError> {
+        #[derive(Deserialize)]
+        struct Permissions {
+            #[serde(default)]
+            push: bool,
+        }
+        #[derive(Deserialize)]
+        struct RepoPermissions {
+            #[serde(default)]
+            permissions: Option<Permissions>,
+        }
         let endpoint = format!("repos/{}", self.velocity);
-        let push = self
-            .command
-            .text(&["api", &endpoint, "--jq", ".permissions.push"])?;
-        Ok(push.trim() == "true")
+        let repo: RepoPermissions = self.command.read(&["api", &endpoint])?;
+        Ok(repo.permissions.is_some_and(|perm| perm.push))
     }
 
     /// Brings the pin-bump issue and the pinned Rosen release up to date. `known_release`
@@ -148,13 +156,9 @@ impl RosenPinWatch {
 
     fn ahead(&self, pin: &RosenPin) -> Result<Ahead, GitHubCommandError> {
         let rosen = &pin.repository;
-        let commits: Vec<Commit> = self.command.read(&[
-            "api",
-            &format!("repos/{rosen}/commits?per_page=100"),
-            "--jq",
-            "[.[] | {sha, message: .commit.message}]",
-        ])?;
-        let commits: Vec<RosenCommit> = commits.into_iter().map(Commit::into_commit).collect();
+        let endpoint = format!("repos/{rosen}/commits?per_page=100");
+        let commits: Vec<ApiCommit> = self.command.read(&["api", &endpoint])?;
+        let commits: Vec<RosenCommit> = commits.into_iter().map(ApiCommit::into_commit).collect();
         let (ahead, found) = rosen_pin::commits_ahead(&commits, &pin.revision);
         let Some(newest) = ahead.first() else {
             return Ok(Ahead::Nothing);
@@ -182,33 +186,48 @@ impl RosenPinWatch {
         descendant: &str,
         ancestor: &str,
     ) -> Result<bool, GitHubCommandError> {
+        #[derive(Deserialize)]
+        struct Comparison {
+            status: String,
+        }
         let endpoint = format!("repos/{repository}/compare/{ancestor}...{descendant}?per_page=1");
-        let status = self.command.text(&["api", &endpoint, "--jq", ".status"])?;
-        Ok(status.trim() == "ahead")
+        let comparison: Comparison = self.command.read(&["api", &endpoint])?;
+        Ok(comparison.status == "ahead")
     }
 
     fn ci_state(&self, repository: &str, commit: &str) -> Result<CiState, GitHubCommandError> {
+        #[derive(Deserialize)]
+        struct CheckRunsResponse {
+            #[serde(default)]
+            check_runs: Vec<Run>,
+        }
+        #[derive(Deserialize)]
+        struct CombinedStatus {
+            #[serde(default)]
+            statuses: Vec<CommitStatus>,
+        }
+        #[derive(Deserialize)]
+        struct CommitStatus {
+            state: String,
+        }
         let commit_endpoint = format!("repos/{repository}/commits/{commit}");
-        let runs: Vec<Run> = self.command.read(&[
-            "api",
-            &format!("{commit_endpoint}/check-runs?per_page=100"),
-            "--jq",
-            "[.check_runs[] | {status, conclusion}]",
-        ])?;
-        let statuses: Vec<String> = self.command.read(&[
-            "api",
-            &format!("{commit_endpoint}/status?per_page=100"),
-            "--jq",
-            "[.statuses[].state]",
-        ])?;
+        let runs_endpoint = format!("{commit_endpoint}/check-runs?per_page=100");
+        let runs: CheckRunsResponse = self.command.read(&["api", &runs_endpoint])?;
+        let status_endpoint = format!("{commit_endpoint}/status?per_page=100");
+        let combined: CombinedStatus = self.command.read(&["api", &status_endpoint])?;
         let runs: Vec<CheckRun<'_>> = runs
+            .check_runs
             .iter()
             .map(|run| CheckRun {
                 completed: run.status == "completed",
                 conclusion: run.conclusion.as_deref(),
             })
             .collect();
-        let statuses: Vec<&str> = statuses.iter().map(String::as_str).collect();
+        let statuses: Vec<&str> = combined
+            .statuses
+            .iter()
+            .map(|status| status.state.as_str())
+            .collect();
         Ok(rosen_pin::ci_state(&runs, &statuses))
     }
 
@@ -270,12 +289,9 @@ impl RosenPinWatch {
             return Ok(BTreeMap::new());
         }
         let issues = format!("repos/{repository}/issues");
-        let recent: Vec<Titled> = self.command.read(&[
-            "api",
-            &format!("{issues}?state=all&sort=updated&direction=desc&per_page=100"),
-            "--jq",
-            "[.[] | {number, title}]",
-        ])?;
+        let recent_endpoint =
+            format!("{issues}?state=all&sort=updated&direction=desc&per_page=100");
+        let recent: Vec<Titled> = self.command.read(&["api", &recent_endpoint])?;
         let recent: BTreeMap<u32, String> = recent
             .into_iter()
             .map(|issue| (issue.number, issue.title))
@@ -286,8 +302,8 @@ impl RosenPinWatch {
                     return Ok((number, title.clone()));
                 }
                 let endpoint = format!("{issues}/{number}");
-                match self.command.text(&["api", &endpoint, "--jq", ".title"]) {
-                    Ok(title) => Ok((number, title.trim().to_owned())),
+                match self.command.read::<Titled>(&["api", &endpoint]) {
+                    Ok(issue) => Ok((number, issue.title)),
                     Err(error) if not_found(&error) => Ok((number, String::new())),
                     Err(error) => Err(error),
                 }
@@ -296,34 +312,40 @@ impl RosenPinWatch {
     }
 
     /// The repository's open issues without its pull requests, or `None` when the signed-in
-    /// account cannot read the repository.
+    /// account cannot read the repository. Reuses the shared open-issues cache when fresh (#556).
     fn open_issues(&self, repository: &str) -> Result<Option<Vec<OpenIssue>>, GitHubCommandError> {
-        let listed = self.command.text(&[
-            "api",
-            "--paginate",
-            &format!("repos/{repository}/issues?state=open&per_page=100"),
-            "--jq",
-            ".[] | select(.pull_request == null) | {number, title, body: (.body // \"\")} | @json",
-        ]);
-        let listed = match listed {
+        if let Some(cached) = crate::issue_cache::get_fresh(repository, crate::OPEN_ISSUES_REFRESH)
+        {
+            return Ok(Some(
+                cached
+                    .into_iter()
+                    .map(|issue| OpenIssue {
+                        repository: repository.to_owned(),
+                        number: issue.number,
+                        title: issue.title,
+                        body: issue.body,
+                    })
+                    .collect(),
+            ));
+        }
+        let endpoint = format!("repos/{repository}/issues?state=open&per_page=100");
+        let listed = match self.command.get_paginated::<Listed>(&endpoint) {
             Ok(listed) => listed,
             Err(error) if not_found(&error) => return Ok(None),
             Err(error) => return Err(error),
         };
-        listed
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| {
-                let issue: Listed = serde_json::from_str(line)?;
-                Ok(OpenIssue {
+        Ok(Some(
+            listed
+                .into_iter()
+                .filter(|issue| issue.pull_request.is_none())
+                .map(|issue| OpenIssue {
                     repository: repository.to_owned(),
                     number: issue.number,
                     title: issue.title,
-                    body: issue.body,
+                    body: issue.body.unwrap_or_default(),
                 })
-            })
-            .collect::<Result<Vec<_>, GitHubCommandError>>()
-            .map(Some)
+                .collect(),
+        ))
     }
 
     /// Opens or rewrites the one pin-bump issue and closes the others.
@@ -338,12 +360,14 @@ impl RosenPinWatch {
         let (kept, issue) = match plan.step {
             PinBumpStep::Open => {
                 let opened: Numbered = self.command.api("POST", &issues, &text)?;
+                crate::issue_cache::invalidate(&self.velocity);
                 (opened.number, PinIssue::Opened(opened.number))
             }
             PinBumpStep::Rewrite(number) => {
                 let _: Value = self
                     .command
                     .api("PATCH", &format!("{issues}/{number}"), &text)?;
+                crate::issue_cache::invalidate(&self.velocity);
                 (number, PinIssue::Rewritten(number))
             }
             PinBumpStep::Keep(number) => (number, PinIssue::Kept(number)),
@@ -386,6 +410,7 @@ impl RosenPinWatch {
             &issue,
             &json!({"state": "closed", "state_reason": reason}),
         )?;
+        crate::issue_cache::invalidate(&self.velocity);
         Ok(())
     }
 
@@ -448,16 +473,21 @@ fn not_found(error: &GitHubCommandError) -> bool {
 }
 
 #[derive(Deserialize)]
-struct Commit {
+struct ApiCommit {
     sha: String,
+    commit: CommitDetail,
+}
+
+#[derive(Deserialize)]
+struct CommitDetail {
     message: String,
 }
 
-impl Commit {
+impl ApiCommit {
     fn into_commit(self) -> RosenCommit {
         RosenCommit {
             commit: self.sha,
-            message: self.message,
+            message: self.commit.message,
         }
     }
 }
@@ -478,7 +508,10 @@ struct Titled {
 struct Listed {
     number: u32,
     title: String,
-    body: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    pull_request: Option<Value>,
 }
 
 #[derive(Deserialize)]

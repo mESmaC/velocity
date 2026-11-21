@@ -5,12 +5,19 @@
 //! delivers, never tags, so the workflow is dispatched with the tag and commit and creates
 //! the tag itself.
 
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+
 use serde::Deserialize;
 use velocity_core::release::{
     ManifestLag, PublishedRelease, detect_manifest_lag, version_from_release_tag,
 };
 
-use crate::{GitHubCommandError, IssueClient};
+use crate::{GitHubCommandError, IssueClient, OPEN_ISSUES_REFRESH};
+
+/// Release asset IDs are immutable once uploaded, so each `latest.json` version is read once.
+static MANIFEST_VERSIONS: LazyLock<Mutex<HashMap<(String, u64), String>>> =
+    LazyLock::new(Mutex::default);
 
 /// The workflow file `.github/workflows/release.yml` defines.
 const RELEASE_WORKFLOW: &str = "release.yml";
@@ -74,6 +81,9 @@ impl IssueClient {
     /// Whether `commit` carries the green `velocity/integration` status the release gate
     /// requires on Rosen's green commit. GitHub lists a context's newest status first.
     pub fn integration_passed(&self, commit: &str) -> Result<bool, GitHubCommandError> {
+        if crate::commit_cache::is_known_green(self.repository(), commit) {
+            return Ok(true);
+        }
         #[derive(Deserialize)]
         struct Status {
             context: String,
@@ -84,10 +94,14 @@ impl IssueClient {
             self.repository()
         );
         let statuses: Vec<Status> = self.transport.command.read(&["api", &endpoint])?;
-        Ok(statuses
+        let passed = statuses
             .iter()
             .find(|status| status.context == INTEGRATION_CONTEXT)
-            .is_some_and(|status| status.state == "success"))
+            .is_some_and(|status| status.state == "success");
+        if passed {
+            crate::commit_cache::record_green(self.repository(), commit, None);
+        }
+        Ok(passed)
     }
 
     /// The newest commit on GitHub's default branch carrying a green `velocity/integration`
@@ -96,6 +110,15 @@ impl IssueClient {
         &self,
         limit: usize,
     ) -> Result<Option<String>, GitHubCommandError> {
+        if let Ok(snapshot) = self.branch_tip_snapshot()
+            && let Some(green) = snapshot
+                .history
+                .iter()
+                .take(limit)
+                .find(|entry| entry.integration_green.is_some())
+        {
+            return Ok(Some(green.sha.clone()));
+        }
         #[derive(Deserialize)]
         struct CommitEntry {
             sha: String,
@@ -205,6 +228,15 @@ impl IssueClient {
     }
 
     fn read_manifest_version(&self, asset_id: u64) -> Result<String, GitHubCommandError> {
+        let key = (self.repository().to_ascii_lowercase(), asset_id);
+        if let Some(version) = MANIFEST_VERSIONS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&key)
+            .cloned()
+        {
+            return Ok(version);
+        }
         #[derive(Deserialize)]
         struct Manifest {
             version: String,
@@ -216,6 +248,10 @@ impl IssueClient {
             "Accept: application/octet-stream",
             &endpoint,
         ])?;
+        MANIFEST_VERSIONS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, manifest.version.clone());
         Ok(manifest.version)
     }
 
@@ -268,6 +304,14 @@ impl IssueClient {
     }
 
     fn has_open_release_blocker(&self) -> Result<bool, GitHubCommandError> {
+        if let Some(open) = crate::issue_cache::get_fresh(self.repository(), OPEN_ISSUES_REFRESH) {
+            return Ok(open.iter().any(|issue| {
+                issue
+                    .labels
+                    .iter()
+                    .any(|label| label.eq_ignore_ascii_case("release-blocker"))
+            }));
+        }
         #[derive(Deserialize)]
         struct IssueStub {
             #[serde(default)]

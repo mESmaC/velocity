@@ -7,7 +7,9 @@ use std::process::{Child, Output, Stdio};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
-/// Why a `gh` call for an issue, label, status or repository read failed.
+use crate::http_transport::{self, TransportAttempt};
+
+/// Why a `gh` or GitHub API call for an issue, label, status or repository read failed.
 #[derive(Debug, Error)]
 pub enum GitHubCommandError {
     #[error("GitHub transport I/O failed: {0}")]
@@ -33,11 +35,13 @@ const POLL: Duration = Duration::from_millis(10);
 
 pub(crate) struct GitHubCommand {
     directory: PathBuf,
-    /// Where this client was created, so each `gh` call is counted against its feature.
+    /// Where this client was created, so each call is counted against its feature.
     caller: &'static Location<'static>,
     /// The checkout's `origin` when the client was created, and when that was: a cached client
     /// is current only while both still hold (#229).
     origin: String,
+    /// Whether this client targets `github.com` and may use the in-process HTTPS transport.
+    github_com: bool,
     created_at: Instant,
 }
 
@@ -54,6 +58,7 @@ impl GitHubCommand {
                 .to_path_buf(),
             caller: Location::caller(),
             origin: repository.full_name(),
+            github_com: true,
             created_at: Instant::now(),
         }
     }
@@ -68,16 +73,21 @@ impl GitHubCommand {
             .ancestors()
             .last()
             .ok_or_else(|| GitHubCommandError::Invalid("Checkout has no filesystem root".into()))?;
-        let repository = origin_url(&directory)?;
+        let (repository, github_com) = origin_url(&directory)?;
         Ok((
             Self {
                 directory: root.to_path_buf(),
                 caller,
                 origin: repository.clone(),
+                github_com,
                 created_at: Instant::now(),
             },
             repository,
         ))
+    }
+
+    pub(crate) fn is_github_com(&self) -> bool {
+        self.github_com
     }
 
     /// Whether `directory`'s `origin` is still the one this client was created for, and the
@@ -87,15 +97,53 @@ impl GitHubCommand {
             && std::fs::canonicalize(directory)
                 .ok()
                 .and_then(|directory| origin_url(&directory).ok())
-                .is_some_and(|origin| origin == self.origin)
+                .is_some_and(|(origin, _)| origin == self.origin)
     }
 
     pub fn read<T: DeserializeOwned>(&self, arguments: &[&str]) -> Result<T, GitHubCommandError> {
+        if self.github_com
+            && let Some((endpoint, accept)) = parse_simple_api_get(arguments)
+            && let TransportAttempt::Handled(result) =
+                http_transport::get(self.caller, endpoint, accept)
+        {
+            return Ok(serde_json::from_slice(&result?)?);
+        }
         self.run(arguments, None, None)
+    }
+
+    /// Paginated REST GET via HTTP with per-page ETag caching, falling back to `gh` when
+    /// the in-process HTTP token is unavailable.
+    pub(crate) fn get_paginated<T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+    ) -> Result<Vec<T>, GitHubCommandError> {
+        if self.github_com
+            && let TransportAttempt::Handled(result) =
+                http_transport::get_paginated(self.caller, endpoint)
+        {
+            return result;
+        }
+        let pages: Vec<Vec<T>> =
+            self.run(&["api", "--paginate", "--slurp", endpoint], None, None)?;
+        Ok(pages.into_iter().flatten().collect())
     }
 
     /// A command's plain-text output.
     pub fn text(&self, arguments: &[&str]) -> Result<String, GitHubCommandError> {
+        if self.github_com {
+            if let Some((endpoint, accept)) = parse_simple_api_get(arguments)
+                && let TransportAttempt::Handled(result) =
+                    http_transport::get(self.caller, endpoint, accept)
+            {
+                return Ok(String::from_utf8_lossy(&result?).into_owned());
+            }
+            if let Some((method, endpoint)) = parse_simple_api_method(arguments)
+                && let TransportAttempt::Handled(result) =
+                    http_transport::send(self.caller, method, endpoint, None, None)
+            {
+                return Ok(String::from_utf8_lossy(&result?).into_owned());
+            }
+        }
         let output = finish(self.spawn(arguments, false, None)?, DEADLINE)?;
         if !output.status.success() {
             return Err(GitHubCommandError::Command {
@@ -112,6 +160,14 @@ impl GitHubCommand {
         endpoint: &str,
         body: &Value,
     ) -> Result<T, GitHubCommandError> {
+        if self.github_com {
+            let encoded = serde_json::to_vec(body)?;
+            if let TransportAttempt::Handled(result) =
+                http_transport::send(self.caller, method, endpoint, Some(&encoded), None)
+            {
+                return Ok(serde_json::from_slice(&result?)?);
+            }
+        }
         self.run(
             &["api", "--method", method, endpoint, "--input", "-"],
             Some(body),
@@ -125,6 +181,14 @@ impl GitHubCommand {
         path: &str,
         body: &Value,
     ) -> Result<T, GitHubCommandError> {
+        if self.github_com {
+            let encoded = serde_json::to_vec(body)?;
+            if let TransportAttempt::Handled(result) =
+                http_transport::send(self.caller, "POST", "graphql", Some(&encoded), Some(path))
+            {
+                return Ok(serde_json::from_slice(&result?)?);
+            }
+        }
         self.run(
             &["api", "--method", "POST", "graphql", "--input", "-"],
             Some(body),
@@ -140,11 +204,33 @@ impl GitHubCommand {
         endpoint: &str,
         body: &Value,
     ) -> Result<Vec<u8>, GitHubCommandError> {
+        if self.github_com {
+            let encoded = serde_json::to_vec(body)?;
+            if let TransportAttempt::Handled(result) =
+                http_transport::send(self.caller, method, endpoint, Some(&encoded), None)
+            {
+                return result;
+            }
+        }
         self.output(
             &["api", "--method", method, endpoint, "--input", "-"],
             Some(body),
             None,
         )
+    }
+
+    /// REST GET via HTTP when available, returning `Fallback` if the caller should run `gh`.
+    pub(crate) fn try_http_get<T: DeserializeOwned>(&self, endpoint: &str) -> TransportAttempt<T> {
+        if !self.github_com {
+            return TransportAttempt::Fallback;
+        }
+        match http_transport::get(self.caller, endpoint, None) {
+            TransportAttempt::Handled(Ok(bytes)) => {
+                TransportAttempt::Handled(serde_json::from_slice(&bytes).map_err(Into::into))
+            }
+            TransportAttempt::Handled(Err(error)) => TransportAttempt::Handled(Err(error)),
+            TransportAttempt::Fallback => TransportAttempt::Fallback,
+        }
     }
 
     fn run<T: DeserializeOwned>(
@@ -214,6 +300,32 @@ impl GitHubCommand {
     }
 }
 
+/// Recognizes plain `gh api <endpoint>` and `gh api -H "Accept: <mime>" <endpoint>` calls
+/// that can go directly through the pooled HTTPS transport with ETag caching.
+fn parse_simple_api_get<'a>(arguments: &[&'a str]) -> Option<(&'a str, Option<&'a str>)> {
+    match arguments {
+        ["api", endpoint] if !endpoint.starts_with('-') => Some((endpoint, None)),
+        ["api", "-H", header, endpoint] if !endpoint.starts_with('-') => {
+            let accept = header
+                .strip_prefix("Accept:")
+                .or_else(|| header.strip_prefix("accept:"))?
+                .trim();
+            Some((endpoint, Some(accept)))
+        }
+        _ => None,
+    }
+}
+
+/// Recognizes `gh api --method <METHOD> <endpoint>` calls with no body (such as DELETE).
+fn parse_simple_api_method<'a>(arguments: &[&'a str]) -> Option<(&'a str, &'a str)> {
+    match arguments {
+        ["api", "--method", method, endpoint] if !endpoint.starts_with('-') => {
+            Some((method, endpoint))
+        }
+        _ => None,
+    }
+}
+
 /// Waits for `child` and collects what it printed, stopping it when it runs past `limit`.
 fn finish(mut child: Child, limit: Duration) -> Result<Output, GitHubCommandError> {
     // Read on their own threads: a child that fills a pipe nobody reads never exits.
@@ -250,7 +362,7 @@ fn collect<Pipe: Read + Send + 'static>(pipe: Option<Pipe>) -> std::thread::Join
     })
 }
 
-fn origin_url(directory: &Path) -> Result<String, GitHubCommandError> {
+fn origin_url(directory: &Path) -> Result<(String, bool), GitHubCommandError> {
     let repository = gix::discover(directory).map_err(|error| {
         GitHubCommandError::Invalid(format!("Could not open Git checkout: {error}"))
     })?;
@@ -261,6 +373,9 @@ fn origin_url(directory: &Path) -> Result<String, GitHubCommandError> {
         .url(gix::remote::Direction::Fetch)
         .cloned()
         .ok_or_else(|| GitHubCommandError::Invalid("Origin has no fetch URL".into()))?;
+    let github_com = url
+        .host()
+        .is_some_and(|host| host.eq_ignore_ascii_case("github.com"));
     // gh uses its own credential store. Git remote userinfo must never become
     // process arguments, even when the checkout's origin embeds credentials.
     url.set_user(None);
@@ -269,8 +384,10 @@ fn origin_url(directory: &Path) -> Result<String, GitHubCommandError> {
     if url.scheme == gix::url::Scheme::Ssh && !url.path.starts_with(b"/") {
         url.path = format!("/{}", url.path).into();
     }
-    Ok(url
-        .with_request_alternate_form(false)
-        .to_bstring()
-        .to_string())
+    Ok((
+        url.with_request_alternate_form(false)
+            .to_bstring()
+            .to_string(),
+        github_com,
+    ))
 }
