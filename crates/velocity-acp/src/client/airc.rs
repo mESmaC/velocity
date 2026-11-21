@@ -27,7 +27,7 @@ pub(super) async fn graph_preface(setup: &SessionSetup) -> Option<String> {
         .collect();
     let lookup = tokio::task::spawn_blocking(move || {
         let map = velocity_graph::workspace_map(&executable, &app_data, &project, &worktree);
-        let matches = if title.is_empty() {
+        let matches = if title.is_empty() || velocity_graph::is_conversational_prompt(&title) {
             None
         } else {
             velocity_graph::task_context(&executable, &app_data, &project, &worktree, &title)

@@ -192,7 +192,14 @@ async fn prepare_workspace(
         launch.shared_servers.push(mcp);
     }
     launch.env.extend(environment);
-    setup.preface = Some(velocity_rosen::workspace_note(&change));
+    setup.session_card = Some(velocity_acp::client::SessionCard {
+        identity: Some(format!("{agent} (spec-{})", key.1)),
+        workspace: Some(workspace.root.clone()),
+        change: Some(change),
+        is_rosen: true,
+        unavailable_tools: vec!["velocity-browser (spec interview)".into()],
+        ..velocity_acp::client::SessionCard::default()
+    });
     setup.worktree = workspace.root;
     Ok(())
 }

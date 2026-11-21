@@ -44,8 +44,22 @@ pub(crate) async fn record_source(
         .map_err(|error| error.to_string())
 }
 
-pub(crate) fn workspace_note(application: &AppHandle, key: (u32, u32), change: &str) -> String {
-    let mut note = velocity_rosen::workspace_note(change);
+/// Short per-thread session card for a Rosen workspace (#534).
+/// Static workflow, check, and issue-update rules live in AGENTS.md.
+pub(crate) fn session_card(
+    application: &AppHandle,
+    key: (u32, u32),
+    worktree: &Path,
+    change: &str,
+) -> velocity_acp::client::SessionCard {
+    let nick = velocity_rosen::agent_name(worktree);
+    let mut card = velocity_acp::client::SessionCard {
+        identity: Some(format!("{nick} (thread-{})", key.1)),
+        workspace: Some(worktree.to_path_buf()),
+        change: Some(change.to_owned()),
+        is_rosen: true,
+        ..velocity_acp::client::SessionCard::default()
+    };
     if let Ok(store) = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -54,24 +68,12 @@ pub(crate) fn workspace_note(application: &AppHandle, key: (u32, u32), change: &
         .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
         .and_then(|thread| thread.issue.as_ref())
     {
-        note.push_str(&format!(
-            "\n\nThis change implements {}#{}. Record its issue number in the named snapshot: \
-             `rosen commit -m \"<one-line summary> (#{})\"`. Use the AIRC issue_comment tool \
-             when you start, when a finding changes the plan, and when blocked. Use \
-             issue_ready_to_close to post completion evidence and flag the issue for independent \
-             review. Leave the issue open. Velocity announces the land. If the issue waits \
-             on other issues, call issue_comment with blocked_by naming them and end your \
-             turn. If it waits on an upstream PR or release, call issue_blocked_upstream \
-             with upstream (checked daily by Velocity) and end your turn. If its spec \
-             section was removed, call issue_close_not_planned with spec_section and \
-             removed_commit and end your turn. Only when physical hardware or an explicit \
-             scope hold requires a person (never for spec defaults per Rule 1), call \
-             issue_hold with reason and release_action so it shows on Work with its \
-             release action.",
-            issue.repository, issue.number, issue.number,
+        card.work_item = Some(format!(
+            "{}#{} (name snapshot with `(#{})`)",
+            issue.repository, issue.number, issue.number
         ));
     }
-    note
+    card
 }
 
 pub(crate) fn observe(

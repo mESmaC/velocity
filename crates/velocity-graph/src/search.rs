@@ -29,6 +29,80 @@ const TEST_OR_DOC_WORDS: [&str; 12] = [
     "order",
 ];
 
+/// Conversational words that do not carry technical signal when deciding whether an opening
+/// prompt should seed code-graph matches (#534).
+const CONVERSATIONAL_WORDS: [&str; 42] = [
+    "about",
+    "anything",
+    "been",
+    "chat",
+    "could",
+    "discuss",
+    "everything",
+    "feedback",
+    "feel",
+    "give",
+    "good",
+    "have",
+    "hello",
+    "help",
+    "here",
+    "hey",
+    "honest",
+    "just",
+    "know",
+    "like",
+    "make",
+    "more",
+    "need",
+    "only",
+    "our",
+    "please",
+    "question",
+    "quick",
+    "really",
+    "should",
+    "some",
+    "something",
+    "sure",
+    "talk",
+    "tell",
+    "thanks",
+    "thank",
+    "think",
+    "thoughts",
+    "want",
+    "would",
+    "your",
+];
+
+/// Opening phrases that mark a conversational or feedback prompt rather than a task title (#534).
+const CONVERSATIONAL_PREFIXES: [&str; 17] = [
+    "hi ",
+    "hi,",
+    "hello",
+    "hey ",
+    "hey,",
+    "thanks",
+    "thank you",
+    "good morning",
+    "good afternoon",
+    "good evening",
+    "i'd like",
+    "i would like",
+    "can we talk",
+    "let's chat",
+    "let's discuss",
+    "what do you think",
+    "how do you feel",
+];
+
+/// Minimum word-based relevance score (excluding the +0.5 code-symbol tie-breaker) required
+/// for opening-prompt graph seeding (#534).
+const TASK_SEED_MIN_SCORE: f64 = 4.0;
+/// Minimum share of non-stop query terms matched for multi-term opening-prompt seeding (#534).
+const TASK_SEED_MIN_COVERAGE: f64 = 0.30;
+
 type Words = (Arc<HashSet<String>>, Arc<HashSet<String>>);
 
 /// Words and stems per record, and how many records hold each.
@@ -128,6 +202,62 @@ impl Search {
         hits
     }
 
+    /// Up to `limit` records for opening-prompt task seeding, keeping only matches above the
+    /// relevance threshold and returning nothing for conversational prompts (#534).
+    pub fn find_task_seeds(&self, graph: &Graph, title: &str, limit: usize) -> Vec<Hit> {
+        if is_conversational_prompt(title) {
+            return Vec::new();
+        }
+        let wanted = words(title);
+        let terms: Vec<&String> = wanted
+            .iter()
+            .filter(|word| !word.starts_with("stem:"))
+            .collect();
+        if terms.is_empty() {
+            return Vec::new();
+        }
+        let lowered = title.trim().to_lowercase();
+        let exact_matches = graph.named_or_aliased(title.trim()).len();
+        let tests_wanted = terms
+            .iter()
+            .any(|term| TEST_OR_DOC_WORDS.contains(&term.as_str()))
+            || crate::spec_outline::looks_like_spec_query(title);
+        let mut hits: Vec<Hit> = (0..graph.records.len())
+            .filter_map(|index| {
+                let record = &graph.records[index];
+                let exact = record.name.to_lowercase() == lowered
+                    || record.qualified.to_lowercase() == lowered
+                    || record
+                        .aliases
+                        .iter()
+                        .any(|alias| alias.to_lowercase() == lowered);
+                let (word_score, matched) = self.word_score_details(graph, index, &wanted, &terms);
+                let name_only = name_match_bonus(record, &lowered, exact);
+                let mut relevance = word_score + name_only;
+                if !tests_wanted && (record.test || is_doc(record)) {
+                    relevance *= 0.3;
+                }
+                let coverage = matched as f64 / terms.len() as f64;
+                let meets_coverage = name_only > 0.0
+                    || (terms.len() < 3 && matched >= 1)
+                    || (matched >= 2 && coverage >= TASK_SEED_MIN_COVERAGE);
+                (relevance >= TASK_SEED_MIN_SCORE && meets_coverage).then_some(Hit {
+                    record: index,
+                    score: relevance + code_nudge(record),
+                    exact: exact && exact_matches == 1,
+                })
+            })
+            .collect();
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then(left.record.cmp(&right.record))
+        });
+        hits.truncate(limit);
+        hits
+    }
+
     /// Rarer words count more and words in the name twice. The sum is scaled by the square of
     /// the share of query terms the record matches, so one common word can't outrank a record
     /// that matches the whole question (Graphify #1602).
@@ -138,6 +268,16 @@ impl Search {
         wanted: &HashSet<String>,
         terms: &[&String],
     ) -> f64 {
+        self.word_score_details(graph, index, wanted, terms).0
+    }
+
+    fn word_score_details(
+        &self,
+        graph: &Graph,
+        index: usize,
+        wanted: &HashSet<String>,
+        terms: &[&String],
+    ) -> (f64, usize) {
         let total = graph.records.len().max(1) as f64;
         let weight =
             |word: &String| (1.0 + total / *self.frequency.get(word).unwrap_or(&1) as f64).ln();
@@ -145,7 +285,7 @@ impl Search {
         let score = wanted.intersection(name).map(weight).sum::<f64>() * 2.0
             + wanted.intersection(other).map(weight).sum::<f64>();
         if terms.is_empty() {
-            return score;
+            return (score, 0);
         }
         let matched = terms
             .iter()
@@ -157,8 +297,75 @@ impl Search {
             })
             .count();
         let coverage = matched as f64 / terms.len() as f64;
-        score * coverage * coverage
+        (score * coverage * coverage, matched)
     }
+}
+
+/// Whether `text` is a conversational or feedback prompt that should not seed graph hits (#534).
+pub fn is_conversational_prompt(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if has_code_or_spec_signal(trimmed) {
+        return false;
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    if CONVERSATIONAL_PREFIXES
+        .iter()
+        .any(|prefix| lowered.starts_with(prefix) || lowered == prefix.trim())
+    {
+        return true;
+    }
+    let meaningful: Vec<String> = words(trimmed)
+        .into_iter()
+        .filter(|word| !word.starts_with("stem:"))
+        .collect();
+    if meaningful.is_empty() {
+        return true;
+    }
+    let technical = meaningful
+        .iter()
+        .filter(|word| !CONVERSATIONAL_WORDS.contains(&word.as_str()))
+        .count();
+    technical == 0 || (meaningful.len() >= 4 && technical * 2 < meaningful.len())
+}
+
+fn has_code_or_spec_signal(text: &str) -> bool {
+    text.contains("::")
+        || text.contains('`')
+        || text.contains('§')
+        || text.contains('/')
+        || text.contains('\\')
+        || text.split_whitespace().any(|token| {
+            let trimmed = token.trim_matches(|character: char| {
+                !character.is_alphanumeric() && !matches!(character, '_' | '.' | '#' | '-')
+            });
+            trimmed.contains('_')
+                || trimmed.strip_prefix('#').is_some_and(|digits| {
+                    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+                })
+                || trimmed.strip_prefix('F').is_some_and(|digits| {
+                    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+                })
+                || [
+                    ".rs", ".ts", ".svelte", ".md", ".toml", ".mjs", ".ps1", ".lean",
+                ]
+                .iter()
+                .any(|suffix| trimmed.ends_with(suffix))
+                || has_internal_camel_case(trimmed)
+        })
+}
+
+fn has_internal_camel_case(token: &str) -> bool {
+    let mut previous_lower = false;
+    for character in token.chars() {
+        if previous_lower && character.is_uppercase() {
+            return true;
+        }
+        previous_lower = character.is_lowercase();
+    }
+    false
 }
 
 fn record_words(record: &Record) -> Words {
@@ -176,8 +383,12 @@ fn record_words(record: &Record) -> Words {
 /// An exact name first, then names that start with the query, then names that contain it.
 /// Code gets a nudge over prose and files: an agent looking for a name wants the symbol.
 fn name_bonus(record: &Record, lowered: &str, exact: bool) -> f64 {
+    name_match_bonus(record, lowered, exact) + code_nudge(record)
+}
+
+fn name_match_bonus(record: &Record, lowered: &str, exact: bool) -> f64 {
     let name = record.name.to_lowercase();
-    let mut bonus = if exact {
+    if exact {
         1000.0
     } else if lowered.len() >= 3 && name.starts_with(lowered) {
         30.0
@@ -185,11 +396,15 @@ fn name_bonus(record: &Record, lowered: &str, exact: bool) -> f64 {
         4.0
     } else {
         0.0
-    };
-    if matches!(record.kind, RecordKind::Symbol(kind) if !kind.is_doc()) {
-        bonus += 0.5;
     }
-    bonus
+}
+
+fn code_nudge(record: &Record) -> f64 {
+    if matches!(record.kind, RecordKind::Symbol(kind) if !kind.is_doc()) {
+        0.5
+    } else {
+        0.0
+    }
 }
 
 /// Test, example and stress code: ranked lower in searches that don't ask for tests, and
@@ -268,5 +483,102 @@ fn collect_section_tokens(text: &str, out: &mut HashSet<String>) {
             out.insert(lower.clone());
             out.insert(format!("§{lower}"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SymbolKind;
+
+    fn sample_record(address: &str, name: &str, qualified: &str, path: &str, doc: &str) -> Record {
+        Record {
+            address: address.to_owned(),
+            kind: RecordKind::Symbol(SymbolKind::Function),
+            name: name.to_owned(),
+            qualified: qualified.to_owned(),
+            path: path.to_owned(),
+            start_line: 1,
+            end_line: 10,
+            signature: format!("pub fn {name}()"),
+            doc: doc.to_owned(),
+            aliases: Vec::new(),
+            span_hash: format!("hash-{address}"),
+            test: false,
+            up: None,
+            down: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn conversational_prompts_never_seed_graph_matches() {
+        let mut graph = Graph::default();
+        graph.records.push(sample_record(
+            "1.aaaa1",
+            "honest_feedback_helper",
+            "honest_feedback_helper",
+            "crates/example/src/lib.rs",
+            "Handles user feedback",
+        ));
+        let search = Search::new(&graph, None);
+        assert!(is_conversational_prompt(
+            "I'd like your honest feedback on working in Velocity"
+        ));
+        assert!(is_conversational_prompt(
+            "Hey, can we talk about how things feel?"
+        ));
+        assert!(
+            search
+                .find_task_seeds(
+                    &graph,
+                    "I'd like your honest feedback on working in Velocity",
+                    5
+                )
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn task_seeding_keeps_relevant_matches_and_drops_weak_incidental_hits() {
+        let mut graph = Graph::default();
+        graph.records.push(sample_record(
+            "1.aaaa1",
+            "load_claude_project_instructions",
+            "SessionSetup::load_claude_project_instructions",
+            "crates/velocity-acp/src/client/session.rs",
+            "Inject AGENTS.md once for Claude sessions",
+        ));
+        graph.records.push(sample_record(
+            "1.aaaa2",
+            "render_session_card",
+            "SessionCard::render_session_card",
+            "crates/velocity-acp/src/client/session_card.rs",
+            "Render short per-thread session card",
+        ));
+        for index in 0..40 {
+            graph.records.push(sample_record(
+                &format!("1.bbbb{index}"),
+                &format!("handle_item_{index}"),
+                &format!("module::handle_item_{index}"),
+                "crates/other/src/lib.rs",
+                "Generic handler for misc work",
+            ));
+        }
+        let search = Search::new(&graph, None);
+        assert!(!is_conversational_prompt(
+            "Agent instructions: inject once, resolve contradictions, a session card and a drift check"
+        ));
+        let weak = search.find_task_seeds(&graph, "generic unrelated prose without symbols", 5);
+        assert!(
+            weak.is_empty(),
+            "expected weak incidental hit to be filtered"
+        );
+        let strong =
+            search.find_task_seeds(&graph, "load_claude_project_instructions AGENTS.md", 5);
+        assert!(!strong.is_empty());
+        assert_eq!(
+            graph.records[strong[0].record].name,
+            "load_claude_project_instructions"
+        );
     }
 }

@@ -819,9 +819,10 @@ pub(crate) fn prepare_resume(
         .env
         .extend(velocity_rosen::agent_environment(&server, &name, change));
     setup.shared_servers.extend(mcp_server(root, &agent.env));
-    setup.preface = Some(crate::rosen_issue::workspace_note(
+    setup.session_card = Some(crate::rosen_issue::session_card(
         application,
         (project, thread.id),
+        root,
         change,
     ));
     crate::handoff::configure(application, (project, thread.id), setup);

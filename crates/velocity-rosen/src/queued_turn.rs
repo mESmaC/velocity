@@ -156,6 +156,18 @@ pub fn workspace_head(worktree: &Path) -> Option<(String, String)> {
     Some((marker.change.to_string(), marker.tree.to_string()))
 }
 
+/// Concise machine-wide queue depth for the opening session card (#534).
+pub fn queue_depth_summary() -> String {
+    let busy_light = busy_light_slots();
+    let line = RunQueue::machine()
+        .ok()
+        .and_then(|queue| queue.line().ok())
+        .unwrap_or_default();
+    let running = line.iter().filter(|entry| entry.running).count();
+    let waiting = line.iter().filter(|entry| !entry.running).count();
+    format!("{busy_light}/{LIGHT_SLOTS} light slots busy, {running} running, {waiting} waiting")
+}
+
 /// Estimates queue position, wait duration, and wait reason for a run under `policy` and `class`.
 pub fn estimate(
     policy: AgentRun,

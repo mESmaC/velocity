@@ -44,9 +44,11 @@ pub struct SessionSetup {
     /// The model, effort and speed the session runs on (F15), set through the agent's config
     /// options once the session starts. `None` leaves the agent's own defaults.
     pub run_settings: Option<RunSettings<String>>,
-    /// Sent ahead of the session's first prompt and not shown in the transcript: what the
-    /// agent must know about its folder, such as a Rosen workspace's note (F5).
+    /// Sent ahead of the session's first prompt and not shown in the transcript: extra
+    /// per-session preface lines outside the structured session card.
     pub preface: Option<String>,
+    /// Short per-thread session card holding only values that change per thread (#534).
+    pub session_card: Option<super::session_card::SessionCard>,
     /// The work item's title for the new session's initial code graph lookup.
     pub graph_task_title: Option<String>,
     /// A saved build thread moves its pending input to a new account on quota failure.
@@ -100,6 +102,8 @@ pub struct StartedSession {
     /// The agent's config options once the run settings were applied.
     pub options: Vec<SessionConfigOption>,
     pub(super) graph_on: bool,
+    /// Shared/Velocity MCP servers omitted because the agent lacks their transport (#534).
+    pub(super) dropped_servers: Vec<String>,
 }
 
 impl SessionSetup {
@@ -113,6 +117,7 @@ impl SessionSetup {
             resume: None,
             run_settings: None,
             preface: None,
+            session_card: None,
             graph_task_title: None,
             pause_on_subscription_limit: false,
             usage_role: None,
@@ -157,7 +162,27 @@ impl SessionSetup {
             );
             object.insert("autoMemoryEnabled".into(), serde_json::json!(true));
         }
-        self.session_metadata = Some(Meta::from_iter([(
+        let agents_path = self.worktree.join("AGENTS.md");
+        let instructions = match tokio::fs::read_to_string(&agents_path).await {
+            Ok(instructions) => Some(instructions),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        let inject_agents = instructions
+            .as_deref()
+            .filter(|text| !text.trim().is_empty())
+            .filter(|text| !claude_harness_loads_agents(&self.worktree, text));
+        if inject_agents.is_some()
+            && let Some(object) = settings.as_object_mut()
+        {
+            // Exclude root AGENTS.md from Claude's own project-instruction discovery when
+            // Velocity injects it via systemPrompt.append so Claude receives AGENTS.md once (#534).
+            object.insert(
+                "claudeMdExcludes".into(),
+                serde_json::json!(claude_agents_excludes(&agents_path)),
+            );
+        }
+        let mut metadata = Meta::from_iter([(
             "claudeCode".into(),
             serde_json::json!({
                 "options": {
@@ -165,25 +190,19 @@ impl SessionSetup {
                     "disallowedTools": ["mcp__computer-use"]
                 }
             }),
-        )]));
-        let instructions = match tokio::fs::read_to_string(self.worktree.join("AGENTS.md")).await {
-            Ok(instructions) => instructions,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error),
-        };
-        if !instructions.trim().is_empty() {
+        )]);
+        if let Some(instructions) = inject_agents {
             // claude-agent-acp forwards the preset's append field to the Claude SDK.
-            if let Some(metadata) = &mut self.session_metadata {
-                metadata.insert(
-                    "systemPrompt".into(),
-                    serde_json::json!({
-                        "type": "preset",
-                        "preset": "claude_code",
-                        "append": format!("Project instructions from AGENTS.md:\n\n{instructions}"),
-                    }),
-                );
-            }
+            metadata.insert(
+                "systemPrompt".into(),
+                serde_json::json!({
+                    "type": "preset",
+                    "preset": "claude_code",
+                    "append": format!("Project instructions from AGENTS.md:\n\n{instructions}"),
+                }),
+            );
         }
+        self.session_metadata = Some(metadata);
         Ok(())
     }
 
@@ -240,17 +259,24 @@ pub(super) async fn start_or_resume_session(
         .as_ref()
         .and_then(|resume| resume.session_id.clone())
         .filter(|_| initialized.agent_capabilities.load_session);
-    let servers = supported_servers(
+    let (servers, dropped_servers) = split_supported_servers(
         session_servers(setup),
         &initialized.agent_capabilities.mcp_capabilities,
     );
     if let Some(earlier) = earlier
-        && let Some(started) =
-            load_earlier_session(connection, setup, shared, earlier, &servers).await?
+        && let Some(started) = load_earlier_session(
+            connection,
+            setup,
+            shared,
+            earlier,
+            &servers,
+            &dropped_servers,
+        )
+        .await?
     {
         return Ok(started);
     }
-    new_resumed_session(connection, setup, shared, servers).await
+    new_resumed_session(connection, setup, shared, servers, dropped_servers).await
 }
 
 async fn load_earlier_session(
@@ -259,6 +285,7 @@ async fn load_earlier_session(
     shared: &Shared,
     earlier: String,
     servers: &[McpServer],
+    dropped_servers: &[String],
 ) -> Result<Option<StartedSession>, agent_client_protocol::Error> {
     let session_id = SessionId::new(earlier);
     let suppress_history = !setup
@@ -293,6 +320,7 @@ async fn load_earlier_session(
             loaded: true,
             options,
             graph_on: has_graph(servers),
+            dropped_servers: dropped_servers.to_vec(),
         }));
     }
     Ok(None)
@@ -303,6 +331,7 @@ async fn new_resumed_session(
     setup: &SessionSetup,
     shared: &Shared,
     servers: Vec<McpServer>,
+    dropped_servers: Vec<String>,
 ) -> Result<StartedSession, agent_client_protocol::Error> {
     let graph_on = has_graph(&servers);
     let session = connection
@@ -325,6 +354,7 @@ async fn new_resumed_session(
         loaded: false,
         options,
         graph_on,
+        dropped_servers,
     })
 }
 
@@ -573,14 +603,28 @@ pub fn session_servers(setup: &SessionSetup) -> Vec<McpServer> {
 /// only to agents that advertise them, since an unknown transport fails `session/new` and
 /// would stop the whole session over one shared server.
 fn supported_servers(servers: Vec<McpServer>, capabilities: &McpCapabilities) -> Vec<McpServer> {
-    servers
-        .into_iter()
-        .filter(|server| match server {
+    split_supported_servers(servers, capabilities).0
+}
+
+fn split_supported_servers(
+    servers: Vec<McpServer>,
+    capabilities: &McpCapabilities,
+) -> (Vec<McpServer>, Vec<String>) {
+    let mut kept = Vec::with_capacity(servers.len());
+    let mut dropped = Vec::new();
+    for server in servers {
+        let supported = match &server {
             McpServer::Http(_) => capabilities.http,
             McpServer::Sse(_) => capabilities.sse,
             _ => true,
-        })
-        .collect()
+        };
+        if supported {
+            kept.push(server);
+        } else if let Some(name) = server_name(&server) {
+            dropped.push(name.to_owned());
+        }
+    }
+    (kept, dropped)
 }
 
 pub(super) fn server_name(server: &McpServer) -> Option<&str> {
@@ -641,5 +685,110 @@ fn permission_kind(kind: PermissionOptionKind) -> PermissionKind {
         PermissionOptionKind::RejectAlways => PermissionKind::RejectAlways,
         // A kind this build does not know is never chosen: only known allow options are.
         _ => PermissionKind::RejectOnce,
+    }
+}
+
+/// True when Claude Code's own project instruction files (`CLAUDE.md`, `.claude/CLAUDE.md`)
+/// already import or duplicate `AGENTS.md`, so Velocity must not append a second copy (#534).
+fn claude_harness_loads_agents(worktree: &std::path::Path, agents_contents: &str) -> bool {
+    let normalized_agents = agents_contents.trim();
+    for relative in ["CLAUDE.md", ".claude/CLAUDE.md"] {
+        let Ok(contents) = std::fs::read_to_string(worktree.join(relative)) else {
+            continue;
+        };
+        if claude_md_includes_agents(&contents, normalized_agents) {
+            return true;
+        }
+    }
+    false
+}
+
+fn claude_md_includes_agents(claude_md: &str, normalized_agents: &str) -> bool {
+    if !normalized_agents.is_empty() && claude_md.trim() == normalized_agents {
+        return true;
+    }
+    claude_md.lines().any(|line| {
+        let trimmed = line.trim();
+        matches!(
+            trimmed,
+            "@AGENTS.md" | "@./AGENTS.md" | "@../AGENTS.md" | "@agents.md" | "@./agents.md"
+        )
+    })
+}
+
+fn claude_agents_excludes(agents_path: &std::path::Path) -> Vec<String> {
+    let forward = agents_path.to_string_lossy().replace('\\', "/");
+    let mut excludes = vec!["AGENTS.md".to_owned()];
+    if !forward.is_empty() && !excludes.contains(&forward) {
+        excludes.push(forward);
+    }
+    excludes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TempWorktree(PathBuf);
+
+    impl TempWorktree {
+        fn new() -> std::io::Result<Self> {
+            let path = std::env::temp_dir().join(format!(
+                "velocity-acp-session-test-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&path)?;
+            Ok(Self(path))
+        }
+    }
+
+    impl Drop for TempWorktree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn claude_injects_agents_once_and_excludes_native_duplicate() -> std::io::Result<()> {
+        let dir = TempWorktree::new()?;
+        std::fs::write(dir.0.join("AGENTS.md"), "# AGENTS.md\n- Rule one.\n")?;
+        let mut setup = SessionSetup::new(dir.0.clone(), Vec::new());
+        setup.load_claude_project_instructions().await?;
+        let first_bytes = setup.instruction_bytes();
+        assert!(first_bytes > 0);
+        // Calling a second time must be idempotent and never append a second copy.
+        setup.load_claude_project_instructions().await?;
+        assert_eq!(setup.instruction_bytes(), first_bytes);
+        let meta = setup
+            .session_metadata
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("missing Claude session metadata"))?;
+        let excludes = &meta["claudeCode"]["options"]["settings"]["claudeMdExcludes"];
+        assert!(
+            excludes
+                .as_array()
+                .is_some_and(|list| list.iter().any(|item| item == "AGENTS.md"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn claude_skips_injection_when_claude_md_imports_agents() -> std::io::Result<()> {
+        let dir = TempWorktree::new()?;
+        std::fs::write(dir.0.join("AGENTS.md"), "# AGENTS.md\n- Rule one.\n")?;
+        std::fs::write(dir.0.join("CLAUDE.md"), "@AGENTS.md\n")?;
+        let mut setup = SessionSetup::new(dir.0.clone(), Vec::new());
+        setup.load_claude_project_instructions().await?;
+        assert_eq!(setup.instruction_bytes(), 0);
+        let meta = setup
+            .session_metadata
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("missing Claude session metadata"))?;
+        assert!(
+            meta["claudeCode"]["options"]["settings"]
+                .get("claudeMdExcludes")
+                .is_none()
+        );
+        Ok(())
     }
 }

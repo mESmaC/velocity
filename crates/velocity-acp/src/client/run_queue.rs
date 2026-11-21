@@ -24,13 +24,12 @@ pub(super) fn prompt_content(preface: Option<String>, prompt: String) -> Vec<Con
 
 /// Antigravity runs long shell commands in the background; unlike Velocity's own queued
 /// runs, those commands never wake the agent once its turn ends (#544).
-const ANTIGRAVITY_BACKGROUND_NOTE: &str = "[Velocity] A shell command still running in the \
+pub(super) const ANTIGRAVITY_BACKGROUND_NOTE: &str = "A shell command still running in the \
     background when your turn ends will not wake you, so wait for it (or check its status) \
     before ending your turn. Only `queue_run`, `preflight` and `workflow_run` results from \
     `velocity-run` come back as a new turn.";
 
-/// Rosen workspaces already carry their workspace note. Every other session gets the
-/// queue note ahead of its own preface, including sessions resumed after a restart.
+/// Fallback preface when `velocity-run` is unavailable on a non-Rosen session.
 pub(super) fn preface(launch: &AgentLaunch, previous: Option<String>) -> Option<String> {
     if launch
         .env
@@ -47,18 +46,24 @@ pub(super) fn preface(launch: &AgentLaunch, previous: Option<String>) -> Option<
     })
 }
 
+/// Provider-specific launch note when the provider requires one beyond AGENTS.md.
+pub(super) fn provider_note(launch: &AgentLaunch) -> Option<&'static str> {
+    (launch.own_config == Some(crate::Provider::Antigravity)
+        || launch.concurrency_provider == Some(crate::Provider::Antigravity))
+    .then_some(ANTIGRAVITY_BACKGROUND_NOTE)
+}
+
 /// Provider-specific launch instructions delivered ahead of the session's first prompt.
 pub(super) fn append_provider_preface(
     launch: &AgentLaunch,
     previous: Option<String>,
 ) -> Option<String> {
-    if launch.own_config != Some(crate::Provider::Antigravity)
-        && launch.concurrency_provider != Some(crate::Provider::Antigravity)
-    {
+    let Some(note) = provider_note(launch) else {
         return previous;
-    }
+    };
+    let line = format!("[Velocity] {note}");
     Some(match previous {
-        Some(previous) => format!("{previous}\n\n{ANTIGRAVITY_BACKGROUND_NOTE}"),
-        None => ANTIGRAVITY_BACKGROUND_NOTE.to_owned(),
+        Some(previous) => format!("{previous}\n\n{line}"),
+        None => line,
     })
 }

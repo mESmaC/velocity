@@ -15,8 +15,8 @@ pub const WORKFLOW_RUN_TOOL: &str = "workflow_run";
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(20);
 
 const DESCRIPTION: &str = "Ask Velocity to run a GitHub Actions workflow in this project's \
-    repository, since agents have no `gh`. Pass the workflow's file name, such as `ci.yml`. \
-    Only workflows the project owner lists under `[ci] dispatchable` in the base's \
+    repository, since agents do not run `gh` directly. Pass the workflow's file name, such as \
+    `ci.yml`. Only workflows the project owner lists under `[ci] dispatchable` in the base's \
     rosen.toml run; any other request is refused with the reason. After a request is \
     accepted, end your turn. Velocity waits for the run and sends its conclusion, each \
     job's result, failed steps' output and the artifacts, with small text artifacts in \

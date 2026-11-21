@@ -132,11 +132,6 @@ fn attach_tool(setup: &mut SessionSetup, executable: &Path, port: u16, token: &s
         .args(vec![queued_run_tool::QUEUED_RUN_SWITCH.into(), port])
         .env(vec![EnvVariable::new(QUEUED_RUN_TOKEN_ENV, token)]);
     setup.shared_servers.insert(0, McpServer::Stdio(server));
-    let instructions = format!("[Velocity] {}", queued_run_tool::INSTRUCTIONS);
-    setup.preface = Some(match setup.preface.take() {
-        Some(preface) => format!("{preface}\n\n{instructions}"),
-        None => instructions,
-    });
 }
 
 impl Drop for RunQueue {

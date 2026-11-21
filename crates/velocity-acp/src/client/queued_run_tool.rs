@@ -23,16 +23,13 @@ pub const QUEUED_RUN_PORT_ENV: &str = "VELOCITY_QUEUED_RUN_PORT";
 pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const REQUEST_BYTES: u64 = 128 * 1024;
 
-pub(super) const INSTRUCTIONS: &str = "Use `preflight` from `velocity-run` before naming a \
-    change to run the applicable formatting, UI, crate type-check, sensitive-path clippy, \
-    overlap and generated-file freshness checks in one call. Use `queue_run` from \
-    `velocity-run` for commands that can take more than a minute, including \
-    `cargo check -p <crate>` and Lean checks. Pass the program and its arguments separately. \
-    `queue_run` returns a durable `run_id`, queue position and estimated wait. Use `run_status` \
-    to inspect a run's phase, queueing reason, checked change/head, exit status and log excerpt, \
-    or to recover a missed result; use `run_cancel` to cancel a queued or running command. \
-    After a command or preflight queues, end your turn. Velocity sends the result and log path \
-    in your next prompt.";
+pub(super) const INSTRUCTIONS: &str = "Queue checks and builds through `velocity-run` \
+    (including `cargo check -p <crate>`, Lean checks, `cargo metadata --format-version 1` \
+    and `pnpm -C ui bindings`). Pass the program and its arguments separately. \
+    `queue_run` returns a durable `run_id`, queue position and estimated wait; inspect with \
+    `run_status` or cancel with `run_cancel`. Run `preflight` before naming a change. \
+    After a command or preflight queues, end your turn; Velocity sends the result and log \
+    path in your next prompt.";
 
 #[derive(Deserialize, Serialize)]
 pub(super) struct Request {

@@ -159,16 +159,34 @@ Most used: {}.",
     }
 
     pub(crate) fn task_matches(&mut self, title: &str) -> Option<String> {
-        let (matches, outcome) = self
-            .measured_call(
-                "graph_find",
-                &serde_json::json!({"query": title, "limit": 5}),
-            )
-            .ok()?;
-        if matches!(outcome, ToolOutcome::Classified) {
+        if crate::search::is_conversational_prompt(title) {
             return None;
         }
-        Some(matches)
+        if self.index.is_rosen() {
+            let _ = self.refresh(&[]);
+        }
+        let graph = &self.index.graph;
+        let hits = self.search.find_task_seeds(graph, title, 5);
+        if hits.is_empty() {
+            return None;
+        }
+        let claims = if hits.iter().any(|hit| {
+            graph.records[hit.record].kind == RecordKind::Symbol(crate::SymbolKind::Item)
+        }) {
+            self.index.live_claims()
+        } else {
+            Vec::new()
+        };
+        let mut text = String::new();
+        for hit in hits {
+            let marker = if hit.exact { "  [exact]" } else { "" };
+            let _ = writeln!(
+                text,
+                "{}{marker}",
+                line_with_claims(graph, hit.record, &claims)
+            );
+        }
+        (!text.is_empty()).then_some(within_budget(text))
     }
 
     /// Re-reads `paths` (known files that changed) and lists the worktree again when a path

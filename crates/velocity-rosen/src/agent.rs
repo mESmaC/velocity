@@ -64,18 +64,13 @@ pub fn path_with_rosen(existing: &str) -> Option<String> {
     Some(path.to_string_lossy().into_owned())
 }
 
-/// What an agent whose folder is not a Rosen workspace, such as a git worktree in any
-/// project, is told with its first message (F5 "Build queue", #308): `rosen run` waits in
-/// the machine's run queue (Rosen R3) whatever folder it runs in, so builds from every
-/// project take turns in one line. A Rosen workspace's [`workspace_note`] says the same.
+/// Fallback note for non-Rosen sessions where `velocity-run` is unavailable (#534).
 pub fn run_queue_note() -> &'static str {
     RUN_QUEUE_NOTE
 }
 
-const RUN_QUEUE_NOTE: &str = "[Velocity] Use cargo fmt, UI type-check and lint, and \
-     `queue_run` or `rosen run -- cargo check -p <crate>` for the Rust crate your change \
-     touches. Use the queue for Lean checks. The integration build covers Rust compilation, \
-     clippy, tests and stress runs.";
+const RUN_QUEUE_NOTE: &str = "[Velocity] `velocity-run` is unavailable in this session; \
+     fall back to `rosen run -- <command>` for checks and builds. See AGENTS.md for rules.";
 
 /// Rosen's own MCP server for an agent (Rosen R10 `rosen mcp`): its commands as tools.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,29 +101,8 @@ pub fn mcp_command(root: &Path, environment: &[(String, String)]) -> Option<McpC
     })
 }
 
-/// Sent with the agent's first message: its folder is a Rosen workspace, not a git
-/// checkout, so the git and pull request steps in its instructions don't apply.
+/// Short Rosen workspace header for callers that do not assemble a full session card (#534).
+/// Static workflow and build rules live in AGENTS.md so they are never duplicated or contradictory.
 pub fn workspace_note(change: &str) -> String {
-    format!(
-        "[Velocity] Your working folder is a Rosen workspace for change `{change}`, not a git \
-         checkout. Every file you write is stored on the Rosen server within 2 seconds, so \
-         there is nothing to commit, push or open: skip any git branch, commit, push and pull \
-         request steps your instructions give. When the work is done, name it with \
-         `rosen commit -m \"<one-line summary>\"`; Velocity lands the change as soon as it combines cleanly with the base. `rosen status` shows what is stored, `rosen diff` \
-         your change, and \
-         `rosen claim --exclusive <paths>` claims code paths other agents might edit so the first \
-         claim wins (plain `rosen claim <paths>` notices are for registration lists and generated \
-         files, which `--exclusive` refuses). The `rosen` MCP server offers the same commands as \
-         tools (`status`, `diff`, `claim` with `exclusive: true`, `share`, `release`, `overlaps`, \
-         `wait`, `commit` and the rest), returning JSON. Calling `wait` records a Rosen path wait \
-         and returns at once; if any path is held, end your turn and Velocity parks and resumes \
-         your thread when the paths are free. Run `preflight` from `velocity-run` before naming \
-         the change, then end your turn; Velocity inspects the diff and sends one pass/fail \
-         report covering changed-file formatting, UI checks, touched-crate type-checks, \
-         sensitive-path clippy, overlaps and generated-file freshness. For any other command \
-         that can take more than a minute, use `queue_run` from `velocity-run` when available, \
-         then end your turn. Velocity runs it in Rosen's queue and sends the result and full \
-         log path when it finishes. The integration build covers full Rust compilation, \
-         clippy, tests and stress runs."
-    )
+    format!("[Velocity] Rosen workspace · change `{change}` (rules live in AGENTS.md).")
 }

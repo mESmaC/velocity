@@ -52,10 +52,9 @@ impl ToolServer for Server {
     }
 
     fn instructions(&self) -> String {
-        "Run preflight before naming a change (`preflight`), queue a long command (`queue_run`), \
-         inspect its status or recover a missed result (`run_status`), cancel it (`run_cancel`), \
-         or request an owner-allowed GitHub workflow run (`workflow_run`), then end your turn to \
-         receive the result from Velocity."
+        "Run `preflight` before naming a change, queue checks and builds with `queue_run`, \
+         inspect or cancel runs with `run_status`/`run_cancel`, or request an owner-allowed \
+         GitHub workflow run with `workflow_run`, then end your turn to receive the result."
             .into()
     }
 

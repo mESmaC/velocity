@@ -738,14 +738,27 @@ async fn run_thread_session(
         SessionSetup::new(worktree_path, plan.bypass_modes),
         true,
     );
-    setup.preface = rosen_change
-        .as_deref()
-        .map(|change| crate::rosen_issue::workspace_note(&application, key, change));
+    let branch = branch_name.as_deref().unwrap_or(&plan.thread.branch_name);
+    setup.session_card = Some(match rosen_change.as_deref() {
+        Some(change) => {
+            crate::rosen_issue::session_card(&application, key, &setup.worktree, change)
+        }
+        None => velocity_acp::client::SessionCard {
+            identity: Some(format!(
+                "{} (thread-{})",
+                velocity_rosen::agent_name(&setup.worktree),
+                key.1
+            )),
+            workspace: Some(setup.worktree.clone()),
+            change: Some(branch.to_owned()),
+            is_rosen: false,
+            ..velocity_acp::client::SessionCard::default()
+        },
+    });
     if rosen_change.is_some() {
         let server = crate::rosen::mcp_server(&setup.worktree, &plan.agent.env);
         setup.shared_servers.extend(server);
     }
-    let branch = branch_name.as_deref().unwrap_or(&plan.thread.branch_name);
     if let Err(error) = crate::airc_claims::attach_with_prompt(
         &application,
         key,
@@ -1017,7 +1030,12 @@ fn goal_session_setup(
     )
     .with_graph_task_title(graph_title.to_owned());
     if let Some(change) = &folder.rosen_change {
-        setup.preface = Some(velocity_rosen::workspace_note(change));
+        setup.session_card = Some(crate::rosen_issue::session_card(
+            application,
+            key,
+            &folder.path,
+            change,
+        ));
         setup
             .shared_servers
             .extend(crate::rosen::mcp_server(&folder.path, &plan.agent.env));
@@ -1202,6 +1220,11 @@ async fn finish_goal_claimed(
 }
 
 fn add_work_handoff(application: &AppHandle, key: ThreadKey, setup: &mut SessionSetup) {
+    let members = handoff_members(application, key);
+    if let Some(card) = setup.session_card.as_mut() {
+        populate_session_card_handoff(application, key, &members, card);
+        return;
+    }
     let Some(handoff) = work_handoff(application, key) else {
         return;
     };
@@ -1209,6 +1232,101 @@ fn add_work_handoff(application: &AppHandle, key: ThreadKey, setup: &mut Session
         Some(preface) => format!("{preface}\n\n{handoff}"),
         None => handoff,
     });
+}
+
+fn handoff_members(application: &AppHandle, key: ThreadKey) -> Vec<String> {
+    let mut members = vec![format!("thread-{}", key.1)];
+    if let Ok(store) = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    ) && let Some(previous) = store
+        .project(key.0)
+        .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
+        .and_then(|thread| thread.previous_work_thread)
+    {
+        members.push(format!("thread-{previous}"));
+    }
+    members
+}
+
+fn populate_session_card_handoff(
+    application: &AppHandle,
+    key: ThreadKey,
+    members: &[String],
+    card: &mut velocity_acp::client::SessionCard,
+) {
+    use velocity_threads::launch::handoff_line;
+    if let Ok(store) = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    ) && let Some(project) = store.project(key.0)
+        && let Some(thread) = project.threads.iter().find(|thread| thread.id == key.1)
+    {
+        if card.work_item.is_none() && (thread.started_by_dispatch || thread.goal_member.is_some())
+        {
+            card.work_item = Some(handoff_line(&thread.title));
+        }
+        if let Some(previous) = thread
+            .previous_work_thread
+            .and_then(|id| project.threads.iter().find(|item| item.id == id))
+        {
+            let outcome = if previous.state == ThreadState::Merged {
+                "landed"
+            } else {
+                "ended without landing"
+            };
+            let mut summary = format!("{} ({outcome})", handoff_line(&previous.title));
+            if let Some(change) = &previous.rosen_change {
+                summary.push_str(&format!(" · change {change}"));
+            }
+            card.previous_item = Some(summary);
+        }
+    }
+    if let Ok(data) = application.path().app_data_dir() {
+        append_airc_claims_to_card(&data, key.0, members, card);
+    }
+}
+
+fn append_airc_claims_to_card(
+    data: &std::path::Path,
+    project: u32,
+    members: &[String],
+    card: &mut velocity_acp::client::SessionCard,
+) {
+    use velocity_threads::launch::handoff_line;
+    let Ok(channel) = velocity_airc::Channel::open(data, &project.to_string()) else {
+        return;
+    };
+    if let Ok(claims) = channel.claims() {
+        for claim in claims
+            .iter()
+            .filter(|claim| members.contains(&claim.member))
+            .take(4)
+        {
+            let files = claim
+                .files
+                .iter()
+                .take(4)
+                .map(|file| handoff_line(file))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let paths = if files.is_empty() { "none" } else { &files };
+            card.push_claim(format!("{} (paths: {paths})", handoff_line(claim.key())));
+        }
+    }
+    if let Ok(waits) = channel.dependency_waits() {
+        for wait in waits
+            .iter()
+            .filter(|wait| members.contains(&wait.member))
+            .take(4)
+        {
+            card.push_claim(format!(
+                "wait: {} holds {}",
+                handoff_line(&wait.holder_nick),
+                handoff_line(&wait.file)
+            ));
+        }
+    }
 }
 
 async fn attach_task_brief(

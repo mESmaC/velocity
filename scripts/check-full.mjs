@@ -55,6 +55,7 @@ function checkBindings() {
 }
 
 try {
+  run("node", ["scripts/check-instruction-drift.mjs"]);
   run("cargo", ["fmt", "--all", "--", "--check"]);
   run("node", ["scripts/check-ui.mjs"]);
   // No separate `cargo build --workspace`: clippy with --all-targets compiles every

@@ -2,7 +2,7 @@
 
 <!-- split-spec: {"order":752,"kind":"markdown","indentation":2} -->
 - Agents request GitHub workflow runs the owner allows (#508).
-  Agents have no `gh`, so `velocity-run` also offers `workflow_run`, which takes a workflow file name, an optional branch or tag and optional `workflow_dispatch` inputs.
+  Agents do not run `gh` directly, so `velocity-run` also offers `workflow_run`, which takes a workflow file name, an optional branch or tag and optional `workflow_dispatch` inputs.
   The owner lists the workflow files agents may request in `rosen.toml`:
 
   ```toml

@@ -42,14 +42,14 @@ pub fn conflict_message(change: &str, base_branch: &str, files: &[String]) -> St
 pub fn regeneration_instructions(paths: &[String]) -> String {
     let mut message = String::new();
     for path in paths {
-        let command = match path.replace('\\', "/").as_str() {
-            "Cargo.lock" => "rosen run -- cargo metadata --format-version 1",
-            "ui/pnpm-lock.yaml" => "pnpm -C ui install --lockfile-only",
-            "ui/src/lib/bindings.ts" => "rosen run -- pnpm -C ui bindings",
+        let instruction = match path.replace('\\', "/").as_str() {
+            "Cargo.lock" => "queue `cargo metadata --format-version 1` via `queue_run`",
+            "ui/pnpm-lock.yaml" => "run `pnpm -C ui install --lockfile-only`",
+            "ui/src/lib/bindings.ts" => "queue `pnpm -C ui bindings` via `queue_run`",
             _ => continue,
         };
         message.push_str(&format!(
-            "Regenerate `{path}`: run `{command}` from the project root.\n"
+            "Regenerate `{path}`: {instruction} from the project root.\n"
         ));
     }
     message

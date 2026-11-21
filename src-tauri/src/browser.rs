@@ -14,8 +14,6 @@ use velocity_browser::{BrowserHub, BrowserInput, BrowserKey, BrowserView, Frame}
 
 use crate::{state::ManagedStateStore, threads::lock};
 
-const INSTRUCTIONS: &str = "Use velocity-browser for pages. Read pages with snapshot, interact with its element refs, and request screenshots only for visual checks. Never enter passwords, tokens or API keys. Ask the owner to use Take over in the Browser tab for sign-in and continue other work until they hand it back.";
-
 #[derive(Clone, Serialize, Type, Event)]
 pub struct BrowserFrame {
     project: u32,
@@ -125,13 +123,12 @@ pub fn configure(application: &AppHandle, key: BrowserKey, setup: &mut SessionSe
                 EnvVariable::new(velocity_browser::TOKEN_ENV, route.token.to_string()),
             ]);
         setup.shared_servers.push(McpServer::Stdio(server));
-        setup.preface = Some(match setup.preface.take() {
-            Some(preface) => format!("{preface}\n\n{INSTRUCTIONS}"),
-            None => INSTRUCTIONS.into(),
-        });
         Ok(())
     })();
     if let Err(error) = result {
+        if let Some(card) = setup.session_card.as_mut() {
+            card.push_unavailable_tool("velocity-browser");
+        }
         crate::diagnostics::record("browser", &error);
     }
 }

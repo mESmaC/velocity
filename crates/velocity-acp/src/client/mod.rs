@@ -30,6 +30,7 @@ mod queued_runs;
 pub mod rewrite;
 mod run_queue;
 mod session;
+mod session_card;
 mod shared;
 mod sign_in;
 mod terminals;
@@ -87,6 +88,7 @@ pub use queued_runs::enable_queued_runs;
 pub use session::{
     SessionResume, SessionSetup, StartedSession, answer_permission, session_servers,
 };
+pub use session_card::SessionCard;
 pub use shared::{SharedServer, install_shared_servers, install_skill_prompt_resolver};
 pub use sign_in::sign_in;
 pub use title::{TitleReply, TitleRequest, request_title};
@@ -417,7 +419,13 @@ async fn run_admitted_session(
                         "Could not start the queued run tool: {error}"
                     )));
                 }
-                setup.preface = run_queue::preface(&launch, setup.preface.take());
+                if let Some(card) = setup.session_card.as_mut() {
+                    card.push_unavailable_tool(
+                        "velocity-run (fall back to `rosen run -- <command>`)",
+                    );
+                } else {
+                    setup.preface = run_queue::preface(&launch, setup.preface.take());
+                }
                 let mut results = RunResults::default();
                 let pre_shutdown_results: Vec<_> = run_history
                     .into_iter()
@@ -436,7 +444,13 @@ async fn run_admitted_session(
                 (None, results)
             }
         };
-    setup.preface = run_queue::append_provider_preface(&launch, setup.preface.take());
+    if let Some(note) = run_queue::provider_note(&launch) {
+        if let Some(card) = setup.session_card.as_mut() {
+            card.push_note(note);
+        } else {
+            setup.preface = run_queue::append_provider_preface(&launch, setup.preface.take());
+        }
+    }
     // Velocity's own servers come first in the setup, so a clash keeps them (session_servers).
     setup
         .shared_servers
@@ -604,7 +618,14 @@ async fn drive(
         session_id: session_id.clone(),
         loaded: started.loaded,
     });
-    let mut preface = session_preface(&setup, started.loaded, started.graph_on).await;
+    let mut preface = session_preface(
+        &setup,
+        &launch,
+        started.loaded,
+        started.graph_on,
+        &started.dropped_servers,
+    )
+    .await;
     let (turn_sender, turn_ended) = unbounded_channel();
     let mut coordination = coordination::Coordination::default();
     let mut turn = Turn {
@@ -631,35 +652,115 @@ async fn drive(
     .await
 }
 
-/// The workspace note, any transcript needed for recovery, and a fresh session's graph hints.
-async fn session_preface(setup: &SessionSetup, loaded: bool, graph_on: bool) -> Vec<ContentBlock> {
-    let graph_preface = if !loaded && graph_on {
+/// The opening session card, any transcript needed for recovery, and a fresh session's graph hints.
+/// On a loaded session (`loaded == true`), static opening context is already in history and is not
+/// re-injected (#534).
+async fn session_preface(
+    setup: &SessionSetup,
+    launch: &AgentLaunch,
+    loaded: bool,
+    graph_on: bool,
+    dropped_servers: &[String],
+) -> Vec<ContentBlock> {
+    if loaded {
+        return setup
+            .handoff_context
+            .iter()
+            .map(|text| preface_block(text))
+            .collect();
+    }
+    let card_text = match &setup.session_card {
+        Some(card) => {
+            Some(enrich_session_card(card, setup, launch, graph_on, dropped_servers).await)
+        }
+        None => None,
+    };
+    let graph_preface = if graph_on {
         airc::graph_preface(setup).await
     } else {
         None
     };
-    setup
-        .preface
-        .iter()
-        .cloned()
+    let blocks: Vec<ContentBlock> = card_text
+        .into_iter()
+        .chain(setup.preface.iter().cloned())
         .chain(setup.task_brief.iter().cloned())
         .chain(setup.handoff_context.iter().cloned())
-        .chain(
-            setup
-                .resume
-                .iter()
-                .filter(|_| !loaded)
-                .map(|resume| resume.transcript.clone()),
-        )
+        .chain(setup.resume.iter().map(|resume| resume.transcript.clone()))
         .chain(graph_preface)
-        .map(|text| {
-            ContentBlock::from(velocity_core::text_budget::prompt_excerpt(
-                &text,
-                velocity_core::text_budget::PROMPT_BYTES,
-                "\n[Context excerpt. Use the graph or the workspace files for further detail.]",
-            ))
-        })
-        .collect()
+        .map(|text| preface_block(&text))
+        .collect();
+    session_card::join_adjacent_text_blocks(blocks)
+}
+
+fn preface_block(text: &str) -> ContentBlock {
+    ContentBlock::from(velocity_core::text_budget::prompt_excerpt(
+        text,
+        velocity_core::text_budget::PROMPT_BYTES,
+        "\n[Context excerpt. Use the graph or the workspace files for further detail.]",
+    ))
+}
+
+async fn enrich_session_card(
+    base: &SessionCard,
+    setup: &SessionSetup,
+    launch: &AgentLaunch,
+    graph_on: bool,
+    dropped_servers: &[String],
+) -> String {
+    let mut card = base.clone();
+    if card.workspace.is_none() {
+        card.workspace = Some(setup.worktree.clone());
+    }
+    if !graph_on {
+        card.push_unavailable_tool("velocity-graph");
+    }
+    if setup.airc.is_none() {
+        card.push_unavailable_tool("airc");
+    }
+    if card.is_rosen
+        && !setup
+            .shared_servers
+            .iter()
+            .any(|server| session::server_name(server) == Some("rosen"))
+    {
+        card.push_unavailable_tool("rosen");
+    }
+    for name in dropped_servers {
+        card.push_unavailable_tool(format!("{name} (unsupported MCP transport)"));
+    }
+    if card.queue_depth.is_none() {
+        let queue_depth =
+            tokio::task::spawn_blocking(velocity_rosen::queued_turn::queue_depth_summary)
+                .await
+                .ok();
+        card.queue_depth = queue_depth;
+    }
+    if card.is_rosen
+        && let Some(endpoint) = launch.env_value("ROSEN_ENDPOINT")
+        && let Some(change) = card
+            .change
+            .as_deref()
+            .or_else(|| launch.env_value("ROSEN_CHANGE"))
+        && let Ok(Ok(state)) = tokio::time::timeout(
+            std::time::Duration::from_millis(1500),
+            velocity_rosen::brief::session_state(endpoint, change),
+        )
+        .await
+    {
+        if card.base_tip.is_none() {
+            card.base_tip = state.base_tip;
+        }
+        if !state.held_path_claims.is_empty() {
+            card.push_claim(format!(
+                "rosen paths: {}",
+                state.held_path_claims.join(", ")
+            ));
+        }
+        for overlap in state.overlapping_changes {
+            card.push_overlap(overlap);
+        }
+    }
+    card.render()
 }
 
 struct PromptResult {
@@ -941,7 +1042,7 @@ impl Turn<'_> {
         if !self.preface.is_empty() {
             let mut sent = std::mem::take(self.preface);
             sent.append(&mut blocks);
-            blocks = sent;
+            blocks = session_card::join_adjacent_text_blocks(sent);
         }
         self.request(blocks)
     }

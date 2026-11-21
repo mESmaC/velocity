@@ -13,7 +13,7 @@ Velocity is a desktop agentic IDE built for one goal: finish projects as fast as
 
 These hold for every feature. A feature that breaks one of them is wrong, whatever else this spec says.
 
-1. **Agents never wait for approval.** Every agent runs with full permissions (bypass / yolo / unrestricted) until it finishes. Every agent also has its full toolset: all of its provider's built-in tools, your MCP servers and skills, the shell, the network and GitHub (§3.2 Tool access). Velocity has no approval prompts, no plan-approval gates and no "needs you" states. Messages sent to a busy agent are queued and picked up at its next step. They never interrupt it.
+1. **Agents never wait for approval.** Every agent runs with full permissions (bypass / yolo / unrestricted) until it finishes. Every agent also has its full toolset: all of its provider's built-in tools, your MCP servers and skills, the shell, the network and Velocity's GitHub tools (§3.2 Tool access). Velocity has no approval prompts, no plan-approval gates and no "needs you" states. Messages sent to a busy agent are queued and picked up at its next step. They never interrupt it.
 2. **The spec comes first.** Every new project starts with a spec interview. No build work starts until the spec is locked.
 3. **A task is finished when its change lands.** The agent names its work (`rosen commit -m`) and repairs anything a stored conflict or post-land revert sends back to it.
    - **Legacy GitHub projects:** an agent opens a PR, watches it until it merges, fixes CI and answers every review comment.
