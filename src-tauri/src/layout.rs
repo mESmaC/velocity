@@ -64,12 +64,14 @@ type CommandBody = Box<dyn FnOnce() + Send>;
 /// time and in the order the window sent them. On the UI thread they ran in order, and
 /// some depend on it: two model choices for one thread save the model and reconfigure
 /// the agent in separate steps, which side by side could interleave (#286).
+/// Not `async`: `#[track_caller]` does nothing on an async fn, so the caller is read here,
+/// synchronously at the call, and the labeled future is returned (#557).
 #[track_caller]
-pub(crate) async fn off_ui_thread<Value: Send + 'static>(
+pub(crate) fn off_ui_thread<Value: Send + 'static>(
     work: impl FnOnce() -> Result<Value, String> + Send + 'static,
-) -> Result<Value, String> {
+) -> impl Future<Output = Result<Value, String>> {
     let label = velocity_core::performance::caller_label(Location::caller());
-    off_ui_thread_labeled(label, work).await
+    off_ui_thread_labeled(label, work)
 }
 
 /// Same as [`off_ui_thread`], recording command latency under an explicit IPC command name.

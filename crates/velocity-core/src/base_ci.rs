@@ -834,7 +834,7 @@ mod tests {
                 "error: redundant closure | --> crates/velocity-graph/src/lib.rs",
             )],
         );
-        let waiting = plan(&[original.clone()], &[], &[before]);
+        let waiting = plan(std::slice::from_ref(&original), &[], &[before]);
         assert!(waiting.superseded.is_empty());
         assert!(waiting.start.is_empty());
 
@@ -852,7 +852,7 @@ mod tests {
                 ..original.clone()
             }],
             &[],
-            &[at_land.clone()],
+            std::slice::from_ref(&at_land),
         );
         assert_eq!(reopened.superseded.len(), 1);
         assert_eq!(reopened.superseded[0].thread, 7);
@@ -872,7 +872,7 @@ mod tests {
                 ..original
             }],
             &[],
-            &[after_land.clone()],
+            std::slice::from_ref(&after_land),
         );
         assert_eq!(later.superseded.len(), 1);
         assert_eq!(later.start, vec![after_land]);
@@ -930,7 +930,11 @@ error[E0063]: missing fields `change`, `payload` in initializer of `Entry`
                 ..failed_job("clippy")
             }],
         );
-        let distinct = plan(&[active.clone()], &[], &[second_error.clone()]);
+        let distinct = plan(
+            std::slice::from_ref(&active),
+            &[],
+            std::slice::from_ref(&second_error),
+        );
         assert!(distinct.superseded.is_empty());
         assert_eq!(distinct.start, vec![second_error]);
 
