@@ -624,6 +624,9 @@ impl StateStore {
         for handoff in item.handoff_items.values_mut() {
             handoff.rewind_events(replacing, latest);
         }
+        for retained in item.retained_rosen_issues.values_mut() {
+            retained.progress.rewind_events(replacing, latest);
+        }
         self.store_snapshot(next)?;
         if previous != 0 || replacing || past_end {
             eprintln!(

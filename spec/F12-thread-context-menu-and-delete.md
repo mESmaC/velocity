@@ -26,6 +26,7 @@ Delete is **immediate, with no confirmation** (decided).
    - a linked task goes back to todo, or a linked issue becomes free again.
 
    The thread is gone either way.
+   Deleting a merged thread whose Rosen land still has pending issue follow-ups (land comment, close on green, or reopen on revert) retains those follow-ups on the project until they complete.
    A workspace that can't be removed yet (the agent is still exiting or a file is still open) is retried in the background until it goes, and one that F5's verification keeps stays on disk; the toast says which.
 
 **Accept when:**

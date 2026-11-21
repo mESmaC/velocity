@@ -1244,6 +1244,11 @@ pub struct ProjectItem {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[specta(skip)]
     pub handoff_items: BTreeMap<String, handoff::Item>,
+    /// Issue follow-ups retained after a landed thread is deleted so green builds and
+    /// reverts still close or reopen its issue (#570).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[specta(skip)]
+    pub retained_rosen_issues: BTreeMap<String, rosen_issue::RetainedIssueProgress>,
     pub id: u32,
     pub name: String,
     pub location_kind: ProjectLocationKind,
@@ -1398,6 +1403,7 @@ impl ProjectItem {
             ci_repairs: Vec::new(),
             base_ci: None,
             handoff_items: BTreeMap::new(),
+            retained_rosen_issues: BTreeMap::new(),
             id: identifier,
             name,
             repository_path,
@@ -1455,6 +1461,7 @@ impl ProjectItem {
                 .threads
                 .iter()
                 .any(|thread| thread.rosen_change.is_some())
+            || !self.retained_rosen_issues.is_empty()
     }
 
     /// Hand out the next task number, above every task saved now or before (F8).

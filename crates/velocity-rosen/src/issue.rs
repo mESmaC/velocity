@@ -1,5 +1,6 @@
 //! Work identity on the server-owned change, before its agent starts.
-use rosen_client::protocol::{CommentTarget, ReadAnswer, ThreadFilter};
+use rosen_client::protocol::{CommentTarget, LogRequest, ReadAnswer, ThreadFilter};
+use rosen_core::SnapshotKind;
 use velocity_core::work_pool::WorkKey;
 
 use crate::{ProjectServer, RosenError, workspace::session};
@@ -164,4 +165,134 @@ async fn issue_spec_path(
             "The project has no spec file for its source issue".into(),
         ))
     })
+}
+
+/// Resolves the source GitHub issue `(repository, number)` recorded on a Rosen change or
+/// its landed commit, for recovering orphaned `handoff_items` whose thread was deleted (#570).
+pub async fn change_source_issue(
+    server: &ProjectServer,
+    change: &str,
+    commit: &str,
+    default_repository: Option<&str>,
+) -> Result<Option<(String, u32)>, RosenError> {
+    let client = crate::connection::requests(server.endpoint()).await?;
+    match client
+        .review_list(ThreadFilter {
+            change: change.to_owned(),
+            state: None,
+        })
+        .await
+    {
+        Ok(notes) => {
+            for comment in notes.iter().flat_map(|note| note.comments.iter()) {
+                if let Some(found) = parse_source_issue_note(&comment.body) {
+                    return Ok(Some(found));
+                }
+            }
+        }
+        Err(rosen_client::Error::Server(_)) => {}
+        Err(error) => return Err(error.into()),
+    }
+    let Some(repository) = default_repository else {
+        return Ok(None);
+    };
+    if let Ok(log) = client
+        .log(LogRequest {
+            at: Some(commit.to_owned()),
+            limit: Some(1),
+            ..LogRequest::default()
+        })
+        .await
+        && let Some(number) = log
+            .entries
+            .first()
+            .and_then(|entry| parse_issue_suffix(&entry.summary))
+    {
+        return Ok(Some((repository.to_owned(), number)));
+    }
+    if let Ok(answer) = client.change_show(change).await {
+        if let Some(number) = parse_owner_issue(answer.change.owner.as_str()) {
+            return Ok(Some((repository.to_owned(), number)));
+        }
+        for snapshot in answer.change.snapshots.iter().rev() {
+            if let SnapshotKind::Named(message) = &snapshot.kind
+                && let Some(number) = parse_issue_suffix(message)
+            {
+                return Ok(Some((repository.to_owned(), number)));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn parse_source_issue_note(body: &str) -> Option<(String, u32)> {
+    const PREFIX: &str = "Velocity source issue: ";
+    let rest = body
+        .get(..PREFIX.len())
+        .filter(|head| head.eq_ignore_ascii_case(PREFIX))
+        .and_then(|_| body.get(PREFIX.len()..))?;
+    let token = rest
+        .split(|character: char| character.is_whitespace() || character == '.')
+        .next()?;
+    let (repository, number) = token.rsplit_once('#')?;
+    let number = number.parse::<u32>().ok().filter(|number| *number > 0)?;
+    (repository.contains('/') && !repository.starts_with('/') && !repository.ends_with('/'))
+        .then(|| (repository.to_owned(), number))
+}
+
+fn parse_issue_suffix(text: &str) -> Option<u32> {
+    let mut found = None;
+    let mut rest = text;
+    while let Some(index) = rest.find("(#") {
+        let after = &rest[index + 2..];
+        let digits: String = after
+            .chars()
+            .take_while(|character| character.is_ascii_digit())
+            .collect();
+        if !digits.is_empty()
+            && after.get(digits.len()..digits.len() + 1) == Some(")")
+            && let Ok(number) = digits.parse::<u32>()
+            && number > 0
+        {
+            found = Some(number);
+        }
+        rest = after;
+    }
+    found
+}
+
+fn parse_owner_issue(owner: &str) -> Option<u32> {
+    let rest = owner.strip_prefix("issue-")?;
+    let digits = rest.split('-').next()?;
+    digits.parse::<u32>().ok().filter(|number| *number > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_issue_suffix, parse_owner_issue, parse_source_issue_note};
+
+    // Risk (#570): recovering an orphaned landed handoff after its thread is deleted relies
+    // on accurately identifying the source repository and issue number from Rosen metadata.
+    #[test]
+    fn parses_source_issue_from_notes_commits_and_owners() {
+        assert_eq!(
+            parse_source_issue_note(
+                "Velocity source issue: mESmaC/rosen#427. The thread retains this association."
+            ),
+            Some(("mESmaC/rosen".to_owned(), 427))
+        );
+        assert_eq!(parse_source_issue_note("Unrelated review comment"), None);
+        assert_eq!(
+            parse_issue_suffix("Fix post-land verification (#427)"),
+            Some(427)
+        );
+        assert_eq!(
+            parse_issue_suffix("Follow-up to (#193) for (#427)"),
+            Some(427)
+        );
+        assert_eq!(parse_issue_suffix("No issue number"), None);
+        assert_eq!(parse_owner_issue("issue-427-192"), Some(427));
+        assert_eq!(parse_owner_issue("issue-427"), Some(427));
+        assert_eq!(parse_owner_issue("scout-1"), None);
+    }
 }

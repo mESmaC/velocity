@@ -625,10 +625,7 @@ impl<'a> OverlapContext<'a> {
     }
 
     fn overlapping_land(&mut self, wait: &IssueOverlap, number: u32) -> Result<LandCheck, String> {
-        let Some(commit) = blocker_thread(self.project, wait)
-            .and_then(|thread| thread.rosen_issue.landed_commit())
-            .map(str::to_owned)
-        else {
+        let Some(commit) = blocker_landed_commit(self.project, wait).map(str::to_owned) else {
             return Ok(LandCheck::Waiting);
         };
         let issue = self.client.get(number).map_err(|error| error.to_string())?;
@@ -746,6 +743,11 @@ fn has_landed(project: &ProjectItem, repository: &str, number: u32) -> bool {
                 .is_some_and(|issue| issue.number == number)
                 && thread.rosen_issue.landed_commit().is_some()
         })
+        || project.retained_rosen_issues.values().any(|retained| {
+            retained.issue.number == number
+                && retained.issue.repository.eq_ignore_ascii_case(repository)
+                && retained.progress.landed_commit().is_some()
+        })
 }
 
 fn blocker_thread<'a>(project: &'a ProjectItem, wait: &IssueOverlap) -> Option<&'a ThreadItem> {
@@ -759,6 +761,24 @@ fn blocker_thread<'a>(project: &'a ProjectItem, wait: &IssueOverlap) -> Option<&
             .blocker_thread
             .is_none_or(|identifier| thread.id == identifier)
     })
+}
+
+fn blocker_landed_commit<'a>(project: &'a ProjectItem, wait: &IssueOverlap) -> Option<&'a str> {
+    blocker_thread(project, wait)
+        .and_then(|thread| thread.rosen_issue.landed_commit())
+        .or_else(|| {
+            project
+                .retained_rosen_issues
+                .values()
+                .find(|retained| {
+                    retained.issue.number == wait.blocker
+                        && retained
+                            .issue
+                            .repository
+                            .eq_ignore_ascii_case(&wait.issue.repository)
+                })
+                .and_then(|retained| retained.progress.landed_commit())
+        })
 }
 
 fn publish_reviews(
@@ -777,8 +797,7 @@ fn publish_reviews(
             "persisted state",
         )?
         .project(identifier)
-        .and_then(|project| blocker_thread(project, wait))
-        .and_then(|thread| thread.rosen_issue.landed_commit())
+        .and_then(|project| blocker_landed_commit(project, wait))
             == Some(commit);
         if still_landed
             && client

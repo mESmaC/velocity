@@ -222,6 +222,35 @@ pub fn last_green(server: &ProjectServer) -> Result<Option<String>, RosenError> 
         .optional()?)
 }
 
+/// Earliest Unix-second timestamp when Rosen recorded a `green` or `built` event
+/// covering `commit`, when readable from `metadata.sqlite` (#570).
+pub fn commit_green_at(server: &ProjectServer, commit: &str) -> Result<Option<u64>, RosenError> {
+    let connection = ledger(server)?;
+    if !table_exists(&connection, "base_history")? || !table_exists(&connection, "events")? {
+        return Ok(None);
+    }
+    let Some((reference, target_seq)): Option<(String, i64)> = connection
+        .query_row(
+            "SELECT ref_name, seq FROM base_history WHERE commit_id=?1 LIMIT 1",
+            [commit],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let green_ms: Option<u64> = connection.query_row(
+        "SELECT MIN(e.created_at) FROM events e
+         LEFT JOIN base_history h
+           ON h.ref_name=?1 AND h.commit_id = json_extract(e.detail, '$.commit')
+         WHERE e.kind IN ('green', 'built')
+           AND (h.seq >= ?2 OR json_extract(e.detail, '$.commit') = ?3)",
+        params![reference, target_seq, commit],
+        |row| row.get(0),
+    )?;
+    Ok(green_ms.map(|ms| ms / 1000))
+}
+
 /// The lands on the base that no green build covers yet.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Uncovered {

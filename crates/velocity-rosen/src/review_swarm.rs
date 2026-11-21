@@ -50,6 +50,13 @@ impl IssueReviews {
             _ => None,
         }
     }
+
+    /// Whether `(change, commit)` is a current non-reverted land without reviewer objections (#570).
+    pub fn can_close_land(&self, change: &str, commit: &str) -> bool {
+        self.lands
+            .get(&(change.into(), commit.into()))
+            .is_some_and(|review| review.state != ReviewedState::IssuesFiled)
+    }
 }
 
 pub async fn issue_reviews(server: &ProjectServer) -> Result<IssueReviews, RosenError> {

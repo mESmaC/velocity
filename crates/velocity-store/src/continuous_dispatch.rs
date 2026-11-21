@@ -330,6 +330,17 @@ impl ProjectItem {
                 since: None,
             });
         }
+        let retained = self.retained_rosen_issues.values().find_map(|retained| {
+            (same_issue(&retained.issue, issue) && !retained.progress.is_integration_green())
+                .then(|| retained.progress.landed_commit())
+                .flatten()
+        });
+        if let Some(commit) = retained {
+            return Some(LandedWait {
+                commit: Some(commit.to_owned()),
+                since: None,
+            });
+        }
         self.continuous_dispatch
             .landed_holds
             .get(&issue.number)
@@ -363,7 +374,8 @@ impl ProjectItem {
             })
     }
 
-    /// Mirrored landed holds that no local thread on this machine owns and closes (#519).
+    /// Mirrored landed holds that no local thread or retained issue record on this machine
+    /// owns and closes (#519, #570).
     pub fn orphaned_landed_holds(&self) -> Vec<LandedHold> {
         self.continuous_dispatch
             .landed_holds
@@ -375,6 +387,9 @@ impl ProjectItem {
                         .as_ref()
                         .is_some_and(|assigned| same_issue(assigned, &hold.issue))
                         && thread.rosen_issue.landed_commit() == Some(hold.commit.as_str())
+                }) && !self.retained_rosen_issues.values().any(|retained| {
+                    same_issue(&retained.issue, &hold.issue)
+                        && retained.progress.landed_commit() == Some(hold.commit.as_str())
                 })
             })
             .cloned()

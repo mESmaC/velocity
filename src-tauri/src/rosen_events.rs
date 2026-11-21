@@ -40,6 +40,7 @@ pub(crate) fn follow(application: &AppHandle, project: u32) {
 async fn follow_project(application: &AppHandle, project: u32) {
     let warm = crate::code_graph::follow_rosen_base(application, project);
     let mut position = (String::new(), 0);
+    let mut swept_handoffs = false;
     loop {
         if !crate::rosen::rosen_in_use(application, project) {
             connection_state(application, project, false);
@@ -60,6 +61,17 @@ async fn follow_project(application: &AppHandle, project: u32) {
                     .map_err(|error| error.to_string())
                     .and_then(|result| result);
                     report(restored);
+                    if !swept_handoffs {
+                        match crate::rosen_issue::sweep_orphaned_handoff_issues(
+                            application,
+                            project,
+                        )
+                        .await
+                        {
+                            Ok(()) => swept_handoffs = true,
+                            Err(error) => report::<()>(Err(error)),
+                        }
+                    }
                     // What a crash or a failed step left undone, before anything new.
                     run_follow_ups(application, project).await;
                     report(crate::rosen_mirror::refresh(application, project).await);

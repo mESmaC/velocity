@@ -65,7 +65,13 @@ impl ProjectItem {
                 && thread.rosen_issue.is_integration_green()
                 && commit.is_none_or(|sha| thread.rosen_issue.landed_commit() == Some(sha))
         });
+        let retained_green = self.retained_rosen_issues.values().any(|retained| {
+            same_issue(&retained.issue, issue)
+                && retained.progress.is_integration_green()
+                && commit.is_none_or(|sha| retained.progress.landed_commit() == Some(sha))
+        });
         thread_green
+            || retained_green
             || self
                 .continuous_dispatch
                 .landed_holds

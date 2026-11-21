@@ -1,16 +1,18 @@
 //! GitHub effects are run by the Rosen event follower, never by the checker (#386).
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Manager};
-use velocity_github::{IssueState, RosenIssueEffect};
+use velocity_core::work_pool::WorkKey;
+use velocity_github::{IssueClient, IssueState, RosenIssueEffect};
 use velocity_rosen::{
     IssueEvent,
     review_swarm::{self, IssueCloser, IssueReviews},
 };
 use velocity_store::continuous_dispatch::LandedHold;
+use velocity_store::issues::ThreadIssue;
 use velocity_store::rosen_issue::{IssueAction, IssueObservation};
 
 use crate::state::ManagedStateStore;
@@ -166,7 +168,7 @@ async fn follow_thread(
         if !done {
             break;
         }
-        finish(application, project, thread.id, action)?;
+        finish(application, project, &thread.change, action)?;
     }
     Ok(())
 }
@@ -178,7 +180,7 @@ async fn issue_reviews(application: &AppHandle, project: u32) -> Result<IssueRev
         .map_err(|error| error.to_string())
 }
 
-type BuildTargets = (Vec<(u32, String)>, Vec<LandedHold>, Vec<String>);
+type BuildTargets = (Vec<(String, String)>, Vec<LandedHold>, Vec<String>);
 
 fn build_check_targets(application: &AppHandle, project: u32) -> Result<BuildTargets, String> {
     let store = lock(
@@ -235,10 +237,10 @@ pub(crate) async fn confirm_builds(
         let work_changed = store
             .confirm_rosen_work_build(project, sequence, &covered_for_store)
             .map_err(|error| error.to_string())?;
-        for (thread, commit) in candidates {
+        for (change, commit) in candidates {
             if covered_for_store.contains(&commit) {
                 store
-                    .confirm_rosen_issue_build(project, thread, &commit)
+                    .confirm_rosen_issue_build(project, &change, &commit)
                     .map_err(|error| error.to_string())?;
             }
         }
@@ -264,7 +266,6 @@ pub(crate) async fn confirm_builds(
 }
 
 struct Pending {
-    id: u32,
     directory: PathBuf,
     change: String,
     watcher_due: bool,
@@ -279,20 +280,35 @@ fn pending(application: &AppHandle, project: u32) -> Result<Vec<Pending>, String
     let Some(project) = store.project(project) else {
         return Ok(Vec::new());
     };
-    Ok(project
+    let directory = PathBuf::from(&project.repository_path);
+    let mut live_changes = HashSet::new();
+    let mut items: Vec<Pending> = project
         .threads
         .iter()
         .filter(|thread| !thread.rosen_issue.pending.is_empty())
         .filter_map(|thread| {
+            let change = thread.rosen_change.clone()?;
+            live_changes.insert(change.clone());
             Some(Pending {
-                id: thread.id,
-                directory: PathBuf::from(&project.repository_path),
-                change: thread.rosen_change.clone()?,
+                directory: directory.clone(),
+                change,
                 watcher_due: thread.rosen_issue.watcher_due(),
                 actions: thread.rosen_issue.pending.clone(),
             })
         })
-        .collect())
+        .collect();
+    for (change, retained) in &project.retained_rosen_issues {
+        if live_changes.contains(change) || retained.progress.pending.is_empty() {
+            continue;
+        }
+        items.push(Pending {
+            directory: directory.clone(),
+            change: change.clone(),
+            watcher_due: retained.progress.watcher_due(),
+            actions: retained.progress.pending.clone(),
+        });
+    }
+    Ok(items)
 }
 
 fn synchronize(
@@ -311,7 +327,7 @@ fn synchronize(
         _ if action.land_comment => RosenIssueEffect::Landed { change },
         _ => return Ok(false),
     };
-    let client = velocity_github::IssueClient::for_repository(&directory, &issue.repository)
+    let client = IssueClient::for_repository(&directory, &issue.repository)
         .map_err(|error| error.to_string())?;
     client
         .follow_rosen_issue(
@@ -327,15 +343,272 @@ fn synchronize(
 fn finish(
     application: &AppHandle,
     project: u32,
-    thread: u32,
+    change: &str,
     action: &IssueAction,
 ) -> Result<(), String> {
     lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?
-    .finish_rosen_issue(project, thread, action)
+    .finish_rosen_issue(project, change, action)
     .map_err(|error| error.to_string())
+}
+
+struct HandoffSweepTargets {
+    directory: PathBuf,
+    remote: Option<String>,
+    candidates: Vec<HandoffSweepCandidate>,
+}
+
+struct HandoffSweepCandidate {
+    change: String,
+    commit: String,
+    known_issue: Option<ThreadIssue>,
+}
+
+/// On startup, finds any `handoff_items` entry whose change landed and went green in Rosen
+/// after its thread was deleted, and adopts its open issue into `retained_rosen_issues` so
+/// the next `follow_up` pass closes it with the usual comment (#570).
+pub(crate) async fn sweep_orphaned_handoff_issues(
+    application: &AppHandle,
+    project: u32,
+) -> Result<(), String> {
+    let handle = application.clone();
+    let Some(HandoffSweepTargets {
+        directory,
+        remote,
+        candidates,
+    }) = tauri::async_runtime::spawn_blocking(move || handoff_sweep_candidates(&handle, project))
+        .await
+        .map_err(|error| error.to_string())??
+    else {
+        return Ok(());
+    };
+    let mut commits: Vec<String> = candidates.iter().map(|item| item.commit.clone()).collect();
+    commits.sort_unstable();
+    commits.dedup();
+    let server = crate::rosen::server(application, project).await?;
+    let covered = velocity_rosen::issue_build_coverage(&server, &commits)
+        .await
+        .map_err(|error| error.to_string())?;
+    let green_candidates: Vec<_> = candidates
+        .into_iter()
+        .filter(|item| covered.contains(&item.commit))
+        .collect();
+    if green_candidates.is_empty() {
+        return Ok(());
+    }
+    let dir = directory.clone();
+    let Some((repository, open_numbers)) =
+        tauri::async_runtime::spawn_blocking(move || open_issue_numbers(&dir, remote.as_deref()))
+            .await
+            .map_err(|error| error.to_string())??
+    else {
+        return Ok(());
+    };
+    if open_numbers.is_empty() {
+        return Ok(());
+    }
+    let resolved =
+        resolve_open_handoff_issues(&server, &repository, &open_numbers, green_candidates).await?;
+    if resolved.is_empty() {
+        return Ok(());
+    }
+    let reviews = review_swarm::issue_reviews(&server)
+        .await
+        .map_err(|error| error.to_string())?;
+    adopt_resolved_handoff_issues(
+        application,
+        project,
+        &server,
+        &directory,
+        &reviews,
+        resolved,
+    )
+    .await
+}
+
+async fn adopt_resolved_handoff_issues(
+    application: &AppHandle,
+    project: u32,
+    server: &velocity_rosen::ProjectServer,
+    directory: &Path,
+    reviews: &IssueReviews,
+    resolved: Vec<(String, String, ThreadIssue)>,
+) -> Result<(), String> {
+    for (change, commit, issue) in resolved {
+        if !reviews.can_close_land(&change, &commit) {
+            continue;
+        }
+        let local_green = velocity_rosen::integration::commit_green_at(server, &commit)
+            .ok()
+            .flatten();
+        let (dir, repo, number, sha) = (
+            directory.to_path_buf(),
+            issue.repository.clone(),
+            issue.number,
+            commit.clone(),
+        );
+        let need_github_time = local_green.is_none();
+        let Some(github_green) = tauri::async_runtime::spawn_blocking(move || {
+            confirm_orphaned_handoff_github(&dir, &repo, number, &sha, need_github_time)
+        })
+        .await
+        .map_err(|error| error.to_string())??
+        else {
+            continue;
+        };
+        let green_since = local_green.or(github_green).unwrap_or_else(unix_seconds);
+        crate::state::try_with_store(application, move |store| {
+            store
+                .adopt_orphaned_handoff_issue(project, change, issue, commit, green_since)
+                .map_err(|error| error.to_string())
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+fn handoff_sweep_candidates(
+    application: &AppHandle,
+    project: u32,
+) -> Result<Option<HandoffSweepTargets>, String> {
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let Some(project) = store.project(project) else {
+        return Ok(None);
+    };
+    let live_changes: HashSet<&str> = project
+        .threads
+        .iter()
+        .filter_map(|thread| thread.rosen_change.as_deref())
+        .collect();
+    let mut candidates = Vec::new();
+    for (change, item) in &project.handoff_items {
+        let Some(commit) = item.landed.as_ref() else {
+            continue;
+        };
+        if live_changes.contains(change.as_str())
+            || project.retained_rosen_issues.contains_key(change)
+        {
+            continue;
+        }
+        let known_issue = project.rosen_work_items.iter().find_map(|work| {
+            if work.change.as_deref() != Some(change.as_str()) {
+                return None;
+            }
+            match &work.key {
+                WorkKey::Issue { repository, number } => {
+                    Some(ThreadIssue::new(repository.clone(), *number))
+                }
+                _ => None,
+            }
+        });
+        if item.source != "Issue" && known_issue.is_none() {
+            continue;
+        }
+        candidates.push(HandoffSweepCandidate {
+            change: change.clone(),
+            commit: commit.clone(),
+            known_issue,
+        });
+    }
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(HandoffSweepTargets {
+        directory: PathBuf::from(&project.repository_path),
+        remote: project.github_remote.clone(),
+        candidates,
+    }))
+}
+
+fn open_issue_numbers(
+    directory: &Path,
+    remote: Option<&str>,
+) -> Result<Option<(String, HashSet<u32>)>, String> {
+    let client = match remote {
+        Some(remote) => Some(
+            IssueClient::for_repository(directory, remote).map_err(|error| error.to_string())?,
+        ),
+        None if directory.join(".git").exists()
+            && IssueClient::has_origin(directory).map_err(|error| error.to_string())? =>
+        {
+            Some(IssueClient::discover(directory).map_err(|error| error.to_string())?)
+        }
+        None => None,
+    };
+    let Some(client) = client else {
+        return Ok(None);
+    };
+    let repository = client.repository().to_owned();
+    let numbers = client
+        .open_issues()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|issue| issue.number)
+        .collect();
+    Ok(Some((repository, numbers)))
+}
+
+async fn resolve_open_handoff_issues(
+    server: &velocity_rosen::ProjectServer,
+    repository: &str,
+    open_numbers: &HashSet<u32>,
+    candidates: Vec<HandoffSweepCandidate>,
+) -> Result<Vec<(String, String, ThreadIssue)>, String> {
+    let mut resolved = Vec::new();
+    for candidate in candidates {
+        let issue = match candidate.known_issue {
+            Some(issue) => Some(issue),
+            None => velocity_rosen::change_source_issue(
+                server,
+                &candidate.change,
+                &candidate.commit,
+                Some(repository),
+            )
+            .await
+            .map_err(|error| error.to_string())?
+            .map(|(repo, number)| ThreadIssue::new(repo, number)),
+        };
+        let Some(issue) = issue else {
+            continue;
+        };
+        if issue.repository.eq_ignore_ascii_case(repository) && open_numbers.contains(&issue.number)
+        {
+            resolved.push((candidate.change, candidate.commit, issue));
+        }
+    }
+    Ok(resolved)
+}
+
+fn confirm_orphaned_handoff_github(
+    directory: &Path,
+    repository: &str,
+    number: u32,
+    commit: &str,
+    need_green_at: bool,
+) -> Result<Option<Option<u64>>, String> {
+    let client =
+        IssueClient::for_repository(directory, repository).map_err(|error| error.to_string())?;
+    let current = client
+        .landed_awaiting_integration(number)
+        .map_err(|error| error.to_string())?;
+    if current.as_deref() != Some(commit) {
+        return Ok(None);
+    }
+    let passed_at = if need_green_at {
+        client
+            .integration_status_covering(commit)
+            .ok()
+            .flatten()
+            .and_then(|coverage| coverage.passed_at)
+    } else {
+        None
+    };
+    Ok(Some(passed_at))
 }
 
 /// Closes orphaned lands from other machines once a green integration build (here or on
