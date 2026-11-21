@@ -155,13 +155,11 @@ fn checklist_item_state(trimmed: &str) -> Option<bool> {
     let rest = rest.trim_start();
     let (checked, after) = if let Some(after) = rest.strip_prefix("[ ]") {
         (false, after)
-    } else if let Some(after) = rest
-        .strip_prefix("[x]")
-        .or_else(|| rest.strip_prefix("[X]"))
-    {
-        (true, after)
     } else {
-        return None;
+        let after = rest
+            .strip_prefix("[x]")
+            .or_else(|| rest.strip_prefix("[X]"))?;
+        (true, after)
     };
     (after.is_empty() || after.starts_with(char::is_whitespace)).then_some(checked)
 }
