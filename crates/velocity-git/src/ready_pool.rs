@@ -8,8 +8,8 @@
 //! the pool would point back into the pool folder once the worktree moves. Cargo's `target`
 //! folder has no such paths and stays fresh across the move, so the prebuild is kept.
 //!
-//! Lean projects get their pinned toolchain and Mathlib's prebuilt files in the same step
-//! (see [`crate::lean_setup`]).
+//! Lean projects set up their pinned toolchain and Mathlib's prebuilt files on demand when
+//! proofs are built or `lake` runs (#546), rather than in every warm pool slot.
 //!
 //! Each slot records its base commit and whether its prebuild finished (and whether it failed)
 //! in a `velocity-ready` file in its git admin folder, outside the checkout, so agents never
@@ -22,7 +22,6 @@ use std::process::Command;
 use velocity_core::ready_pool::{changes_affect_build, slot_folder, slot_index};
 
 use crate::command::git;
-use crate::lean_setup::prepare_lean;
 use crate::manager::{
     WorktreeError, WorktreeSetupRequest, copy_configured_untracked_files,
     parse_untracked_file_list, run_git_command, validate_worktree_path_length,
@@ -160,29 +159,27 @@ fn build_inputs_changed(slot: &Path, base: &str, tip: &str) -> bool {
 }
 
 /// Prepares the slot at its base so an agent's first build compiles only what it changes.
-/// Every Lake project in it gets its pinned Lean toolchain and Mathlib's prebuilt files
-/// (F5 Warm pool → Lean), with packages seeded from the repository's other checkouts. With
-/// `build_cargo` ("share the Rust build cache"), a Cargo project then runs
+/// With `build_cargo` ("share the Rust build cache"), a Cargo project runs
 /// `cargo build --workspace` in the slot's own `target` folder with the shared compiler
-/// cache. Both run below normal priority so agents' own builds go first. The slot is marked
-/// built either way: a step that fails at the tip of `master` fails for the agent too, and
-/// retrying it would only keep the machine busy. A failure is marked too, so the next merge
-/// to `master` rebuilds it whatever that merge touched (F5 Refilling).
+/// cache below normal priority so agents' own builds go first. Lean setup runs on demand
+/// when a workspace builds proofs or invokes `lake` (#546), so slots for non-proof work
+/// carry no `proofs/.lake`. The slot is marked built either way: a step that fails at the
+/// tip of `master` fails for the agent too, and retrying it would only keep the machine busy.
+/// A failure is marked too, so the next merge to `master` rebuilds it whatever that merge
+/// touched (F5 Refilling).
 pub fn prebuild_ready_worktree(
-    repository_root: &Path,
+    _repository_root: &Path,
     slot: &Path,
     build_cargo: bool,
 ) -> Result<(), WorktreeError> {
     let base = read_mark(slot)
         .map(|mark| mark.base)
         .ok_or_else(|| unmarked(slot))?;
-    let lean = prepare_lean(slot, &package_sources(repository_root, slot));
-    let built = if build_cargo && slot.join("Cargo.toml").is_file() {
+    let result = if build_cargo && slot.join("Cargo.toml").is_file() {
         run_prebuild(slot)
     } else {
         Ok(())
     };
-    let result = lean.and(built);
     let outcome = if result.is_ok() {
         PrebuildOutcome::Succeeded
     } else {
@@ -190,22 +187,6 @@ pub fn prebuild_ready_worktree(
     };
     write_mark(slot, &base, Some(outcome))?;
     result
-}
-
-/// The checkouts a slot's Lake packages may be cloned from: the repository's main checkout
-/// first, then its other registered worktrees. The slot itself is left out.
-fn package_sources(repository_root: &Path, slot: &Path) -> Vec<PathBuf> {
-    let own = fs::canonicalize(slot).ok();
-    let mut seen = Vec::new();
-    std::iter::once(repository_root.to_path_buf())
-        .chain(registered_worktrees(repository_root).unwrap_or_default())
-        .filter(|path| {
-            let canonical = fs::canonicalize(path).ok();
-            let fresh = canonical.is_some() && canonical != own && !seen.contains(&canonical);
-            seen.push(canonical);
-            fresh
-        })
-        .collect()
 }
 
 /// Takes `ready.slot` for a thread: catches it up to the tip, moves it to the thread's path

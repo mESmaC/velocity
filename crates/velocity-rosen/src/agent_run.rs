@@ -144,6 +144,7 @@ pub fn install(executable: &Path) {
                 eprintln!("Could not install the agent shell commands: {error}");
             })
             .ok()
+            .inspect(|commands| crate::lean_cache::install_lake_shim(&commands.folder))
     });
 }
 
@@ -216,7 +217,7 @@ fn saved_passthrough(folder: &Path) -> Vec<String> {
     velocity_core::agent_env::normalize_passthrough(&names).unwrap_or_default()
 }
 
-fn filter_environment(command: &mut Command, passthrough: &[String]) {
+pub(crate) fn filter_environment(command: &mut Command, passthrough: &[String]) {
     for (os_name, _) in std::env::vars_os() {
         if velocity_core::agent_env::should_withhold(&os_name.to_string_lossy(), passthrough) {
             command.env_remove(&os_name);
@@ -224,11 +225,11 @@ fn filter_environment(command: &mut Command, passthrough: &[String]) {
     }
 }
 
-fn executable_file(name: &str) -> String {
+pub(crate) fn executable_file(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
-fn copy_launcher(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn copy_launcher(source: &Path, destination: &Path) -> io::Result<()> {
     if std::fs::hard_link(source, destination).is_err() {
         std::fs::copy(source, destination)?;
     }
@@ -260,6 +261,8 @@ pub fn serve() -> Option<(String, io::Result<ExitStatus>)> {
     let passthrough = saved_passthrough(folder);
     let result = if name == "rosen" {
         rosen_program(folder).and_then(|program| run_rosen(&program, &arguments, &passthrough))
+    } else if name == "lake" {
+        crate::lean_cache::run_lake(&arguments, &passthrough)
     } else {
         run_direct(folder, &name, &arguments, &passthrough)
     };
@@ -357,7 +360,7 @@ fn run_held(name: &str, arguments: &[OsString], passthrough: &[String]) -> io::R
 }
 
 /// The first `name` executable on `path` outside a managed command folder.
-fn real_program(name: &str, path: &OsStr) -> Option<PathBuf> {
+pub(crate) fn real_program(name: &str, path: &OsStr) -> Option<PathBuf> {
     let file = executable_file(name);
     std::env::split_paths(path)
         .filter(|folder| !is_command_folder(folder))
@@ -475,7 +478,7 @@ pub fn toolchain_path_from(path: &OsStr) -> io::Result<OsString> {
     std::env::join_paths(folders).map_err(io::Error::other)
 }
 
-fn toolchain_path() -> io::Result<OsString> {
+pub(crate) fn toolchain_path() -> io::Result<OsString> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     toolchain_path_from(&path)
 }

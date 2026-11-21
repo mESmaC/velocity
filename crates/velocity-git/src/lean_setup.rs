@@ -215,8 +215,17 @@ fn prepare_lake_project(
         });
         seed_package(&packages.join(&package.name), package, source_folders);
     }
-    if manifest.uses_mathlib() {
+    if let Some(mathlib) = manifest
+        .packages
+        .iter()
+        .find(|package| package.name == MATHLIB)
+    {
         run_tool(project, "lake", &["exe", "cache", "get"])?;
+        let stamp = project.join(velocity_core::lean_cache::MATHLIB_CACHE_STAMP);
+        if let Some(parent) = stamp.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(stamp, &mathlib.rev);
     }
     Ok(())
 }

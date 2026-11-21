@@ -24,6 +24,7 @@ mod git_base;
 pub mod integration;
 mod issue;
 pub mod landing;
+pub mod lean_cache;
 mod light_target;
 pub mod machine_dispatch;
 pub mod machines;

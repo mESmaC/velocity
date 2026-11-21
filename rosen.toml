@@ -85,11 +85,11 @@ commands = [
 [warm_pool]
 size = 8
 
-# Prepare the Lean cache and UI dependencies in the template or slot.
+# Prepare UI dependencies in the template or slot. Lean / Mathlib's cache is prepared on
+# demand the first time a workspace builds proofs or runs `lake` (#546), so workspaces that
+# never touch `proofs/` do not carry a ~7 GB `proofs/.lake` copy.
 [prepare]
 commands = [
-    # The elan lake proxy installs proofs/lean-toolchain before fetching Mathlib's cache.
-    "cd proofs && lake exe cache get",
     "pnpm -C ui install",
 ]
 

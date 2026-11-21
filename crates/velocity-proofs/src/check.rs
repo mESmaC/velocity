@@ -319,21 +319,82 @@ fn is_proof_source(path: &str) -> bool {
     path.ends_with(".lean") && !path.contains("/.lake/")
 }
 
-/// `lake build`. A project on Mathlib fetches Mathlib's prebuilt cache first, so a fresh
-/// worktree never compiles Mathlib from source.
+/// `lake build`. A project on Mathlib fetches Mathlib's prebuilt cache on demand first when
+/// the pinned revision is not unpacked yet, so a fresh workspace never compiles Mathlib from
+/// source (#546).
 fn lake_build(folder: &Path) -> CheckStep<()> {
-    let manifest = std::fs::read_to_string(folder.join("lake-manifest.json")).unwrap_or_default();
-    if manifest.contains("\"mathlib\"") {
-        match lake(folder, &["exe", "cache", "get"]) {
-            Ok(output) if output.status.success() => {}
-            Ok(output) => return CheckStep::Failed(excerpt("lake exe cache get", &output)),
-            Err(error) => return CheckStep::Failed(error),
-        }
+    if let Err(failure) = ensure_mathlib_cache(folder) {
+        return CheckStep::Failed(failure);
     }
     match lake(folder, &["build"]) {
         Ok(output) if output.status.success() => CheckStep::Ran(()),
         Ok(output) => CheckStep::Failed(excerpt("lake build", &output)),
         Err(error) => CheckStep::Failed(error),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ProofManifestFile {
+    #[serde(default, rename = "packagesDir")]
+    packages_dir: Option<String>,
+    #[serde(default)]
+    packages: Vec<ProofManifestPackage>,
+}
+
+#[derive(serde::Deserialize)]
+struct ProofManifestPackage {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    rev: String,
+}
+
+fn ensure_mathlib_cache(folder: &Path) -> Result<(), String> {
+    let manifest_text =
+        std::fs::read_to_string(folder.join("lake-manifest.json")).unwrap_or_default();
+    if let Some((packages_dir, rev)) = parse_mathlib_pin(&manifest_text) {
+        let olean = folder
+            .join(packages_dir)
+            .join(velocity_core::lean_cache::MATHLIB_OLEAN_RELATIVE);
+        let stamp_path = folder.join(velocity_core::lean_cache::MATHLIB_CACHE_STAMP);
+        let stamped = std::fs::read_to_string(&stamp_path).ok();
+        if velocity_core::lean_cache::mathlib_cache_current(
+            stamped.as_deref(),
+            &rev,
+            olean.is_file(),
+        ) {
+            return Ok(());
+        }
+        run_cache_get(folder)?;
+        if let Some(parent) = stamp_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(stamp_path, rev);
+        return Ok(());
+    }
+    if manifest_text.contains("\"mathlib\"") {
+        run_cache_get(folder)?;
+    }
+    Ok(())
+}
+
+fn parse_mathlib_pin(text: &str) -> Option<(String, String)> {
+    let manifest: ProofManifestFile = serde_json::from_str(text).ok()?;
+    let packages_dir = manifest
+        .packages_dir
+        .filter(|folder| velocity_core::lean_cache::is_relative_folder(folder))
+        .unwrap_or_else(|| velocity_core::lean_cache::DEFAULT_PACKAGES_DIR.to_owned());
+    let mathlib = manifest.packages.into_iter().find(|package| {
+        package.name == "mathlib" && velocity_core::lean_cache::is_commit_hash(&package.rev)
+    })?;
+    Some((packages_dir, mathlib.rev))
+}
+
+fn run_cache_get(folder: &Path) -> Result<(), String> {
+    match lake(folder, &["exe", "cache", "get"]) {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => Err(excerpt("lake exe cache get", &output)),
+        Err(error) => Err(error),
     }
 }
 

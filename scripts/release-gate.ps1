@@ -135,15 +135,44 @@ function Confirm-NoReleaseBlocker {
     }
 }
 
+function Ensure-MathlibCache([string]$ProofsDirectory) {
+    $manifestPath = Join-Path $ProofsDirectory 'lake-manifest.json'
+    if (-not (Test-Path -LiteralPath $manifestPath)) { return }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $mathlib = $manifest.packages | Where-Object { $_.name -eq 'mathlib' } | Select-Object -First 1
+    if (-not $mathlib -or -not $mathlib.rev) { return }
+    $packagesDirectory = if ($manifest.packagesDir) { $manifest.packagesDir } else { '.lake/packages' }
+    $stampPath = Join-Path $ProofsDirectory '.lake/.velocity-mathlib-rev'
+    $mathlibOlean = Join-Path $ProofsDirectory (Join-Path $packagesDirectory 'mathlib/.lake/build/lib/lean/Mathlib.olean')
+    if ((Test-Path -LiteralPath $mathlibOlean) -and (Test-Path -LiteralPath $stampPath)) {
+        $stamped = (Get-Content -LiteralPath $stampPath -Raw).Trim()
+        if ($stamped -eq $mathlib.rev) { return }
+    }
+    Write-Host '==> Proofs: fetching Mathlib cache (lake exe cache get)' -ForegroundColor Cyan
+    lake exe cache get
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Gate "lake exe cache get (exit $LASTEXITCODE)"
+    }
+    $stampDirectory = Split-Path -Parent $stampPath
+    if (-not (Test-Path -LiteralPath $stampDirectory)) {
+        New-Item -ItemType Directory -Path $stampDirectory -Force | Out-Null
+    }
+    Set-Content -LiteralPath $stampPath -Value $mathlib.rev -NoNewline -Encoding utf8
+}
+
 function Confirm-Proofs {
     if (-not (Get-Command lake -ErrorAction SilentlyContinue)) {
         Stop-Gate 'lake is not installed. Run proofs/scripts/Setup-Toolchain.ps1.'
     }
     Write-Host '==> Proofs: lake build and axiom audit' -ForegroundColor Cyan
     Push-Location proofs
-    lake build 2>&1 | Tee-Object -Variable lakeLines | Out-Host
-    $lakeExit = $LASTEXITCODE
-    Pop-Location
+    try {
+        Ensure-MathlibCache (Get-Location).Path
+        lake build 2>&1 | Tee-Object -Variable lakeLines | Out-Host
+        $lakeExit = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
     if ($lakeExit -ne 0) {
         Stop-Gate "lake build (exit $lakeExit)"
     }

@@ -204,6 +204,13 @@ impl QueuedRun {
             self.record.head = head;
         }
         sink.set_running(self.record.change.clone(), self.record.head.clone());
+        if let Some(outcome) = self
+            .prepare_lake_cache(rosen, worktree, &directory, launch, &turn, &stop)
+            .await
+        {
+            drop(turn);
+            return outcome;
+        }
         let command = match self.build_command(rosen, &directory, launch, &turn) {
             Ok(command) => command,
             Err(error) => return ExecutionOutcome::Failed(error),
@@ -284,6 +291,9 @@ impl QueuedRun {
                 for variable in THREAD_VARIABLES {
                     command.env(variable, &jobs);
                 }
+                if velocity_rosen::lean_cache::is_lake(&self.command.program) {
+                    command.env("PATH", clean_toolchain_path(launch)?);
+                }
                 command
             }
             QueuedTurn::Light { target, .. } => {
@@ -312,6 +322,94 @@ impl QueuedRun {
         };
         command
             .current_dir(directory)
+            .stdin(Stdio::null())
+            .stdout(self.output.try_clone()?)
+            .stderr(self.output.try_clone()?)
+            .kill_on_drop(true);
+        Ok(command)
+    }
+
+    /// Unpacks Mathlib's prebuilt cache on demand before running `lake` so a fresh workspace
+    /// never compiles Mathlib from source (#546).
+    async fn prepare_lake_cache(
+        &mut self,
+        rosen: &Path,
+        worktree: &Path,
+        directory: &Path,
+        launch: &AgentLaunch,
+        turn: &QueuedTurn,
+        stop: &CancellationToken,
+    ) -> Option<ExecutionOutcome> {
+        if !velocity_rosen::lean_cache::is_lake(&self.command.program) {
+            return None;
+        }
+        let pending = velocity_rosen::lean_cache::pending_mathlib_cache(
+            directory,
+            Some(worktree),
+            &self.command.arguments,
+        )?;
+        let _ = writeln!(
+            &self.output,
+            "==> Preparing Lean / Mathlib cache (lake exe cache get) in {}\n",
+            pending.project.display()
+        );
+        let command = match self.build_lake_cache_command(rosen, &pending.project, launch, turn) {
+            Ok(command) => command,
+            Err(error) => return Some(ExecutionOutcome::Failed(error)),
+        };
+        let mut child = match spawn_owned_command(command) {
+            Ok(child) => child,
+            Err(error) => return Some(ExecutionOutcome::Failed(error)),
+        };
+        let outcome = tokio::select! {
+            status = child.wait() => status.map_or_else(ExecutionOutcome::Failed, ExecutionOutcome::Exited),
+            () = stop.cancelled() => {
+                let _ = stop_owned_process(&mut child).await;
+                ExecutionOutcome::Cancelled
+            }
+        };
+        match outcome {
+            ExecutionOutcome::Exited(status) if status.success() => {
+                velocity_rosen::lean_cache::record_mathlib_cache_ready(
+                    &pending.project,
+                    &pending.rev,
+                );
+                None
+            }
+            other => Some(other),
+        }
+    }
+
+    fn build_lake_cache_command(
+        &self,
+        rosen: &Path,
+        project: &Path,
+        launch: &AgentLaunch,
+        turn: &QueuedTurn,
+    ) -> io::Result<tokio::process::Command> {
+        let mut command = hidden_command(rosen);
+        launch.apply_environment(&mut command);
+        command
+            .args([
+                "run",
+                "--class",
+                self.command.class(),
+                "--",
+                &self.command.program,
+                "exe",
+                "cache",
+                "get",
+            ])
+            .env("PATH", clean_toolchain_path(launch)?)
+            .env(HELD_ENV, self.command.class());
+        if let QueuedTurn::Rosen(rosen_turn) = turn {
+            let jobs = rosen_turn.budget().jobs.to_string();
+            for variable in THREAD_VARIABLES {
+                command.env(variable, &jobs);
+            }
+        }
+        command
+            .current_dir(project)
             .stdin(Stdio::null())
             .stdout(self.output.try_clone()?)
             .stderr(self.output.try_clone()?)

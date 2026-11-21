@@ -1,7 +1,6 @@
 #### Warm pool (speed) · Lean · Built
 
 <!-- split-spec: {"order":717,"kind":"markdown","indentation":2} -->
-- Built: the prebuild worker does it for each Lake project (a `lean-toolchain` and a lakefile) at the checkout's root or in a top-level folder such as `proofs/`, before the Cargo build and whether or not the Rust build cache is shared.
-  Mathlib's cache tool keeps its downloads in one machine-wide folder, so only the first worktree on a machine downloads Mathlib and later ones unpack it.
-  Before Lake runs, each package pinned in `lake-manifest.json` that the worktree lacks is cloned locally from another checkout of the repository that has the pinned commit (the main checkout first), with the manifest's URL as `origin`, so Lake uses it instead of cloning Mathlib's history again.
-  A failed step is not retried until `master` moves, like the Cargo prebuild.
+- Built: warm-pool slots and Rosen `[prepare]` templates skip Lean setup so workspaces that never touch `proofs/` have no `proofs/.lake` (#546).
+  When a workspace runs `lake` (through `queue_run`, the agent shell, `scripts/check.ps1`, `scripts/release-gate.ps1` or `velocity-proofs`), Velocity checks the Lake project's `lake-manifest.json` and runs `lake exe cache get` first whenever Mathlib's prebuilt cache is missing or its pinned revision changed, stamping `.lake/.velocity-mathlib-rev` so repeat builds skip the fetch.
+  Mathlib's cache tool keeps its downloads in one machine-wide folder (`~/.cache/mathlib`), so only the first proof build on a machine downloads Mathlib and later workspaces unpack it on demand.

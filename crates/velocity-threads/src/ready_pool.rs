@@ -4,9 +4,10 @@
 //!
 //! Two background threads share the pool. The checkout worker fetches the tip, makes,
 //! removes and catches slots up one at a time, so swarm launches never race each other on
-//! setup. The prebuild worker builds one slot at a time below normal priority: Lean
-//! toolchain and Mathlib's cache for Lake projects, then the Cargo build. A take marks
-//! its slot taken under the pool's lock, so two threads never get the same worktree.
+//! setup. The prebuild worker builds one slot at a time below normal priority when the
+//! shared Cargo build cache is on; Lean setup runs on demand when proofs are built (#546).
+//! A take marks its slot taken under the pool's lock, so two threads never get the same
+//! worktree.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -510,9 +511,12 @@ impl ReadyPools {
     fn next_prebuild(&self) -> Option<(PoolProject, u32, String)> {
         let mut pools = self.lock();
         pools.values_mut().find_map(|pool| {
-            // Runs with the Rust build cache off too: Lean setup (toolchain and Mathlib's
-            // cache) is part of every prebuild, and only the Cargo build follows the setting.
+            // Lean setup runs on demand when proofs are built (#546), so warm pool
+            // prebuilds run only when the Cargo build cache is enabled.
             let project = pool.project.clone()?;
+            if !project.share_build_cache {
+                return None;
+            }
             let index = prebuild_work(&pool.slots, project.standing)?;
             let base = pool.slots.iter().find_map(|slot| match &slot.state {
                 SlotState::Ready { base, .. } if slot.index == index => Some(base.clone()),

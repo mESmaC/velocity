@@ -1,7 +1,8 @@
-//! Headless check of the warm pool's Lean setup (SPEC.md F5 Warm pool → Lean) on a real
-//! repository with a Mathlib project: makes one ready slot at the given commit, prebuilds it
-//! (toolchain through elan, Lake packages seeded from the repository's other checkouts,
-//! `lake exe cache get`), then asks Lake whether Mathlib is up to date without building, and
+//! Headless check of on-demand Lean setup (SPEC.md F5 Warm pool → Lean, #546) on a real
+//! repository with a Mathlib project: makes one ready slot at the given commit, confirms the
+//! warm pool prebuild does not create `proofs/.lake`, then runs `prepare_lean` (toolchain
+//! through elan, Lake packages seeded from the repository's other checkouts,
+//! `lake exe cache get`), asks Lake whether Mathlib is up to date without building, and
 //! removes the slot.
 //!
 //! `cargo run -p velocity-git --example lean_pool -- <repository> [commit]`
@@ -15,7 +16,7 @@ use std::time::Instant;
 
 use velocity_git::{
     WorktreeSetupRequest, create_ready_worktree, default_settings, parse_manifest,
-    prebuild_ready_worktree, remove_ready_worktree,
+    prebuild_ready_worktree, prepare_lean, remove_ready_worktree,
 };
 
 type Outcome<Value = ()> = Result<Value, Box<dyn std::error::Error>>;
@@ -57,11 +58,16 @@ fn run(repository: &Path, commit: &str, slot: &Path) -> Outcome {
     create_ready_worktree(&request)?;
     println!("slot checked out at {}", &commit[..commit.len().min(7)]);
 
-    let started = Instant::now();
     prebuild_ready_worktree(repository, slot, false)?;
-    println!("Lean prebuild finished in {:?}", started.elapsed());
-
     let proofs = slot.join("proofs");
+    if proofs.join(".lake").exists() {
+        return Err("warm pool prebuild unexpectedly created proofs/.lake".into());
+    }
+    println!("warm pool prebuild left proofs/.lake absent");
+
+    let started = Instant::now();
+    prepare_lean(slot, &[repository.to_path_buf()])?;
+    println!("on-demand Lean setup finished in {:?}", started.elapsed());
     let manifest = parse_manifest(&std::fs::read_to_string(proofs.join("lake-manifest.json"))?)
         .ok_or("unreadable lake-manifest.json")?;
     for package in &manifest.packages {
