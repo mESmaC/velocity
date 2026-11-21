@@ -76,11 +76,11 @@ pub fn serve_stdio(arguments: &[OsString]) -> Result<(), Error> {
     let app_data = Path::new(app_data);
     let cache = crate::usage::folder(app_data, project);
     let endpoint = project_endpoint(app_data, project);
-    let backend = Backend::Shared(Project::new(
+    let backend = Backend::Shared(Box::new(Project::new(
         cache.clone(),
         std::env::current_exe()?,
         endpoint,
-    ));
+    )));
     serve_connection(
         PathBuf::from(worktree),
         cache,
@@ -165,7 +165,8 @@ enum Backend {
         tools: Box<Mutex<Option<Tools>>>,
         endpoint: Option<Endpoint>,
     },
-    Shared(Project),
+    // Boxed so a local backend doesn't carry the shared client's size (clippy::large_enum_variant).
+    Shared(Box<Project>),
 }
 
 /// Serves one connection. The index is built in the background from the start, so the first

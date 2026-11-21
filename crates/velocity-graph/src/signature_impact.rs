@@ -623,7 +623,7 @@ pub fn file_references_symbol(path: &str, source: &str, altered: &AlteredSignatu
     let referenced = parse
         .references
         .iter()
-        .any(|reference| names.iter().any(|name| reference.name == *name));
+        .any(|reference| names.contains(&reference.name));
     if referenced {
         return true;
     }
