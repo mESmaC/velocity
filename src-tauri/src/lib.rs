@@ -24,6 +24,7 @@ mod github_requests;
 mod goal_stack;
 mod goal_swarm;
 pub mod graph_access;
+mod graph_indexer_pin;
 mod handoff;
 pub mod headless;
 mod interview;
@@ -435,6 +436,7 @@ pub fn run() -> anyhow::Result<()> {
             updates::initialize(application.handle());
             local_build::initialize(application.handle());
             rosen_pin::initialize(application.handle());
+            graph_indexer_pin::initialize(application.handle());
             velocity_reports::initialize(application.handle());
             restart::resume_interrupted(application.handle(), interrupted);
             rosen_migration::initialize(application.handle());

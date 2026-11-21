@@ -98,6 +98,8 @@ Each release publishes a Linux x86-64 build as `velocity-graph-<version>-x86_64-
 The release workflow publishes both with the release it builds.
 Publishing a release built any other way, such as a local build, starts the `Graph indexer` workflow, which attaches both; dispatching it with a tag adds them to an earlier release (#518).
 An archive and checksum already on a release are never replaced, because Collapse pins the checksum.
+In a release build on a machine with a Velocity or Collapse Rosen project whose signed-in account may push to Collapse's repository, Velocity checks every ten minutes whether the newest published Velocity release carrying the archive and `.sha256` changes `velocity-graph`'s parser or schema version from Collapse's `ops/Dockerfile` pin (#577).
+When either version differs, Velocity keeps exactly one open "Bump the velocity-graph pin to `<version>`" issue on Collapse's repository naming the version, parser and schema changes, archive URL and SHA-256, rewriting it in place for newer releases and closing finished or duplicate pin-bump issues (following the F5 Rosen pin-bump pattern, #513).
 It indexes one commit of a git repository, bare or not, reading its regular files from git objects with no checkout.
 Git blob IDs are the file hashes and parse cache keys, so a commit gives the same records and addresses as the MCP tools for the same tree.
 The parse cache lives in the folder given with `--cache`, so only blobs missing from it are read and parsed.

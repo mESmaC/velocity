@@ -10,6 +10,7 @@ mod command;
 mod commit_cache;
 mod dependency_graph;
 mod gh_command;
+pub mod graph_indexer_pin;
 mod http_transport;
 mod issue_cache;
 mod issue_dependencies;
