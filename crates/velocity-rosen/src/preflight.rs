@@ -10,13 +10,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rosen_client::protocol::{DiffRequest, OverlapQuery, SubmitReceipt};
 use rosen_client::snapshot::WorkspaceMarker;
-use rosen_client::{AgentId, Client, Endpoint, ObjectId};
+use rosen_client::{AgentId, ChangeState, Client, Endpoint, ObjectId};
 use rosen_core::ReviewMode;
 use rusqlite::{Connection as SqliteConnection, OpenFlags, params};
 use toml_edit::{DocumentMut, Item, Value};
 use velocity_core::preflight::{
-    PreflightRecord, WorkspaceCrate, evaluate_gate, land_refusal_parts, name_refusal_message,
-    normalize_path,
+    PreflightOverlap, PreflightRecord, WorkspaceCrate, evaluate_gate, failed_non_overlap_checks,
+    failed_on_overlaps, land_refusal_parts, name_refusal_message, normalize_path,
 };
 
 pub use rosen_client::protocol::OverlapRecord;
@@ -188,6 +188,21 @@ pub async fn record_outcome(
     } else {
         false
     };
+    let overlaps_failed = !passed && failed_on_overlaps(failure_summary);
+    let blocking_overlaps = if overlaps_failed {
+        snapshot
+            .overlaps
+            .iter()
+            .map(|overlap| PreflightOverlap {
+                change: overlap.change.to_string(),
+                owner: overlap.owner.to_string(),
+                paths: overlap.paths.clone(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let non_overlap_checks_passed = passed || !failed_non_overlap_checks(failure_summary);
     let record = PreflightRecord {
         change: snapshot.change.clone(),
         head: snapshot.head.to_string(),
@@ -198,6 +213,8 @@ pub async fn record_outcome(
         } else {
             failure_summary.to_owned()
         },
+        blocking_overlaps,
+        non_overlap_checks_passed,
         log_path: log_path.to_owned(),
         recorded_at: unix_now(),
     };
@@ -206,6 +223,60 @@ pub async fn record_outcome(
         .await
         .map_err(|error| RosenError::StatusData(error.to_string()))??;
     Ok(RecordOutcome::Recorded { receipt_submitted })
+}
+
+/// Reads the persisted preflight record for `change` from `server`'s data directory (#565).
+pub fn load_change_record(server: &ProjectServer, change: &str) -> Option<PreflightRecord> {
+    load_record(Some(server.data_dir()), change)
+}
+
+/// Returns the subset of `changes` that are still `ChangeState::Open` on `server` (#565).
+/// A missing change on the server is treated as closed; transport errors are propagated.
+pub async fn open_change_ids(
+    server: &ProjectServer,
+    changes: &[String],
+) -> Result<BTreeSet<String>, RosenError> {
+    if changes.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let mut open = BTreeSet::new();
+    for change in changes {
+        match client.change_show(change).await {
+            Ok(shown) if shown.change.state == ChangeState::Open => {
+                open.insert(change.clone());
+            }
+            Ok(_) | Err(rosen_client::Error::Server(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(open)
+}
+
+/// Returns `(preflight_passed_for_head, has_passing_work)` for `(change, head)` (#565).
+pub async fn passing_work_status(
+    server: &ProjectServer,
+    change: &str,
+    head: &str,
+) -> Result<(bool, bool), RosenError> {
+    let data_dir = server.data_dir().to_path_buf();
+    let change_owned = change.to_owned();
+    let head_owned = head.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let receipt = has_preflight_receipt(&data_dir, &change_owned, &head_owned)?;
+        let record = load_record(Some(&data_dir), &change_owned);
+        let passed_for_head = receipt
+            || record
+                .as_ref()
+                .is_some_and(|saved| saved.passed && saved.head == head_owned);
+        let has_passing_work = passed_for_head
+            || record
+                .as_ref()
+                .is_some_and(PreflightRecord::has_passing_work);
+        Ok::<_, RosenError>((passed_for_head, has_passing_work))
+    })
+    .await
+    .map_err(|error| RosenError::StatusData(error.to_string()))?
 }
 
 enum ReceiptAttempt {
@@ -752,6 +823,8 @@ mod tests {
             base: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
             passed: false,
             failure_summary: "- [FAIL] cargo clippy -p velocity-core --all-targets — failed".into(),
+            blocking_overlaps: Vec::new(),
+            non_overlap_checks_passed: false,
             log_path: "C:/temp/preflight.log".into(),
             recorded_at: 42,
         };

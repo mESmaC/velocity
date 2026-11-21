@@ -248,6 +248,11 @@ async fn consume(
         Some((change, meaning)) => {
             let handle = application.clone();
             let change = change.to_owned();
+            let resolved_outcome = match meaning {
+                ChangeEvent::Landed => Some("landed"),
+                ChangeEvent::Abandoned => Some("was abandoned"),
+                _ => None,
+            };
             let sequence = event.seq;
             let output = velocity_rosen::revert_output(event);
             let commit = work_evidence.commit.map(str::to_owned);
@@ -257,14 +262,18 @@ async fn consume(
                     commit: commit.as_deref(),
                     revert_reason: revert_reason.as_deref(),
                 };
-                take(
+                let result = take(
                     &handle,
                     project,
                     (sequence, &change),
                     meaning,
                     output.as_deref(),
                     evidence,
-                )
+                );
+                if let Some(outcome) = resolved_outcome {
+                    let _ = record_overlap_resolution(&handle, project, &change, outcome);
+                }
+                result
             })
             .await
             .map_err(|error| error.to_string())??;
@@ -403,10 +412,62 @@ fn record_rosen_wait(
             .rosen_path_wait
             .get_or_insert_with(velocity_store::rosen::RosenPathWait::default);
         wait.merge(paths, holders);
-        saved.dependency_wait = Some(wait.description());
+        saved.dependency_wait = saved.rosen_wait_description();
     })
     .map_err(|error| error.to_string())?;
     crate::threads::refresh(application, key, false)?;
+    Ok(())
+}
+
+/// Records that an overlapping blocking change landed or was abandoned on every waiting
+/// thread in `project` so `parking::cycle` wakes or continues them with the outcome (#565).
+fn record_overlap_resolution(
+    application: &AppHandle,
+    project: u32,
+    finished_change: &str,
+    outcome: &str,
+) -> Result<(), String> {
+    let waiting: Vec<u32> = {
+        let store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        store
+            .project(project)
+            .map(|item| {
+                item.threads
+                    .iter()
+                    .filter(|thread| {
+                        thread.rosen_overlap_wait.as_ref().is_some_and(|wait| {
+                            wait.blockers
+                                .iter()
+                                .any(|blocker| blocker.change == finished_change)
+                        })
+                    })
+                    .map(|thread| thread.id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    for thread_id in waiting {
+        let mut updated = false;
+        lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?
+        .update_thread(project, thread_id, |saved| {
+            if let Some(wait) = saved.rosen_overlap_wait.as_mut()
+                && wait.record_resolution(finished_change, outcome)
+            {
+                saved.dependency_wait = saved.rosen_wait_description();
+                updated = true;
+            }
+        })
+        .map_err(|error| error.to_string())?;
+        if updated {
+            crate::threads::refresh(application, (project, thread_id), false)?;
+        }
+    }
     Ok(())
 }
 
@@ -437,7 +498,7 @@ fn clear_rosen_wait(application: &AppHandle, key: ThreadKey) -> Result<(), Strin
     )?
     .update_thread(key.0, key.1, |saved| {
         if saved.rosen_path_wait.take().is_some() {
-            saved.dependency_wait = None;
+            saved.dependency_wait = saved.rosen_wait_description();
             cleared = true;
         }
     })

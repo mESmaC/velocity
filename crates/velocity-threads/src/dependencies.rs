@@ -38,8 +38,8 @@ pub fn refresh(
         .threads
         .iter()
         .filter_map(|thread| {
-            // Rosen path waits own `dependency_wait` on Rosen threads (#531).
-            if thread.rosen_path_wait.is_some() {
+            // Rosen path and overlap waits own `dependency_wait` on Rosen threads (#531, #565).
+            if thread.has_rosen_wait() {
                 return None;
             }
             let description = waits

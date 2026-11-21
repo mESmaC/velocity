@@ -1456,12 +1456,19 @@ fn populate_session_card_handoff(
             {
                 let outcome = if previous.state == ThreadState::Merged {
                     "landed"
+                } else if previous.kept_work_reason.is_some() {
+                    "stopped with passing work kept"
                 } else {
                     "ended without landing"
                 };
                 let mut summary = format!("{} ({outcome})", handoff_line(&previous.title));
                 if let Some(change) = &previous.rosen_change {
                     summary.push_str(&format!(" · change {change}"));
+                }
+                if previous.kept_work_reason.is_some()
+                    && let Some(workspace) = &previous.worktree_path
+                {
+                    summary.push_str(&format!(" · workspace {workspace}"));
                 }
                 card.previous_item = Some(summary);
             }
@@ -1600,6 +1607,8 @@ fn saved_work_handoff(
         members.push(previous.airc_member());
         let outcome = if previous.state == ThreadState::Merged {
             "landed"
+        } else if previous.kept_work_reason.is_some() {
+            "stopped with passing work kept"
         } else {
             "ended without landing"
         };
@@ -1609,6 +1618,11 @@ fn saved_work_handoff(
         ));
         if let Some(change) = &previous.rosen_change {
             summary.push_str(&format!(" (Rosen change {change})"));
+        }
+        if previous.kept_work_reason.is_some()
+            && let Some(workspace) = &previous.worktree_path
+        {
+            summary.push_str(&format!("\nKept workspace: {workspace}"));
         }
         for task in project
             .tasks

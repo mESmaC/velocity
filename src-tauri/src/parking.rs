@@ -8,7 +8,8 @@ use velocity_airc::Channel;
 use velocity_store::{AgentActivity, ProjectItem, ThreadItem, ThreadState};
 use velocity_threads::parking::{
     ParkingAction, ParkingInput, RosenParkingAction, RosenParkingInput, parking_action,
-    resume_prompt, rosen_parking_action, rosen_resume_prompt,
+    resume_prompt, rosen_parking_action, rosen_wait_resume_prompt,
+    should_break_mutual_overlap_wait,
 };
 use velocity_threads::{ThreadKey, agent_launch_for_account, spawn_session};
 
@@ -89,8 +90,38 @@ fn step(
     }
 }
 
-/// Checks Rosen path waits for a Rosen thread. Returns `Ok(true)` when Rosen handled this
-/// thread's wait state, or `Ok(false)` to fall back to any pre-existing legacy AIRC wait.
+struct RosenWaitCheck {
+    has_active: bool,
+    tracked: bool,
+}
+
+/// Syncs any active Rosen path waits (`rosen wait`) or open preflight overlap blockers onto
+/// `key` and returns whether the thread has an active or tracked Rosen wait (#565).
+pub(crate) fn sync_active_rosen_waits(
+    application: &AppHandle,
+    key: ThreadKey,
+    change: &str,
+) -> Result<bool, String> {
+    let thread = {
+        let store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let Some(thread) = store
+            .project(key.0)
+            .and_then(|project| project.threads.iter().find(|item| item.id == key.1))
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        thread
+    };
+    let status = inspect_rosen_waits(application, key, &thread, change, true)?;
+    Ok(status.has_active || status.tracked)
+}
+
+/// Checks Rosen path waits and preflight overlap waits for a Rosen thread. Returns `Ok(true)`
+/// when Rosen handled this thread's wait state, or `Ok(false)` for legacy AIRC waits.
 fn step_rosen(
     application: &AppHandle,
     key: ThreadKey,
@@ -100,29 +131,17 @@ fn step_rosen(
     session_running: bool,
     turn_in_progress: bool,
 ) -> Result<bool, String> {
-    let needs_check = thread.rosen_path_wait.is_some()
+    let check_path_waits = thread.rosen_path_wait.is_some()
         || thread.activity == AgentActivity::Parked
-        || (session_running && !turn_in_progress);
-    if !needs_check {
+        || (session_running && !turn_in_progress)
+        || (thread.state == ThreadState::Working && thread.activity == AgentActivity::Idle);
+    let check_overlap_waits =
+        thread.rosen_overlap_wait.is_some() || thread.state == ThreadState::Working;
+    if !check_path_waits && !check_overlap_waits {
         return Ok(false);
     }
-    let active = tauri::async_runtime::block_on(async {
-        let server = crate::rosen::server(application, key.0).await?;
-        velocity_rosen::mcp_proxy::active_waits(&server, change)
-            .await
-            .map_err(|error| error.to_string())
-    });
-    let active = match active {
-        Ok(active) => active,
-        Err(_) => return Ok(thread.rosen_path_wait.is_some()),
-    };
-    let mut tracked_wait = thread.rosen_path_wait.is_some();
-    if !active.is_empty() && !tracked_wait {
-        let paths: Vec<String> = active.iter().map(|claim| claim.path.clone()).collect();
-        sync_rosen_wait(application, key, paths)?;
-        tracked_wait = true;
-    }
-    if active.is_empty() && !tracked_wait {
+    let status = inspect_rosen_waits(application, key, thread, change, check_path_waits)?;
+    if !status.has_active && !status.tracked {
         return Ok(false);
     }
     if crate::goal_stack::continue_wait(application, key, thread, channel)? {
@@ -133,8 +152,8 @@ fn step_rosen(
         activity: thread.activity,
         session_running,
         turn_in_progress,
-        has_active_waits: !active.is_empty(),
-        tracked_wait,
+        has_active_waits: status.has_active,
+        tracked_wait: status.tracked,
     };
     match rosen_parking_action(input) {
         RosenParkingAction::Park => park(application, key)?,
@@ -145,10 +164,247 @@ fn step_rosen(
     Ok(true)
 }
 
+fn inspect_rosen_waits(
+    application: &AppHandle,
+    key: ThreadKey,
+    thread: &ThreadItem,
+    change: &str,
+    check_path_waits: bool,
+) -> Result<RosenWaitCheck, String> {
+    let path_status = if check_path_waits {
+        inspect_path_waits(application, key, thread, change)?
+    } else {
+        RosenWaitCheck {
+            has_active: thread.rosen_path_wait.is_some(),
+            tracked: thread.rosen_path_wait.is_some(),
+        }
+    };
+    let overlap_status = inspect_overlap_waits(application, key, thread, change)?;
+    Ok(RosenWaitCheck {
+        has_active: path_status.has_active || overlap_status.has_active,
+        tracked: path_status.tracked || overlap_status.tracked,
+    })
+}
+
+fn inspect_path_waits(
+    application: &AppHandle,
+    key: ThreadKey,
+    thread: &ThreadItem,
+    change: &str,
+) -> Result<RosenWaitCheck, String> {
+    let queried = tauri::async_runtime::block_on(async {
+        let server = crate::rosen::server(application, key.0).await?;
+        let active = velocity_rosen::mcp_proxy::active_waits(&server, change)
+            .await
+            .map_err(|error| error.to_string())?;
+        if active.is_empty() {
+            return Ok::<_, String>((Vec::new(), Vec::new()));
+        }
+        let paths: Vec<String> = active.into_iter().map(|claim| claim.path).collect();
+        let holders = if thread.rosen_path_wait.is_none() {
+            velocity_rosen::mcp_proxy::wait_holders(&server, change, &paths)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(other_change, owner)| {
+                    let short = other_change.get(..8).unwrap_or(&other_change);
+                    format!("{owner} ({short})")
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Ok((paths, holders))
+    });
+    let (paths, holders) = match queried {
+        Ok(result) => result,
+        Err(_) => {
+            let tracked = thread.rosen_path_wait.is_some();
+            return Ok(RosenWaitCheck {
+                has_active: tracked,
+                tracked,
+            });
+        }
+    };
+    let mut tracked = thread.rosen_path_wait.is_some();
+    if !paths.is_empty() && !tracked {
+        sync_rosen_wait(application, key, paths.clone(), holders)?;
+        tracked = true;
+    }
+    Ok(RosenWaitCheck {
+        has_active: !paths.is_empty(),
+        tracked,
+    })
+}
+
+fn inspect_overlap_waits(
+    application: &AppHandle,
+    key: ThreadKey,
+    thread: &ThreadItem,
+    change: &str,
+) -> Result<RosenWaitCheck, String> {
+    let Ok(data_dir) = application.path().app_data_dir() else {
+        let tracked = thread.rosen_overlap_wait.is_some();
+        return Ok(RosenWaitCheck {
+            has_active: tracked,
+            tracked,
+        });
+    };
+    let server = velocity_rosen::ProjectServer::new(&data_dir, key.0);
+    let record = velocity_rosen::preflight::load_change_record(&server, change);
+    if let Some(existing) = thread.rosen_overlap_wait.as_ref() {
+        return inspect_tracked_overlap_wait(application, key, change, existing, record.as_ref());
+    }
+    let Some(record) = record.filter(|item| {
+        thread.state == ThreadState::Working
+            && item.failed_on_overlaps()
+            && thread.supervision.last_overlap_wait_at != Some(item.recorded_at)
+    }) else {
+        return Ok(RosenWaitCheck {
+            has_active: false,
+            tracked: false,
+        });
+    };
+    adopt_preflight_overlap_wait(application, key, &record)
+}
+
+fn adopt_preflight_overlap_wait(
+    application: &AppHandle,
+    key: ThreadKey,
+    record: &velocity_core::preflight::PreflightRecord,
+) -> Result<RosenWaitCheck, String> {
+    let candidate_ids: Vec<String> = record
+        .blocking_overlaps
+        .iter()
+        .map(|overlap| overlap.change.clone())
+        .collect();
+    let open = tauri::async_runtime::block_on(async {
+        let server = crate::rosen::server(application, key.0).await?;
+        velocity_rosen::preflight::open_change_ids(&server, &candidate_ids)
+            .await
+            .map_err(|error| error.to_string())
+    });
+    let Ok(open) = open else {
+        return Ok(RosenWaitCheck {
+            has_active: false,
+            tracked: false,
+        });
+    };
+    let active_overlaps: Vec<_> = record
+        .blocking_overlaps
+        .iter()
+        .filter(|overlap| open.contains(&overlap.change))
+        .cloned()
+        .collect();
+    if active_overlaps.is_empty() {
+        return Ok(RosenWaitCheck {
+            has_active: false,
+            tracked: false,
+        });
+    }
+    let wait = velocity_store::rosen::RosenOverlapWait::from_overlaps(
+        &active_overlaps,
+        record.recorded_at,
+    );
+    sync_overlap_wait(application, key, wait)?;
+    Ok(RosenWaitCheck {
+        has_active: true,
+        tracked: true,
+    })
+}
+
+fn inspect_tracked_overlap_wait(
+    application: &AppHandle,
+    key: ThreadKey,
+    change: &str,
+    existing: &velocity_store::rosen::RosenOverlapWait,
+    record: Option<&velocity_core::preflight::PreflightRecord>,
+) -> Result<RosenWaitCheck, String> {
+    if let Some(latest) = record
+        && latest.recorded_at > existing.preflight_recorded_at
+        && !latest.failed_on_overlaps()
+    {
+        clear_overlap_wait(application, key)?;
+        return Ok(RosenWaitCheck {
+            has_active: false,
+            tracked: false,
+        });
+    }
+    if existing.blockers.is_empty() {
+        return Ok(RosenWaitCheck {
+            has_active: false,
+            tracked: true,
+        });
+    }
+    let blocker_ids = existing.blocker_change_ids();
+    let open = tauri::async_runtime::block_on(async {
+        let server = crate::rosen::server(application, key.0).await?;
+        velocity_rosen::preflight::open_change_ids(&server, &blocker_ids)
+            .await
+            .map_err(|error| error.to_string())
+    });
+    let Ok(open) = open else {
+        return Ok(RosenWaitCheck {
+            has_active: true,
+            tracked: true,
+        });
+    };
+    let mut updated = existing.clone();
+    let changed = updated.retain_open(&open);
+    let remaining_ids = updated.blocker_change_ids();
+    let mutual_break = !remaining_ids.is_empty()
+        && is_mutual_overlap_deadlock(application, key.0, change, &remaining_ids)?;
+    if mutual_break {
+        updated.record_mutual_break();
+    }
+    if changed || mutual_break {
+        update_overlap_wait(application, key, updated.clone())?;
+    }
+    Ok(RosenWaitCheck {
+        has_active: !updated.blockers.is_empty(),
+        tracked: true,
+    })
+}
+
+fn is_mutual_overlap_deadlock(
+    application: &AppHandle,
+    project: u32,
+    change: &str,
+    open_blockers: &[String],
+) -> Result<bool, String> {
+    let store = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?;
+    let Some(item) = store.project(project) else {
+        return Ok(false);
+    };
+    let peers: Vec<(String, Vec<String>)> = item
+        .threads
+        .iter()
+        .filter(|other| matches!(other.state, ThreadState::Working | ThreadState::Review))
+        .filter_map(|other| {
+            let other_change = other.rosen_change.as_ref()?;
+            let other_wait = other.rosen_overlap_wait.as_ref()?;
+            Some((other_change.clone(), other_wait.blocker_change_ids()))
+        })
+        .collect();
+    let peer_slices: Vec<(&str, &[String])> = peers
+        .iter()
+        .map(|(other_change, targets)| (other_change.as_str(), targets.as_slice()))
+        .collect();
+    Ok(should_break_mutual_overlap_wait(
+        change,
+        open_blockers,
+        &peer_slices,
+    ))
+}
+
 fn sync_rosen_wait(
     application: &AppHandle,
     key: ThreadKey,
     paths: Vec<String>,
+    holders: Vec<String>,
 ) -> Result<(), String> {
     lock(
         application.state::<ManagedStateStore>().inner(),
@@ -158,27 +414,89 @@ fn sync_rosen_wait(
         let wait = saved
             .rosen_path_wait
             .get_or_insert_with(velocity_store::rosen::RosenPathWait::default);
-        wait.merge(paths, Vec::new());
-        saved.dependency_wait = Some(wait.description());
+        wait.merge(paths, holders);
+        saved.dependency_wait = saved.rosen_wait_description();
     })
     .map_err(|error| error.to_string())?;
     crate::threads::refresh(application, key, false)?;
     Ok(())
 }
 
-fn take_rosen_wait(
+fn sync_overlap_wait(
     application: &AppHandle,
     key: ThreadKey,
-) -> Result<Option<velocity_store::rosen::RosenPathWait>, String> {
+    wait: velocity_store::rosen::RosenOverlapWait,
+) -> Result<(), String> {
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .update_thread(key.0, key.1, |saved| {
+        saved.supervision.last_overlap_wait_at = Some(wait.preflight_recorded_at);
+        saved.supervision.idle_nudged = false;
+        saved.supervision.idle_nudge_turns = None;
+        saved.rosen_overlap_wait = Some(wait);
+        saved.dependency_wait = saved.rosen_wait_description();
+    })
+    .map_err(|error| error.to_string())?;
+    crate::threads::refresh(application, key, false)?;
+    Ok(())
+}
+
+fn update_overlap_wait(
+    application: &AppHandle,
+    key: ThreadKey,
+    wait: velocity_store::rosen::RosenOverlapWait,
+) -> Result<(), String> {
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .update_thread(key.0, key.1, |saved| {
+        saved.rosen_overlap_wait = Some(wait);
+        saved.dependency_wait = saved.rosen_wait_description();
+    })
+    .map_err(|error| error.to_string())?;
+    crate::threads::refresh(application, key, false)?;
+    Ok(())
+}
+
+fn clear_overlap_wait(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .update_thread(key.0, key.1, |saved| {
+        saved.rosen_overlap_wait = None;
+        saved.dependency_wait = saved.rosen_wait_description();
+    })
+    .map_err(|error| error.to_string())?;
+    crate::threads::refresh(application, key, false)?;
+    Ok(())
+}
+
+struct TakenRosenWaits {
+    path: Option<velocity_store::rosen::RosenPathWait>,
+    overlap: Option<velocity_store::rosen::RosenOverlapWait>,
+}
+
+fn take_rosen_waits(
+    application: &AppHandle,
+    key: ThreadKey,
+) -> Result<Option<TakenRosenWaits>, String> {
     let mut taken = None;
     lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?
     .update_thread(key.0, key.1, |saved| {
-        taken = saved.rosen_path_wait.take();
-        if taken.is_some() {
+        let path = saved.rosen_path_wait.take();
+        let overlap = saved.rosen_overlap_wait.take();
+        if path.is_some() || overlap.is_some() {
             saved.dependency_wait = None;
+            saved.supervision.idle_nudged = false;
+            saved.supervision.idle_nudge_turns = None;
+            taken = Some(TakenRosenWaits { path, overlap });
         }
     })
     .map_err(|error| error.to_string())?;
@@ -190,11 +508,12 @@ fn wake_rosen(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
     let Ok(_guard) = lease.try_lock() else {
         return Ok(());
     };
-    let Some(wait) = take_rosen_wait(application, key)? else {
+    let Some(waits) = take_rosen_waits(application, key)? else {
         return Ok(());
     };
     tauri::async_runtime::block_on(crate::rosen_rebase::apply_at_boundary(application, key));
-    if let Err(error) = resume(application, key, &rosen_resume_prompt(&wait)) {
+    let prompt = rosen_wait_resume_prompt(waits.path.as_ref(), waits.overlap.as_ref());
+    if let Err(error) = resume(application, key, &prompt) {
         crate::threads::fail(
             application,
             key,
@@ -210,12 +529,12 @@ fn continue_live_rosen(application: &AppHandle, key: ThreadKey) -> Result<(), St
     let Ok(_guard) = lease.try_lock() else {
         return Ok(());
     };
-    let Some(wait) = take_rosen_wait(application, key)? else {
+    let Some(waits) = take_rosen_waits(application, key)? else {
         return Ok(());
     };
     tauri::async_runtime::block_on(crate::rosen_rebase::apply_at_boundary(application, key));
     crate::threads::refresh(application, key, false)?;
-    let prompt = rosen_resume_prompt(&wait);
+    let prompt = rosen_wait_resume_prompt(waits.path.as_ref(), waits.overlap.as_ref());
     if let Err(error) = crate::threads::steer(application, key, &prompt) {
         crate::threads::fail(
             application,

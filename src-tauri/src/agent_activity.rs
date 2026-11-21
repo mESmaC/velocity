@@ -346,11 +346,16 @@ fn idle_nudge(
     live: bool,
 ) -> Result<(), String> {
     let thread = supervised_thread(application, key)?;
-    if is_dispatch_or_issue(&thread)
-        && let Some(change) = thread.rosen_change.as_deref()
-        && !unnamed_open_change(application, key.0, change)?
-    {
+    if thread.dependency_wait.is_some() || thread.has_rosen_wait() {
         return Ok(());
+    }
+    if let Some(change) = thread.rosen_change.as_deref() {
+        if crate::parking::sync_active_rosen_waits(application, key, change)? {
+            return Ok(());
+        }
+        if is_dispatch_or_issue(&thread) && !unnamed_open_change(application, key.0, change)? {
+            return Ok(());
+        }
     }
     let turns_before = thread.supervision.turns;
     let blocks = lock(

@@ -236,6 +236,7 @@ fn idle_working_due(
         && thread.interview.is_none()
         && thread.worktree_path.is_some()
         && thread.dependency_wait.is_none()
+        && !thread.has_rosen_wait()
         && !thread.startup_recovery_pending
         && !checkpoint.released
         && !checkpoint.idle_nudged
@@ -752,6 +753,19 @@ mod trace_fixtures {
             Action::Nothing
         );
         thread.dependency_wait = None;
+        thread.rosen_overlap_wait = Some(velocity_store::rosen::RosenOverlapWait::from_overlaps(
+            &[velocity_core::preflight::PreflightOverlap {
+                change: "abcdef1234567890".into(),
+                owner: "issue-130-178".into(),
+                paths: vec!["design/screens/README.md".into()],
+            }],
+            10,
+        ));
+        assert_eq!(
+            decide_with_turn(&thread, &settings, due, true, false, false),
+            Action::Nothing
+        );
+        thread.rosen_overlap_wait = None;
         thread.queued_runs.push(QueuedRunRecord::new(
             "velocity-run-1".into(),
             "cargo".into(),

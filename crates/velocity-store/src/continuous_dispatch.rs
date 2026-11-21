@@ -428,6 +428,7 @@ pub fn can_finish_empty_dispatch(thread: &crate::ThreadItem) -> bool {
         && thread.state == ThreadState::Working
         && thread.activity == crate::AgentActivity::Idle
         && thread.dependency_wait.is_none()
+        && !thread.has_rosen_wait()
         && !thread.startup_recovery_pending
         && thread.queued_runs.is_empty()
         && !thread.queued_run_history.iter().any(|run| !run.delivered)
@@ -441,9 +442,11 @@ pub fn can_finish_empty_dispatch(thread: &crate::ThreadItem) -> bool {
 }
 
 /// A dispatch or issue thread that already received an idle continue prompt and ended a
-/// subsequent turn idle again (#544).
+/// subsequent turn idle again (#544), with no open dependency or Rosen overlap wait (#565).
 pub fn idle_nudge_exhausted(thread: &crate::ThreadItem) -> bool {
     (thread.started_by_dispatch || thread.issue.is_some())
+        && thread.dependency_wait.is_none()
+        && !thread.has_rosen_wait()
         && thread.supervision.idle_nudged
         && thread
             .supervision
@@ -828,20 +831,50 @@ impl StateStore {
 }
 
 fn mark_dispatch(project: &mut ProjectItem, selected: Option<u32>, thread: u32) {
-    let previous = project
+    let issue = project
         .threads
         .iter()
-        .find(|entry| {
-            entry.started_by_dispatch
-                && matches!(entry.state, ThreadState::Done | ThreadState::Merged)
-                && entry.rosen_follow_ups.is_empty()
-                && !project.continuous_dispatch.cleanup.contains(&entry.id)
-                && !project
-                    .threads
-                    .iter()
-                    .any(|later| later.previous_work_thread == Some(entry.id))
-        })
-        .map(|entry| entry.id);
+        .find(|entry| entry.id == thread)
+        .and_then(|entry| entry.issue.clone());
+    let unlinked = |entry: &crate::ThreadItem| {
+        entry.id != thread
+            && entry.started_by_dispatch
+            && entry.rosen_follow_ups.is_empty()
+            && !project.continuous_dispatch.cleanup.contains(&entry.id)
+            && !project
+                .threads
+                .iter()
+                .any(|later| later.previous_work_thread == Some(entry.id))
+    };
+    // A stopped thread that kept passing work is reserved for the next dispatch of its own
+    // issue so its Rosen change and workspace are handed off cleanly (#565).
+    let kept_same_issue = issue.as_ref().and_then(|target| {
+        project
+            .threads
+            .iter()
+            .rev()
+            .find(|entry| {
+                unlinked(entry)
+                    && entry.state == ThreadState::Done
+                    && entry.kept_work_reason.is_some()
+                    && entry
+                        .issue
+                        .as_ref()
+                        .is_some_and(|assigned| same_issue(assigned, target))
+            })
+            .map(|entry| entry.id)
+    });
+    let previous = kept_same_issue.or_else(|| {
+        project
+            .threads
+            .iter()
+            .find(|entry| {
+                unlinked(entry)
+                    && entry.kept_work_reason.is_none()
+                    && matches!(entry.state, ThreadState::Done | ThreadState::Merged)
+            })
+            .map(|entry| entry.id)
+    });
     project.active_thread_id = match previous {
         Some(prior) if selected == Some(prior) => Some(thread),
         _ => selected,
@@ -874,8 +907,7 @@ fn dispatch_end_reason(thread: &crate::ThreadItem) -> String {
     if idle_nudge_exhausted(thread) {
         format!(
             "The agent stayed idle with an unnamed change after a supervision continue prompt, \
-             so Velocity stopped the session and returned the issue to dispatch.\n\nLast agent \
-             message:\n{last}"
+             so Velocity stopped the session.\n\nLast agent message:\n{last}"
         )
     } else {
         last
@@ -883,6 +915,74 @@ fn dispatch_end_reason(thread: &crate::ThreadItem) -> String {
 }
 
 impl StateStore {
+    /// Stops an idle-nudge-exhausted thread whose Rosen change has passing work without
+    /// abandoning the change, deleting its workspace, or labelling the issue `no-change` (#565).
+    /// Clears the issue's dispatch attempt once so the next dispatch links this thread via
+    /// `previous_work_thread`.
+    pub fn finish_kept_work_dispatch(
+        &mut self,
+        project: u32,
+        identifier: u32,
+        reason: String,
+    ) -> Result<(), ThreadError> {
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                let index = item
+                    .threads
+                    .iter()
+                    .position(|thread| thread.id == identifier)
+                    .ok_or(ThreadError::UnknownThread {
+                        project,
+                        thread: identifier,
+                    })?;
+                if !can_finish_empty_dispatch(&item.threads[index]) {
+                    return Err(ThreadError::InvalidLaunch(
+                        "The thread resumed, is waiting, or still has unread messages".into(),
+                    ));
+                }
+                let already_handed_off = item.threads[index]
+                    .previous_work_thread
+                    .and_then(|prior| item.threads.iter().find(|entry| entry.id == prior))
+                    .is_some_and(|prior| {
+                        prior.kept_work_reason.is_some()
+                            && match (&prior.issue, &item.threads[index].issue) {
+                                (Some(left), Some(right)) => same_issue(left, right),
+                                _ => false,
+                            }
+                    });
+                let thread = &mut item.threads[index];
+                thread.state = ThreadState::Done;
+                thread.kept_work_reason = Some(reason);
+                let issue_to_reopen = if thread.started_by_dispatch && !already_handed_off {
+                    thread.issue.clone()
+                } else {
+                    None
+                };
+                if thread.started_by_dispatch {
+                    for task in &mut item.tasks {
+                        if task.assigned_thread_id == Some(identifier)
+                            && task.state == TaskState::Now
+                        {
+                            thread.task_ids.retain(|listed| *listed != task.id);
+                            task.assigned_thread_id = None;
+                            task.state = TaskState::Todo;
+                        }
+                    }
+                }
+                if let Some(issue) = issue_to_reopen {
+                    item.continuous_dispatch.attempts.retain(|attempt| {
+                        attempt.number != issue.number
+                            || !attempt.repository.eq_ignore_ascii_case(&issue.repository)
+                    });
+                }
+                crate::rosen_work::remove_thread(item, identifier);
+                Ok((true, ()))
+            },
+        )
+    }
+
     pub fn finish_empty_dispatch(
         &mut self,
         project: u32,
@@ -1223,11 +1323,96 @@ mod tests {
         let report = &project.continuous_dispatch.no_change_reports[&identifier];
         assert_eq!(report.issue, issue);
         assert!(report.reason.contains("supervision continue prompt"));
+        assert!(!report.reason.contains("returned the issue to dispatch"));
         assert!(
             report
                 .reason
                 .contains("Waiting for cargo check to complete.")
         );
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#565): an overlap wait must survive save and load, keep the thread out of
+    // idle-nudge exhaustion and empty finish, and a stopped thread with passing work must
+    // keep its change/workspace without `no-change` and hand off via `previous_work_thread`.
+    #[test]
+    fn overlap_wait_and_kept_work_handoff_survive_save_and_load()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, mut store) = legacy_store()?;
+        store.set_continuous_dispatch(1, 2, false)?;
+        let thread = NewThread::new(
+            "Issue #107".into(),
+            "vel/issue-107".into(),
+            directory.join("agent-107").display().to_string(),
+            &store.settings(),
+        );
+        let issue = ThreadIssue::new("owner/repo".into(), 107);
+        let first =
+            store.record_continuous_dispatch(1, thread.clone(), issue.clone(), "v1".into())?;
+        let wait = crate::rosen::RosenOverlapWait::from_overlaps(
+            &[velocity_core::preflight::PreflightOverlap {
+                change: "abcdef1234567890".into(),
+                owner: "issue-130-178".into(),
+                paths: vec!["design/screens/README.md".into()],
+            }],
+            77,
+        );
+        store.update_thread(1, first, |item| {
+            item.activity = AgentActivity::Idle;
+            item.rosen_change = Some("qpxzxwup12345678".into());
+            item.supervision.turns = 2;
+            item.supervision.idle_nudged = true;
+            item.supervision.idle_nudge_turns = Some(1);
+            item.rosen_overlap_wait = Some(wait.clone());
+            item.dependency_wait = item.rosen_wait_description();
+        })?;
+        drop(store);
+
+        let mut loaded = StateStore::load_or_default(&directory)?;
+        let saved = &loaded.project(1).ok_or("missing project")?.threads[0];
+        assert_eq!(saved.rosen_overlap_wait.as_ref(), Some(&wait));
+        assert!(!can_finish_empty_dispatch(saved));
+        assert!(!idle_nudge_exhausted(saved));
+
+        loaded.update_thread(1, first, |item| {
+            item.rosen_overlap_wait = None;
+            item.dependency_wait = None;
+        })?;
+        loaded.finish_kept_work_dispatch(
+            1,
+            first,
+            "Kept passing work in change qpxzxwup".into(),
+        )?;
+        let project = loaded.project(1).ok_or("missing project")?;
+        assert_eq!(project.threads[0].state, ThreadState::Done);
+        assert!(project.continuous_dispatch.cleanup.is_empty());
+        assert!(project.continuous_dispatch.no_change_reports.is_empty());
+        assert!(project.continuous_dispatch.attempts.is_empty());
+
+        // An unrelated issue dispatched first must not steal #107's kept-work thread.
+        let other_issue = ThreadIssue::new("owner/repo".into(), 108);
+        let other =
+            loaded.record_continuous_dispatch(1, thread.clone(), other_issue, "v1".into())?;
+        let other_thread = loaded
+            .project(1)
+            .ok_or("missing project")?
+            .threads
+            .iter()
+            .find(|item| item.id == other)
+            .ok_or("missing other thread")?;
+        assert_eq!(other_thread.previous_work_thread, None);
+
+        // Next dispatch of #107 links the kept-work thread via `previous_work_thread`.
+        let retry = loaded.record_continuous_dispatch(1, thread, issue, "v1".into())?;
+        let retry_thread = loaded
+            .project(1)
+            .ok_or("missing project")?
+            .threads
+            .iter()
+            .find(|item| item.id == retry)
+            .ok_or("missing retry thread")?;
+        assert_eq!(retry_thread.previous_work_thread, Some(first));
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

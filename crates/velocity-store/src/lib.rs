@@ -880,6 +880,10 @@ pub struct ThreadItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(skip)]
     pub rosen_path_wait: Option<rosen::RosenPathWait>,
+    /// Durable Rosen overlap wait tracked after a preflight overlap failure (#565).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub rosen_overlap_wait: Option<rosen::RosenOverlapWait>,
     /// The agent's ACP session id, which a parked thread loads again on resume (§2.2).
     #[serde(default)]
     pub agent_session: Option<String>,
@@ -894,6 +898,10 @@ pub struct ThreadItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(skip)]
     pub no_change_reason: Option<String>,
+    /// Reason a stopped thread kept its passing Rosen change and workspace for handoff (#565).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub kept_work_reason: Option<String>,
     pub review_stage: Option<ReviewStage>,
     pub task_ids: Vec<u32>,
     #[serde(default)]
@@ -928,6 +936,23 @@ pub struct ThreadItem {
 }
 
 impl ThreadItem {
+    /// Whether this thread currently tracks a Rosen path or overlap wait (#531, #565).
+    pub fn has_rosen_wait(&self) -> bool {
+        self.rosen_path_wait.is_some() || self.rosen_overlap_wait.is_some()
+    }
+
+    /// Combined `dependency_wait` description from active Rosen waits, if any (#531, #565).
+    pub fn rosen_wait_description(&self) -> Option<String> {
+        match (&self.rosen_path_wait, &self.rosen_overlap_wait) {
+            (Some(path), Some(overlap)) => {
+                Some(format!("{}; {}", path.description(), overlap.description()))
+            }
+            (Some(path), None) => Some(path.description()),
+            (None, Some(overlap)) => Some(overlap.description()),
+            (None, None) => None,
+        }
+    }
+
     pub fn new(id: u32, title: String) -> Self {
         Self {
             id,
@@ -955,11 +980,13 @@ impl ThreadItem {
             airc_server_identity: None,
             dependency_wait: None,
             rosen_path_wait: None,
+            rosen_overlap_wait: None,
             agent_session: None,
             context_handoff: None,
             provider_queued: false,
             transcript: Default::default(),
             no_change_reason: None,
+            kept_work_reason: None,
             startup_recovery_pending: false,
             queued_runs: Vec::new(),
             queued_run_history: Vec::new(),
@@ -1029,11 +1056,13 @@ impl ThreadItem {
             airc_server_identity: None,
             dependency_wait: None,
             rosen_path_wait: None,
+            rosen_overlap_wait: None,
             agent_session: None,
             context_handoff: None,
             provider_queued: false,
             transcript: Default::default(),
             no_change_reason: None,
+            kept_work_reason: None,
             startup_recovery_pending: false,
             queued_runs: Vec::new(),
             queued_run_history: Vec::new(),

@@ -1187,51 +1187,110 @@ fn finish_empty_thread(
     let Some(root) = thread.worktree_path.as_deref() else {
         return Ok(());
     };
-    let finishable = should_finish_idle_change(
-        application,
-        project,
-        change,
-        Path::new(root),
-        idle_nudge_exhausted(&thread),
-    )?;
-    if finishable && crate::threads::stop_idle_thread(application, key)? {
-        let nick = if thread.started_by_dispatch && thread.issue.is_some() {
-            dispatch_claims(application, project)?
-                .into_iter()
-                .find(|claim| thread.matches_airc_member(&claim.member))
-                .map(|claim| claim.nick)
-        } else {
-            None
-        };
-        lock(
-            application.state::<ManagedStateStore>().inner(),
-            "persisted state",
-        )?
-        .finish_empty_dispatch_with_nick(project, thread.id, nick)
-        .map_err(|error| error.to_string())?;
-        crate::threads::refresh(application, key, false)?;
+    if crate::parking::sync_active_rosen_waits(application, key, change)? {
+        return Ok(());
     }
+    let exhausted = idle_nudge_exhausted(&thread);
+    let disposition = inspect_idle_change(application, project, change, Path::new(root))?;
+    match (disposition, exhausted) {
+        (
+            velocity_rosen::dispatch::IdleChangeDisposition::PassingWork {
+                head,
+                changed_files,
+                preflight_passed,
+            },
+            true,
+        ) => finish_kept_work_thread(
+            application,
+            key,
+            change,
+            Path::new(root),
+            &head,
+            changed_files,
+            preflight_passed,
+        ),
+        (velocity_rosen::dispatch::IdleChangeDisposition::Empty, _)
+        | (velocity_rosen::dispatch::IdleChangeDisposition::UnverifiedEdits { .. }, true) => {
+            finish_no_change_thread(application, key, &thread)
+        }
+        _ => Ok(()),
+    }
+}
+
+fn finish_no_change_thread(
+    application: &AppHandle,
+    key: velocity_threads::ThreadKey,
+    thread: &velocity_store::ThreadItem,
+) -> Result<(), String> {
+    if !crate::threads::stop_idle_thread(application, key)? {
+        return Ok(());
+    }
+    let nick = if thread.started_by_dispatch && thread.issue.is_some() {
+        dispatch_claims(application, key.0)?
+            .into_iter()
+            .find(|claim| thread.matches_airc_member(&claim.member))
+            .map(|claim| claim.nick)
+    } else {
+        None
+    };
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .finish_empty_dispatch_with_nick(key.0, thread.id, nick)
+    .map_err(|error| error.to_string())?;
+    crate::threads::refresh(application, key, false)?;
     Ok(())
 }
 
-fn should_finish_idle_change(
+/// Stops an idle-nudge-exhausted thread whose Rosen change has passing work while keeping
+/// the change and workspace intact for handoff through `previous_work_thread` (#565).
+fn finish_kept_work_thread(
+    application: &AppHandle,
+    key: velocity_threads::ThreadKey,
+    change: &str,
+    root: &Path,
+    head: &str,
+    changed_files: usize,
+    preflight_passed: bool,
+) -> Result<(), String> {
+    if !crate::threads::stop_idle_thread(application, key)? {
+        return Ok(());
+    }
+    tauri::async_runtime::block_on(crate::rosen::stop_watch(application, root));
+    crate::airc_claims::release(application, key)?;
+    let short_change = change.get(..8).unwrap_or(change);
+    let short_head = head.get(..8).unwrap_or(head);
+    let status = if preflight_passed {
+        "preflight passed"
+    } else {
+        "non-overlap preflight checks passed"
+    };
+    let reason = format!(
+        "Stopped after idle supervision nudge; kept Rosen change {short_change} (head \
+         {short_head}, {changed_files} changed file(s), {status}) and workspace for handoff."
+    );
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .finish_kept_work_dispatch(key.0, key.1, reason)
+    .map_err(|error| error.to_string())?;
+    crate::threads::refresh(application, key, false)?;
+    Ok(())
+}
+
+fn inspect_idle_change(
     application: &AppHandle,
     project: u32,
     change: &str,
     root: &Path,
-    exhausted: bool,
-) -> Result<bool, String> {
+) -> Result<velocity_rosen::dispatch::IdleChangeDisposition, String> {
     tauri::async_runtime::block_on(async {
         let server = crate::rosen::server(application, project).await?;
-        if exhausted {
-            velocity_rosen::dispatch::is_unnamed_open_change(&server, change, None)
-                .await
-                .map_err(|error| error.to_string())
-        } else {
-            velocity_rosen::dispatch::ended_without_changes(&server, change, root)
-                .await
-                .map_err(|error| error.to_string())
-        }
+        velocity_rosen::dispatch::inspect_idle_change(&server, change, root)
+            .await
+            .map_err(|error| error.to_string())
     })
 }
 

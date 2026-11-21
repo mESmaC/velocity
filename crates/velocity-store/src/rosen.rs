@@ -174,6 +174,158 @@ impl RosenPathWait {
     }
 }
 
+/// One overlapping open Rosen change that a thread waits on to land or be abandoned (#565).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverlapBlocker {
+    pub change: String,
+    #[serde(default)]
+    pub owner: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+}
+
+impl OverlapBlocker {
+    pub fn label(&self) -> String {
+        let short = self.change.get(..8).unwrap_or(&self.change);
+        if self.owner.trim().is_empty() {
+            short.to_owned()
+        } else {
+            format!("{} ({short})", self.owner)
+        }
+    }
+}
+
+/// Durable state for a thread waiting on overlapping Rosen changes to land or be abandoned
+/// after a preflight overlap failure (#565).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RosenOverlapWait {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blockers: Vec<OverlapBlocker>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wake_messages: Vec<String>,
+    /// `PreflightRecord::recorded_at` that created this wait, preventing re-adoption of the
+    /// same preflight record after the thread has already woken.
+    #[serde(default)]
+    pub preflight_recorded_at: u64,
+}
+
+impl RosenOverlapWait {
+    pub fn from_overlaps(
+        overlaps: &[velocity_core::preflight::PreflightOverlap],
+        recorded_at: u64,
+    ) -> Self {
+        let mut blockers = Vec::new();
+        for overlap in overlaps {
+            if overlap.change.trim().is_empty() {
+                continue;
+            }
+            if let Some(existing) = blockers
+                .iter_mut()
+                .find(|item: &&mut OverlapBlocker| item.change == overlap.change)
+            {
+                for path in &overlap.paths {
+                    if !path.trim().is_empty() && !existing.paths.contains(path) {
+                        existing.paths.push(path.clone());
+                    }
+                }
+            } else {
+                blockers.push(OverlapBlocker {
+                    change: overlap.change.clone(),
+                    owner: overlap.owner.clone(),
+                    paths: overlap.paths.clone(),
+                });
+            }
+        }
+        Self {
+            blockers,
+            wake_messages: Vec::new(),
+            preflight_recorded_at: recorded_at,
+        }
+    }
+
+    pub fn blocker_change_ids(&self) -> Vec<String> {
+        self.blockers
+            .iter()
+            .map(|blocker| blocker.change.clone())
+            .collect()
+    }
+
+    pub fn paths(&self) -> Vec<String> {
+        let mut paths = Vec::new();
+        for blocker in &self.blockers {
+            for path in &blocker.paths {
+                if !path.trim().is_empty() && !paths.contains(path) {
+                    paths.push(path.clone());
+                }
+            }
+        }
+        paths
+    }
+
+    /// Removes `change` from active blockers and records why it finished.
+    pub fn record_resolution(&mut self, change: &str, outcome: &str) -> bool {
+        let Some(index) = self
+            .blockers
+            .iter()
+            .position(|blocker| blocker.change == change)
+        else {
+            return false;
+        };
+        let blocker = self.blockers.remove(index);
+        let message = format!("{} {outcome}", blocker.label());
+        if !self.wake_messages.contains(&message) {
+            self.wake_messages.push(message);
+        }
+        true
+    }
+
+    /// Drops blockers no longer open on Rosen and records a wake message for each.
+    pub fn retain_open(&mut self, open_changes: &std::collections::BTreeSet<String>) -> bool {
+        let closed: Vec<String> = self
+            .blockers
+            .iter()
+            .filter(|blocker| !open_changes.contains(&blocker.change))
+            .map(|blocker| blocker.change.clone())
+            .collect();
+        let mut changed = false;
+        for change in closed {
+            changed |= self.record_resolution(&change, "finished");
+        }
+        changed
+    }
+
+    pub fn record_mutual_break(&mut self) {
+        let labels: Vec<String> = self.blockers.iter().map(OverlapBlocker::label).collect();
+        let message = if labels.is_empty() {
+            String::from("mutual overlap wait detected; proceeding first")
+        } else {
+            format!(
+                "mutual overlap wait with {}; proceeding first",
+                labels.join(", ")
+            )
+        };
+        self.blockers.clear();
+        if !self.wake_messages.contains(&message) {
+            self.wake_messages.push(message);
+        }
+    }
+
+    pub fn description(&self) -> String {
+        let changes: Vec<String> = self.blockers.iter().map(OverlapBlocker::label).collect();
+        let paths = self.paths();
+        let who = if changes.is_empty() {
+            String::from("overlapping change")
+        } else {
+            changes.join(", ")
+        };
+        if paths.is_empty() {
+            format!("waiting for {who}")
+        } else {
+            format!("waiting for {who} · {}", paths.join(", "))
+        }
+    }
+}
+
 /// Outcome of queueing a manual conflict resolution for a Rosen thread (#522).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QueueResolution {
@@ -724,6 +876,13 @@ impl StateStore {
             _ => {}
         }
         let thread = &mut item.threads[index];
+        if matches!(
+            progress,
+            RosenProgress::Named | RosenProgress::Landed | RosenProgress::Abandoned
+        ) && thread.rosen_overlap_wait.take().is_some()
+        {
+            thread.dependency_wait = thread.rosen_wait_description();
+        }
         if progress == RosenProgress::ChangesRequested
             && thread.state != ThreadState::Merged
             && thread.review_stage != Some(ReviewStage::Fixing)

@@ -33,6 +33,10 @@ pub struct Supervision {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(skip)]
     pub last_wait: Option<String>,
+    /// `PreflightRecord::recorded_at` of the last overlap wait recorded for this thread (#565).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub last_overlap_wait_at: Option<u64>,
 }
 
 impl crate::StateStore {

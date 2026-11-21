@@ -28,6 +28,63 @@ pub async fn is_unnamed_open_change(
             .any(|snapshot| matches!(snapshot.kind, rosen_core::SnapshotKind::Named(_))))
 }
 
+/// Disposition of an idle, open, unnamed Rosen change before continuous dispatch acts (#544, #565).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IdleChangeDisposition {
+    /// Change is closed or already named.
+    NotUnnamedOpen,
+    /// Change is open and unnamed with no diff against its parent.
+    Empty,
+    /// Change is open and unnamed with edits whose preflight (or non-overlap checks) passed (#565).
+    PassingWork {
+        head: String,
+        changed_files: usize,
+        preflight_passed: bool,
+    },
+    /// Change is open and unnamed with edits that have not passed preflight.
+    UnverifiedEdits { head: String, changed_files: usize },
+}
+
+/// Snapshots final local edits and classifies an idle Rosen change so continuous dispatch
+/// never abandons passing work as "no change" (#565).
+pub async fn inspect_idle_change(
+    server: &ProjectServer,
+    change: &str,
+    root: &std::path::Path,
+) -> Result<IdleChangeDisposition, RosenError> {
+    if !is_unnamed_open_change(server, change, Some(root)).await? {
+        return Ok(IdleChangeDisposition::NotUnnamedOpen);
+    }
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let (shown, diff) = tokio::try_join!(
+        client.change_show(change),
+        client.diff(DiffRequest {
+            to: Some(change.into()),
+            context: Some(0),
+            ..DiffRequest::default()
+        })
+    )?;
+    if diff.files.is_empty() {
+        return Ok(IdleChangeDisposition::Empty);
+    }
+    let head = shown.change.head.to_string();
+    let changed_files = diff.files.len();
+    let (preflight_passed, has_passing_work) =
+        crate::preflight::passing_work_status(server, change, &head).await?;
+    if preflight_passed || has_passing_work {
+        Ok(IdleChangeDisposition::PassingWork {
+            head,
+            changed_files,
+            preflight_passed,
+        })
+    } else {
+        Ok(IdleChangeDisposition::UnverifiedEdits {
+            head,
+            changed_files,
+        })
+    }
+}
+
 /// Named work still belongs to the landing lifecycle, including a prose-only change.
 /// Snapshot the final files first: the watcher may still be uploading the last step.
 pub async fn ended_without_changes(

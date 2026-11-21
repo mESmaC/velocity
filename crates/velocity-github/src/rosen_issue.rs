@@ -257,14 +257,21 @@ impl IssueClient {
             return Ok(());
         }
         let issue = self.read_issue(number)?;
+        let already_no_change = issue_has_no_change_label(&issue);
+        let has_hold = issue_has_hold_state(&issue);
+        let has_blockers = has_blocking_dependencies(&issue);
         // An issue already held or tracking keeps that state without adding `no-change` (#506, #526).
-        if issue.state == IssueState::Open
-            && !issue_has_no_change_label(&issue)
-            && !issue_has_hold_state(&issue)
-            && !has_blocking_dependencies(&issue)
-        {
+        let added_no_change =
+            issue.state == IssueState::Open && !already_no_change && !has_hold && !has_blockers;
+        if added_no_change {
             self.label_issue(number, Self::NO_CHANGE_LABEL)?;
         }
+        let hold_note = no_change_hold_note(
+            heading == "Ended with no change" && issue.state == IssueState::Open,
+            added_no_change || already_no_change,
+            has_hold,
+            has_blockers,
+        );
         let end = reason.floor_char_boundary(60_000);
         let truncated = if end < reason.len() {
             "\n\n[Message truncated.]"
@@ -274,7 +281,7 @@ impl IssueClient {
         self.add_issue_comment(
             &issue.id,
             &format!(
-                "## {heading}\n\n{byline}\n\n{}{truncated}\n\n{marker}",
+                "## {heading}\n\n{byline}\n\n{}{truncated}{hold_note}\n\n{marker}",
                 &reason[..end]
             ),
         )?;
@@ -1190,6 +1197,30 @@ fn ends_with_dependency_wait(message: &str) -> bool {
         let line = line.trim();
         line.starts_with("Waits for ") && line.ends_with(", recorded as GitHub issue dependencies.")
     })
+}
+
+fn no_change_hold_note(
+    is_no_change: bool,
+    labelled_no_change: bool,
+    has_hold_state: bool,
+    has_blockers: bool,
+) -> &'static str {
+    if !is_no_change {
+        return "";
+    }
+    if labelled_no_change {
+        "\n\nHold: this issue is held under `no-change` and paused from continuous dispatch. \
+         A bounded review, removing the `no-change` label, or the 2-hour review timeout \
+         returns it to dispatch."
+    } else if has_blockers {
+        "\n\nHold: this issue remains held by its open GitHub blockers (no `no-change` label \
+         was added). Continuous dispatch starts it once those blockers close or pass integration."
+    } else if has_hold_state {
+        "\n\nHold: this issue keeps its existing hold label (no `no-change` label was added). \
+         Resolving or removing that hold returns it to dispatch."
+    } else {
+        ""
+    }
 }
 
 fn issue_has_no_change_label(issue: &GitHubIssue) -> bool {

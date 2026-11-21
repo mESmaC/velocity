@@ -5,7 +5,7 @@
 
 use velocity_airc::waits::{WaitEnded, WaitState};
 use velocity_core::thread_view_model::TranscriptBlock;
-use velocity_store::rosen::RosenPathWait;
+use velocity_store::rosen::{RosenOverlapWait, RosenPathWait};
 use velocity_store::{AgentActivity, ThreadState};
 
 /// The transcript a new session is sent is cut to its newest characters, so a long thread
@@ -81,14 +81,70 @@ pub fn rosen_parking_action(input: RosenParkingInput) -> RosenParkingAction {
     }
     match (input.activity, input.has_active_waits) {
         (AgentActivity::Parked, true) => RosenParkingAction::Nothing,
-        (AgentActivity::Parked, false) if !input.session_running && input.tracked_wait => {
-            RosenParkingAction::Wake
-        }
+        (_, false) if !input.session_running && input.tracked_wait => RosenParkingAction::Wake,
         (_, true) if input.session_running && !input.turn_in_progress => RosenParkingAction::Park,
         (_, false) if input.tracked_wait && input.session_running && !input.turn_in_progress => {
             RosenParkingAction::ContinueLive
         }
         _ => RosenParkingAction::Nothing,
+    }
+}
+
+/// Deterministic deadlock-breaker when two threads mutually wait on each other's overlapping
+/// Rosen changes (#565): returns `true` only when every remaining open blocker is itself
+/// waiting on `change` and `change` has the strictly smallest change ID among them.
+pub fn should_break_mutual_overlap_wait(
+    change: &str,
+    open_blockers: &[String],
+    peer_blockers: &[(&str, &[String])],
+) -> bool {
+    !open_blockers.is_empty()
+        && open_blockers.iter().all(|blocker| {
+            change < blocker.as_str()
+                && peer_blockers.iter().any(|(peer_change, peer_targets)| {
+                    *peer_change == blocker.as_str()
+                        && peer_targets.iter().any(|target| target == change)
+                })
+        })
+}
+
+/// The first message sent when a Rosen overlap wait ends (#565).
+pub fn rosen_overlap_resume_prompt(wait: &RosenOverlapWait) -> String {
+    let paths = wait.paths();
+    let scope = if paths.is_empty() {
+        String::from("overlapping Rosen changes")
+    } else {
+        format!("overlapping Rosen changes on {}", paths.join(", "))
+    };
+    let detail = if wait.wake_messages.is_empty() {
+        String::from("the blocking changes finished")
+    } else {
+        wait.wake_messages.join("; ")
+    };
+    format!(
+        "Velocity paused your wait on {scope}, and resumed you because {detail}. Any pending \
+         rebase has been applied. Run `preflight` from `velocity-run` and name your change with \
+         `rosen commit -m` once it passes."
+    )
+}
+
+/// Combined wake/continue prompt when Rosen path and/or overlap waits end (#531, #565).
+pub fn rosen_wait_resume_prompt(
+    path_wait: Option<&RosenPathWait>,
+    overlap_wait: Option<&RosenOverlapWait>,
+) -> String {
+    match (path_wait, overlap_wait) {
+        (Some(path), Some(overlap)) => format!(
+            "{}\n\n{}",
+            rosen_resume_prompt(path),
+            rosen_overlap_resume_prompt(overlap)
+        ),
+        (Some(path), None) => rosen_resume_prompt(path),
+        (None, Some(overlap)) => rosen_overlap_resume_prompt(overlap),
+        (None, None) => String::from(
+            "Your Rosen wait ended and any pending rebase has been applied. Run `preflight` \
+             from `velocity-run` and continue your work.",
+        ),
     }
 }
 
@@ -213,5 +269,46 @@ mod tests {
             rosen_parking_action(freed_before_turn_end),
             RosenParkingAction::ContinueLive
         );
+
+        let freed_after_restart = RosenParkingInput {
+            session_running: false,
+            ..freed_before_turn_end
+        };
+        assert_eq!(
+            rosen_parking_action(freed_after_restart),
+            RosenParkingAction::Wake
+        );
+    }
+
+    // Risk (#565): mutual overlap waits must break deterministically on one side only, and
+    // overlap wake prompts must instruct the resumed agent to re-run preflight and commit.
+    #[test]
+    fn mutual_overlap_wait_breaks_on_lower_change_id() {
+        let a_waits = vec!["bbbbbbbb".to_owned()];
+        let b_waits = vec!["aaaaaaaa".to_owned()];
+        let peers = [
+            ("aaaaaaaa", a_waits.as_slice()),
+            ("bbbbbbbb", b_waits.as_slice()),
+        ];
+        assert!(should_break_mutual_overlap_wait(
+            "aaaaaaaa", &a_waits, &peers
+        ));
+        assert!(!should_break_mutual_overlap_wait(
+            "bbbbbbbb", &b_waits, &peers
+        ));
+
+        let mut wait = RosenOverlapWait::from_overlaps(
+            &[velocity_core::preflight::PreflightOverlap {
+                change: "bbbbbbbb12345678".into(),
+                owner: "issue-130-178".into(),
+                paths: vec!["design/screens/README.md".into()],
+            }],
+            10,
+        );
+        wait.record_resolution("bbbbbbbb12345678", "landed");
+        let prompt = rosen_wait_resume_prompt(None, Some(&wait));
+        assert!(prompt.contains("issue-130-178"), "{prompt}");
+        assert!(prompt.contains("landed"), "{prompt}");
+        assert!(prompt.contains("preflight"), "{prompt}");
     }
 }

@@ -100,8 +100,8 @@ fn project_cycle(
     if let Err(error) = update_waits(application, project, &channel) {
         eprintln!("Velocity AIRC project {} waits: {error}", project.id);
     }
-    crate::agent_activity::cycle(application, project, &channel)?;
     crate::parking::cycle(application, project, &channel);
+    crate::agent_activity::cycle(application, project, &channel)?;
     let head = channel
         .server_event_head()
         .map_err(|error| error.to_string())?;

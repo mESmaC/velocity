@@ -328,6 +328,16 @@ fn append_step_excerpt(output: &mut String, step: &StepOutcome) {
     }
 }
 
+/// One overlapping open Rosen change observed when `preflight` failed on overlaps (#565).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreflightOverlap {
+    pub change: String,
+    #[serde(default)]
+    pub owner: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+}
+
 /// Persisted result of the most recent `preflight` run for one Rosen change (#560).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreflightRecord {
@@ -341,10 +351,47 @@ pub struct PreflightRecord {
     /// Bounded summary of failing steps when `passed` is false.
     #[serde(default)]
     pub failure_summary: String,
+    /// Open Rosen changes that caused `preflight`'s overlap step to fail (#565).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocking_overlaps: Vec<PreflightOverlap>,
+    /// True when every non-overlap preflight check passed (including an outright pass
+    /// or a failure caused only by open-change overlaps) (#565).
+    #[serde(default)]
+    pub non_overlap_checks_passed: bool,
     #[serde(default)]
     pub log_path: String,
     #[serde(default)]
     pub recorded_at: u64,
+}
+
+impl PreflightRecord {
+    /// Whether this preflight run failed on overlapping open changes (#565).
+    pub fn failed_on_overlaps(&self) -> bool {
+        !self.passed && !self.blocking_overlaps.is_empty()
+    }
+
+    /// Whether this preflight run verified the change's code checks (either passed
+    /// outright or failed only on open-change overlaps) (#565).
+    pub fn has_passing_work(&self) -> bool {
+        self.passed
+            || self.non_overlap_checks_passed
+            || (!self.blocking_overlaps.is_empty()
+                && !failed_non_overlap_checks(&self.failure_summary))
+    }
+}
+
+/// Whether a persisted failure summary reports a failing `overlaps` step (#565).
+pub fn failed_on_overlaps(failure_summary: &str) -> bool {
+    failure_summary
+        .lines()
+        .any(|line| line.starts_with("- [FAIL] overlaps"))
+}
+
+/// Whether a persisted failure summary reports any failing step other than `overlaps` (#565).
+pub fn failed_non_overlap_checks(failure_summary: &str) -> bool {
+    failure_summary
+        .lines()
+        .any(|line| line.starts_with("- [FAIL] ") && !line.starts_with("- [FAIL] overlaps"))
 }
 
 /// Result of checking whether a change's current snapshot has a passing preflight (#560).
@@ -612,6 +659,8 @@ mod tests {
             passed: false,
             failure_summary: "- [FAIL] cargo clippy -p velocity-graph --all-targets — failed"
                 .into(),
+            blocking_overlaps: Vec::new(),
+            non_overlap_checks_passed: false,
             log_path: "C:/tmp/preflight.log".into(),
             recorded_at: 100,
         };
