@@ -1,11 +1,10 @@
 use anyhow::Context;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 use velocity_core::state::ui_zoom::{UiZoomAdjustment, UiZoomView};
-use velocity_store::{Settings, StateStore};
+use velocity_store::{Settings, StateStore, StoreLock};
 
-pub type ManagedStateStore = Mutex<StateStore>;
+pub type ManagedStateStore = StoreLock;
 
 fn resolve_store_directory(application: &AppHandle) -> anyhow::Result<PathBuf> {
     application
@@ -36,7 +35,7 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<Vec<velocity_thread
         .map_err(|_| anyhow::anyhow!("Thread sessions lock is poisoned"))?
         .restore(store.state());
     store.defer_saves();
-    application.manage(Mutex::new(store));
+    application.manage(ManagedStateStore::new(store));
     start_background_saves(application);
     Ok(interrupted)
 }
@@ -65,7 +64,7 @@ pub fn save_now(application: &AppHandle) -> Result<(), String> {
     let Some(store) = application.try_state::<ManagedStateStore>() else {
         return Ok(());
     };
-    velocity_store::save_pending(store.inner())
+    velocity_store::save_pending(store.inner().as_mutex())
         .map(|_| ())
         .map_err(|error| format!("Could not save state: {error}"))
 }
@@ -73,7 +72,7 @@ pub fn save_now(application: &AppHandle) -> Result<(), String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn get_settings(application: AppHandle) -> Result<Settings, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::off_ui_thread_named("get_settings", move || {
         let store = application.state::<ManagedStateStore>();
         let guard = store
             .lock()
@@ -86,7 +85,7 @@ pub async fn get_settings(application: AppHandle) -> Result<Settings, String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn set_settings(application: AppHandle, settings: Settings) -> Result<Settings, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::off_ui_thread_named("set_settings", move || {
         let store = application.state::<ManagedStateStore>();
         let mut guard = store
             .lock()
@@ -106,7 +105,7 @@ pub async fn set_settings(application: AppHandle, settings: Settings) -> Result<
 #[specta::specta]
 pub async fn get_ui_zoom(application: AppHandle) -> Result<UiZoomView, String> {
     let handle = application.clone();
-    let view = crate::layout::off_ui_thread(move || {
+    let view = crate::layout::off_ui_thread_named("get_ui_zoom", move || {
         let store = handle.state::<ManagedStateStore>();
         let store = store.lock().map_err(|error| error.to_string())?;
         Ok(store.state().settings.ui_zoom.view())
@@ -123,7 +122,7 @@ pub async fn adjust_ui_zoom(
     adjustment: UiZoomAdjustment,
 ) -> Result<UiZoomView, String> {
     let handle = application.clone();
-    let view = crate::layout::off_ui_thread(move || {
+    let view = crate::layout::off_ui_thread_named("adjust_ui_zoom", move || {
         let store = handle.state::<ManagedStateStore>();
         let mut store = store.lock().map_err(|error| error.to_string())?;
         store

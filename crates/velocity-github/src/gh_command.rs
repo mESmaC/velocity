@@ -104,7 +104,7 @@ impl GitHubCommand {
         if self.github_com
             && let Some((endpoint, accept)) = parse_simple_api_get(arguments)
             && let TransportAttempt::Handled(result) =
-                http_transport::get(self.caller, endpoint, accept)
+                http_transport::get(&self.origin, self.caller, endpoint, accept)
         {
             return Ok(serde_json::from_slice(&result?)?);
         }
@@ -119,7 +119,7 @@ impl GitHubCommand {
     ) -> Result<Vec<T>, GitHubCommandError> {
         if self.github_com
             && let TransportAttempt::Handled(result) =
-                http_transport::get_paginated(self.caller, endpoint)
+                http_transport::get_paginated(&self.origin, self.caller, endpoint)
         {
             return result;
         }
@@ -133,13 +133,13 @@ impl GitHubCommand {
         if self.github_com {
             if let Some((endpoint, accept)) = parse_simple_api_get(arguments)
                 && let TransportAttempt::Handled(result) =
-                    http_transport::get(self.caller, endpoint, accept)
+                    http_transport::get(&self.origin, self.caller, endpoint, accept)
             {
                 return Ok(String::from_utf8_lossy(&result?).into_owned());
             }
             if let Some((method, endpoint)) = parse_simple_api_method(arguments)
                 && let TransportAttempt::Handled(result) =
-                    http_transport::send(self.caller, method, endpoint, None, None)
+                    http_transport::send(&self.origin, self.caller, method, endpoint, None, None)
             {
                 return Ok(String::from_utf8_lossy(&result?).into_owned());
             }
@@ -162,9 +162,14 @@ impl GitHubCommand {
     ) -> Result<T, GitHubCommandError> {
         if self.github_com {
             let encoded = serde_json::to_vec(body)?;
-            if let TransportAttempt::Handled(result) =
-                http_transport::send(self.caller, method, endpoint, Some(&encoded), None)
-            {
+            if let TransportAttempt::Handled(result) = http_transport::send(
+                &self.origin,
+                self.caller,
+                method,
+                endpoint,
+                Some(&encoded),
+                None,
+            ) {
                 return Ok(serde_json::from_slice(&result?)?);
             }
         }
@@ -183,9 +188,14 @@ impl GitHubCommand {
     ) -> Result<T, GitHubCommandError> {
         if self.github_com {
             let encoded = serde_json::to_vec(body)?;
-            if let TransportAttempt::Handled(result) =
-                http_transport::send(self.caller, "POST", "graphql", Some(&encoded), Some(path))
-            {
+            if let TransportAttempt::Handled(result) = http_transport::send(
+                &self.origin,
+                self.caller,
+                "POST",
+                "graphql",
+                Some(&encoded),
+                Some(path),
+            ) {
                 return Ok(serde_json::from_slice(&result?)?);
             }
         }
@@ -206,9 +216,14 @@ impl GitHubCommand {
     ) -> Result<Vec<u8>, GitHubCommandError> {
         if self.github_com {
             let encoded = serde_json::to_vec(body)?;
-            if let TransportAttempt::Handled(result) =
-                http_transport::send(self.caller, method, endpoint, Some(&encoded), None)
-            {
+            if let TransportAttempt::Handled(result) = http_transport::send(
+                &self.origin,
+                self.caller,
+                method,
+                endpoint,
+                Some(&encoded),
+                None,
+            ) {
                 return result;
             }
         }
@@ -224,7 +239,7 @@ impl GitHubCommand {
         if !self.github_com {
             return TransportAttempt::Fallback;
         }
-        match http_transport::get(self.caller, endpoint, None) {
+        match http_transport::get(&self.origin, self.caller, endpoint, None) {
             TransportAttempt::Handled(Ok(bytes)) => {
                 TransportAttempt::Handled(serde_json::from_slice(&bytes).map_err(Into::into))
             }
@@ -279,7 +294,8 @@ impl GitHubCommand {
         has_input: bool,
         graphql_path: Option<&str>,
     ) -> Result<Child, GitHubCommandError> {
-        crate::request_counter::record(
+        crate::request_counter::record_for_project(
+            &self.origin,
             self.caller,
             crate::request_counter::operation(arguments, graphql_path),
         );

@@ -3,6 +3,7 @@
   import Icon from './Icon.svelte';
   import TokenUsage from './TokenUsage.svelte';
   import ProcessMemory from './ProcessMemory.svelte';
+  import PerformanceDiagnostics from './PerformanceDiagnostics.svelte';
   import GraphStatusView from './GraphStatus.svelte';
   import { modal } from './motion';
   import { codeGraphCommands } from './ipc';
@@ -154,6 +155,8 @@
       <TokenUsage />
       <hr />
       <ProcessMemory />
+      <hr />
+      <PerformanceDiagnostics />
       <hr />
       <section aria-label="Usage limits">
         <div class="usage-title">Usage limits</div>

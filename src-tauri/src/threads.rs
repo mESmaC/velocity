@@ -212,13 +212,59 @@ pub struct ThreadSubagentChanged {
     pub subagent: SubagentView,
 }
 
-pub(crate) fn lock<'guard, Value>(
-    mutex: &'guard Mutex<Value>,
+pub(crate) trait Lockable {
+    type Target;
+    type Guard<'guard>: std::ops::Deref<Target = Self::Target> + std::ops::DerefMut
+    where
+        Self: 'guard;
+
+    #[track_caller]
+    fn lock_with_metrics(&self, what: &str) -> Result<Self::Guard<'_>, String>;
+}
+
+impl<Value> Lockable for Mutex<Value> {
+    type Target = Value;
+    type Guard<'guard>
+        = MutexGuard<'guard, Value>
+    where
+        Value: 'guard;
+
+    fn lock_with_metrics(&self, what: &str) -> Result<Self::Guard<'_>, String> {
+        self.lock()
+            .map_err(|error| format!("Could not read {what}: {error}"))
+    }
+}
+
+impl Lockable for ManagedStateStore {
+    type Target = velocity_store::StateStore;
+    type Guard<'guard> = velocity_store::StoreGuard<'guard>;
+
+    #[track_caller]
+    fn lock_with_metrics(&self, what: &str) -> Result<Self::Guard<'_>, String> {
+        self.lock()
+            .map_err(|error| format!("Could not read {what}: {error}"))
+    }
+}
+
+impl<Lock: Lockable + Send + Sync + 'static> Lockable for tauri::State<'_, Lock> {
+    type Target = Lock::Target;
+    type Guard<'guard>
+        = Lock::Guard<'guard>
+    where
+        Self: 'guard;
+
+    #[track_caller]
+    fn lock_with_metrics(&self, what: &str) -> Result<Self::Guard<'_>, String> {
+        self.inner().lock_with_metrics(what)
+    }
+}
+
+#[track_caller]
+pub(crate) fn lock<'guard, Lock: Lockable + ?Sized>(
+    mutex: &'guard Lock,
     what: &str,
-) -> Result<MutexGuard<'guard, Value>, String> {
-    mutex
-        .lock()
-        .map_err(|error| format!("Could not read {what}: {error}"))
+) -> Result<Lock::Guard<'guard>, String> {
+    mutex.lock_with_metrics(what)
 }
 
 /// `start_thread` and `send_message` (§3.1): the composer's thread intents.

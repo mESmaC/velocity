@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 pub use save_behind::save_pending;
+pub use store_lock::{StoreGuard, StoreLock};
 
 pub mod interview;
 pub mod issues;
@@ -68,6 +69,7 @@ pub mod rosen_work;
 mod save_behind;
 pub mod shared_mcp;
 pub mod skills;
+mod store_lock;
 pub mod swarm_dialog;
 pub mod swarms;
 pub mod task_list;

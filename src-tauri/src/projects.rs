@@ -30,7 +30,7 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
 #[tauri::command]
 #[specta::specta]
 pub async fn list_projects(application: AppHandle) -> Result<ProjectList, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::off_ui_thread_named("list_projects", move || {
         let store = application.state::<ManagedStateStore>();
         store
             .lock()
@@ -43,7 +43,7 @@ pub async fn list_projects(application: AppHandle) -> Result<ProjectList, String
 #[tauri::command]
 #[specta::specta]
 pub async fn switch_project(window: Window, identifier: u32) -> Result<LayoutSnapshot, String> {
-    crate::layout::off_ui_thread(move || {
+    crate::layout::off_ui_thread_named("switch_project", move || {
         let store = window.state::<ManagedStateStore>();
         let layout = window.state::<MainLayout>();
         let mut store = store.lock().map_err(|error| error.to_string())?;

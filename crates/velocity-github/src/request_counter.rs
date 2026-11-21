@@ -17,6 +17,11 @@ pub struct RequestTotal {
 }
 
 pub(crate) fn record(caller: &Location<'static>, operation: String) {
+    record_for_project("(global)", caller, operation);
+}
+
+pub(crate) fn record_for_project(project: &str, caller: &Location<'static>, operation: String) {
+    velocity_core::performance::record_gh_call(project, caller, &operation);
     // A poisoned lock only means another counting thread panicked; the totals are still usable.
     let mut totals = TOTALS
         .lock()

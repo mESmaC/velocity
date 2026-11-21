@@ -433,3 +433,27 @@
   padding: var(--sp-6) var(--sp-8);
   border-bottom: 1px solid var(--line-dim);
 }
+
+/* ── performance diagnostics ────────────────────────────────────────────── */
+.perf-badge {
+  display: inline-flex;
+  align-items: center;
+  height: var(--h-xs);
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+}
+.perf-badge[data-state='ok'] {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.perf-badge[data-state='breach'] {
+  background: var(--err-soft);
+  color: var(--err);
+}
+.perf-table th:first-child {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+}

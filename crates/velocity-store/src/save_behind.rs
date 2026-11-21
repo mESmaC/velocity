@@ -10,6 +10,7 @@
 //! still writes every change before returning, as before.
 
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use crate::{PersistedState, StateStore, StoreError, write_atomic_snapshot};
 
@@ -64,24 +65,44 @@ impl StateStore {
 /// serialized and each one copies the newest state, so an older revision never replaces a
 /// newer one on disk.
 pub fn save_pending(store: &Mutex<StateStore>) -> Result<bool, StoreError> {
+    let save_started = Instant::now();
+    let mut lock_time = Duration::ZERO;
     let write_lock = {
         let guard = store.lock().unwrap_or_else(PoisonError::into_inner);
-        if !guard.has_unsaved_changes() {
+        let hold_started = Instant::now();
+        let result = guard
+            .has_unsaved_changes()
+            .then(|| Arc::clone(&guard.write_lock));
+        drop(guard);
+        lock_time += hold_started.elapsed();
+        let Some(write_lock) = result else {
             return Ok(false);
-        }
-        Arc::clone(&guard.write_lock)
+        };
+        write_lock
     };
     let _writing = write_lock.lock().unwrap_or_else(PoisonError::into_inner);
     let (directory, snapshot) = {
         let guard = store.lock().unwrap_or_else(PoisonError::into_inner);
-        if !guard.has_unsaved_changes() {
+        let hold_started = Instant::now();
+        let result = guard
+            .has_unsaved_changes()
+            .then(|| (guard.directory.clone(), guard.state.clone()));
+        drop(guard);
+        lock_time += hold_started.elapsed();
+        let Some(pair) = result else {
             return Ok(false);
-        }
-        (guard.directory.clone(), guard.state.clone())
+        };
+        pair
     };
     write_atomic_snapshot(&directory, &snapshot)?;
-    let mut guard = store.lock().unwrap_or_else(PoisonError::into_inner);
-    guard.disk_revision = snapshot.revision;
+    {
+        let mut guard = store.lock().unwrap_or_else(PoisonError::into_inner);
+        let hold_started = Instant::now();
+        guard.disk_revision = snapshot.revision;
+        drop(guard);
+        lock_time += hold_started.elapsed();
+    }
+    velocity_core::performance::record_save(save_started.elapsed(), lock_time);
     Ok(true)
 }
 

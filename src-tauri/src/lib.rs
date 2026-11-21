@@ -34,6 +34,7 @@ mod local_build;
 mod machines;
 mod new_project;
 mod parking;
+mod performance;
 pub mod process_memory;
 mod project_health;
 mod projects;
@@ -112,6 +113,7 @@ fn bindings() -> Builder<tauri::Wry> {
         window::close_window,
         window::window_heartbeat,
         diagnostics::log_window_error,
+        performance::get_performance_diagnostics,
         process_memory::get_process_memory,
         project_health::get_project_health,
         state::get_settings,

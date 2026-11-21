@@ -1,6 +1,8 @@
 use crate::state::ManagedStateStore;
+use std::panic::Location;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, mpsc};
+use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, Window, Wry};
 use tauri_specta::Event;
 use velocity_core::layout_state::LayoutState;
@@ -31,7 +33,7 @@ pub struct LayoutIntentRequested {
 #[tauri::command]
 #[specta::specta]
 pub async fn get_layout_state(window: Window) -> Result<LayoutSnapshot, String> {
-    concurrently(move || read_layout(&window)).await
+    concurrently("get_layout_state", move || read_layout(&window)).await
 }
 
 #[tauri::command]
@@ -40,17 +42,21 @@ pub async fn dispatch_layout(
     window: Window,
     action: LayoutAction,
 ) -> Result<LayoutSnapshot, String> {
-    concurrently(move || dispatch(&window, action)).await
+    concurrently("dispatch_layout", move || dispatch(&window, action)).await
 }
 
 /// The layout commands take only the store and layout locks, in that order, so they run
 /// side by side on the blocking pool and never wait behind a slower command (#273).
 async fn concurrently<Value: Send + 'static>(
+    command: &'static str,
     work: impl FnOnce() -> Result<Value, String> + Send + 'static,
 ) -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(work)
+    let started = Instant::now();
+    let outcome = tauri::async_runtime::spawn_blocking(work)
         .await
-        .map_err(|error| format!("Main-window state task failed: {error}"))?
+        .map_err(|error| format!("Main-window state task failed: {error}"))?;
+    velocity_core::performance::record_ui_command(command, started.elapsed());
+    outcome
 }
 
 type CommandBody = Box<dyn FnOnce() + Send>;
@@ -59,10 +65,28 @@ type CommandBody = Box<dyn FnOnce() + Send>;
 /// time and in the order the window sent them. On the UI thread they ran in order, and
 /// some depend on it: two model choices for one thread save the model and reconfigure
 /// the agent in separate steps, which side by side could interleave (#286).
+#[track_caller]
 pub(crate) async fn off_ui_thread<Value: Send + 'static>(
     work: impl FnOnce() -> Result<Value, String> + Send + 'static,
 ) -> Result<Value, String> {
+    let label = velocity_core::performance::caller_label(Location::caller());
+    off_ui_thread_labeled(label, work).await
+}
+
+/// Same as [`off_ui_thread`], recording command latency under an explicit IPC command name.
+pub(crate) async fn off_ui_thread_named<Value: Send + 'static>(
+    command: &'static str,
+    work: impl FnOnce() -> Result<Value, String> + Send + 'static,
+) -> Result<Value, String> {
+    off_ui_thread_labeled(command.to_owned(), work).await
+}
+
+async fn off_ui_thread_labeled<Value: Send + 'static>(
+    label: String,
+    work: impl FnOnce() -> Result<Value, String> + Send + 'static,
+) -> Result<Value, String> {
     static COMMANDS: OnceLock<Mutex<mpsc::Sender<CommandBody>>> = OnceLock::new();
+    let started = Instant::now();
     let commands = COMMANDS.get_or_init(|| {
         let (sender, receiver) = mpsc::channel::<CommandBody>();
         std::thread::spawn(move || {
@@ -79,14 +103,20 @@ pub(crate) async fn off_ui_thread<Value: Send + 'static>(
             .unwrap_or_else(|_| Err("The command failed unexpectedly".into()));
         let _ignored = reply.send(outcome);
     });
-    commands
+    let sent = commands
         .lock()
         .map_err(|error| error.to_string())?
         .send(body)
-        .map_err(|_| String::from("The command thread has stopped"))?;
-    result
+        .map_err(|_| String::from("The command thread has stopped"));
+    if let Err(error) = sent {
+        velocity_core::performance::record_ui_command(&label, started.elapsed());
+        return Err(error);
+    }
+    let outcome = result
         .await
-        .map_err(|_| String::from("The command thread has stopped"))?
+        .map_err(|_| String::from("The command thread has stopped"));
+    velocity_core::performance::record_ui_command(&label, started.elapsed());
+    outcome?
 }
 
 fn read_layout(window: &Window) -> Result<LayoutSnapshot, String> {

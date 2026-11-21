@@ -31,6 +31,7 @@ pub mod layout_view;
 pub mod lean_cache;
 pub mod navigation;
 pub mod new_project;
+pub mod performance;
 pub mod preflight;
 pub mod project_health;
 pub mod projects;

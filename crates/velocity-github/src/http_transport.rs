@@ -73,6 +73,7 @@ static WORKER: OnceLock<Option<tokio::sync::mpsc::UnboundedSender<HttpJob>>> = O
 
 /// REST GET with `ETag` / `If-None-Match` conditional caching.
 pub(crate) fn get(
+    project: &str,
     caller: &'static Location<'static>,
     endpoint: &str,
     accept: Option<&str>,
@@ -80,7 +81,7 @@ pub(crate) fn get(
     let url = api_url(endpoint);
     let accept = accept.unwrap_or(DEFAULT_ACCEPT);
     let label = format!("api {}", endpoint.trim_start_matches('/'));
-    match execute_get(caller, &url, accept, &label) {
+    match execute_get(project, caller, &url, accept, &label) {
         TransportAttempt::Handled(Ok((body, _))) => TransportAttempt::Handled(Ok(body)),
         TransportAttempt::Handled(Err(error)) => TransportAttempt::Handled(Err(error)),
         TransportAttempt::Fallback => TransportAttempt::Fallback,
@@ -89,6 +90,7 @@ pub(crate) fn get(
 
 /// Follows GitHub REST `Link: <...>; rel="next"` pagination with per-page ETag caching.
 pub(crate) fn get_paginated<T: DeserializeOwned>(
+    project: &str,
     caller: &'static Location<'static>,
     endpoint: &str,
 ) -> TransportAttempt<Vec<T>> {
@@ -96,7 +98,7 @@ pub(crate) fn get_paginated<T: DeserializeOwned>(
     let label = format!("api {}", endpoint.trim_start_matches('/'));
     let mut items = Vec::new();
     for _ in 0..MAX_REST_PAGES {
-        let (body, next) = match execute_get(caller, &url, DEFAULT_ACCEPT, &label) {
+        let (body, next) = match execute_get(project, caller, &url, DEFAULT_ACCEPT, &label) {
             TransportAttempt::Handled(Ok(page)) => page,
             TransportAttempt::Handled(Err(error)) => return TransportAttempt::Handled(Err(error)),
             TransportAttempt::Fallback => return TransportAttempt::Fallback,
@@ -115,6 +117,7 @@ pub(crate) fn get_paginated<T: DeserializeOwned>(
 }
 
 struct HttpRequest<'a> {
+    project: &'a str,
     caller: &'static Location<'static>,
     method: &'a Method,
     url: &'a str,
@@ -126,6 +129,7 @@ struct HttpRequest<'a> {
 
 /// REST mutation (`POST`/`PATCH`/`DELETE`/`PUT`) or GraphQL (`POST graphql`).
 pub(crate) fn send(
+    project: &str,
     caller: &'static Location<'static>,
     method: &str,
     endpoint: &str,
@@ -147,6 +151,7 @@ pub(crate) fn send(
         None => format!("api {method}"),
     };
     let request = HttpRequest {
+        project,
         caller,
         method: &method,
         url: &url,
@@ -166,6 +171,7 @@ pub(crate) fn send(
 }
 
 fn execute_get(
+    project: &str,
     caller: &'static Location<'static>,
     url: &str,
     accept: &str,
@@ -180,6 +186,7 @@ fn execute_get(
     let cache_key = (url.to_owned(), accept.to_owned());
     let etag = cached_etag(&cache_key);
     let request = HttpRequest {
+        project,
         caller,
         method: &Method::GET,
         url,
@@ -229,7 +236,12 @@ fn dispatch_with_auth_retry(
     request: &HttpRequest<'_>,
 ) -> Result<HttpOutcome, GitHubCommandError> {
     let outcome = dispatch_once(worker, initial_token, request)?;
-    record_outcome(request.caller, request.operation, outcome.status);
+    record_outcome(
+        request.project,
+        request.caller,
+        request.operation,
+        outcome.status,
+    );
     if outcome.status != StatusCode::UNAUTHORIZED {
         return Ok(outcome);
     }
@@ -237,17 +249,27 @@ fn dispatch_with_auth_retry(
         return Ok(outcome);
     };
     let retry = dispatch_once(worker, &refreshed, request)?;
-    record_outcome(request.caller, request.operation, retry.status);
+    record_outcome(
+        request.project,
+        request.caller,
+        request.operation,
+        retry.status,
+    );
     Ok(retry)
 }
 
-fn record_outcome(caller: &'static Location<'static>, operation: &str, status: StatusCode) {
+fn record_outcome(
+    project: &str,
+    caller: &'static Location<'static>,
+    operation: &str,
+    status: StatusCode,
+) {
     let label = if status == StatusCode::NOT_MODIFIED {
         format!("{operation} (304)")
     } else {
         operation.to_owned()
     };
-    crate::request_counter::record(caller, label);
+    crate::request_counter::record_for_project(project, caller, label);
 }
 
 fn dispatch_once(

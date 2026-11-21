@@ -41,6 +41,11 @@ pub fn initialize(application: &AppHandle) {
         );
         previous(panic);
     }));
+    velocity_core::performance::set_breach_logger(record_performance_breach);
+}
+
+fn record_performance_breach(message: &str) {
+    record(velocity_core::performance::BREACH_LOG_SOURCE, message);
 }
 
 /// Appends one entry. Failing to log must never fail the caller, so errors only reach stderr.

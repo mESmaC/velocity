@@ -82,6 +82,12 @@ export const commands = {
 	 *  or an unhandled promise rejection. `source` names where the window caught it.
 	 */
 	logWindowError: (source: string, message: string) => __TAURI_INVOKE<void>("log_window_error", { source, message }),
+	/**
+	 *  Returns the rolling performance measurements, active budgets and recent budget breaches.
+	 *  Runs directly without taking the persisted store lock or waiting behind the UI command
+	 *  thread so diagnostics stay responsive even under heavy contention.
+	 */
+	getPerformanceDiagnostics: () => __TAURI_INVOKE<PerformanceDiagnostics>("get_performance_diagnostics"),
 	getProcessMemory: () => __TAURI_INVOKE<ProcessMemory[]>("get_process_memory"),
 	/**  `get_project_health` (§3.1): returns the active health signals for one project (#509). */
 	getProjectHealth: (projectIdentifier: number) => __TAURI_INVOKE<ProjectHealthView_Serialize>("get_project_health", { projectIdentifier }),
@@ -731,6 +737,18 @@ export type BrowserView_Serialize = {
 	tabs: Tab[],
 };
 
+export type BudgetBreach = {
+	unix_ms: string,
+	category: BudgetCategory,
+	subject: string,
+	observed: number,
+	budget: number,
+	unit: string,
+	detail: string,
+};
+
+export type BudgetCategory = "UiCommand" | "StoreLock" | "StateSave" | "GhRate";
+
 export type ChangeRow = ChangeRow_Serialize | ChangeRow_Deserialize;
 
 export type ChangeRow_Deserialize = {
@@ -923,6 +941,16 @@ export type CollapseMirrorHealth_Serialize = {
 	last_land_agent: string | null,
 	/**  The repository is archived on Collapse, which refuses mirror pushes. */
 	archived: boolean,
+};
+
+export type CommandLatencyRow = {
+	command: string,
+	calls: number,
+	p95_ms: number,
+	max_ms: number,
+	last_ms: number,
+	breaches: number,
+	breaching: boolean,
 };
 
 export type Comparison = Comparison_Serialize | Comparison_Deserialize;
@@ -1478,6 +1506,15 @@ export type Frame = {
 	jpeg: string,
 	width: number | null,
 	height: number | null,
+};
+
+export type GhRateRow = {
+	project: string,
+	calls_last_minute: number,
+	peak_per_minute: number,
+	total_calls: number,
+	breaches: number,
+	breaching: boolean,
 };
 
 /**  One repository the signed-in account owns or can see through an organisation. */
@@ -3333,6 +3370,25 @@ export type PendingInterview_Serialize = {
 	brief: string,
 };
 
+export type PerformanceBudgets = {
+	ui_command_p95_ms: number,
+	store_lock_hold_ms: number,
+	save_lock_ms: number,
+	gh_calls_per_minute: number,
+};
+
+export type PerformanceDiagnostics = {
+	uptime_seconds: number,
+	steady_state: boolean,
+	budgets: PerformanceBudgets,
+	total_breaches: number,
+	ui_commands: CommandLatencyRow[],
+	store_locks: StoreLockRow[],
+	saves: SaveDiagnostics,
+	gh_projects: GhRateRow[],
+	recent_breaches: BudgetBreach[],
+};
+
 export type Period = "Today" | "Week";
 
 export type PersistedState = PersistedState_Serialize | PersistedState_Deserialize;
@@ -4335,6 +4391,18 @@ export type RosenWorkView_Serialize = {
 	expanded_issues: WorkKey[],
 };
 
+export type SaveDiagnostics = {
+	count: number,
+	last_duration_ms: number,
+	p95_duration_ms: number,
+	max_duration_ms: number,
+	last_lock_ms: number,
+	p95_lock_ms: number,
+	max_lock_ms: number,
+	breaches: number,
+	breaching: boolean,
+};
+
 export type ScoutCadence = "once" | "every_thirty_minutes" | "after_every_merge";
 
 export type ScoutFocusArea = "bugs" | "stress" | "proof_gaps" | "spec_drift" | "performance" | "security" | "dead_code" | "ux";
@@ -4872,6 +4940,18 @@ export type Status_Serialize = {
 /**  Stop a duty role (F7): every agent is dismissed and the role leaves "On duty". */
 export type StopDutyRequest = {
 	role: DutyRole,
+};
+
+export type StoreLockRow = {
+	caller: string,
+	acquisitions: number,
+	max_wait_ms: number,
+	last_wait_ms: number,
+	p95_hold_ms: number,
+	max_hold_ms: number,
+	last_hold_ms: number,
+	breaches: number,
+	breaching: boolean,
 };
 
 /**  Where a subagent is (§3.2 Subagents). */
