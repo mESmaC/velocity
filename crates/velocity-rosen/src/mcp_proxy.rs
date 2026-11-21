@@ -9,7 +9,7 @@
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 
 use rosen_client::protocol::{
     ClaimFilter, ClaimKind, ClaimRequest, OverlapQuery, PathClaim, WaitOutcome,
@@ -312,7 +312,7 @@ struct ChildBackend {
 impl ChildBackend {
     fn spawn(rosen_args: &[String], workspace: Option<PathBuf>) -> Result<Self, RosenError> {
         let program = resolve_rosen_binary()?;
-        let mut command = Command::new(&program);
+        let mut command = crate::process::hidden_command(&program);
         command
             .args(rosen_args)
             .stdin(Stdio::piped())
