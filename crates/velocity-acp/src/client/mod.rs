@@ -440,6 +440,9 @@ async fn run_admitted_session(
     setup
         .shared_servers
         .extend(launch_shared_servers(&launch, &setup.worktree));
+    if let Some(memory_dir) = &setup.project_memory_dir {
+        launch.set_env("VELOCITY_PROJECT_MEMORY_DIR", &memory_dir.to_string_lossy());
+    }
     if launch.own_config == Some(crate::Provider::Anthropic)
         && let Err(error) = setup.load_claude_project_instructions().await
     {
@@ -635,6 +638,7 @@ async fn session_preface(setup: &SessionSetup, loaded: bool, graph_on: bool) -> 
         .preface
         .iter()
         .cloned()
+        .chain(setup.task_brief.iter().cloned())
         .chain(setup.handoff_context.iter().cloned())
         .chain(
             setup

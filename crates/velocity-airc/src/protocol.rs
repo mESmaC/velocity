@@ -1,6 +1,7 @@
 use crate::{
     Channel, Error,
     issue_tools::{self, IssueHandler},
+    next_work_tools::{self, NextWorkHandler},
     read_tools::{self, MessageReader},
 };
 use serde_json::{Value, json};
@@ -14,6 +15,7 @@ use velocity_core::text_budget::tool_answer;
 pub(crate) struct ToolOptions<'a> {
     continuous_dispatch: bool,
     issue_handler: Option<&'a IssueHandler<'a>>,
+    next_work_handler: Option<&'a NextWorkHandler<'a>>,
 }
 
 impl<'a> ToolOptions<'a> {
@@ -24,7 +26,13 @@ impl<'a> ToolOptions<'a> {
         Self {
             continuous_dispatch,
             issue_handler,
+            next_work_handler: None,
         }
+    }
+
+    pub(crate) fn with_next_work(mut self, handler: &'a NextWorkHandler<'a>) -> Self {
+        self.next_work_handler = Some(handler);
+        self
     }
 }
 
@@ -148,13 +156,7 @@ fn respond(
         "tools/call" => {
             let parameters = &request["params"];
             let (text, failed) = match call(
-                channel,
-                member,
-                nick,
-                parameters,
-                connected,
-                options.issue_handler,
-                session,
+                channel, member, nick, parameters, connected, options, session,
             ) {
                 Ok(value) => (value.to_string(), false),
                 Err(error) => (error.to_string(), true),
@@ -176,7 +178,7 @@ fn call(
     nick: &str,
     parameters: &Value,
     connected: &std::sync::atomic::AtomicBool,
-    issue_handler: Option<&IssueHandler<'_>>,
+    options: &ToolOptions<'_>,
     session: &mut ToolSession,
 ) -> Result<Value, Error> {
     let arguments = &parameters["arguments"];
@@ -203,7 +205,14 @@ fn call(
             session.nick.as_deref().unwrap_or(nick),
             name,
             arguments,
-            issue_handler,
+            options.issue_handler,
+        ),
+        next_work_tools::NEXT_WORK_TOOL => next_work_tools::call(
+            channel,
+            member,
+            session.nick.as_deref().unwrap_or(nick),
+            arguments,
+            options.next_work_handler,
         ),
         "join" => Ok(json!({"nick":channel.join_with_session(member, nick, true)?})),
         "leave" => {
@@ -321,6 +330,9 @@ fn tool_list(rosen: bool, options: &ToolOptions<'_>) -> Vec<Value> {
     tools.extend(crate::task_tools::tools(options.continuous_dispatch));
     if options.issue_handler.is_some() {
         tools.extend(issue_tools::tools());
+    }
+    if options.next_work_handler.is_some() {
+        tools.push(next_work_tools::tool());
     }
     tools.extend(writing_tools());
     tools.extend(claim_tools());

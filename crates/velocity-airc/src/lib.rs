@@ -6,6 +6,7 @@ mod delivery;
 mod event_log;
 mod issue_tools;
 mod launch;
+mod next_work_tools;
 mod presence;
 mod process;
 mod protocol;
@@ -31,9 +32,10 @@ pub use delivery::{
 };
 pub use issue_tools::{IssueCreate, IssueRead, IssueRequest, IssueUpdate};
 pub use launch::{
-    CONTINUOUS_DISPATCH_ARGUMENT, SERVER_NAME, SERVER_SWITCH, serve_stdio, serve_stdio_with_issues,
-    server_arguments,
+    CONTINUOUS_DISPATCH_ARGUMENT, SERVER_NAME, SERVER_SWITCH, serve_stdio,
+    serve_stdio_with_handlers, serve_stdio_with_issues, server_arguments,
 };
+pub use next_work_tools::NextWorkRequest;
 pub use protocol::serve;
 pub use routing::{MessageMode, mode_for};
 pub use tasks::{TaskChange, TaskListRow, TaskTarget};

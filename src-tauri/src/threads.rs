@@ -67,6 +67,12 @@ fn configure_session(
     let mut setup = setup.with_run_settings(settings);
     setup.airc = airc;
     setup.graph_task_title = title;
+    if let Ok(app_data) = application.path().app_data_dir() {
+        match velocity_threads::agent_memory::prepare_project_memory(&app_data, key.0) {
+            Ok(memory_dir) => setup.project_memory_dir = Some(memory_dir),
+            Err(error) => eprintln!("Project {} agent memory: {error}", key.0),
+        }
+    }
     crate::handoff::configure(application, key, &mut setup);
     setup
 }
@@ -744,6 +750,7 @@ async fn run_thread_session(
         return fail(&application, key, "Could not claim work", &error);
     }
     add_work_handoff(&application, key, &mut setup);
+    attach_task_brief(&application, key, &plan.prompt, &mut setup).await;
     crate::browser::configure(&application, key, &mut setup);
     setup.pause_on_subscription_limit = true;
     let session = spawn_session(plan.agent, setup, inputs);
@@ -1118,6 +1125,7 @@ async fn finish_goal_claimed(
             &error,
         );
     }
+    let task_brief = build_thread_task_brief(application, key, &claimed.prompt, &folder.path).await;
     let path = folder.path.display().to_string();
     let prompt = work_handoff(application, key).map_or_else(
         || claimed.prompt.clone(),
@@ -1126,12 +1134,16 @@ async fn finish_goal_claimed(
     let session = if let Some(turn) = selection {
         report(save_agent_session(application, key, &turn.events));
         report(apply_batch(application, key, &turn.events));
+        let continued_prompt = match &task_brief {
+            Some(brief) => format!("{brief}\n\n{prompt}"),
+            None => prompt.clone(),
+        };
         let continued = lock(
             application.state::<ManagedThreads>().inner(),
             "thread sessions",
         )
         .ok()
-        .and_then(|mut runtimes| runtimes.continue_claimed_session(key, &path, &prompt));
+        .and_then(|mut runtimes| runtimes.continue_claimed_session(key, &path, &continued_prompt));
         if continued.is_some() {
             Some(turn.session)
         } else {
@@ -1153,7 +1165,9 @@ async fn finish_goal_claimed(
         .ok()
         .and_then(|mut runtimes| runtimes.begin_claimed_session(key, &path, &prompt));
         inputs.map(|inputs| {
-            let setup = goal_session_setup(application, key, &plan, &folder, &claimed.piece.title);
+            let mut setup =
+                goal_session_setup(application, key, &plan, &folder, &claimed.piece.title);
+            setup.task_brief = task_brief;
             spawn_session(plan.agent.clone(), setup, inputs)
         })
     };
@@ -1189,6 +1203,47 @@ fn add_work_handoff(application: &AppHandle, key: ThreadKey, setup: &mut Session
         Some(preface) => format!("{preface}\n\n{handoff}"),
         None => handoff,
     });
+}
+
+async fn attach_task_brief(
+    application: &AppHandle,
+    key: ThreadKey,
+    prompt: &str,
+    setup: &mut SessionSetup,
+) {
+    setup.task_brief = build_thread_task_brief(application, key, prompt, &setup.worktree).await;
+}
+
+async fn build_thread_task_brief(
+    application: &AppHandle,
+    key: ThreadKey,
+    prompt: &str,
+    worktree: &std::path::Path,
+) -> Option<String> {
+    let app_data = application.path().app_data_dir().ok()?;
+    let (project, thread) = {
+        let store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )
+        .ok()?;
+        let project = store.project(key.0)?.clone();
+        let thread = project
+            .threads
+            .iter()
+            .find(|thread| thread.id == key.1)?
+            .clone();
+        (project, thread)
+    };
+    let input = velocity_threads::task_brief::thread_brief_input(
+        &project,
+        &thread,
+        prompt,
+        worktree,
+        Vec::new(),
+    )?;
+    let brief = velocity_threads::task_brief::build_brief_async(&app_data, &project, input).await;
+    Some(brief.render_for_session())
 }
 
 fn work_handoff(application: &AppHandle, key: ThreadKey) -> Option<String> {

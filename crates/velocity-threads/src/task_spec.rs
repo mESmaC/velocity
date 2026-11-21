@@ -4,19 +4,7 @@ const READ: &str = "Read only the relevant headings with `graph_read` (source: t
 /// Explicit references travel with the work. The agent resolves headings in its own
 /// workspace, where the graph can check that the spans still match the source.
 pub(crate) fn instructions(evidence: &[&str]) -> String {
-    let mut sections = Vec::new();
-    for word in evidence.iter().flat_map(|text| {
-        text.split(|character: char| {
-            !character.is_alphanumeric() && character != '.' && character != '§'
-        })
-    }) {
-        if word.starts_with(['F', '§'])
-            && let Some(section) = velocity_spec::section_id(word)
-            && !sections.contains(&section)
-        {
-            sections.push(section);
-        }
-    }
+    let sections = velocity_spec::extract_section_ids(evidence);
     if sections.is_empty() {
         return format!("{DISCOVER} {READ}");
     }

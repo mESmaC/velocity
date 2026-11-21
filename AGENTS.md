@@ -6,7 +6,7 @@ Velocity is a Rust + Tauri desktop IDE for running coding agents in parallel.
 
 - Follow the issue, §7 item or named spec section for your work. Find the applicable headings with `graph_find` (kind: section) and read them with `graph_read` (source: true). If the graph is unavailable or clips a section, read just that section's lines. Use the project instructions already in your session and keep spec reads to the sections you need.
 - SPEC.md §1 governs product rules. Agents run unrestricted with all tools and no approval gates. Providers sign in through OAuth. The frontend calls Tauri commands and subscribes to events. It never runs shell commands.
-- Take the first unclaimed, unblocked item in the lowest milestone when choosing work. Use §7 for build order and §8 for open decisions that affect your piece. Skip blocked items. Treat *(proposed)* decisions as ready to build. File a `spec-question` issue with the recommended answer and blocked items when a decision is missing. File contradictions and unrelated findings as issues. Edit only your claimed piece.
+- Take the first unclaimed, unblocked item in the lowest milestone when choosing work (or call AIRC `next_work` to claim it atomically with its task brief). Use §7 for build order and §8 for open decisions that affect your piece. Skip blocked items. Treat *(proposed)* decisions as ready to build. File a `spec-question` issue with the recommended answer and blocked items when a decision is missing. File contradictions and unrelated findings as issues. Edit only your claimed piece.
 - Follow the AIRC Task List instructions. Continuous dispatch can maintain the list. Other threads change it only at the user's request.
 
 ## Rosen workspace
@@ -20,7 +20,7 @@ Velocity is a Rust + Tauri desktop IDE for running coding agents in parallel.
 
 ## Shared files
 
-- Tick your matching §7 item in the same change. Register commands, events, modules, members and dependencies in the appropriate group and place new named groups alphabetically. Use the existing implementation if the base lands the same fix first.
+- Velocity ticks the owning §7 item automatically when a Rosen change lands, so agents do not edit SPEC.md §7 in every change. Register commands, events, modules, members and dependencies in the appropriate group and place new named groups alphabetically. Use the existing implementation if the base lands the same fix first.
 - When Rosen reports `regenerate`, regenerate `Cargo.lock` with `rosen run -- cargo metadata --format-version 1`, `ui/pnpm-lock.yaml` with `pnpm -C ui install --lockfile-only` and `ui/src/lib/bindings.ts` by queuing `pnpm -C ui bindings` or using `rosen run -- pnpm -C ui bindings`. Regenerate from the merged inputs and name the change again. Keep generated artifacts and registration lists in their respective `rosen.toml` lists.
 
 ## Commands

@@ -57,6 +57,10 @@ pub struct SessionSetup {
     pub handoff: Option<super::handoff::Experiment>,
     /// A fresh session's saved note and current change state have their own preface budget.
     pub handoff_context: Option<String>,
+    /// Structured task brief prepared at dispatch or fix-forward handoff (#539).
+    pub task_brief: Option<String>,
+    /// Per-project agent memory folder keyed by project rather than workspace path (#539).
+    pub project_memory_dir: Option<PathBuf>,
     /// Queued commands persisted from before a Velocity restart (#516).
     pub restored_runs: Vec<velocity_core::queued_runs::QueuedRunRecord>,
     /// Recent finished queued runs persisted on this thread for `run_status` and restart recovery (#536).
@@ -114,6 +118,8 @@ impl SessionSetup {
             usage_role: None,
             handoff: None,
             handoff_context: None,
+            task_brief: None,
+            project_memory_dir: None,
             restored_runs: Vec::new(),
             run_history: Vec::new(),
         }
@@ -139,11 +145,23 @@ impl SessionSetup {
     }
 
     pub(super) async fn load_claude_project_instructions(&mut self) -> std::io::Result<()> {
+        let mut settings = serde_json::json!({
+            "deniedMcpServers": [{ "serverName": "computer-use" }]
+        });
+        if let Some(memory_dir) = &self.project_memory_dir
+            && let Some(object) = settings.as_object_mut()
+        {
+            object.insert(
+                "autoMemoryDirectory".into(),
+                serde_json::json!(memory_dir.to_string_lossy()),
+            );
+            object.insert("autoMemoryEnabled".into(), serde_json::json!(true));
+        }
         self.session_metadata = Some(Meta::from_iter([(
             "claudeCode".into(),
             serde_json::json!({
                 "options": {
-                    "settings": { "deniedMcpServers": [{ "serverName": "computer-use" }] },
+                    "settings": settings,
                     "disallowedTools": ["mcp__computer-use"]
                 }
             }),

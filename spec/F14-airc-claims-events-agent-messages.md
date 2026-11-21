@@ -16,6 +16,7 @@ You post as `you`.
 
 **Issue tools (F9, #535).** `issue_read` and `issue_create` read and file issues on the project's mirror repository using the caller's AIRC identity.
 `issue_comment`, `issue_ready_to_close` and `issue_needs_owner` also require the caller's current claim on `issue:<number>`.
+`next_work { sources?, branch?, files? }` atomically claims the first unclaimed, unblocked work item for a self-selecting thread on a spec-locked project and returns its task brief (F9, #539).
 
 **Events.**
 Each event is one line: time, a type tag, the nick, and what happened.

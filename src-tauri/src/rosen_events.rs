@@ -555,6 +555,9 @@ async fn follow_up_once(
         follow_up,
         RosenFollowUp::FinishLanded | RosenFollowUp::FinishAbandoned
     ) {
+        if matches!(follow_up, RosenFollowUp::FinishLanded) {
+            tick_spec_section_on_land(application, key).await;
+        }
         return match finish_work(application, key).await {
             Ok(true) => FollowUpStep::Finished,
             Ok(false) => FollowUpStep::Waiting("waiting for workspace setup to finish".into()),
@@ -567,7 +570,11 @@ async fn follow_up_once(
                 return FollowUpStep::Finished;
             };
             match reopen_reverted(application, key, change).await {
-                Ok(()) => deliver(application, key, follow_up, message),
+                Ok(()) => {
+                    let message =
+                        with_revert_fix_forward_brief(application, key, change, message).await;
+                    deliver(application, key, follow_up, &message)
+                }
                 Err(error) => Err(error),
             }
         }
@@ -842,4 +849,92 @@ fn workspace(application: &AppHandle, key: ThreadKey) -> Result<Option<PathBuf>,
         .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
         .and_then(|thread| thread.worktree_path.as_deref())
         .map(PathBuf::from))
+}
+
+/// Ticks the owning §7 implementation-order item in Rosen when a change lands (#539).
+async fn tick_spec_section_on_land(application: &AppHandle, key: ThreadKey) {
+    let target = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .ok()
+    .and_then(|store| {
+        let project = store.project(key.0)?;
+        let thread = project.threads.iter().find(|thread| thread.id == key.1)?;
+        let issue = thread.issue.as_ref().map(|issue| issue.number);
+        let section = thread.spec_section.clone();
+        let title = thread.title.clone();
+        let label = issue
+            .map(|number| format!("#{number}"))
+            .or_else(|| section.clone())
+            .unwrap_or_else(|| format!("thread-{}", thread.id));
+        Some((project.spec_path.clone(), section, issue, title, label))
+    });
+    let Some((spec_path, section, issue, title, label)) = target else {
+        return;
+    };
+    let Ok(server) = crate::rosen::server(application, key.0).await else {
+        return;
+    };
+    let query = velocity_rosen::spec_tick::TickQuery {
+        spec_section: section.as_deref(),
+        issue_number: issue,
+        title: Some(title.as_str()),
+    };
+    if let Err(error) =
+        velocity_rosen::spec_tick::tick_on_land(&server, &spec_path, &query, &label).await
+    {
+        report::<()>(Err(format!(
+            "Could not tick §7 item for {label} on land: {error}"
+        )));
+    }
+}
+
+/// Appends the structured fix-forward task brief (including landed head and failed check)
+/// when a reverted Rosen change is reopened for its author (#539).
+async fn with_revert_fix_forward_brief(
+    application: &AppHandle,
+    key: ThreadKey,
+    change: &str,
+    message: &str,
+) -> String {
+    let Ok(app_data) = application.path().app_data_dir() else {
+        return message.to_owned();
+    };
+    let context = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .ok()
+    .and_then(|store| {
+        let project = store.project(key.0)?.clone();
+        let thread = project
+            .threads
+            .iter()
+            .find(|thread| thread.id == key.1)?
+            .clone();
+        let checkout = thread
+            .worktree_path
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(&project.repository_path));
+        Some((project, thread, checkout))
+    });
+    let Some((project, thread, checkout)) = context else {
+        return message.to_owned();
+    };
+    let landed_head = thread
+        .rosen_last_reverted_commit
+        .as_deref()
+        .unwrap_or("unknown");
+    let input = velocity_threads::task_brief::revert_brief_input(
+        &project,
+        &thread,
+        change,
+        landed_head,
+        message,
+        &checkout,
+    );
+    let brief = velocity_threads::task_brief::build_brief_async(&app_data, &project, input).await;
+    format!("{}\n\n{message}", brief.render(3_800))
 }

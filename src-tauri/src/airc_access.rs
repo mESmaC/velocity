@@ -5,7 +5,7 @@ use anyhow::Context;
 use std::path::Path;
 use tauri::{AppHandle, Manager};
 use velocity_acp::client::AircLaunch;
-use velocity_airc::{SERVER_SWITCH, serve_stdio_with_issues};
+use velocity_airc::{SERVER_SWITCH, serve_stdio_with_handlers};
 
 /// `velocity --airc-mcp <app-data> <project-id> <member-id> <nick>`: serve one agent's AIRC
 /// connection on stdin/stdout and exit. `false` when Velocity was started normally.
@@ -17,8 +17,12 @@ pub fn serve_airc_server() -> anyhow::Result<bool> {
     if switch.to_str() != Some(SERVER_SWITCH) {
         return Ok(false);
     }
-    serve_stdio_with_issues(rest, velocity_threads::issue_activity::handle_issue_request)
-        .context("The AIRC MCP connection failed")?;
+    serve_stdio_with_handlers(
+        rest,
+        velocity_threads::issue_activity::handle_issue_request,
+        velocity_threads::next_work::handle_next_work,
+    )
+    .context("The AIRC MCP connection failed")?;
     Ok(true)
 }
 

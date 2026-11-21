@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod agent_activity;
+pub mod agent_memory;
 pub mod agent_tasks;
 pub mod build_repairs;
 pub mod ci_repairs;
@@ -20,6 +21,7 @@ pub mod launch;
 pub mod local_release;
 pub mod machine_worker;
 pub mod naming;
+pub mod next_work;
 pub mod overlap_paths;
 pub mod parked_review;
 pub mod parking;
@@ -35,6 +37,7 @@ pub mod subagents;
 pub mod swarm;
 pub mod sweep;
 pub mod sweep_runner;
+pub mod task_brief;
 mod task_spec;
 pub mod titles;
 pub mod transcript_saves;

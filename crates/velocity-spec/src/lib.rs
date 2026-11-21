@@ -1,5 +1,12 @@
 //! A project's root spec and Markdown files recursively under `spec/`, read as one spec.
 
+mod sections;
+
+pub use sections::{
+    ImplementationItem, OpenQuestion, SectionSpan, TickQuery, extract_acceptance_criteria,
+    extract_section_ids, tick_implementation_item,
+};
+
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
