@@ -255,8 +255,14 @@ fn configure_concurrency(application: &AppHandle) {
     drop(store);
 }
 
+fn configure_agent_environment(application: &AppHandle) {
+    let passthrough = settings(application).providers.env_passthrough;
+    velocity_rosen::agent_run::set_passthrough_env(&passthrough);
+}
+
 pub fn initialize(application: &AppHandle) {
     configure_concurrency(application);
+    configure_agent_environment(application);
     watch_live_limits(application);
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
@@ -841,6 +847,7 @@ pub(crate) fn set_provider_settings_now(
             .map_err(|error| error.to_string())?;
     }
     configure_concurrency(&application);
+    configure_agent_environment(&application);
     current_view(&application)
 }
 

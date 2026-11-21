@@ -179,7 +179,9 @@ async fn exchange(
 ) -> Result<Value, ClientError> {
     let mut command = process::hidden_command(find_program(OsStr::new(program)));
     if let Some(launch) = launch {
-        launch.apply_environment(&mut command);
+        let _ = launch.apply_environment(&mut command);
+    } else {
+        let _ = process::filter_inherited_environment(&mut command, &[], None, 0, &[]);
     }
     command
         .args(arguments)

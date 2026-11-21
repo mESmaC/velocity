@@ -294,6 +294,7 @@ fn launch_plan<H: Host>(host: &H, (project, thread): InterviewKey) -> Option<Lau
                 agent.trim_unused_context();
             }
             agent.launch.shared_servers = shared_servers;
+            agent.launch.env_passthrough = settings.providers.env_passthrough.clone();
             if let Some(profile) = settings.saved_account(provider, account) {
                 agent.launch.use_account(account, &profile.directory);
             }

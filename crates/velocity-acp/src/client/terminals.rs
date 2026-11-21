@@ -17,10 +17,13 @@ use tokio::task::JoinHandle;
 
 use super::ClientError;
 use super::files::resolve_in_worktree;
-use super::process::{AgentProcess, hidden_command, spawn_owned_command, stop_owned_process};
+use super::process::{
+    AgentLaunch, AgentProcess, filter_inherited_environment, hidden_command, spawn_owned_command,
+    stop_owned_process,
+};
 #[cfg(windows)]
 use super::program_path::find_program;
-use crate::retained_output_start;
+use crate::{Provider, retained_output_start};
 
 /// Output kept so far, truncated from the front at a character boundary
 /// (`terminal_output::retained_output_start`).
@@ -56,6 +59,9 @@ struct Terminal {
 /// The terminals one agent session has created.
 pub struct Terminals {
     worktree: PathBuf,
+    env_passthrough: Vec<String>,
+    own_config: Option<Provider>,
+    account: u32,
     next_id: AtomicU64,
     terminals: Mutex<HashMap<String, Arc<Terminal>>>,
     completions: Mutex<Vec<TerminalExit>>,
@@ -71,6 +77,22 @@ impl Terminals {
     pub fn new(worktree: PathBuf) -> Self {
         Terminals {
             worktree,
+            env_passthrough: Vec::new(),
+            own_config: None,
+            account: 0,
+            next_id: AtomicU64::new(1),
+            terminals: Mutex::new(HashMap::new()),
+            completions: Mutex::new(Vec::new()),
+            stopping: AtomicBool::new(false),
+        }
+    }
+
+    pub fn with_launch(worktree: PathBuf, launch: &AgentLaunch) -> Self {
+        Terminals {
+            worktree,
+            env_passthrough: launch.env_passthrough.clone(),
+            own_config: launch.own_config,
+            account: launch.account,
             next_id: AtomicU64::new(1),
             terminals: Mutex::new(HashMap::new()),
             completions: Mutex::new(Vec::new()),
@@ -91,6 +113,13 @@ impl Terminals {
             None => self.worktree.clone(),
         };
         let mut command = shell_command(&request.command, &request.args);
+        let _ = filter_inherited_environment(
+            &mut command,
+            &self.env_passthrough,
+            self.own_config,
+            self.account,
+            &[],
+        );
         command
             .current_dir(&folder)
             .envs(

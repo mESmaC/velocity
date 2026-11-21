@@ -3822,41 +3822,45 @@ export type ProviderEdit = ProviderEdit_Serialize | ProviderEdit_Deserialize;
 export type ProviderEdit_Deserialize = ({ MaxAgents: {
 	provider: ProviderKind,
 	maximum?: number | null,
-} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | 
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; EnvPassthrough?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | 
 /**  Show or hide a model chip in the pickers. */
 ({ ShowModel: {
 	provider: ProviderKind,
 	model: string,
 	shown: boolean,
-} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultModel: {
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; EnvPassthrough?: never; MaxAgents?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultModel: {
 	provider: ProviderKind,
 	model: string,
-} }) & { DefaultEffort?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultEffort: EffortLevel }) & { DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleModel: {
+} }) & { DefaultEffort?: never; DefaultSpeed?: never; EnvPassthrough?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultEffort: EffortLevel }) & { DefaultModel?: never; DefaultSpeed?: never; EnvPassthrough?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; EnvPassthrough?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleModel: {
 	provider: ProviderKind,
 	model: string,
-} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleSpeed?: never } | ({ TitleEffort: EffortLevel }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never } | 
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; EnvPassthrough?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleSpeed?: never } | ({ TitleEffort: EffortLevel }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; EnvPassthrough?: never; MaxAgents?: never; ShowModel?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; EnvPassthrough?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never } | 
 /**  Back to GPT-6 Luna · Low · Fast (F15 Thread titles). */
-"TitleReset";
+"TitleReset" | 
+/**  Owner-named environment variables allowed through the agent credential filter (F15, #530). */
+({ EnvPassthrough: string[] }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never };
 
 /**  A change from Settings → Providers or the home composer's model menu. */
 export type ProviderEdit_Serialize = ({ MaxAgents: {
 	provider: ProviderKind,
 	maximum: number | null,
-} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | 
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; EnvPassthrough?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | 
 /**  Show or hide a model chip in the pickers. */
 ({ ShowModel: {
 	provider: ProviderKind,
 	model: string,
 	shown: boolean,
-} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultModel: {
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; EnvPassthrough?: never; MaxAgents?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultModel: {
 	provider: ProviderKind,
 	model: string,
-} }) & { DefaultEffort?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultEffort: EffortLevel }) & { DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleModel: {
+} }) & { DefaultEffort?: never; DefaultSpeed?: never; EnvPassthrough?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultEffort: EffortLevel }) & { DefaultModel?: never; DefaultSpeed?: never; EnvPassthrough?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ DefaultSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; EnvPassthrough?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleModel: {
 	provider: ProviderKind,
 	model: string,
-} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleSpeed?: never } | ({ TitleEffort: EffortLevel }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never } | 
+} }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; EnvPassthrough?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleSpeed?: never } | ({ TitleEffort: EffortLevel }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; EnvPassthrough?: never; MaxAgents?: never; ShowModel?: never; TitleModel?: never; TitleSpeed?: never } | ({ TitleSpeed: SpeedMode }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; EnvPassthrough?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never } | 
 /**  Back to GPT-6 Luna · Low · Fast (F15 Thread titles). */
-"TitleReset";
+"TitleReset" | 
+/**  Owner-named environment variables allowed through the agent credential filter (F15, #530). */
+({ EnvPassthrough: string[] }) & { DefaultEffort?: never; DefaultModel?: never; DefaultSpeed?: never; MaxAgents?: never; ShowModel?: never; TitleEffort?: never; TitleModel?: never; TitleSpeed?: never };
 
 export type ProviderKind = string;
 
@@ -3960,6 +3964,8 @@ export type ProviderSettings_Deserialize = {
 	next_custom_agent?: number,
 	accounts?: ProviderAccount_Deserialize[],
 	default_accounts?: { [key in string]: number },
+	/**  Owner-named environment variables allowed through the agent credential filter (F15, #530). */
+	env_passthrough?: string[],
 };
 
 export type ProviderSettings_Serialize = {
@@ -3990,6 +3996,8 @@ export type ProviderSettings_Serialize = {
 	next_custom_agent: number,
 	accounts: ProviderAccount_Serialize[],
 	default_accounts: { [key in string]: number },
+	/**  Owner-named environment variables allowed through the agent credential filter (F15, #530). */
+	env_passthrough: string[],
 };
 
 export type ProviderUsage = ProviderUsage_Serialize | ProviderUsage_Deserialize;
@@ -4047,6 +4055,8 @@ export type ProvidersView_Deserialize = {
 	title_is_default: boolean,
 	/**  The title model's provider isn't signed in. */
 	title_warning: boolean,
+	/**  Owner-named environment variables allowed through the agent credential filter (F15, #530). */
+	env_passthrough: string[],
 };
 
 export type ProvidersView_Serialize = {
@@ -4060,6 +4070,8 @@ export type ProvidersView_Serialize = {
 	title_is_default: boolean,
 	/**  The title model's provider isn't signed in. */
 	title_warning: boolean,
+	/**  Owner-named environment variables allowed through the agent credential filter (F15, #530). */
+	env_passthrough: string[],
 };
 
 export type PulseCount = PulseCount_Serialize | PulseCount_Deserialize;

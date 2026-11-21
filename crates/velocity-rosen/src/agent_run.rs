@@ -8,15 +8,17 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
-use std::sync::OnceLock;
+use std::sync::{OnceLock, PoisonError, RwLock};
 
 use rosen_client::run_queue::{HELD_ENV, POLL, RunClass, RunQueue};
 
 use crate::process::{background_command, hidden_command};
 
 static AGENT_COMMANDS: OnceLock<Option<AgentCommands>> = OnceLock::new();
+static PASSTHROUGH_ENV: RwLock<Vec<String>> = RwLock::new(Vec::new());
 const APP_RECORD: &str = "velocity-program";
 const ROSEN_RECORD: &str = "rosen-program";
+const PASSTHROUGH_RECORD: &str = "passthrough-env";
 const RUST_COMMANDS: &[&str] = &[
     "cargo",
     "rustc",
@@ -177,10 +179,49 @@ fn create_commands(executable: &Path) -> io::Result<AgentCommands> {
     } else {
         None
     };
+    let passthrough = in_process_passthrough();
+    if !passthrough.is_empty() {
+        let _ = std::fs::write(path.join(PASSTHROUGH_RECORD), passthrough.join("\n"));
+    }
     Ok(AgentCommands {
         folder: folder.keep(),
         rosen,
     })
+}
+
+/// Updates the owner-approved pass-through variable names used by agent shims and
+/// Velocity's own light checks (#530).
+pub fn set_passthrough_env(names: &[String]) {
+    let normalized = velocity_core::agent_env::normalize_passthrough(names).unwrap_or_default();
+    if let Some(folder) = command_folder() {
+        let _ = std::fs::write(folder.join(PASSTHROUGH_RECORD), normalized.join("\n"));
+    }
+    *PASSTHROUGH_ENV
+        .write()
+        .unwrap_or_else(PoisonError::into_inner) = normalized;
+}
+
+fn in_process_passthrough() -> Vec<String> {
+    PASSTHROUGH_ENV
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+fn saved_passthrough(folder: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(folder.join(PASSTHROUGH_RECORD)) else {
+        return Vec::new();
+    };
+    let names: Vec<String> = text.lines().map(str::to_owned).collect();
+    velocity_core::agent_env::normalize_passthrough(&names).unwrap_or_default()
+}
+
+fn filter_environment(command: &mut Command, passthrough: &[String]) {
+    for (os_name, _) in std::env::vars_os() {
+        if velocity_core::agent_env::should_withhold(&os_name.to_string_lossy(), passthrough) {
+            command.env_remove(&os_name);
+        }
+    }
 }
 
 fn executable_file(name: &str) -> String {
@@ -216,10 +257,11 @@ pub fn serve() -> Option<(String, io::Result<ExitStatus>)> {
     let folder = executable.parent()?;
     let name = executable_name(executable.file_name()?.to_str()?);
     let arguments: Vec<_> = arguments.collect();
+    let passthrough = saved_passthrough(folder);
     let result = if name == "rosen" {
-        rosen_program(folder).and_then(|program| run_rosen(&program, &arguments))
+        rosen_program(folder).and_then(|program| run_rosen(&program, &arguments, &passthrough))
     } else {
-        run_direct(folder, &name, &arguments)
+        run_direct(folder, &name, &arguments, &passthrough)
     };
     Some((name, result))
 }
@@ -228,44 +270,67 @@ fn rosen_program(folder: &Path) -> io::Result<PathBuf> {
     std::fs::read_to_string(folder.join(ROSEN_RECORD)).map(PathBuf::from)
 }
 
-fn run_direct(folder: &Path, name: &str, arguments: &[OsString]) -> io::Result<ExitStatus> {
+fn run_direct(
+    folder: &Path,
+    name: &str,
+    arguments: &[OsString],
+    passthrough: &[String],
+) -> io::Result<ExitStatus> {
     if name != "cargo" {
         return Err(io::Error::other(REFUSAL));
     }
     match cargo_policy(&policy_arguments(arguments), false).map_err(io::Error::other)? {
         AgentRun::RustUtility | AgentRun::RustCheck if inside_held_turn() => {
-            run_held(name, arguments)
+            run_held(name, arguments, passthrough)
         }
-        AgentRun::RustUtility => run_utility(OsStr::new(name), arguments),
-        AgentRun::RustCheck => run_light(&rosen_program(folder)?, &[], OsStr::new(name), arguments),
+        AgentRun::RustUtility => run_utility(OsStr::new(name), arguments, passthrough),
+        AgentRun::RustCheck => run_light(
+            &rosen_program(folder)?,
+            &[],
+            OsStr::new(name),
+            arguments,
+            passthrough,
+        ),
         _ => Err(io::Error::other(REFUSAL)),
     }
 }
 
-fn run_rosen(program: &Path, arguments: &[OsString]) -> io::Result<ExitStatus> {
+fn run_rosen(
+    program: &Path,
+    arguments: &[OsString],
+    passthrough: &[String],
+) -> io::Result<ExitStatus> {
     let subcommand = subcommand_index(arguments);
     if !arguments.get(subcommand).is_some_and(|arg| arg == "run") {
-        return hidden_command(program).args(arguments).status();
+        let mut command = hidden_command(program);
+        filter_environment(&mut command, passthrough);
+        return command.args(arguments).status();
     }
     let run_arguments = &arguments[subcommand + 1..];
     let (program_at, run) = classify_run(run_arguments).map_err(io::Error::other)?;
     if run != AgentRun::Ordinary && inside_held_turn() {
         // `rosen run` sees the held turn and starts at once (#548).
-        return hidden_command(program).args(arguments).status();
+        let mut command = hidden_command(program);
+        filter_environment(&mut command, passthrough);
+        return command.args(arguments).status();
     }
     match run {
-        AgentRun::Ordinary => hidden_command(program)
-            .args(arguments)
-            .env_remove(HELD_ENV)
-            .status(),
-        AgentRun::RustUtility => {
-            run_utility(&run_arguments[program_at], &run_arguments[program_at + 1..])
+        AgentRun::Ordinary => {
+            let mut command = hidden_command(program);
+            filter_environment(&mut command, passthrough);
+            command.args(arguments).env_remove(HELD_ENV).status()
         }
+        AgentRun::RustUtility => run_utility(
+            &run_arguments[program_at],
+            &run_arguments[program_at + 1..],
+            passthrough,
+        ),
         AgentRun::RustCheck | AgentRun::Bindings => run_light(
             program,
             &arguments[..subcommand],
             &run_arguments[program_at],
             &run_arguments[program_at + 1..],
+            passthrough,
         ),
     }
 }
@@ -279,17 +344,16 @@ fn inside_held_turn() -> bool {
 
 /// Runs the real `name` inside a held turn. It is resolved here, skipping managed command
 /// folders, so a `PATH` that still names this shim's folder cannot start the shim again.
-fn run_held(name: &str, arguments: &[OsString]) -> io::Result<ExitStatus> {
+fn run_held(name: &str, arguments: &[OsString], passthrough: &[String]) -> io::Result<ExitStatus> {
     let path = toolchain_path()?;
     let program = real_program(name, &path).ok_or_else(|| {
         io::Error::other(format!(
             "Could not find {name} outside Velocity's managed commands"
         ))
     })?;
-    background_command(program)
-        .args(arguments)
-        .env("PATH", path)
-        .status()
+    let mut command = background_command(program);
+    filter_environment(&mut command, passthrough);
+    command.args(arguments).env("PATH", path).status()
 }
 
 /// The first `name` executable on `path` outside a managed command folder.
@@ -301,9 +365,15 @@ fn real_program(name: &str, path: &OsStr) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-fn run_utility(program: &OsStr, arguments: &[OsString]) -> io::Result<ExitStatus> {
+fn run_utility(
+    program: &OsStr,
+    arguments: &[OsString],
+    passthrough: &[String],
+) -> io::Result<ExitStatus> {
     let _slot = light_slot()?;
-    background_command(program)
+    let mut command = background_command(program);
+    filter_environment(&mut command, passthrough);
+    command
         .args(arguments)
         .env("PATH", toolchain_path()?)
         .status()
@@ -314,6 +384,7 @@ fn run_light(
     rosen_arguments: &[OsString],
     program: &OsStr,
     arguments: &[OsString],
+    passthrough: &[String],
 ) -> io::Result<ExitStatus> {
     let directory = std::env::current_dir()?;
     let root = directory
@@ -322,7 +393,7 @@ fn run_light(
         .unwrap_or(&directory);
     let target = light_target(root);
     let _turn = light_turn(&target, root, &directory)?;
-    light_command(rosen, rosen_arguments, program, &target)?
+    light_command(rosen, rosen_arguments, program, &target, passthrough)?
         .args(arguments)
         .status()
 }
@@ -339,7 +410,8 @@ pub(crate) fn light_output(
         .map(|folder| folder.join(executable_file("rosen")))
         .ok_or_else(|| io::Error::other("the rosen program was not found"))?;
     let _turn = light_turn(target, directory, directory)?;
-    light_command(&rosen, &[], OsStr::new(program), target)?
+    let passthrough = in_process_passthrough();
+    light_command(&rosen, &[], OsStr::new(program), target, &passthrough)?
         .args(arguments)
         .current_dir(directory)
         .stdin(Stdio::null())
@@ -374,12 +446,14 @@ fn light_command(
     rosen_arguments: &[OsString],
     program: &OsStr,
     target: &Path,
+    passthrough: &[String],
 ) -> io::Result<Command> {
     // No Rosen turn: its admission charges every running turn its full cap (6 GiB for
     // an integration build), which kept two-job checks waiting while gigabytes sat free.
     // A light run starts when its own memory fits above Rosen's reserve; the run below
     // still executes in a job capped at a build turn's memory.
     let mut command = background_command(rosen);
+    filter_environment(&mut command, passthrough);
     command
         .args(rosen_arguments)
         .args(["run", "--class", RunClass::Build.name(), "--"])

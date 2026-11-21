@@ -451,10 +451,13 @@ async fn run_admitted_session(
             "Could not load project AGENTS.md: {error}"
         )));
     }
-    let mut agent = process::spawn_agent(&launch, &setup.worktree)?;
+    let (mut agent, withheld) = process::spawn_agent_filtered(&launch, &setup.worktree)?;
+    if let Some(line) = velocity_core::agent_env::format_withheld_log(&withheld) {
+        let _ = events.send(AgentEvent::Log(line));
+    }
     let shared = Arc::new(Shared {
         worktree: setup.worktree.clone(),
-        terminals: Terminals::new(setup.worktree.clone()),
+        terminals: Terminals::with_launch(setup.worktree.clone(), &launch),
         transcript: Mutex::new(Transcript::new()),
         subagents: Mutex::default(),
         events,

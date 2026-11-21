@@ -1,5 +1,6 @@
 //! Launching an agent: one process per thread, in that thread's worktree (§3.2).
 
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -20,9 +21,11 @@ pub struct AgentLaunch {
     /// shims such as `claude-agent-acp` on Windows (`program_path::find_program`).
     pub program: PathBuf,
     pub args: Vec<String>,
-    /// Added to Velocity's own environment, which the agent inherits whole: your `PATH`,
-    /// toolchains, credentials and config (§3.2 Tool access).
+    /// Added to Velocity's filtered environment: your `PATH`, toolchains, config and
+    /// session variables, with credential variables stripped (§3.2 Tool access, #530).
     pub env: Vec<(String, String)>,
+    /// Owner-named environment variables allowed through the credential filter (F15, #530).
+    pub env_passthrough: Vec<String>,
     /// Settings → Agents → shared MCP servers (§3.2 Tool access), filled by whoever builds
     /// the launch from settings. `run_session` passes them in `session/new`, after Velocity's
     /// own servers and minus the names the agent's own config already has.
@@ -42,6 +45,7 @@ impl AgentLaunch {
             program,
             args: Vec::new(),
             env: Vec::new(),
+            env_passthrough: Vec::new(),
             shared_servers: Vec::new(),
             own_config: None,
             concurrency_provider: None,
@@ -124,29 +128,72 @@ impl AgentLaunch {
             .map(|(_, value)| value.as_str())
     }
 
-    pub(super) fn apply_environment(&self, command: &mut Command) {
+    pub(super) fn apply_environment(&self, command: &mut Command) -> Vec<String> {
+        let withheld = filter_inherited_environment(
+            command,
+            &self.env_passthrough,
+            self.own_config,
+            self.account,
+            &self.env,
+        );
         command.envs(self.env.iter().map(|(name, value)| (name, value)));
-        if self.account == 0 {
-            return;
-        }
-        // A token inherited from the desktop would take priority over the chosen CLI login.
-        let overrides: &[&str] = match self.own_config {
-            Some(Provider::Anthropic) => &[
-                "ANTHROPIC_API_KEY",
-                "ANTHROPIC_AUTH_TOKEN",
-                "CLAUDE_CODE_OAUTH_TOKEN",
-                "CLAUDE_CODE_USE_BEDROCK",
-                "CLAUDE_CODE_USE_VERTEX",
-                "CLAUDE_CODE_USE_FOUNDRY",
-            ],
-            Some(Provider::Codex) => &["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"],
-            Some(Provider::KimiCode) => &["KIMI_API_KEY", "KIMI_MODEL_API_KEY"],
-            Some(Provider::Antigravity) => &["GEMINI_API_KEY", "GOOGLE_API_KEY", "AGY_ADC_AUTH"],
-            _ => &[],
+        withheld
+    }
+}
+
+/// Strips credential variables and inherited `VELOCITY_*` settings from `command` before
+/// spawning an agent, terminal, queued run or probe (#530). Returns the sorted names (never
+/// values) of withheld variables that are not replaced by `explicit`.
+pub(super) fn filter_inherited_environment(
+    command: &mut Command,
+    passthrough: &[String],
+    own_config: Option<Provider>,
+    account: u32,
+    explicit: &[(String, String)],
+) -> Vec<String> {
+    let mut withheld = BTreeSet::new();
+    let provider_overrides = provider_auth_overrides(own_config);
+    for (os_name, _) in std::env::vars_os() {
+        let name = os_name.to_string_lossy();
+        let forced_override = provider_overrides
+            .iter()
+            .any(|variable| variable.eq_ignore_ascii_case(&name));
+        let strip = if account != 0 && forced_override {
+            // An isolated CLI account must never be overridden by an environment token.
+            true
+        } else if forced_override {
+            !velocity_core::agent_env::is_passthrough(&name, passthrough)
+        } else {
+            velocity_core::agent_env::should_withhold(&name, passthrough)
         };
-        for variable in overrides {
-            command.env_remove(variable);
+        if strip {
+            command.env_remove(&os_name);
+            if !explicit
+                .iter()
+                .any(|(explicit_name, _)| explicit_name.eq_ignore_ascii_case(&name))
+            {
+                withheld.insert(name.into_owned());
+            }
         }
+    }
+    withheld.into_iter().collect()
+}
+
+fn provider_auth_overrides(own_config: Option<Provider>) -> &'static [&'static str] {
+    // A token inherited from the desktop would take priority over the provider's OAuth login (F15).
+    match own_config {
+        Some(Provider::Anthropic) => &[
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY",
+        ],
+        Some(Provider::Codex) => &["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"],
+        Some(Provider::KimiCode) => &["KIMI_API_KEY", "KIMI_MODEL_API_KEY"],
+        Some(Provider::Antigravity) => &["GEMINI_API_KEY", "GOOGLE_API_KEY", "AGY_ADC_AUTH"],
+        _ => &[],
     }
 }
 
@@ -155,10 +202,17 @@ pub type AgentProcess = Box<dyn ChildWrapper>;
 /// Starts the agent in `worktree` with piped stdio for ACP. It loads your user and project
 /// config as it would in a terminal: no isolated home, no empty config, no sandbox.
 pub fn spawn_agent(launch: &AgentLaunch, worktree: &Path) -> Result<AgentProcess, ClientError> {
+    spawn_agent_filtered(launch, worktree).map(|(process, _)| process)
+}
+
+pub(super) fn spawn_agent_filtered(
+    launch: &AgentLaunch,
+    worktree: &Path,
+) -> Result<(AgentProcess, Vec<String>), ClientError> {
     launch.prepare_account()?;
     let program = find_program(launch.program.as_os_str());
     let mut command = hidden_command(&program);
-    launch.apply_environment(&mut command);
+    let withheld = launch.apply_environment(&mut command);
     crate::providers::configure_codex_startup(&mut command, launch, &program);
     command
         .args(&launch.args)
@@ -168,10 +222,11 @@ pub fn spawn_agent(launch: &AgentLaunch, worktree: &Path) -> Result<AgentProcess
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    spawn_owned_command(command).map_err(|source| ClientError::Spawn {
+    let process = spawn_owned_command(command).map_err(|source| ClientError::Spawn {
         program: launch.program.display().to_string(),
         source,
-    })
+    })?;
+    Ok((process, withheld))
 }
 
 /// Ownership groups terminate descendants even after their shell shim exits.

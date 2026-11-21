@@ -337,8 +337,10 @@ pub fn agent_launch_for_account(
             if settings.agents.trim_agent_context {
                 agent.trim_unused_context();
             }
-            // Every role's agent comes from here, so every one gets the shared servers.
+            // Every role's agent comes from here, so every one gets the shared servers and
+            // owner-approved environment pass-through list (#530).
             agent.launch.shared_servers = crate::shared_mcp::shared_mcp_servers(settings);
+            agent.launch.env_passthrough = settings.providers.env_passthrough.clone();
             if let Some(profile) = settings
                 .saved_account(provider, account)
                 .filter(|profile| profile.id != 0)

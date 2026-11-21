@@ -576,6 +576,8 @@ pub enum ProviderEdit {
     TitleSpeed(SpeedMode),
     /// Back to GPT-6 Luna · Low · Fast (F15 Thread titles).
     TitleReset,
+    /// Owner-named environment variables allowed through the agent credential filter (F15, #530).
+    EnvPassthrough(Vec<String>),
 }
 
 impl StateStore {
@@ -820,6 +822,7 @@ fn apply_edit(settings: &mut Settings, edit: ProviderEdit) {
             providers.title_effort = defaults.title_effort;
             providers.title_speed = defaults.title_speed;
         }
+        ProviderEdit::EnvPassthrough(names) => providers.env_passthrough = names,
     }
 }
 
@@ -836,5 +839,38 @@ fn set_maximum(
             provider,
             maximum: maximum.max(1),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProviderEdit;
+    use crate::StateStore;
+
+    #[test]
+    fn env_passthrough_survives_save_and_load() -> Result<(), Box<dyn std::error::Error>> {
+        // Risk (#530): losing pass-through names across restarts breaks owner-approved
+        // agent variables, and accepting `NAME=value` could persist a secret in state.json.
+        let directory =
+            std::env::temp_dir().join(format!("velocity-env-passthrough-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let mut store = StateStore::load_or_default(&directory)?;
+        assert!(store.edit_providers(ProviderEdit::EnvPassthrough(vec![
+            " CUSTOM_TOKEN ".into(),
+            "custom_token".into(),
+            "BUILD_KEY".into(),
+        ]))?);
+        assert!(
+            store
+                .edit_providers(ProviderEdit::EnvPassthrough(vec!["API_KEY=secret".into()]))
+                .is_err()
+        );
+        let reloaded = StateStore::load_or_default(&directory)?;
+        assert_eq!(
+            reloaded.settings().providers.env_passthrough,
+            vec!["CUSTOM_TOKEN".to_owned(), "BUILD_KEY".to_owned()]
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+        Ok(())
     }
 }

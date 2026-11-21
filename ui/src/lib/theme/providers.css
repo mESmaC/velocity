@@ -388,6 +388,52 @@
   font-size: var(--fs-sm);
   color: var(--err);
 }
+.pv-env-form {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+.pv-env-input {
+  max-width: 360px;
+}
+.pv-env-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  margin-top: var(--sp-5);
+}
+.pv-env-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  height: 26px;
+  padding: 0 var(--sp-3) 0 var(--sp-4);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--text);
+  font: var(--fs-sm) var(--mono);
+}
+.pv-env-chip button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--r-pill);
+  color: var(--muted);
+  font-size: var(--fs-md);
+  line-height: 1;
+}
+.pv-env-chip button:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+.pv-env-empty {
+  margin: var(--sp-4) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
 
 /* ── the composer's model menu ──────────────────────────────────────────── */
 .composer-row:has(.model-menu) {

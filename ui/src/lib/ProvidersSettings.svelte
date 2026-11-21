@@ -38,6 +38,7 @@
   let adding = $state(false);
   let agentName = $state('');
   let agentCommand = $state('');
+  let passthroughInput = $state('');
 
   function report(reason: unknown) {
     error = reason instanceof Error ? reason.message : String(reason);
@@ -98,6 +99,27 @@
     adding = false;
     agentName = '';
     agentCommand = '';
+  }
+
+  function addPassthrough() {
+    const raw = passthroughInput.trim();
+    if (!raw || !view) return;
+    error = '';
+    providerCommands
+      .edit({ EnvPassthrough: [...view.env_passthrough, raw] })
+      .then((next) => {
+        view = next;
+        passthroughInput = '';
+        error = '';
+      })
+      .catch(report);
+  }
+
+  function removePassthrough(name: string) {
+    if (!view) return;
+    edit({
+      EnvPassthrough: view.env_passthrough.filter((entry) => entry !== name),
+    });
   }
 
   onMount(() => {
@@ -433,8 +455,8 @@
               <p class="worktree-description">
                 Any agent that speaks ACP over stdio, as in Zed. It gets its own
                 card, its models are read over ACP, and it runs unrestricted
-                with every tool. It inherits your environment, so there is no
-                field for a variable or a key.
+                with every tool. It inherits your non-credential environment, so
+                there is no field for a variable or a key.
               </p>
               <div class="pv-add-row">
                 <label class="worktree-input"
@@ -503,6 +525,60 @@
                 >Reset to GPT-6 Luna · Low · Fast</button
               >{/if}
           </p>
+        </section>
+        <section>
+          <h2>Agent environment</h2>
+          <p class="worktree-description">
+            Agents, queued runs and agent shims do not inherit credential
+            variables (<code>*_KEY</code>, <code>*_KEY_PATH</code>,
+            <code>*_TOKEN</code>, <code>*_SECRET</code>,
+            <code>*_PASSWORD</code>, <code>*_CREDENTIALS</code>,
+            <code>GH_TOKEN</code>, <code>GITHUB_TOKEN</code> and your
+            <code>VELOCITY_*</code> settings). Withheld variable names are recorded
+            in the thread debug log without their values. Name any variable an agent
+            genuinely needs below — variable names only, never values.
+          </p>
+          <form
+            class="pv-env-form"
+            onsubmit={(event) => {
+              event.preventDefault();
+              addPassthrough();
+            }}
+          >
+            <label class="worktree-input pv-env-input"
+              ><span>Variable</span><input
+                aria-label="Pass-through environment variable name"
+                placeholder="MY_TOOL_TOKEN"
+                bind:value={passthroughInput}
+                spellcheck="false"
+              /></label
+            >
+            <button
+              class="worktree-button"
+              type="submit"
+              disabled={!passthroughInput.trim()}>Allow</button
+            >
+          </form>
+          {#if view.env_passthrough.length}
+            <div class="pv-env-list" role="list" aria-label="Allowed variables">
+              {#each view.env_passthrough as name (name)}
+                <span class="pv-env-chip" role="listitem">
+                  <code>{name}</code>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${name}`}
+                    title={`Stop passing ${name} to agents`}
+                    onclick={() => removePassthrough(name)}>×</button
+                  >
+                </span>
+              {/each}
+            </div>
+          {:else}
+            <p class="pv-env-empty">
+              No pass-through variables configured. Every credential variable is
+              withheld.
+            </p>
+          {/if}
         </section>
       {/if}
     </div>

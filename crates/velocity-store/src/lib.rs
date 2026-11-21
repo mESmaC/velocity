@@ -87,6 +87,8 @@ pub enum StoreError {
     WorktreeSetting(String),
     #[error("Invalid shared MCP server: {0}")]
     SharedMcpServer(String),
+    #[error("Invalid pass-through environment variable: {0}")]
+    EnvPassthrough(String),
     #[error("Could not create state directory '{path}': {source}")]
     CreateDirectory {
         path: String,
@@ -524,6 +526,9 @@ pub struct ProviderSettings {
     pub accounts: Vec<provider_accounts::ProviderAccount>,
     #[serde(default)]
     pub default_accounts: BTreeMap<String, u32>,
+    /// Owner-named environment variables allowed through the agent credential filter (F15, #530).
+    #[serde(default)]
+    pub env_passthrough: Vec<String>,
 }
 
 fn default_title_provider() -> ProviderKind {
@@ -657,6 +662,7 @@ impl Settings {
                 next_custom_agent: 1,
                 accounts: Vec::new(),
                 default_accounts: BTreeMap::new(),
+                env_passthrough: Vec::new(),
             },
             agents: AgentSettings {
                 max_turns: core_settings.agents.max_turns,
@@ -1703,6 +1709,10 @@ impl StateStore {
         }
         shared_mcp::validate_shared_mcp_servers(&agents.shared_mcp_servers)
             .map_err(|error| StoreError::SharedMcpServer(error.to_string()))?;
+        next_settings.providers.env_passthrough = velocity_core::agent_env::normalize_passthrough(
+            &next_settings.providers.env_passthrough,
+        )
+        .map_err(StoreError::EnvPassthrough)?;
         if self.state.settings != next_settings {
             self.state.apply_settings(next_settings);
         }

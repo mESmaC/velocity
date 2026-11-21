@@ -1613,6 +1613,13 @@ fn apply_batch(
     key: ThreadKey,
     batch: &[AgentEvent],
 ) -> Result<(), String> {
+    for event in batch {
+        if let AgentEvent::Log(line) = event
+            && line.starts_with(velocity_core::agent_env::WITHHELD_LOG_PREFIX)
+        {
+            crate::diagnostics::record(&format!("thread {}/{}", key.0, key.1), line);
+        }
+    }
     let progress: Option<ThreadProgress> = {
         let mut runtimes = lock(
             application.state::<ManagedThreads>().inner(),

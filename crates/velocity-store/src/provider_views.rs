@@ -216,6 +216,8 @@ pub struct ProvidersView {
     pub title_is_default: bool,
     /// The title model's provider isn't signed in.
     pub title_warning: bool,
+    /// Owner-named environment variables allowed through the agent credential filter (F15, #530).
+    pub env_passthrough: Vec<String>,
 }
 
 /// What the views read besides saved settings.
@@ -311,6 +313,7 @@ impl StateStore {
             title_note,
             title_is_default,
             title_warning,
+            env_passthrough: providers.env_passthrough.clone(),
         }
     }
 

@@ -164,7 +164,13 @@ After them, **Add an ACP agent** takes a name, a command and its arguments, as Z
 - It signs in through `authenticate` when it offers an auth method.
   An agent that offers none counts as signed in once `initialize` succeeds.
 - The form has no field for an environment variable or a key.
-  The agent inherits your environment, as every agent does.
+  The agent inherits your non-credential environment, as every agent does.
+
+**Agent environment** (#530).
+Before spawning ACP agents, ACP terminals, queued runs, preflight checks, provider probes and agent shims, Velocity strips inherited variables matching `*_KEY`, `*_KEY_PATH`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD` and `*_CREDENTIALS`, plus `GH_TOKEN`, `GITHUB_TOKEN`, `AGY_ADC_AUTH`, provider auth overrides and inherited `VELOCITY_*` settings.
+Each provider uses its own OAuth login, never a token from the environment.
+Withheld variable names (never values) are recorded in the thread's debug log (`AgentEvent::Log` and `velocity.log`) so a missing variable can be diagnosed.
+In Settings → Providers, the owner can list variable names an agent genuinely needs to pass through; entries containing `=` are rejected so values are never stored.
 
 **Thread titles:**
 - **Default:** GPT-6 Luna · Low · Fast.
