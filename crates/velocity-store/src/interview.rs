@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 
 use crate::projects::ProjectError;
-use crate::{PersistedState, ProjectItem, StateStore};
+use crate::{ProjectItem, StateStore};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
@@ -76,23 +76,28 @@ impl StateStore {
         project_identifier: u32,
         change: impl FnOnce(&mut ProjectItem) -> Result<Value, Failure>,
     ) -> Result<Value, Failure> {
-        let mut candidate = self.state.clone();
-        let project = candidate
+        let index = self
+            .state
             .projects
-            .iter_mut()
-            .find(|project| project.id == project_identifier)
-            .ok_or(ProjectError::UnknownProject(project_identifier))?;
-        let value = change(project)?;
-        self.save_candidate(candidate)?;
-        Ok(value)
-    }
-
-    fn save_candidate(&mut self, candidate: PersistedState) -> Result<(), ProjectError> {
-        if candidate == self.state {
-            return Ok(());
+            .iter()
+            .position(|project| project.id == project_identifier)
+            .ok_or_else(|| ProjectError::UnknownProject(project_identifier).into())?;
+        let before = self.state.projects[index].clone();
+        let value = match change(&mut self.state.projects[index]) {
+            Ok(value) => value,
+            Err(error) => {
+                self.state.projects[index] = before;
+                return Err(error);
+            }
+        };
+        if self.state.projects[index] == before {
+            return Ok(value);
         }
-        self.store_snapshot(candidate)?;
-        Ok(())
+        if let Err(error) = self.record_change() {
+            self.state.projects[index] = before;
+            return Err(ProjectError::from(error).into());
+        }
+        Ok(value)
     }
 
     /// The active project's identifier, if any project is open.
@@ -103,7 +108,10 @@ impl StateStore {
     /// Rebuilds the main window's read model from the saved state without touching what
     /// is being typed, searched or selected.
     pub fn refresh_layout(&self, layout: &mut velocity_core::layout_state::LayoutState) {
-        layout.replace_data(crate::project_layout::read_model(self));
+        layout.replace_data(crate::project_layout::read_model_for(
+            self,
+            layout.selected_thread(),
+        ));
         crate::build_gate::sync_layout(&self.state, layout);
     }
 }

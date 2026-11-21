@@ -83,17 +83,17 @@ impl StateStore {
         project: u32,
         choice: VersionControl,
     ) -> Result<(), StoreError> {
-        let mut next = self.state.clone();
-        let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
-            return Err(StoreError::WorktreeSetting(
-                "Select a project to choose its version control".into(),
-            ));
-        };
-        if item.version_control == choice {
-            return Ok(());
-        }
-        item.version_control = choice;
-        self.store_snapshot(next)
+        self.try_edit_project(
+            project,
+            || StoreError::WorktreeSetting("Select a project to choose its version control".into()),
+            |item| {
+                if item.version_control == choice {
+                    return Ok((false, ()));
+                }
+                item.version_control = choice;
+                Ok((true, ()))
+            },
+        )
     }
 
     /// Settings → Worktrees as they apply to `project`, active or not (F5), so background
@@ -166,11 +166,7 @@ impl StateStore {
                 settings.worktrees.project_roots.remove(&identifier);
             }
         }
-        let before = self.state.clone();
-        if let Err(error) = self.set_settings(settings) {
-            self.state = before;
-            return Err(error);
-        }
+        self.set_settings(settings)?;
         Ok(location_changed)
     }
 }

@@ -148,11 +148,11 @@ impl StateStore {
         }
         let setting = self.state.settings.agents.context_handoff;
         let item = Item::new(thread, setting);
-        let mut next = self.state.clone();
-        if let Some(project) = next.projects.iter_mut().find(|item| item.id == project) {
-            project.handoff_items.insert(change.clone(), item);
-            self.store_snapshot(next)?;
-        }
+        let key = change.clone();
+        self.edit_project_in_place(project, |project| {
+            project.handoff_items.insert(key, item);
+            (true, ())
+        })?;
         Ok(Some((change, setting)))
     }
 
@@ -162,61 +162,69 @@ impl StateStore {
         change: &str,
         note: Option<&str>,
     ) -> Result<bool, StoreError> {
-        let mut next = self.state.clone();
-        let Some(project) = next.projects.iter_mut().find(|item| item.id == project) else {
-            return Ok(false);
-        };
-        let Some(thread) = project.threads.iter_mut().find(|item| item.id == thread) else {
-            return Ok(false);
-        };
-        if thread.rosen_change.as_deref() != Some(change) || !can_handoff(thread) {
-            return Ok(false);
-        }
-        let Some(item) = project.handoff_items.get_mut(change) else {
-            return Ok(false);
-        };
-        item.crossed_at.get_or_insert_with(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-        });
-        item.source = source(thread).into();
-        let ready = note.is_some() && item.enabled;
-        if let Some(text) = note.filter(|_| ready) {
-            thread.context_handoff = Some(Note {
-                change: change.into(),
-                text: text.into(),
-                pending: true,
-            });
-        }
-        if next != self.state {
-            self.store_snapshot(next)?;
-        }
-        Ok(ready)
+        Ok(self
+            .edit_project_in_place(project, |project| {
+                let Some(thread_index) = project.threads.iter().position(|item| item.id == thread)
+                else {
+                    return (false, false);
+                };
+                if project.threads[thread_index].rosen_change.as_deref() != Some(change)
+                    || !can_handoff(&project.threads[thread_index])
+                {
+                    return (false, false);
+                }
+                let next_source = source(&project.threads[thread_index]).to_owned();
+                let Some(item) = project.handoff_items.get_mut(change) else {
+                    return (false, false);
+                };
+                let before_item = item.clone();
+                item.crossed_at.get_or_insert_with(|| {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                });
+                item.source = next_source;
+                let ready = note.is_some() && item.enabled;
+                let item_changed = *item != before_item;
+                let mut thread_changed = false;
+                if let Some(text) = note.filter(|_| ready) {
+                    let next_note = Some(Note {
+                        change: change.into(),
+                        text: text.into(),
+                        pending: true,
+                    });
+                    let thread = &mut project.threads[thread_index];
+                    if thread.context_handoff != next_note {
+                        thread.context_handoff = next_note;
+                        thread_changed = true;
+                    }
+                }
+                (item_changed || thread_changed, ready)
+            })?
+            .unwrap_or(false))
     }
 
     pub fn complete_handoff(&mut self, (project, thread): (u32, u32)) -> Result<(), StoreError> {
-        let mut next = self.state.clone();
-        let Some(project) = next.projects.iter_mut().find(|item| item.id == project) else {
-            return Ok(());
-        };
-        let Some(thread) = project.threads.iter_mut().find(|item| item.id == thread) else {
-            return Ok(());
-        };
-        let Some(change) = note_for(thread)
-            .filter(|note| note.pending)
-            .map(|note| note.change.clone())
-        else {
-            return Ok(());
-        };
-        if let Some(item) = project.handoff_items.get_mut(&change) {
-            item.handed_off = true;
-        }
-        if let Some(note) = &mut thread.context_handoff {
-            note.pending = false;
-        }
-        self.store_snapshot(next)
+        self.edit_project_in_place(project, |project| {
+            let Some(thread) = project.threads.iter_mut().find(|item| item.id == thread) else {
+                return (false, ());
+            };
+            let Some(change) = note_for(thread)
+                .filter(|note| note.pending)
+                .map(|note| note.change.clone())
+            else {
+                return (false, ());
+            };
+            if let Some(note) = &mut thread.context_handoff {
+                note.pending = false;
+            }
+            if let Some(item) = project.handoff_items.get_mut(&change) {
+                item.handed_off = true;
+            }
+            (true, ())
+        })?;
+        Ok(())
     }
 
     pub fn observe_handoff_review(
@@ -232,22 +240,20 @@ impl StateStore {
         {
             return Ok(());
         }
-        let mut next = self.state.clone();
-        if let Some(item) = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .and_then(|project| project.handoff_items.get_mut(change))
-        {
-            if let Some(verdict) = verdict {
-                item.verdicts.insert(target, verdict.into());
+        self.edit_project_in_place(project, |project| {
+            let Some(item) = project.handoff_items.get_mut(change) else {
+                return (false, ());
+            };
+            let changed = if let Some(verdict) = verdict {
+                item.verdicts.get(&target).map(String::as_str) != Some(verdict) && {
+                    item.verdicts.insert(target, verdict.into());
+                    true
+                }
             } else {
-                item.verdicts.remove(&target);
-            }
-        }
-        if next != self.state {
-            self.store_snapshot(next)?;
-        }
+                item.verdicts.remove(&target).is_some()
+            };
+            (changed, ())
+        })?;
         Ok(())
     }
 }

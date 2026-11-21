@@ -27,8 +27,7 @@ fn completed_spec_work_survives_history_deletion_and_reload()
     assert!(project.threads.is_empty());
     assert_eq!(project.built_spec_sections, ["Features / Durable work"]);
     drop(loaded);
-    std::fs::remove_file(path)?;
-    std::fs::remove_dir(directory)?;
+    std::fs::remove_dir_all(directory)?;
     Ok(())
 }
 
@@ -92,7 +91,6 @@ fn thread_agent_name_survives_save_load_and_keeps_legacy_defaults()
     assert!(loaded_legacy.matches_airc_member("thread-49"));
 
     drop(loaded);
-    std::fs::remove_file(path)?;
-    std::fs::remove_dir(directory)?;
+    std::fs::remove_dir_all(directory)?;
     Ok(())
 }

@@ -7,15 +7,14 @@ impl StateStore {
         identifier: u32,
         skills: ProjectSkills,
     ) -> Result<(), ProjectError> {
-        let mut next = self.state.clone();
-        let project = next
-            .projects
-            .iter_mut()
-            .find(|project| project.id == identifier)
-            .ok_or(ProjectError::UnknownProject(identifier))?;
-        project.skills = skills;
-        self.store_snapshot(next)?;
-        Ok(())
+        self.try_edit_project(
+            identifier,
+            || ProjectError::UnknownProject(identifier),
+            |project| {
+                project.skills = skills;
+                Ok((true, ()))
+            },
+        )
     }
 }
 
@@ -55,8 +54,7 @@ mod tests {
         }
         let legacy: ProjectItem = serde_json::from_value(legacy)?;
         assert_eq!(legacy.skills, ProjectSkills::default());
-        std::fs::remove_file(directory.join(crate::STATE_FILE_NAME))?;
-        std::fs::remove_dir(directory)?;
+        std::fs::remove_dir_all(directory)?;
         Ok(())
     }
 }

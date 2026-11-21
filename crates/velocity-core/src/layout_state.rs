@@ -586,6 +586,23 @@ impl LayoutState {
         self.changed();
     }
 
+    /// Hydrates an archived settled thread's transcript blocks on demand (#552).
+    pub fn hydrate_thread_blocks(
+        &mut self,
+        identifier: usize,
+        blocks: thread_view_model::SharedBlocks,
+    ) {
+        if let Some(detail) = self
+            .data
+            .threads
+            .iter_mut()
+            .find(|entry| entry.policy.identifier == identifier)
+            .and_then(|entry| entry.detail.as_mut())
+        {
+            detail.blocks = blocks;
+        }
+    }
+
     fn live_thread(&self, identifier: usize) -> Option<&LiveThreadView> {
         let project = self.data.project_identifier?;
         self.live.get(&(project, identifier))

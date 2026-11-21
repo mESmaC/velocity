@@ -32,15 +32,14 @@ impl StateStore {
         project_identifier: u32,
         title: String,
     ) -> Result<TaskItem, TaskError> {
-        let mut next = self.state.clone();
-        let project = next
-            .projects
-            .iter_mut()
-            .find(|project| project.id == project_identifier)
-            .ok_or(TaskError::UnknownProject(project_identifier))?;
-        let task = append_task(project, &title, TaskAttribution::User)?;
-        self.commit(next)?;
-        Ok(task)
+        self.try_edit_project(
+            project_identifier,
+            || TaskError::UnknownProject(project_identifier),
+            |project| {
+                let task = append_task(project, &title, TaskAttribution::User)?;
+                Ok((true, task))
+            },
+        )
     }
     /// Retitle a task, move it between todo and done, or both (F8). `Now` and `Draft` are
     /// never requested: an agent's start sets `Now`, and the spec lock ends `Draft`.
@@ -49,15 +48,14 @@ impl StateStore {
         project_identifier: u32,
         change: TaskUpdate,
     ) -> Result<TaskItem, TaskError> {
-        let mut next = self.state.clone();
-        let project = next
-            .projects
-            .iter_mut()
-            .find(|project| project.id == project_identifier)
-            .ok_or(TaskError::UnknownProject(project_identifier))?;
-        let task = apply_update(project, &change)?;
-        self.commit(next)?;
-        Ok(task)
+        self.try_edit_project(
+            project_identifier,
+            || TaskError::UnknownProject(project_identifier),
+            |project| {
+                let task = apply_update(project, &change)?;
+                Ok((true, task))
+            },
+        )
     }
     /// Remove a task (F8). A thread working on it keeps running; it just stops listing it.
     pub fn delete_task(
@@ -65,15 +63,14 @@ impl StateStore {
         project_identifier: u32,
         identifier: u32,
     ) -> Result<TaskItem, TaskError> {
-        let mut next = self.state.clone();
-        let project = next
-            .projects
-            .iter_mut()
-            .find(|project| project.id == project_identifier)
-            .ok_or(TaskError::UnknownProject(project_identifier))?;
-        let task = remove_task(project, identifier)?;
-        self.commit(next)?;
-        Ok(task)
+        self.try_edit_project(
+            project_identifier,
+            || TaskError::UnknownProject(project_identifier),
+            |project| {
+                let task = remove_task(project, identifier)?;
+                Ok((true, task))
+            },
+        )
     }
     pub fn list_tasks(&self, project_identifier: u32) -> Result<Vec<TaskView>, TaskError> {
         self.project(project_identifier)
@@ -149,48 +146,50 @@ impl StateStore {
         request: u64,
         mutation: TaskMutation,
     ) -> Result<(TaskItem, bool), TaskError> {
-        let mut next = self.state.clone();
-        let item = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .ok_or(TaskError::UnknownProject(project))?;
-        if let Some(undo) = item.task_undo.get(&request) {
-            return Ok((undo.after.as_ref().unwrap_or(&undo.before).clone(), true));
-        }
-        let identifier = match &mutation {
-            TaskMutation::Update(update) => update.task,
-            TaskMutation::Delete(identifier) => *identifier,
-        };
-        let dispatched = item
-            .threads
-            .iter()
-            .any(|thread| thread.matches_airc_member(member) && thread.started_by_dispatch);
-        let before = item
-            .tasks
-            .iter()
-            .find(|task| task.id == identifier)
-            .cloned()
-            .ok_or(TaskError::UnknownTask(identifier))?;
-        let (task, after) = match mutation {
-            TaskMutation::Update(update) => {
-                let updated = apply_update(item, &update)?;
-                (updated.clone(), Some(updated))
-            }
-            TaskMutation::Delete(identifier) => (remove_task(item, identifier)?, None),
-        };
-        if dispatched {
-            item.task_undo.insert(
-                request,
-                TaskUndo {
-                    before,
-                    after,
-                    undone: false,
-                },
-            );
-        }
-        self.commit(next)?;
-        Ok((task, dispatched))
+        self.try_edit_project(
+            project,
+            || TaskError::UnknownProject(project),
+            |item| {
+                if let Some(undo) = item.task_undo.get(&request) {
+                    return Ok((
+                        false,
+                        (undo.after.as_ref().unwrap_or(&undo.before).clone(), true),
+                    ));
+                }
+                let identifier = match &mutation {
+                    TaskMutation::Update(update) => update.task,
+                    TaskMutation::Delete(identifier) => *identifier,
+                };
+                let dispatched = item
+                    .threads
+                    .iter()
+                    .any(|thread| thread.matches_airc_member(member) && thread.started_by_dispatch);
+                let before = item
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == identifier)
+                    .cloned()
+                    .ok_or(TaskError::UnknownTask(identifier))?;
+                let (task, after) = match mutation {
+                    TaskMutation::Update(update) => {
+                        let updated = apply_update(item, &update)?;
+                        (updated.clone(), Some(updated))
+                    }
+                    TaskMutation::Delete(identifier) => (remove_task(item, identifier)?, None),
+                };
+                if dispatched {
+                    item.task_undo.insert(
+                        request,
+                        TaskUndo {
+                            before,
+                            after,
+                            undone: false,
+                        },
+                    );
+                }
+                Ok((true, (task, dispatched)))
+            },
+        )
     }
 
     pub fn undo_task_request(&mut self, project: u32, request: u64) -> Result<TaskItem, TaskError> {

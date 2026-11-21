@@ -20,8 +20,7 @@ pub mod follow_through;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::BTreeMap;
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -69,11 +68,13 @@ pub mod rosen_work;
 mod save_behind;
 pub mod shared_mcp;
 pub mod skills;
+mod storage;
 mod store_lock;
 pub mod swarm_dialog;
 pub mod swarms;
 pub mod task_list;
 pub mod threads;
+pub mod transcripts;
 
 pub use duty::DutyRoleItem;
 
@@ -1585,43 +1586,10 @@ pub fn extended_windows_path(path: &Path) -> PathBuf {
     PathBuf::from(format!(r"\\?\{display}"))
 }
 
-fn write_atomic_snapshot(directory: &Path, state: &PersistedState) -> Result<(), StoreError> {
-    // Compact, not pretty: pretty printing made the file about 70% larger (#320).
-    let serialized =
-        serde_json::to_vec(state).map_err(|source| StoreError::SerializeSnapshot { source })?;
-    let partial_path = extended_windows_path(&directory.join(PARTIAL_STATE_FILE_NAME));
-    let destination_path = extended_windows_path(&directory.join(STATE_FILE_NAME));
-    let mut partial_file =
-        File::create(&partial_path).map_err(|source| StoreError::WritePartial {
-            path: partial_path.display().to_string(),
-            source,
-        })?;
-    partial_file
-        .write_all(&serialized)
-        .map_err(|source| StoreError::WritePartial {
-            path: partial_path.display().to_string(),
-            source,
-        })?;
-    partial_file
-        .sync_all()
-        .map_err(|source| StoreError::SyncPartial {
-            path: partial_path.display().to_string(),
-            source,
-        })?;
-    drop(partial_file);
-    replace_with_retry(&partial_path, &destination_path).map_err(|source| {
-        StoreError::ReplaceSnapshot {
-            partial: partial_path.display().to_string(),
-            destination: destination_path.display().to_string(),
-            source,
-        }
-    })
-}
-
 /// Renames `partial` over `destination`, retrying briefly. On Windows an antivirus scan
 /// or the search indexer can hold the freshly written `state.json` open for a moment,
 /// and the rename then fails with "Access is denied" (#320).
-fn replace_with_retry(partial: &Path, destination: &Path) -> std::io::Result<()> {
+pub(crate) fn replace_with_retry(partial: &Path, destination: &Path) -> std::io::Result<()> {
     const ATTEMPTS: u64 = 8;
     let mut attempt = 1;
     loop {
@@ -1639,59 +1607,56 @@ fn replace_with_retry(partial: &Path, destination: &Path) -> std::io::Result<()>
     }
 }
 
-fn recover_or_cleanup_partial(directory: &Path) -> Result<(), StoreError> {
-    let partial_path = extended_windows_path(&directory.join(PARTIAL_STATE_FILE_NAME));
-    let destination_path = extended_windows_path(&directory.join(STATE_FILE_NAME));
-    if !partial_path.exists() {
-        return Ok(());
+/// Copy-on-write handle to [`PersistedState`]. Deliberately does not implement `Clone`, so
+/// `self.state.clone()` continues to deref to `PersistedState::clone`, while `self.state.arc()`
+/// takes an O(1) `Arc::clone` for background saves without copying under the store lock (#552).
+#[derive(Debug)]
+pub(crate) struct SharedState(Arc<PersistedState>);
+
+impl SharedState {
+    pub(crate) fn new(state: PersistedState) -> Self {
+        Self(Arc::new(state))
     }
-    if destination_path.exists() {
-        let _ignored = fs::remove_file(&partial_path);
-        return Ok(());
+
+    pub(crate) fn arc(&self) -> Arc<PersistedState> {
+        Arc::clone(&self.0)
     }
-    if let Ok(bytes) = fs::read(&partial_path)
-        && serde_json::from_slice::<PersistedState>(&bytes).is_ok()
-    {
-        fs::rename(&partial_path, &destination_path).map_err(|source| {
-            StoreError::ReplaceSnapshot {
-                partial: partial_path.display().to_string(),
-                destination: destination_path.display().to_string(),
-                source,
-            }
-        })?;
-        return Ok(());
+
+    pub(crate) fn replace(&mut self, next: PersistedState) {
+        self.0 = Arc::new(next);
     }
-    let _ignored = fs::remove_file(&partial_path);
-    Ok(())
 }
 
-fn move_corrupt_snapshot_aside(
-    directory: &Path,
-    snapshot_path: &Path,
-) -> Result<PathBuf, StoreError> {
-    let mut backup_index: u32 = 1;
-    let corrupt_path = loop {
-        let candidate = extended_windows_path(
-            &directory.join(format!("{STATE_FILE_NAME}.corrupt-{backup_index}")),
-        );
-        if !candidate.exists() {
-            break candidate;
-        }
-        backup_index = backup_index.saturating_add(1);
-    };
-    fs::rename(snapshot_path, &corrupt_path).map_err(|source| {
-        StoreError::QuarantineCorruptSnapshot {
-            corrupt: corrupt_path.display().to_string(),
-            destination: snapshot_path.display().to_string(),
-            source,
-        }
-    })?;
-    Ok(corrupt_path)
+impl std::ops::Deref for SharedState {
+    type Target = PersistedState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SharedState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl PartialEq<PersistedState> for SharedState {
+    fn eq(&self, other: &PersistedState) -> bool {
+        self.0.as_ref() == other
+    }
+}
+
+impl PartialEq<SharedState> for PersistedState {
+    fn eq(&self, other: &SharedState) -> bool {
+        self == other.0.as_ref()
+    }
 }
 
 pub struct StateStore {
     directory: PathBuf,
-    state: PersistedState,
+    state: SharedState,
+    disk_state: Arc<PersistedState>,
     composer_models: BTreeMap<u32, threads::DraftThreadModel>,
     disk_revision: u32,
     recovered_corrupt_snapshot: Option<PathBuf>,
@@ -1699,6 +1664,14 @@ pub struct StateStore {
     deferred_saves: bool,
     /// Held while a background save writes, so writes happen in revision order.
     write_lock: Arc<Mutex<()>>,
+    /// Last transcript confirmed written to `transcripts/<project>/<thread>.jsonl`.
+    persisted_transcripts: BTreeMap<(u32, u32), velocity_core::thread_view_model::SharedBlocks>,
+    /// Transcript updates waiting to be written to `transcripts/<project>/<thread>.jsonl`.
+    pending_transcripts: BTreeMap<(u32, u32), velocity_core::thread_view_model::SharedBlocks>,
+    /// Deleted threads whose transcript files should be removed from disk.
+    deleted_transcripts: std::collections::BTreeSet<(u32, u32)>,
+    /// Bounded LRU cache of settled threads loaded on demand for UI display.
+    settled_transcripts: transcripts::SettledTranscriptCache,
 }
 
 impl StateStore {
@@ -1708,64 +1681,23 @@ impl StateStore {
             path: resolved_directory.display().to_string(),
             source,
         })?;
-        recover_or_cleanup_partial(&resolved_directory)?;
-        let snapshot_path = extended_windows_path(&resolved_directory.join(STATE_FILE_NAME));
-        if snapshot_path.exists() {
-            Self::load_existing_or_recover(resolved_directory, &snapshot_path)
-        } else {
-            Self::initialize_fresh_snapshot(resolved_directory, None)
-        }
-    }
-
-    fn load_existing_or_recover(
-        resolved_directory: PathBuf,
-        snapshot_path: &Path,
-    ) -> Result<Self, StoreError> {
-        let bytes = fs::read(snapshot_path).map_err(|source| StoreError::ReadSnapshot {
-            path: snapshot_path.display().to_string(),
-            source,
-        })?;
-        match serde_json::from_slice::<PersistedState>(&bytes) {
-            Ok(parsed) => {
-                let normalized = parsed.normalize();
-                let disk_revision = normalized.revision;
-                Ok(Self {
-                    directory: resolved_directory,
-                    state: normalized,
-                    composer_models: Default::default(),
-                    disk_revision,
-                    recovered_corrupt_snapshot: None,
-                    deferred_saves: false,
-                    write_lock: Arc::default(),
-                })
-            }
-            Err(parse_error) => {
-                let corrupt_path = move_corrupt_snapshot_aside(&resolved_directory, snapshot_path)?;
-                eprintln!(
-                    "Quarantined unreadable state file '{}' to '{}' ({parse_error}); starting from defaults.",
-                    snapshot_path.display(),
-                    corrupt_path.display()
-                );
-                Self::initialize_fresh_snapshot(resolved_directory, Some(corrupt_path))
-            }
-        }
-    }
-
-    fn initialize_fresh_snapshot(
-        resolved_directory: PathBuf,
-        recovered_corrupt_snapshot: Option<PathBuf>,
-    ) -> Result<Self, StoreError> {
-        let initial_state = PersistedState::default().normalize();
-        write_atomic_snapshot(&resolved_directory, &initial_state)?;
-        let disk_revision = initial_state.revision;
+        let loaded = storage::load_or_initialize(&resolved_directory)?;
+        let disk_revision = loaded.state.revision;
+        let state = SharedState::new(loaded.state);
+        let disk_state = state.arc();
         Ok(Self {
             directory: resolved_directory,
-            state: initial_state,
+            state,
+            disk_state,
             composer_models: Default::default(),
             disk_revision,
-            recovered_corrupt_snapshot,
+            recovered_corrupt_snapshot: loaded.recovered_corrupt_snapshot,
             deferred_saves: false,
             write_lock: Arc::default(),
+            persisted_transcripts: loaded.persisted_transcripts,
+            pending_transcripts: BTreeMap::new(),
+            deleted_transcripts: std::collections::BTreeSet::new(),
+            settled_transcripts: transcripts::SettledTranscriptCache::default(),
         })
     }
 
@@ -1775,6 +1707,63 @@ impl StateStore {
 
     pub fn state(&self) -> &PersistedState {
         &self.state
+    }
+
+    /// Loads a thread's transcript, returning the in-memory blocks for active threads and
+    /// loading settled (`merged`/`done`) threads on demand through a bounded cache (#552).
+    pub fn thread_transcript(
+        &self,
+        project: u32,
+        thread: u32,
+    ) -> velocity_core::thread_view_model::SharedBlocks {
+        let key = (project, thread);
+        if let Some(in_memory) = self
+            .project(project)
+            .and_then(|item| item.threads.iter().find(|entry| entry.id == thread))
+            .filter(|entry| !entry.transcript.is_empty())
+        {
+            return Arc::clone(&in_memory.transcript);
+        }
+        if let Some(pending) = self.pending_transcripts.get(&key) {
+            return Arc::clone(pending);
+        }
+        if let Some(cached) = self.settled_transcripts.get(key) {
+            return cached;
+        }
+        match transcripts::read_transcript(&self.directory, project, thread) {
+            Ok(blocks) => {
+                if !blocks.is_empty() {
+                    self.settled_transcripts.insert(key, Arc::clone(&blocks));
+                }
+                blocks
+            }
+            Err(error) => {
+                eprintln!(
+                    "Could not read transcript for project {project} thread {thread}: {error}"
+                );
+                velocity_core::thread_view_model::SharedBlocks::default()
+            }
+        }
+    }
+
+    /// Hydrates the currently selected settled thread (and its `previous_work_thread` chain)
+    /// into `layout` on demand (#552).
+    pub fn hydrate_selected_thread(&self, layout: &mut velocity_core::layout_state::LayoutState) {
+        let Some(project) = project_layout::active_project(&self.state) else {
+            return;
+        };
+        let hydrated = transcripts::hydrated_thread_ids(project, layout.selected_thread());
+        for thread_id in hydrated {
+            let Some(thread) = project.threads.iter().find(|entry| entry.id == thread_id) else {
+                continue;
+            };
+            if transcripts::is_settled_state(thread.state) {
+                let blocks = self.thread_transcript(project.id, thread_id);
+                if !blocks.is_empty() {
+                    layout.hydrate_thread_blocks(thread_id as usize, blocks);
+                }
+            }
+        }
     }
 
     pub fn settings(&self) -> Settings {
@@ -1829,9 +1818,17 @@ impl StateStore {
         )
         .map_err(StoreError::EnvPassthrough)?;
         if self.state.settings != next_settings {
+            let previous_settings = self.state.settings.clone();
+            let previous_active = self.state.active_project_index;
+            let previous_revision = self.state.revision;
             self.state.apply_settings(next_settings);
+            if let Err(error) = self.save_if_changed() {
+                self.state.settings = previous_settings;
+                self.state.active_project_index = previous_active;
+                self.state.revision = previous_revision;
+                return Err(error);
+            }
         }
-        self.save_if_changed()?;
         Ok(self.settings())
     }
 
@@ -1842,11 +1839,14 @@ impl StateStore {
         }
         let (write_now, next_disk_revision) =
             apply_dirty_checked_step(self.disk_revision, self.state.revision);
-        if write_now {
-            write_atomic_snapshot(&self.directory, &self.state)?;
+        if write_now || !self.pending_transcripts.is_empty() || !self.deleted_transcripts.is_empty()
+        {
+            self.flush_immediate()?;
+            self.disk_revision = next_disk_revision;
+            return Ok(true);
         }
         self.disk_revision = next_disk_revision;
-        Ok(write_now)
+        Ok(false)
     }
 }
 

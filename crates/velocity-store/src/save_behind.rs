@@ -1,39 +1,64 @@
-//! Saving `state.json` behind the store lock (#285, #320).
+//! Saving persisted state behind the store lock (#285, #320, #552).
 //!
-//! Every thread change used to clone the whole saved state, serialize it, fsync it and
-//! rename it into place while holding the store lock, several times a second while agents
-//! ran. Window commands waited on that lock. In deferred mode a change only updates the
-//! state in memory and bumps its revision; [`save_pending`] then writes the latest
-//! revision from a background loop, serializing and writing outside the store lock.
+//! In deferred mode, mutations update memory in place (or swap an `Arc`) and bump the
+//! revision; [`save_pending`] takes an O(1) `Arc::clone` of [`PersistedState`] under the
+//! store lock, then diffs and writes only changed root/project/settled/transcript files
+//! outside the lock.
 //!
 //! A store that never calls [`StateStore::defer_saves`] (tests, examples, stress scripts)
-//! still writes every change before returning, as before.
+//! writes every change immediately before returning and rolls back in-memory edits on error.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use crate::{PersistedState, StateStore, StoreError, write_atomic_snapshot};
+use velocity_core::thread_view_model::SharedBlocks;
+
+use crate::storage;
+use crate::transcripts::{self, is_settled_state};
+use crate::{PersistedState, ProjectItem, StateStore, StoreError};
+
+struct TranscriptDelta {
+    pending: BTreeMap<(u32, u32), SharedBlocks>,
+    deleted: BTreeSet<(u32, u32)>,
+    reopened: BTreeMap<(u32, u32), SharedBlocks>,
+    evict_settled: BTreeSet<(u32, u32)>,
+}
+
+impl TranscriptDelta {
+    fn needs_state_adjustment(&self) -> bool {
+        !self.evict_settled.is_empty() || !self.reopened.is_empty()
+    }
+}
 
 impl StateStore {
-    /// Stops writing `state.json` on every change: [`save_pending`] writes it instead.
+    /// Stops writing on every change: [`save_pending`] writes incremental diffs instead.
     pub fn defer_saves(&mut self) {
         self.deferred_saves = true;
     }
 
-    /// Whether a change is in memory but not yet in `state.json`.
+    /// Whether a change is in memory but not yet persisted to disk.
     pub fn has_unsaved_changes(&self) -> bool {
         self.disk_revision != self.state.revision
+            || !self.pending_transcripts.is_empty()
+            || !self.deleted_transcripts.is_empty()
     }
 
     /// Replaces the whole state with `next` as the next revision. Without deferred saves,
     /// `next` is written first, and a failed write leaves the state as it was.
     pub(crate) fn store_snapshot(&mut self, mut next: PersistedState) -> Result<(), StoreError> {
         next.revision = self.state.revision.wrapping_add(1);
+        let delta = self.prepare_transcript_delta(&mut next);
         if !self.deferred_saves {
-            write_atomic_snapshot(&self.directory, &next)?;
-            self.disk_revision = next.revision;
+            self.write_delta_immediately(&next, &delta)?;
+            self.state.replace(next);
+            self.disk_state = self.state.arc();
+            self.disk_revision = self.state.revision;
+            self.apply_persisted_delta(delta);
+            return Ok(());
         }
-        self.state = next;
+        self.apply_deferred_delta(delta);
+        self.state.replace(next);
         Ok(())
     }
 
@@ -41,29 +66,407 @@ impl StateStore {
     /// Without deferred saves it is written first; on a failed write the revision goes
     /// back and the caller undoes its change.
     pub(crate) fn record_change(&mut self) -> Result<(), StoreError> {
-        let previous = self.state.revision;
-        self.state.revision = previous.wrapping_add(1);
+        let previous_revision = self.state.revision;
+        self.state.revision = previous_revision.wrapping_add(1);
+        let delta = self.collect_transcript_delta(&self.state);
         if self.deferred_saves {
+            Self::apply_state_transcript_adjustments(&mut self.state, &delta);
+            self.apply_deferred_delta(delta);
             return Ok(());
         }
-        match write_atomic_snapshot(&self.directory, &self.state) {
-            Ok(()) => {
-                self.disk_revision = self.state.revision;
-                Ok(())
+        if delta.needs_state_adjustment() {
+            let mut next = self.state.clone();
+            Self::apply_state_transcript_adjustments(&mut next, &delta);
+            if let Err(error) = self.write_delta_immediately(&next, &delta) {
+                self.state.revision = previous_revision;
+                return Err(error);
             }
+            self.state.replace(next);
+        } else if let Err(error) = self.write_delta_immediately(&self.state, &delta) {
+            self.state.revision = previous_revision;
+            return Err(error);
+        }
+        self.disk_state = self.state.arc();
+        self.disk_revision = self.state.revision;
+        self.apply_persisted_delta(delta);
+        Ok(())
+    }
+
+    /// Flushes the current in-memory state immediately (used by `save_if_changed`).
+    pub(crate) fn flush_immediate(&mut self) -> Result<(), StoreError> {
+        let delta = self.collect_transcript_delta(&self.state);
+        if delta.needs_state_adjustment() {
+            let mut next = self.state.clone();
+            Self::apply_state_transcript_adjustments(&mut next, &delta);
+            self.write_delta_immediately(&next, &delta)?;
+            self.state.replace(next);
+        } else {
+            self.write_delta_immediately(&self.state, &delta)?;
+        }
+        self.disk_state = self.state.arc();
+        self.apply_persisted_delta(delta);
+        Ok(())
+    }
+
+    /// Mutates one project in place, avoiding cloning other projects. In deferred mode no
+    /// rollback clone is taken; in immediate mode only that project is cloned for rollback.
+    pub(crate) fn edit_project_in_place<Value>(
+        &mut self,
+        project_id: u32,
+        edit: impl FnOnce(&mut ProjectItem) -> (bool, Value),
+    ) -> Result<Option<Value>, StoreError> {
+        let Some(index) = self
+            .state
+            .projects
+            .iter()
+            .position(|project| project.id == project_id)
+        else {
+            return Ok(None);
+        };
+        let rollback = (!self.deferred_saves).then(|| self.state.projects[index].clone());
+        let (changed, value) = edit(&mut self.state.projects[index]);
+        if !changed {
+            return Ok(Some(value));
+        }
+        if let Err(error) = self.record_change() {
+            if let Some(previous) = rollback {
+                self.state.projects[index] = previous;
+            }
+            return Err(error);
+        }
+        Ok(Some(value))
+    }
+
+    /// Mutates one project in place with a fallible closure, rolling back only that project
+    /// if the closure or immediate persistence fails (#552).
+    pub(crate) fn try_edit_project<Value, Failure: From<StoreError>>(
+        &mut self,
+        project_id: u32,
+        missing: impl FnOnce() -> Failure,
+        edit: impl FnOnce(&mut ProjectItem) -> Result<(bool, Value), Failure>,
+    ) -> Result<Value, Failure> {
+        let index = self
+            .state
+            .projects
+            .iter()
+            .position(|project| project.id == project_id)
+            .ok_or_else(missing)?;
+        let rollback = self.state.projects[index].clone();
+        let (changed, value) = match edit(&mut self.state.projects[index]) {
+            Ok(outcome) => outcome,
             Err(error) => {
-                self.state.revision = previous;
-                Err(error)
+                self.state.projects[index] = rollback;
+                return Err(error);
+            }
+        };
+        if !changed {
+            return Ok(value);
+        }
+        if let Err(error) = self.record_change() {
+            self.state.projects[index] = rollback;
+            return Err(error.into());
+        }
+        Ok(value)
+    }
+
+    fn prepare_transcript_delta(&self, next: &mut PersistedState) -> TranscriptDelta {
+        let delta = self.collect_transcript_delta(next);
+        Self::apply_state_transcript_adjustments(next, &delta);
+        delta
+    }
+
+    fn collect_transcript_delta(&self, next: &PersistedState) -> TranscriptDelta {
+        let mut pending = BTreeMap::new();
+        let mut reopened = BTreeMap::new();
+        let mut evict_settled = BTreeSet::new();
+        let mut live_keys = BTreeSet::new();
+        for project in &next.projects {
+            for thread in &project.threads {
+                let key = (project.id, thread.id);
+                live_keys.insert(key);
+                if is_settled_state(thread.state) {
+                    if !thread.transcript.is_empty() {
+                        pending.insert(key, Arc::clone(&thread.transcript));
+                        evict_settled.insert(key);
+                    } else if !thread.queued_run_history.is_empty() {
+                        evict_settled.insert(key);
+                    }
+                    continue;
+                }
+                if !thread.transcript.is_empty() {
+                    let known = self
+                        .pending_transcripts
+                        .get(&key)
+                        .or_else(|| self.persisted_transcripts.get(&key));
+                    let changed = known.is_none_or(|prev| {
+                        !Arc::ptr_eq(prev, &thread.transcript)
+                            && prev.as_slice() != thread.transcript.as_slice()
+                    });
+                    if changed {
+                        pending.insert(key, Arc::clone(&thread.transcript));
+                    }
+                } else if let Some(restored) = self.reopened_transcript(key) {
+                    reopened.insert(key, restored);
+                } else if self.persisted_transcripts.contains_key(&key)
+                    || self
+                        .pending_transcripts
+                        .get(&key)
+                        .is_some_and(|blocks| !blocks.is_empty())
+                {
+                    pending.insert(key, SharedBlocks::default());
+                }
+            }
+        }
+        let deleted = self.collect_deleted_transcripts(&live_keys);
+        TranscriptDelta {
+            pending,
+            deleted,
+            reopened,
+            evict_settled,
+        }
+    }
+
+    fn collect_deleted_transcripts(
+        &self,
+        live_keys: &BTreeSet<(u32, u32)>,
+    ) -> BTreeSet<(u32, u32)> {
+        let mut deleted = BTreeSet::new();
+        for project in &self.disk_state.projects {
+            for thread in &project.threads {
+                let key = (project.id, thread.id);
+                if !live_keys.contains(&key) {
+                    deleted.insert(key);
+                }
+            }
+        }
+        for &key in self
+            .persisted_transcripts
+            .keys()
+            .chain(self.pending_transcripts.keys())
+        {
+            if !live_keys.contains(&key) {
+                deleted.insert(key);
+            }
+        }
+        deleted
+    }
+
+    fn apply_state_transcript_adjustments(state: &mut PersistedState, delta: &TranscriptDelta) {
+        if !delta.needs_state_adjustment() {
+            return;
+        }
+        for project in &mut state.projects {
+            for thread in &mut project.threads {
+                let key = (project.id, thread.id);
+                if delta.evict_settled.contains(&key) {
+                    thread.transcript = SharedBlocks::default();
+                    thread.queued_run_history.clear();
+                } else if let Some(blocks) = delta.reopened.get(&key) {
+                    thread.transcript = Arc::clone(blocks);
+                }
             }
         }
     }
+
+    /// Reloads an archived transcript when a settled thread is reopened (e.g. Rosen revert).
+    fn reopened_transcript(&self, key: (u32, u32)) -> Option<SharedBlocks> {
+        let was_settled = self
+            .state
+            .projects
+            .iter()
+            .find(|project| project.id == key.0)
+            .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
+            .is_some_and(|thread| is_settled_state(thread.state))
+            || self
+                .disk_state
+                .projects
+                .iter()
+                .find(|project| project.id == key.0)
+                .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
+                .is_some_and(|thread| is_settled_state(thread.state));
+        if !was_settled {
+            return None;
+        }
+        if let Some(pending) = self.pending_transcripts.get(&key)
+            && !pending.is_empty()
+        {
+            return Some(Arc::clone(pending));
+        }
+        if let Some(cached) = self.settled_transcripts.get(key)
+            && !cached.is_empty()
+        {
+            return Some(cached);
+        }
+        transcripts::read_transcript(&self.directory, key.0, key.1)
+            .ok()
+            .filter(|blocks| !blocks.is_empty())
+    }
+
+    fn write_delta_immediately(
+        &self,
+        next: &PersistedState,
+        delta: &TranscriptDelta,
+    ) -> Result<(), StoreError> {
+        let mut pending = self.pending_transcripts.clone();
+        for (key, blocks) in &delta.pending {
+            pending.insert(*key, Arc::clone(blocks));
+        }
+        let mut deleted = self.deleted_transcripts.clone();
+        for key in &delta.deleted {
+            pending.remove(key);
+            deleted.insert(*key);
+        }
+        for key in delta.pending.keys() {
+            deleted.remove(key);
+        }
+        storage::write_incremental_snapshot(
+            &self.directory,
+            &self.disk_state,
+            next,
+            &pending,
+            &deleted,
+            &self.persisted_transcripts,
+        )
+    }
+
+    fn apply_deferred_delta(&mut self, delta: TranscriptDelta) {
+        for (key, blocks) in delta.reopened {
+            self.persisted_transcripts.insert(key, blocks);
+            self.settled_transcripts.remove(key);
+        }
+        for (key, blocks) in delta.pending {
+            self.deleted_transcripts.remove(&key);
+            if self.is_settled_in_state(key) && !blocks.is_empty() {
+                self.settled_transcripts.insert(key, Arc::clone(&blocks));
+            }
+            self.pending_transcripts.insert(key, blocks);
+        }
+        for key in delta.deleted {
+            self.pending_transcripts.remove(&key);
+            self.settled_transcripts.remove(key);
+            self.deleted_transcripts.insert(key);
+        }
+    }
+
+    fn apply_persisted_delta(&mut self, delta: TranscriptDelta) {
+        let existing_pending = std::mem::take(&mut self.pending_transcripts);
+        let existing_deleted = std::mem::take(&mut self.deleted_transcripts);
+        for (key, blocks) in delta.reopened {
+            self.persisted_transcripts.insert(key, blocks);
+            self.settled_transcripts.remove(key);
+        }
+        for (key, blocks) in existing_pending.into_iter().chain(delta.pending) {
+            if self.is_settled_in_state(key) {
+                self.persisted_transcripts.remove(&key);
+                if !blocks.is_empty() {
+                    self.settled_transcripts.insert(key, blocks);
+                }
+            } else if blocks.is_empty() {
+                self.persisted_transcripts.remove(&key);
+            } else {
+                self.persisted_transcripts.insert(key, blocks);
+            }
+        }
+        for key in existing_deleted.into_iter().chain(delta.deleted) {
+            self.persisted_transcripts.remove(&key);
+            self.settled_transcripts.remove(key);
+        }
+    }
+
+    fn is_settled_in_state(&self, key: (u32, u32)) -> bool {
+        self.project(key.0)
+            .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
+            .is_some_and(|thread| is_settled_state(thread.state))
+    }
 }
 
-/// Writes the store's latest revision to `state.json` if it isn't there yet. The store
-/// lock is held only to copy the state and to record the write, never while serializing
-/// or writing. Returns whether it wrote. Safe to call from several threads: writes are
-/// serialized and each one copies the newest state, so an older revision never replaces a
-/// newer one on disk.
+struct SaveBatch {
+    directory: std::path::PathBuf,
+    previous: Arc<PersistedState>,
+    current: Arc<PersistedState>,
+    pending: BTreeMap<(u32, u32), SharedBlocks>,
+    deleted: BTreeSet<(u32, u32)>,
+    previous_transcripts: BTreeMap<(u32, u32), SharedBlocks>,
+}
+
+fn take_save_batch(store: &Mutex<StateStore>, lock_time: &mut Duration) -> Option<SaveBatch> {
+    let mut guard = store.lock().unwrap_or_else(PoisonError::into_inner);
+    let hold_started = Instant::now();
+    let batch = guard.has_unsaved_changes().then(|| {
+        let pending = std::mem::take(&mut guard.pending_transcripts);
+        let deleted = std::mem::take(&mut guard.deleted_transcripts);
+        let previous_transcripts: BTreeMap<_, _> = pending
+            .keys()
+            .filter_map(|key| {
+                guard
+                    .persisted_transcripts
+                    .get(key)
+                    .map(|blocks| (*key, Arc::clone(blocks)))
+            })
+            .collect();
+        SaveBatch {
+            directory: guard.directory.clone(),
+            previous: Arc::clone(&guard.disk_state),
+            current: guard.state.arc(),
+            pending,
+            deleted,
+            previous_transcripts,
+        }
+    });
+    drop(guard);
+    *lock_time += hold_started.elapsed();
+    batch
+}
+
+fn restore_failed_batch(
+    store: &Mutex<StateStore>,
+    pending: BTreeMap<(u32, u32), SharedBlocks>,
+    deleted: BTreeSet<(u32, u32)>,
+    lock_time: &mut Duration,
+) {
+    let mut guard = store.lock().unwrap_or_else(PoisonError::into_inner);
+    let hold_started = Instant::now();
+    for (key, blocks) in pending {
+        guard.pending_transcripts.entry(key).or_insert(blocks);
+    }
+    for key in deleted {
+        if !guard.pending_transcripts.contains_key(&key) {
+            guard.deleted_transcripts.insert(key);
+        }
+    }
+    drop(guard);
+    *lock_time += hold_started.elapsed();
+}
+
+fn finish_save_batch(
+    store: &Mutex<StateStore>,
+    current: Arc<PersistedState>,
+    pending: BTreeMap<(u32, u32), SharedBlocks>,
+    deleted: BTreeSet<(u32, u32)>,
+    lock_time: &mut Duration,
+) {
+    let mut guard = store.lock().unwrap_or_else(PoisonError::into_inner);
+    let hold_started = Instant::now();
+    guard.disk_revision = current.revision;
+    guard.disk_state = current;
+    for (key, blocks) in pending {
+        if guard.is_settled_in_state(key) || blocks.is_empty() {
+            guard.persisted_transcripts.remove(&key);
+        } else {
+            guard.persisted_transcripts.insert(key, blocks);
+        }
+    }
+    for key in deleted {
+        guard.persisted_transcripts.remove(&key);
+    }
+    drop(guard);
+    *lock_time += hold_started.elapsed();
+}
+
+/// Writes the store's latest revision incrementally to disk if anything changed. The store
+/// lock is held only for O(1) `Arc::clone` / map swaps and to record completion, never while
+/// serializing or writing. Safe to call from several threads: writes are serialized and each
+/// one writes the newest state.
 pub fn save_pending(store: &Mutex<StateStore>) -> Result<bool, StoreError> {
     let save_started = Instant::now();
     let mut lock_time = Duration::ZERO;
@@ -81,27 +484,28 @@ pub fn save_pending(store: &Mutex<StateStore>) -> Result<bool, StoreError> {
         write_lock
     };
     let _writing = write_lock.lock().unwrap_or_else(PoisonError::into_inner);
-    let (directory, snapshot) = {
-        let guard = store.lock().unwrap_or_else(PoisonError::into_inner);
-        let hold_started = Instant::now();
-        let result = guard
-            .has_unsaved_changes()
-            .then(|| (guard.directory.clone(), guard.state.clone()));
-        drop(guard);
-        lock_time += hold_started.elapsed();
-        let Some(pair) = result else {
-            return Ok(false);
-        };
-        pair
+    let Some(batch) = take_save_batch(store, &mut lock_time) else {
+        return Ok(false);
     };
-    write_atomic_snapshot(&directory, &snapshot)?;
-    {
-        let mut guard = store.lock().unwrap_or_else(PoisonError::into_inner);
-        let hold_started = Instant::now();
-        guard.disk_revision = snapshot.revision;
-        drop(guard);
-        lock_time += hold_started.elapsed();
+    if let Err(error) = storage::write_incremental_snapshot(
+        &batch.directory,
+        &batch.previous,
+        &batch.current,
+        &batch.pending,
+        &batch.deleted,
+        &batch.previous_transcripts,
+    ) {
+        restore_failed_batch(store, batch.pending, batch.deleted, &mut lock_time);
+        velocity_core::performance::record_save(save_started.elapsed(), lock_time);
+        return Err(error);
     }
+    finish_save_batch(
+        store,
+        batch.current,
+        batch.pending,
+        batch.deleted,
+        &mut lock_time,
+    );
     velocity_core::performance::record_save(save_started.elapsed(), lock_time);
     Ok(true)
 }
@@ -109,7 +513,8 @@ pub fn save_pending(store: &Mutex<StateStore>) -> Result<bool, StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ProjectItem;
+    use crate::{ProjectItem, ThreadItem, ThreadState};
+    use velocity_core::thread_view_model::TranscriptBlock;
 
     // A deferred change that never reaches disk is lost on the next start (#320).
     #[test]
@@ -136,6 +541,104 @@ mod tests {
         assert!(!save_pending(&store)?);
         let loaded = StateStore::load_or_default(&directory)?;
         assert_eq!(loaded.state().projects.len(), 1);
+        std::fs::remove_dir_all(&directory)?;
+        Ok(())
+    }
+
+    // Risk (#552): hundreds of settled threads with large transcripts must keep state.json
+    // well under 1 MB, archive settled transcripts out of live memory and load them on
+    // demand, and keep save_pending store-lock hold time under 10 ms.
+    #[test]
+    fn settled_transcripts_stay_out_of_state_json_and_save_fast()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-552-{unique}"));
+        let _ignored = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory)?;
+
+        // Seed a legacy monolithic state.json with 200 settled threads and 2 MB+ of transcripts.
+        let mut legacy = PersistedState::default();
+        let mut project = ProjectItem::new(1, "Large".into(), r"C:\large".into());
+        let payload = "x".repeat(4_096);
+        for id in 1..=200u32 {
+            let mut thread = ThreadItem::new(id, format!("Settled thread {id}"));
+            thread.state = ThreadState::Merged;
+            thread.activity = crate::AgentActivity::Idle;
+            thread.transcript = Arc::new(vec![
+                TranscriptBlock::UserMessage {
+                    text: format!("Prompt {id}"),
+                    queued: false,
+                },
+                TranscriptBlock::AgentMessage {
+                    paragraphs: vec![format!("Answer {id}: {payload}")],
+                },
+            ]);
+            project.threads.push(thread);
+        }
+        let mut active = ThreadItem::new(201, "Active thread".into());
+        active.state = ThreadState::Working;
+        active.transcript = Arc::new(vec![TranscriptBlock::UserMessage {
+            text: "Working prompt".into(),
+            queued: false,
+        }]);
+        project.threads.push(active);
+        legacy.projects.push(project);
+        let legacy_bytes = serde_json::to_vec(&legacy)?;
+        assert!(legacy_bytes.len() > 800_000);
+        std::fs::write(directory.join(crate::STATE_FILE_NAME), &legacy_bytes)?;
+
+        // Loading migrates transcripts to transcripts/1/<id>.jsonl and splits projects.
+        let mut store = StateStore::load_or_default(&directory)?;
+        let compact_size = std::fs::metadata(directory.join(crate::STATE_FILE_NAME))?.len();
+        assert!(
+            compact_size < 100_000,
+            "state.json should be compact after migration, got {compact_size} bytes"
+        );
+        let loaded_project = store.project(1).ok_or("missing migrated project")?;
+        // Settled threads keep empty in-memory transcripts and hydrate on demand.
+        assert!(loaded_project.threads[0].transcript.is_empty());
+        assert_eq!(loaded_project.threads[200].transcript.len(), 1);
+        let on_demand = store.thread_transcript(1, 1);
+        assert_eq!(on_demand.len(), 2);
+
+        // Incremental deferred save appends new blocks and stays well under 10 ms lock time.
+        store.defer_saves();
+        store.update_thread(1, 201, |thread| {
+            Arc::make_mut(&mut thread.transcript).push(TranscriptBlock::AgentMessage {
+                paragraphs: vec!["Appended block".into()],
+            });
+        })?;
+        let state_mtime_before =
+            std::fs::metadata(directory.join(crate::STATE_FILE_NAME))?.modified()?;
+        let store = Mutex::new(store);
+        let start = Instant::now();
+        assert!(save_pending(&store)?);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "save_pending took unexpectedly long: {elapsed:?}"
+        );
+        let save_lock_ms = velocity_core::performance::snapshot().saves.last_lock_ms;
+        assert!(
+            save_lock_ms <= velocity_core::performance::SAVE_LOCK_BUDGET_MS,
+            "save_pending held store lock for {save_lock_ms} ms"
+        );
+        // Transcript-only update must not rewrite state.json.
+        assert_eq!(
+            std::fs::metadata(directory.join(crate::STATE_FILE_NAME))?.modified()?,
+            state_mtime_before
+        );
+
+        let reloaded = StateStore::load_or_default(&directory)?;
+        let active_reloaded = reloaded
+            .project(1)
+            .and_then(|item| item.threads.iter().find(|thread| thread.id == 201))
+            .ok_or("missing active thread")?;
+        assert_eq!(active_reloaded.transcript.len(), 2);
+        assert_eq!(reloaded.thread_transcript(1, 42).len(), 2);
+
         std::fs::remove_dir_all(&directory)?;
         Ok(())
     }

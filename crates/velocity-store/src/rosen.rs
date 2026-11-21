@@ -273,16 +273,14 @@ impl StateStore {
         if unchanged {
             return Ok(false);
         }
-        let mut next = self.state.clone();
-        if let Some(thread) = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .and_then(|item| item.threads.iter_mut().find(|t| t.id == identifier))
-        {
-            thread.rosen_follow_up_error = error;
-        }
-        self.store_snapshot(next)?;
+        self.edit_project_in_place(project, |item| {
+            if let Some(thread) = item.threads.iter_mut().find(|t| t.id == identifier) {
+                thread.rosen_follow_up_error = error;
+                (true, ())
+            } else {
+                (false, ())
+            }
+        })?;
         Ok(true)
     }
 
@@ -305,19 +303,17 @@ impl StateStore {
         if !needs_clear {
             return Ok(false);
         }
-        let mut next = self.state.clone();
-        if let Some(thread) = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .and_then(|item| item.threads.iter_mut().find(|t| t.id == identifier))
-        {
-            thread
-                .rosen_follow_ups
-                .retain(|pending| !matches!(pending, RosenFollowUp::Conflict { .. }));
-            thread.rosen_resolution_status = None;
-        }
-        self.store_snapshot(next)?;
+        self.edit_project_in_place(project, |item| {
+            if let Some(thread) = item.threads.iter_mut().find(|t| t.id == identifier) {
+                thread
+                    .rosen_follow_ups
+                    .retain(|pending| !matches!(pending, RosenFollowUp::Conflict { .. }));
+                thread.rosen_resolution_status = None;
+                (true, ())
+            } else {
+                (false, ())
+            }
+        })?;
         Ok(true)
     }
 
@@ -341,8 +337,7 @@ impl StateStore {
         if views.is_empty() {
             return Ok(false);
         }
-        let mut next = self.state.clone();
-        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+        self.edit_project_in_place(project, |item| {
             for thread in &mut item.threads {
                 if let Some((_, view)) = thread.rosen_change.as_ref().and_then(|id| views.get(id)) {
                     if view.conflicts.is_empty()
@@ -356,8 +351,8 @@ impl StateStore {
                     thread.rosen_change_view = Some(view.clone());
                 }
             }
-        }
-        self.store_snapshot(next)?;
+            (true, ())
+        })?;
         Ok(true)
     }
 
@@ -392,42 +387,42 @@ impl StateStore {
         message: &str,
         regeneration: bool,
     ) -> Result<(), StoreError> {
-        let mut next = self.state.clone();
-        let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
-            return Ok(());
-        };
-        if seq <= item.rosen_event_cursor {
-            return Ok(());
-        }
-        item.rosen_event_cursor = seq;
-        if let Some(thread) = item.threads.iter_mut().find(|thread| {
-            thread.rosen_change.as_deref() == Some(change) && thread.state != ThreadState::Merged
-        }) {
-            if seq <= item.rosen_replay_through && notice_handled(thread, message) {
-                return self.store_snapshot(next);
+        self.edit_project_in_place(project, |item| {
+            if seq <= item.rosen_event_cursor {
+                return (false, ());
             }
-            // Regeneration is cumulative: later rebases may omit still-pending files.
-            // A text-conflict notice must not discard that work either.
-            let notice = if regeneration {
-                RosenFollowUp::Regenerate {
-                    message: message.to_owned(),
-                    mark: thread.transcript.len(),
+            item.rosen_event_cursor = seq;
+            if let Some(thread) = item.threads.iter_mut().find(|thread| {
+                thread.rosen_change.as_deref() == Some(change)
+                    && thread.state != ThreadState::Merged
+            }) {
+                if seq <= item.rosen_replay_through && notice_handled(thread, message) {
+                    return (true, ());
                 }
-            } else {
-                thread
-                    .rosen_follow_ups
-                    .retain(|pending| !matches!(pending, RosenFollowUp::Conflict { .. }));
-                thread.rosen_resolution_status.get_or_insert_with(|| {
-                    RosenResolutionStatus::new(DEFAULT_RESOLUTION_STATUS.to_owned(), false)
-                });
-                RosenFollowUp::Conflict {
-                    message: message.to_owned(),
-                    mark: thread.transcript.len(),
-                }
-            };
-            thread.rosen_follow_ups.push(notice);
-        }
-        self.store_snapshot(next)
+                // Regeneration is cumulative: later rebases may omit still-pending files.
+                // A text-conflict notice must not discard that work either.
+                let notice = if regeneration {
+                    RosenFollowUp::Regenerate {
+                        message: message.to_owned(),
+                        mark: thread.transcript.len(),
+                    }
+                } else {
+                    thread
+                        .rosen_follow_ups
+                        .retain(|pending| !matches!(pending, RosenFollowUp::Conflict { .. }));
+                    thread.rosen_resolution_status.get_or_insert_with(|| {
+                        RosenResolutionStatus::new(DEFAULT_RESOLUTION_STATUS.to_owned(), false)
+                    });
+                    RosenFollowUp::Conflict {
+                        message: message.to_owned(),
+                        mark: thread.transcript.len(),
+                    }
+                };
+                thread.rosen_follow_ups.push(notice);
+            }
+            (true, ())
+        })?;
+        Ok(())
     }
 
     /// Validate the saved checkpoints before subscribing. An unbound position
@@ -495,29 +490,26 @@ impl StateStore {
         if missing.is_empty() {
             return Ok(false);
         }
-        let mut next = self.state.clone();
-        let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
-            return Ok(false);
-        };
-        let mut changed = false;
-        for thread in &mut item.threads {
-            if matches!(
-                thread.state,
-                ThreadState::Done | ThreadState::Closed | ThreadState::Merged
-            ) && thread
-                .rosen_change
-                .as_ref()
-                .and_then(|change| missing.get(change))
-                == Some(&thread.rosen_progress_generation)
-            {
-                thread.rosen_change = None;
-                changed = true;
-            }
-        }
-        if changed {
-            self.store_snapshot(next)?;
-        }
-        Ok(changed)
+        Ok(self
+            .edit_project_in_place(project, |item| {
+                let mut changed = false;
+                for thread in &mut item.threads {
+                    if matches!(
+                        thread.state,
+                        ThreadState::Done | ThreadState::Closed | ThreadState::Merged
+                    ) && thread
+                        .rosen_change
+                        .as_ref()
+                        .and_then(|change| missing.get(change))
+                        == Some(&thread.rosen_progress_generation)
+                    {
+                        thread.rosen_change = None;
+                        changed = true;
+                    }
+                }
+                (changed, changed)
+            })?
+            .unwrap_or(false))
     }
 
     /// Rebases without regeneration need no saved action: the periodic pass reads the basis.
@@ -526,11 +518,13 @@ impl StateStore {
         if seq <= self.rosen_event_cursor(project) {
             return Ok(());
         }
-        let mut next = self.state.clone();
-        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+        self.edit_project_in_place(project, |item| {
+            if seq <= item.rosen_event_cursor {
+                return (false, ());
+            }
             item.rosen_event_cursor = seq;
-            self.store_snapshot(next)?;
-        }
+            (true, ())
+        })?;
         Ok(())
     }
 

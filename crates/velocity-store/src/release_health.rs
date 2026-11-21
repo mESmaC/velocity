@@ -29,15 +29,14 @@ impl StateStore {
         if existing.retried_release_runs.contains(&run_id) {
             return Ok(false);
         }
-        let mut next = self.state.clone();
-        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+        self.edit_project_in_place(project, |item| {
             item.retried_release_runs.push(run_id);
             if item.retried_release_runs.len() > MAX_RETRIED_RELEASE_RUNS {
                 let excess = item.retried_release_runs.len() - MAX_RETRIED_RELEASE_RUNS;
                 item.retried_release_runs.drain(..excess);
             }
-        }
-        self.store_snapshot(next)?;
+            (true, ())
+        })?;
         Ok(true)
     }
 }

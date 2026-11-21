@@ -10,28 +10,27 @@ impl StateStore {
         sequence: u64,
         title: &str,
     ) -> Result<TaskItem, ThreadError> {
-        let mut next = self.state.clone();
-        let saved = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        if let Some(task) = saved
-            .tasks
-            .iter()
-            .find(|task| task.agent_request == Some(sequence))
-        {
-            return Ok(task.clone());
-        }
-        let attribution = agent_attribution(saved, member)?;
-        let mut task = crate::task_list::append_task(saved, title, attribution)
-            .map_err(|error| ThreadError::InvalidLaunch(error.to_string()))?;
-        task.agent_request = Some(sequence);
-        if let Some(saved_task) = saved.tasks.last_mut() {
-            saved_task.agent_request = Some(sequence);
-        }
-        self.commit(next)?;
-        Ok(task)
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |saved| {
+                if let Some(task) = saved
+                    .tasks
+                    .iter()
+                    .find(|task| task.agent_request == Some(sequence))
+                {
+                    return Ok((false, task.clone()));
+                }
+                let attribution = agent_attribution(saved, member)?;
+                let mut task = crate::task_list::append_task(saved, title, attribution)
+                    .map_err(|error| ThreadError::InvalidLaunch(error.to_string()))?;
+                task.agent_request = Some(sequence);
+                if let Some(saved_task) = saved.tasks.last_mut() {
+                    saved_task.agent_request = Some(sequence);
+                }
+                Ok((true, task))
+            },
+        )
     }
 }
 

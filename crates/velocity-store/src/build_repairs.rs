@@ -66,20 +66,19 @@ impl StateStore {
         project: u32,
         commits: &[String],
     ) -> Result<(), ThreadError> {
-        let mut next = self.state.clone();
-        let current = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        for repair in &mut current.build_repairs {
-            if commits.contains(&repair.commit) {
-                repair.closed = true;
-            }
-        }
-        if next != self.state {
-            self.commit(next)?;
-        }
-        Ok(())
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |current| {
+                let mut changed = false;
+                for repair in &mut current.build_repairs {
+                    if commits.contains(&repair.commit) && !repair.closed {
+                        repair.closed = true;
+                        changed = true;
+                    }
+                }
+                Ok((changed, ()))
+            },
+        )
     }
 }

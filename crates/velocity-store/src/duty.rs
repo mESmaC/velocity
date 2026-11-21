@@ -739,8 +739,7 @@ mod tests {
         let loaded = StateStore::load_or_default(&directory)?;
         assert!(loaded.state().projects[0].duty_roles.is_empty());
         assert_eq!(loaded.state().projects[0].active_thread_id, None);
-        std::fs::remove_file(directory.join(crate::STATE_FILE_NAME))?;
-        std::fs::remove_dir(directory)?;
+        std::fs::remove_dir_all(directory)?;
         Ok(())
     }
     // #302: a duty agent's effort and speed are saved state. Adding agents rebuilds the role

@@ -29,20 +29,20 @@ impl StateStore {
         if !changed && current.rosen_mirror_sequence <= latest {
             return Ok(());
         }
-        let mut next = self.state.clone();
-        let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
-            return Ok(());
-        };
-        let previous = item.rosen_mirror_sequence;
-        item.rosen_mirror_sequence = 0;
-        if item.rosen_mirror.as_ref() != state {
-            item.rosen_mirror_rejection_sequence = None;
-            item.rosen_mirror_notices.clear();
-        }
-        let replacing = item.rosen_mirror_server_identity.is_some() && changed;
-        item.rosen_mirror_server_identity = Some(identity.to_owned());
-        self.store_snapshot(next)?;
-        if previous != 0 || replacing {
+        let outcome = self.edit_project_in_place(project, |item| {
+            let previous = item.rosen_mirror_sequence;
+            item.rosen_mirror_sequence = 0;
+            if item.rosen_mirror.as_ref() != state {
+                item.rosen_mirror_rejection_sequence = None;
+                item.rosen_mirror_notices.clear();
+            }
+            let replacing = item.rosen_mirror_server_identity.is_some() && changed;
+            item.rosen_mirror_server_identity = Some(identity.to_owned());
+            (true, (previous, replacing))
+        })?;
+        if let Some((previous, replacing)) = outcome
+            && (previous != 0 || replacing)
+        {
             eprintln!(
                 "Rosen mirror for project {project}: restarting at 0 (saved {previous}, latest {latest}, database changed: {changed})"
             );
@@ -64,8 +64,7 @@ impl StateStore {
         {
             return Ok(());
         }
-        let mut next = self.state.clone();
-        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+        self.edit_project_in_place(project, |item| {
             if state.as_ref().is_some_and(|state| state.rejected)
                 && item.rosen_mirror_rejection_sequence.is_none()
             {
@@ -81,8 +80,9 @@ impl StateStore {
             }
             item.rosen_mirror = state;
             item.rosen_mirror_sequence = sequence;
-        }
-        self.store_snapshot(next)
+            (true, ())
+        })?;
+        Ok(())
     }
 
     /// Saves the project's Collapse repository (#429) and whether the landed `rosen.toml`
@@ -105,16 +105,15 @@ impl StateStore {
         if !moved && current.collapse_live_state == live_state {
             return Ok(false);
         }
-        let mut next = self.state.clone();
-        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+        self.edit_project_in_place(project, |item| {
             if moved {
                 // Another repository's forwarder state would mislead until the next read.
                 item.collapse_mirror_health = None;
             }
             item.collapse_repository = repository;
             item.collapse_live_state = live_state;
-        }
-        self.store_snapshot(next)?;
+            (true, ())
+        })?;
         Ok(true)
     }
 
@@ -131,11 +130,10 @@ impl StateStore {
         if unchanged {
             return Ok(false);
         }
-        let mut next = self.state.clone();
-        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+        self.edit_project_in_place(project, |item| {
             item.collapse_mirror_health = health;
-        }
-        self.store_snapshot(next)?;
+            (true, ())
+        })?;
         Ok(true)
     }
 
@@ -152,21 +150,21 @@ impl StateStore {
         if unchanged {
             return Ok(false);
         }
-        let mut next = self.state.clone();
-        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+        self.edit_project_in_place(project, |item| {
             item.rosen_mirror_divergence = divergence;
-        }
-        self.store_snapshot(next)?;
+            (true, ())
+        })?;
         Ok(true)
     }
 
     pub fn finish_mirror_notice(&mut self, project: u32, sequence: u64) -> Result<(), StoreError> {
-        let mut next = self.state.clone();
-        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+        self.edit_project_in_place(project, |item| {
+            let before = item.rosen_mirror_notices.len();
             item.rosen_mirror_notices
                 .retain(|notice| notice.sequence != sequence);
-        }
-        self.store_snapshot(next)
+            (item.rosen_mirror_notices.len() != before, ())
+        })?;
+        Ok(())
     }
 }
 

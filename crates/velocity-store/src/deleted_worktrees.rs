@@ -92,16 +92,13 @@ impl StateStore {
         project: u32,
         path: &str,
     ) -> Result<bool, ThreadError> {
-        let mut next = self.state.clone();
-        let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
-            return Ok(false);
-        };
-        let before = item.deleted_worktrees.len();
-        item.deleted_worktrees.retain(|entry| entry.path != path);
-        if item.deleted_worktrees.len() == before {
-            return Ok(false);
-        }
-        self.commit(next)?;
-        Ok(true)
+        Ok(self
+            .edit_project_in_place(project, |item| {
+                let before = item.deleted_worktrees.len();
+                item.deleted_worktrees.retain(|entry| entry.path != path);
+                let changed = item.deleted_worktrees.len() != before;
+                (changed, changed)
+            })?
+            .unwrap_or(false))
     }
 }

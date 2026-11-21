@@ -83,12 +83,23 @@ pub(crate) fn active_project(state: &PersistedState) -> Option<&ProjectItem> {
 }
 
 pub(crate) fn read_model(store: &crate::StateStore) -> LayoutData {
+    let selected = active_project(store.state())
+        .and_then(|project| project.active_thread_id)
+        .and_then(|identifier| usize::try_from(identifier).ok());
+    read_model_for(store, selected)
+}
+
+pub(crate) fn read_model_for(
+    store: &crate::StateStore,
+    selected_thread: Option<usize>,
+) -> LayoutData {
     let state = store.state();
     let mut data = LayoutData {
         projects: project_palette(state),
         ..LayoutData::default()
     };
     if let Some(project) = active_project(state) {
+        let hydrated = crate::transcripts::hydrated_thread_ids(project, selected_thread);
         data.project_identifier = Some(project.id);
         data.project_name = project.name.clone();
         data.rosen_mirror = project.rosen_mirror.clone();
@@ -124,7 +135,13 @@ pub(crate) fn read_model(store: &crate::StateStore) -> LayoutData {
                 .iter()
                 .map(crate::goal_swarm_view::goal_swarm_row),
         );
-        entries.extend(thread_entries(project, task_count, &state.settings));
+        entries.extend(thread_entries(
+            store,
+            project,
+            task_count,
+            &state.settings,
+            &hydrated,
+        ));
         data.threads = entries;
         data.interviews = project
             .threads
@@ -155,9 +172,11 @@ pub(crate) fn read_model(store: &crate::StateStore) -> LayoutData {
 /// and goal swarm members under theirs in launch order (F16), not in the other groups
 /// (F10); other threads keep newest first.
 fn thread_entries(
+    store: &crate::StateStore,
     project: &ProjectItem,
     task_count: usize,
     settings: &crate::Settings,
+    hydrated: &BTreeSet<u32>,
 ) -> Vec<ThreadEntry> {
     let mut threads: Vec<_> = project
         .threads
@@ -166,7 +185,14 @@ fn thread_entries(
             let membership = crate::swarms::thread_swarm(project, thread.id)
                 .map(|(swarm, agent)| (swarm.id, agent, 0))
                 .or_else(|| crate::goal_swarm_view::goal_membership(project, thread));
-            let mut entry = thread_entry(thread, task_count, settings);
+            let blocks = if !crate::transcripts::is_settled_state(thread.state) {
+                thread.transcript.clone()
+            } else if hydrated.contains(&thread.id) {
+                store.thread_transcript(project.id, thread.id)
+            } else {
+                velocity_core::thread_view_model::SharedBlocks::default()
+            };
+            let mut entry = thread_entry_with_blocks(thread, task_count, settings, blocks);
             entry.policy.member_of = membership
                 .filter(|_| entry.policy.group != ThreadGroup::Settled)
                 .map(|(swarm, _, _)| swarm as usize);
@@ -214,7 +240,17 @@ fn duty_entry(item: &DutyRoleItem) -> ThreadEntry {
     }
 }
 
+#[allow(dead_code)]
 fn thread_entry(thread: &ThreadItem, task_count: usize, settings: &crate::Settings) -> ThreadEntry {
+    thread_entry_with_blocks(thread, task_count, settings, thread.transcript.clone())
+}
+
+fn thread_entry_with_blocks(
+    thread: &ThreadItem,
+    task_count: usize,
+    settings: &crate::Settings,
+    blocks: velocity_core::thread_view_model::SharedBlocks,
+) -> ThreadEntry {
     ThreadEntry {
         policy: LayoutRow {
             identifier: thread.id as usize,
@@ -237,13 +273,17 @@ fn thread_entry(thread: &ThreadItem, task_count: usize, settings: &crate::Settin
             None if thread.state == ThreadState::Spec => NavigationView::SpecScan,
             None => NavigationView::Thread,
         },
-        detail: Some(thread_detail(thread, settings)),
+        detail: Some(thread_detail(thread, settings, blocks)),
         duty: None,
     }
 }
 
-/// The thread header, conversation and model pill retained in `state.json`.
-fn thread_detail(thread: &ThreadItem, settings: &crate::Settings) -> ThreadDetailEntry {
+/// The thread header, conversation and model pill retained in persisted state.
+fn thread_detail(
+    thread: &ThreadItem,
+    settings: &crate::Settings,
+    blocks: velocity_core::thread_view_model::SharedBlocks,
+) -> ThreadDetailEntry {
     let rosen_change = rosen_change(thread);
     ThreadDetailEntry {
         identifier: thread.id as usize,
@@ -278,7 +318,7 @@ fn thread_detail(thread: &ThreadItem, settings: &crate::Settings) -> ThreadDetai
         show_work: false,
         worked_summary: None,
         rosen_change,
-        blocks: thread.transcript.clone(),
+        blocks,
         previous_work_thread: thread.previous_work_thread.map(|id| id as usize),
         agent_commands: Vec::new(),
         provider: provider_color(thread.provider),

@@ -358,44 +358,38 @@ impl StateStore {
         thread: u32,
         update: impl FnOnce(&mut ThreadItem),
     ) -> Result<bool, ThreadError> {
-        let mut next = self.state.clone();
-        let item = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        let record = item
-            .threads
-            .iter_mut()
-            .find(|item| item.id == thread)
-            .ok_or(ThreadError::UnknownThread { project, thread })?;
-        let before = record.clone();
-        update(record);
-        let changed = *record != before;
-        let before = item.rosen_work_items.clone();
-        track_claim(item, thread);
-        if changed || item.rosen_work_items != before {
-            self.store_snapshot(next)?;
-        }
-        Ok(changed)
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                let record = item
+                    .threads
+                    .iter_mut()
+                    .find(|item| item.id == thread)
+                    .ok_or(ThreadError::UnknownThread { project, thread })?;
+                let before = record.clone();
+                update(record);
+                let changed = *record != before;
+                let before_work = item.rosen_work_items.clone();
+                track_claim(item, thread);
+                Ok((changed || item.rosen_work_items != before_work, changed))
+            },
+        )
     }
 
     /// Seed records saved before the projection existed. The existing cursor remains valid.
     pub fn restore_rosen_work(&mut self, project: u32) -> Result<bool, StoreError> {
-        let mut next = self.state.clone();
-        let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
-            return Ok(false);
-        };
-        let before = item.rosen_work_items.clone();
-        let threads: Vec<_> = item.threads.iter().map(|thread| thread.id).collect();
-        for thread in threads {
-            track(item, thread, None, true);
-        }
-        if item.rosen_work_items == before {
-            return Ok(false);
-        }
-        self.store_snapshot(next)?;
-        Ok(true)
+        Ok(self
+            .edit_project_in_place(project, |item| {
+                let before = item.rosen_work_items.clone();
+                let threads: Vec<_> = item.threads.iter().map(|thread| thread.id).collect();
+                for thread in threads {
+                    track(item, thread, None, true);
+                }
+                let changed = item.rosen_work_items != before;
+                (changed, changed)
+            })?
+            .unwrap_or(false))
     }
 
     pub fn confirm_rosen_work_build(
@@ -404,33 +398,33 @@ impl StateStore {
         sequence: u64,
         covered: &[String],
     ) -> Result<bool, StoreError> {
-        let mut next = self.state.clone();
-        let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
-            return Ok(false);
-        };
-        if sequence != 0 && sequence <= item.rosen_event_cursor {
-            return Ok(false);
-        }
-        let mut changed = false;
-        let at = thread_start_timestamp();
-        for item in &mut item.rosen_work_items {
-            if item.status == WorkStatus::Landed
-                && item
-                    .landed_commit
-                    .as_ref()
-                    .is_some_and(|commit| covered.contains(commit))
-            {
-                item.status = WorkStatus::Green;
-                item.updated_at = Some(at.clone());
-                item.green_at = Some(at.clone());
-                changed = true;
-            }
-        }
-        if changed || sequence > item.rosen_event_cursor {
-            item.rosen_event_cursor = item.rosen_event_cursor.max(sequence);
-            self.store_snapshot(next)?;
-        }
-        Ok(changed)
+        Ok(self
+            .edit_project_in_place(project, |item| {
+                if sequence != 0 && sequence <= item.rosen_event_cursor {
+                    return (false, false);
+                }
+                let mut changed = false;
+                let at = thread_start_timestamp();
+                for work in &mut item.rosen_work_items {
+                    if work.status == WorkStatus::Landed
+                        && work
+                            .landed_commit
+                            .as_ref()
+                            .is_some_and(|commit| covered.contains(commit))
+                    {
+                        work.status = WorkStatus::Green;
+                        work.updated_at = Some(at.clone());
+                        work.green_at = Some(at.clone());
+                        changed = true;
+                    }
+                }
+                let dirty = changed || sequence > item.rosen_event_cursor;
+                if dirty {
+                    item.rosen_event_cursor = item.rosen_event_cursor.max(sequence);
+                }
+                (dirty, changed)
+            })?
+            .unwrap_or(false))
     }
 }
 

@@ -476,24 +476,20 @@ impl StateStore {
         overlaps: BTreeMap<u32, IssueOverlap>,
         released: BTreeMap<u32, ThreadIssue>,
     ) -> Result<(), ThreadError> {
-        let item = self
-            .project(project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        if item.continuous_dispatch.issue_overlaps == overlaps
-            && item.continuous_dispatch.overlap_released == released
-        {
-            return Ok(());
-        }
-        let mut next = self.state.clone();
-        let item = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        item.continuous_dispatch.issue_overlaps = overlaps;
-        item.continuous_dispatch.overlap_released = released;
-        self.commit(next)?;
-        Ok(())
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                if item.continuous_dispatch.issue_overlaps == overlaps
+                    && item.continuous_dispatch.overlap_released == released
+                {
+                    return Ok((false, ()));
+                }
+                item.continuous_dispatch.issue_overlaps = overlaps;
+                item.continuous_dispatch.overlap_released = released;
+                Ok((true, ()))
+            },
+        )
     }
 
     /// Records GitHub evidence that `issue` landed and waits for integration (#504). A
@@ -506,38 +502,37 @@ impl StateStore {
         updated_at: String,
         now: u64,
     ) -> Result<(), ThreadError> {
-        let mut next = self.state.clone();
-        let item = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        let existing = item
-            .continuous_dispatch
-            .landed_holds
-            .get(&issue.number)
-            .filter(|hold| hold.commit == commit && same_issue(&hold.issue, &issue));
-        let since = existing.map_or(now, |hold| hold.since.min(now));
-        let green_since = existing.and_then(|hold| hold.green_since);
-        let hold = LandedHold {
-            issue,
-            commit,
-            updated_at,
-            since,
-            green_since,
-        };
-        let removed_remote = item
-            .continuous_dispatch
-            .remote_work_holds
-            .remove(&hold.issue.number)
-            .is_some();
-        let holds = &mut item.continuous_dispatch.landed_holds;
-        if holds.get(&hold.issue.number) == Some(&hold) && !removed_remote {
-            return Ok(());
-        }
-        holds.insert(hold.issue.number, hold);
-        self.commit(next)?;
-        Ok(())
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                let existing = item
+                    .continuous_dispatch
+                    .landed_holds
+                    .get(&issue.number)
+                    .filter(|hold| hold.commit == commit && same_issue(&hold.issue, &issue));
+                let since = existing.map_or(now, |hold| hold.since.min(now));
+                let green_since = existing.and_then(|hold| hold.green_since);
+                let hold = LandedHold {
+                    issue,
+                    commit,
+                    updated_at,
+                    since,
+                    green_since,
+                };
+                let removed_remote = item
+                    .continuous_dispatch
+                    .remote_work_holds
+                    .remove(&hold.issue.number)
+                    .is_some();
+                let holds = &mut item.continuous_dispatch.landed_holds;
+                if holds.get(&hold.issue.number) == Some(&hold) && !removed_remote {
+                    return Ok((false, ()));
+                }
+                holds.insert(hold.issue.number, hold);
+                Ok((true, ()))
+            },
+        )
     }
 
     /// Records the first time a green integration build covered an orphaned land (#519).
@@ -548,38 +543,35 @@ impl StateStore {
         commit: &str,
         green_at: u64,
     ) -> Result<(), ThreadError> {
-        let mut next = self.state.clone();
-        let Some(hold) = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .and_then(|item| item.continuous_dispatch.landed_holds.get_mut(&number))
-            .filter(|hold| hold.commit == commit)
-        else {
-            return Ok(());
-        };
-        if hold.green_since.is_some() {
-            return Ok(());
-        }
-        hold.green_since = Some(green_at);
-        self.commit(next)?;
+        self.edit_project_in_place(project, |item| {
+            let Some(hold) = item
+                .continuous_dispatch
+                .landed_holds
+                .get_mut(&number)
+                .filter(|hold| hold.commit == commit && hold.green_since.is_none())
+            else {
+                return (false, ());
+            };
+            hold.green_since = Some(green_at);
+            (true, ())
+        })?;
         Ok(())
     }
 
     /// Drops one landed hold once its orphaned issue closed or is no longer landed (#519).
     pub fn remove_landed_hold(&mut self, project: u32, number: u32) -> Result<(), ThreadError> {
-        let item = self
-            .project(project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        if !item.continuous_dispatch.landed_holds.contains_key(&number) {
-            return Ok(());
-        }
-        let mut next = self.state.clone();
-        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
-            item.continuous_dispatch.landed_holds.remove(&number);
-        }
-        self.commit(next)?;
-        Ok(())
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                let removed = item
+                    .continuous_dispatch
+                    .landed_holds
+                    .remove(&number)
+                    .is_some();
+                Ok((removed, ()))
+            },
+        )
     }
 
     /// Saves a hold for an issue another machine is working on (#519).
@@ -588,48 +580,40 @@ impl StateStore {
         project: u32,
         hold: RemoteWorkHold,
     ) -> Result<(), ThreadError> {
-        let item = self
-            .project(project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        if item
-            .continuous_dispatch
-            .remote_work_holds
-            .get(&hold.issue.number)
-            == Some(&hold)
-        {
-            return Ok(());
-        }
-        let mut next = self.state.clone();
-        let item = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        item.continuous_dispatch
-            .remote_work_holds
-            .insert(hold.issue.number, hold);
-        self.commit(next)?;
-        Ok(())
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                if item
+                    .continuous_dispatch
+                    .remote_work_holds
+                    .get(&hold.issue.number)
+                    == Some(&hold)
+                {
+                    return Ok((false, ()));
+                }
+                item.continuous_dispatch
+                    .remote_work_holds
+                    .insert(hold.issue.number, hold);
+                Ok((true, ()))
+            },
+        )
     }
 
     /// Clears a remote-work hold once re-reading comments shows the issue is free (#519).
     pub fn clear_remote_work_hold(&mut self, project: u32, number: u32) -> Result<(), ThreadError> {
-        let item = self
-            .project(project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        if !item
-            .continuous_dispatch
-            .remote_work_holds
-            .contains_key(&number)
-        {
-            return Ok(());
-        }
-        let mut next = self.state.clone();
-        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
-            item.continuous_dispatch.remote_work_holds.remove(&number);
-        }
-        self.commit(next)?;
-        Ok(())
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                let removed = item
+                    .continuous_dispatch
+                    .remote_work_holds
+                    .remove(&number)
+                    .is_some();
+                Ok((removed, ()))
+            },
+        )
     }
 
     /// Drops remote-work holds for issues that left the open backlog (#519).
@@ -639,28 +623,22 @@ impl StateStore {
         repository: &str,
         keep: impl Fn(u32) -> bool,
     ) -> Result<(), ThreadError> {
-        let item = self
-            .project(project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        let retained = |number: &u32, hold: &RemoteWorkHold| {
-            hold.issue.repository.eq_ignore_ascii_case(repository) && keep(*number)
-        };
-        if item
-            .continuous_dispatch
-            .remote_work_holds
-            .iter()
-            .all(|(number, hold)| retained(number, hold))
-        {
-            return Ok(());
-        }
-        let mut next = self.state.clone();
-        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
-            item.continuous_dispatch
-                .remote_work_holds
-                .retain(|number, hold| retained(number, hold));
-        }
-        self.commit(next)?;
-        Ok(())
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                let before = item.continuous_dispatch.remote_work_holds.len();
+                item.continuous_dispatch
+                    .remote_work_holds
+                    .retain(|number, hold| {
+                        hold.issue.repository.eq_ignore_ascii_case(repository) && keep(*number)
+                    });
+                Ok((
+                    item.continuous_dispatch.remote_work_holds.len() != before,
+                    (),
+                ))
+            },
+        )
     }
 
     /// Drops holds for issues that left the open backlog or were found no longer landed.
@@ -670,28 +648,19 @@ impl StateStore {
         repository: &str,
         keep: impl Fn(u32) -> bool,
     ) -> Result<(), ThreadError> {
-        let item = self
-            .project(project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        let retained = |number: &u32, hold: &LandedHold| {
-            hold.issue.repository.eq_ignore_ascii_case(repository) && keep(*number)
-        };
-        if item
-            .continuous_dispatch
-            .landed_holds
-            .iter()
-            .all(|(number, hold)| retained(number, hold))
-        {
-            return Ok(());
-        }
-        let mut next = self.state.clone();
-        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
-            item.continuous_dispatch
-                .landed_holds
-                .retain(|number, hold| retained(number, hold));
-        }
-        self.commit(next)?;
-        Ok(())
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                let before = item.continuous_dispatch.landed_holds.len();
+                item.continuous_dispatch
+                    .landed_holds
+                    .retain(|number, hold| {
+                        hold.issue.repository.eq_ignore_ascii_case(repository) && keep(*number)
+                    });
+                Ok((item.continuous_dispatch.landed_holds.len() != before, ()))
+            },
+        )
     }
 
     /// One durable reservation for the whole startup batch, before activity is reset.
@@ -699,24 +668,43 @@ impl StateStore {
         &mut self,
         interrupted: &[(u32, u32)],
     ) -> Result<(), crate::StoreError> {
-        let mut next = self.state.clone();
-        for (project, identifier) in interrupted {
-            if let Some(thread) = next
+        let mut changed = Vec::new();
+        for &(project, identifier) in interrupted {
+            if let Some(thread) = self
+                .state
                 .projects
                 .iter_mut()
-                .find(|item| item.id == *project)
-                .and_then(|project| {
-                    project
-                        .threads
+                .find(|item| item.id == project)
+                .and_then(|item| {
+                    item.threads
                         .iter_mut()
-                        .find(|thread| thread.id == *identifier)
+                        .find(|thread| thread.id == identifier)
                 })
+                && !thread.startup_recovery_pending
             {
                 thread.startup_recovery_pending = true;
+                changed.push((project, identifier));
             }
         }
-        if next != self.state {
-            self.commit(next)?;
+        if !changed.is_empty()
+            && let Err(error) = self.record_change()
+        {
+            for (project, identifier) in changed {
+                if let Some(thread) = self
+                    .state
+                    .projects
+                    .iter_mut()
+                    .find(|item| item.id == project)
+                    .and_then(|item| {
+                        item.threads
+                            .iter_mut()
+                            .find(|thread| thread.id == identifier)
+                    })
+                {
+                    thread.startup_recovery_pending = false;
+                }
+            }
+            return Err(error);
         }
         Ok(())
     }
@@ -727,24 +715,25 @@ impl StateStore {
         slots: u32,
         paused: bool,
     ) -> Result<(), ThreadError> {
-        let mut next = self.state.clone();
-        let item = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        if item.version_control != VersionControl::Rosen {
-            return Err(ThreadError::InvalidLaunch(
-                "Continuous dispatch needs a Rosen project".into(),
-            ));
-        }
-        if item.continuous_dispatch.slots == slots && item.continuous_dispatch.paused == paused {
-            return Ok(());
-        }
-        item.continuous_dispatch.slots = slots;
-        item.continuous_dispatch.paused = paused;
-        self.commit(next)?;
-        Ok(())
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                if item.version_control != VersionControl::Rosen {
+                    return Err(ThreadError::InvalidLaunch(
+                        "Continuous dispatch needs a Rosen project".into(),
+                    ));
+                }
+                if item.continuous_dispatch.slots == slots
+                    && item.continuous_dispatch.paused == paused
+                {
+                    return Ok((false, ()));
+                }
+                item.continuous_dispatch.slots = slots;
+                item.continuous_dispatch.paused = paused;
+                Ok((true, ()))
+            },
+        )
     }
 
     /// Save ownership and the attempted issue version together, without stealing focus.
@@ -908,57 +897,58 @@ impl StateStore {
         identifier: u32,
         nick: Option<String>,
     ) -> Result<(), ThreadError> {
-        let mut next = self.state.clone();
-        let item = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        let thread = item
-            .threads
-            .iter_mut()
-            .find(|thread| thread.id == identifier)
-            .ok_or(ThreadError::UnknownThread {
-                project,
-                thread: identifier,
-            })?;
-        if !can_finish_empty_dispatch(thread) {
-            return Err(ThreadError::InvalidLaunch(
-                "The thread resumed or still has unread messages".into(),
-            ));
-        }
-        thread.state = ThreadState::Done;
-        let reason = dispatch_end_reason(thread);
-        thread.no_change_reason = Some(reason.clone());
-        if thread.started_by_dispatch {
-            if let (Some(issue), Some(change)) = (&thread.issue, &thread.rosen_change) {
-                item.continuous_dispatch.no_change_reports.insert(
-                    identifier,
-                    NoChangeReport {
-                        issue: issue.clone(),
-                        change: change.clone(),
-                        nick,
-                        reason,
-                    },
-                );
-            }
-            for task in &mut item.tasks {
-                if task.assigned_thread_id == Some(identifier) && task.state == TaskState::Now {
-                    item.continuous_dispatch
-                        .task_attempts
-                        .insert(task.id, thread.title.clone());
-                    thread.task_ids.retain(|listed| *listed != task.id);
-                    task.assigned_thread_id = None;
-                    task.state = TaskState::Todo;
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                let thread = item
+                    .threads
+                    .iter_mut()
+                    .find(|thread| thread.id == identifier)
+                    .ok_or(ThreadError::UnknownThread {
+                        project,
+                        thread: identifier,
+                    })?;
+                if !can_finish_empty_dispatch(thread) {
+                    return Err(ThreadError::InvalidLaunch(
+                        "The thread resumed or still has unread messages".into(),
+                    ));
                 }
-            }
-        }
-        if !item.continuous_dispatch.cleanup.contains(&identifier) {
-            item.continuous_dispatch.cleanup.push(identifier);
-        }
-        crate::rosen_work::remove_thread(item, identifier);
-        self.commit(next)?;
-        Ok(())
+                thread.state = ThreadState::Done;
+                let reason = dispatch_end_reason(thread);
+                thread.no_change_reason = Some(reason.clone());
+                if thread.started_by_dispatch {
+                    if let (Some(issue), Some(change)) = (&thread.issue, &thread.rosen_change) {
+                        item.continuous_dispatch.no_change_reports.insert(
+                            identifier,
+                            NoChangeReport {
+                                issue: issue.clone(),
+                                change: change.clone(),
+                                nick,
+                                reason,
+                            },
+                        );
+                    }
+                    for task in &mut item.tasks {
+                        if task.assigned_thread_id == Some(identifier)
+                            && task.state == TaskState::Now
+                        {
+                            item.continuous_dispatch
+                                .task_attempts
+                                .insert(task.id, thread.title.clone());
+                            thread.task_ids.retain(|listed| *listed != task.id);
+                            task.assigned_thread_id = None;
+                            task.state = TaskState::Todo;
+                        }
+                    }
+                }
+                if !item.continuous_dispatch.cleanup.contains(&identifier) {
+                    item.continuous_dispatch.cleanup.push(identifier);
+                }
+                crate::rosen_work::remove_thread(item, identifier);
+                Ok((true, ()))
+            },
+        )
     }
 
     pub fn finish_no_change_report(
@@ -966,25 +956,25 @@ impl StateStore {
         project: u32,
         identifier: u32,
     ) -> Result<(), ThreadError> {
-        let mut next = self.state.clone();
-        let dispatch = &mut next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .ok_or(ThreadError::UnknownProject(project))?
-            .continuous_dispatch;
-        if let Some(report) = dispatch.no_change_reports.remove(&identifier) {
-            // The GitHub label now owns eligibility. Removing it reopens dispatch
-            // even if GitHub gives the issue the same updated_at timestamp.
-            dispatch.attempts.retain(|attempt| {
-                attempt.number != report.issue.number
-                    || !attempt
-                        .repository
-                        .eq_ignore_ascii_case(&report.issue.repository)
-            });
-            self.commit(next)?;
-        }
-        Ok(())
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                let dispatch = &mut item.continuous_dispatch;
+                if let Some(report) = dispatch.no_change_reports.remove(&identifier) {
+                    // The GitHub label now owns eligibility. Removing it reopens dispatch
+                    // even if GitHub gives the issue the same updated_at timestamp.
+                    dispatch.attempts.retain(|attempt| {
+                        attempt.number != report.issue.number
+                            || !attempt
+                                .repository
+                                .eq_ignore_ascii_case(&report.issue.repository)
+                    });
+                    return Ok((true, ()));
+                }
+                Ok((false, ()))
+            },
+        )
     }
 
     /// A dispatch thread that failed before its agent's first turn did no work (#514). Its
@@ -1001,42 +991,41 @@ impl StateStore {
         reason: &str,
         now: u64,
     ) -> Result<bool, ThreadError> {
-        let mut next = self.state.clone();
-        let item = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        let Some(thread) = item
-            .threads
-            .iter_mut()
-            .find(|thread| thread.id == identifier && failed_before_first_turn(thread))
-        else {
-            return Ok(false);
-        };
-        let Some(issue) = thread.issue.clone() else {
-            return Ok(false);
-        };
-        thread.supervision.released = true;
-        let dispatch = &mut item.continuous_dispatch;
-        let failure = dispatch.count_unstarted_failure(&issue, now);
-        if failure <= UNSTARTED_RETURNS {
-            dispatch.launch_failure_reports.insert(
-                identifier,
-                LaunchFailureReport {
-                    issue: issue.clone(),
-                    reason: reason.to_owned(),
-                    failure,
-                },
-            );
-        }
-        dispatch.attempts.retain(|attempt| {
-            attempt.number != issue.number
-                || !attempt.repository.eq_ignore_ascii_case(&issue.repository)
-        });
-        crate::rosen_work::remove_thread(item, identifier);
-        self.commit(next)?;
-        Ok(true)
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                let Some(thread) = item
+                    .threads
+                    .iter_mut()
+                    .find(|thread| thread.id == identifier && failed_before_first_turn(thread))
+                else {
+                    return Ok((false, false));
+                };
+                let Some(issue) = thread.issue.clone() else {
+                    return Ok((false, false));
+                };
+                thread.supervision.released = true;
+                let dispatch = &mut item.continuous_dispatch;
+                let failure = dispatch.count_unstarted_failure(&issue, now);
+                if failure <= UNSTARTED_RETURNS {
+                    dispatch.launch_failure_reports.insert(
+                        identifier,
+                        LaunchFailureReport {
+                            issue: issue.clone(),
+                            reason: reason.to_owned(),
+                            failure,
+                        },
+                    );
+                }
+                dispatch.attempts.retain(|attempt| {
+                    attempt.number != issue.number
+                        || !attempt.repository.eq_ignore_ascii_case(&issue.repository)
+                });
+                crate::rosen_work::remove_thread(item, identifier);
+                Ok((true, true))
+            },
+        )
     }
 
     /// Forgets failed starts of issues that left the open backlog, and of issues whose
@@ -1047,41 +1036,37 @@ impl StateStore {
         repository: &str,
         open: impl Fn(u32) -> bool,
     ) -> Result<(), ThreadError> {
-        let item = self
-            .project(project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        // Only a thread started after the newest failure shows that launches work again.
-        let started = |failures: &UnstartedFailures| {
-            item.threads.iter().any(|thread| {
-                thread.supervision.turns > 0
-                    && thread.supervision.started >= failures.last
-                    && thread
-                        .issue
-                        .as_ref()
-                        .is_some_and(|assigned| same_issue(assigned, &failures.issue))
-            })
-        };
-        let dropped: Vec<u32> = item
-            .continuous_dispatch
-            .unstarted_failures
-            .iter()
-            .filter(|(number, failures)| {
-                failures.issue.repository.eq_ignore_ascii_case(repository)
-                    && (!open(**number) || started(failures))
-            })
-            .map(|(number, _)| *number)
-            .collect();
-        if dropped.is_empty() {
-            return Ok(());
-        }
-        let mut next = self.state.clone();
-        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
-            item.continuous_dispatch
-                .unstarted_failures
-                .retain(|number, _| !dropped.contains(number));
-        }
-        self.commit(next)?;
-        Ok(())
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                // Only a thread started after the newest failure shows that launches work again.
+                let dropped: Vec<u32> =
+                    item.continuous_dispatch
+                        .unstarted_failures
+                        .iter()
+                        .filter(|(number, failures)| {
+                            let started = item.threads.iter().any(|thread| {
+                                thread.supervision.turns > 0
+                                    && thread.supervision.started >= failures.last
+                                    && thread.issue.as_ref().is_some_and(|assigned| {
+                                        same_issue(assigned, &failures.issue)
+                                    })
+                            });
+                            failures.issue.repository.eq_ignore_ascii_case(repository)
+                                && (!open(**number) || started)
+                        })
+                        .map(|(number, _)| *number)
+                        .collect();
+                if dropped.is_empty() {
+                    return Ok((false, ()));
+                }
+                item.continuous_dispatch
+                    .unstarted_failures
+                    .retain(|number, _| !dropped.contains(number));
+                Ok((true, ()))
+            },
+        )
     }
 
     /// The failure's comment reached its issue, or its issue is gone.
@@ -1090,21 +1075,18 @@ impl StateStore {
         project: u32,
         identifier: u32,
     ) -> Result<(), ThreadError> {
-        let mut next = self.state.clone();
-        let dispatch = &mut next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .ok_or(ThreadError::UnknownProject(project))?
-            .continuous_dispatch;
-        if dispatch
-            .launch_failure_reports
-            .remove(&identifier)
-            .is_some()
-        {
-            self.commit(next)?;
-        }
-        Ok(())
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                let removed = item
+                    .continuous_dispatch
+                    .launch_failure_reports
+                    .remove(&identifier)
+                    .is_some();
+                Ok((removed, ()))
+            },
+        )
     }
 
     pub fn finish_dispatch_cleanup(
@@ -1112,17 +1094,17 @@ impl StateStore {
         project: u32,
         identifier: u32,
     ) -> Result<(), ThreadError> {
-        let mut next = self.state.clone();
-        let item = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .ok_or(ThreadError::UnknownProject(project))?;
-        item.continuous_dispatch
-            .cleanup
-            .retain(|pending| *pending != identifier);
-        self.commit(next)?;
-        Ok(())
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                let before = item.continuous_dispatch.cleanup.len();
+                item.continuous_dispatch
+                    .cleanup
+                    .retain(|pending| *pending != identifier);
+                Ok((item.continuous_dispatch.cleanup.len() != before, ()))
+            },
+        )
     }
 }
 

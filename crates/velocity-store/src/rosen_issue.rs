@@ -210,22 +210,18 @@ impl StateStore {
         thread: u32,
         commit: &str,
     ) -> Result<(), StoreError> {
-        let mut next = self.state.clone();
-        let item = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .and_then(|project| project.threads.iter_mut().find(|item| item.id == thread));
-        let Some(item) = item else { return Ok(()) };
-        let Some(issue) = &item.issue else {
-            return Ok(());
-        };
-        let before = item.rosen_issue.clone();
-        item.rosen_issue.confirm_build(issue, commit);
-        if item.rosen_issue == before {
-            return Ok(());
-        }
-        self.store_snapshot(next)
+        self.edit_project_in_place(project, |project| {
+            let Some(item) = project.threads.iter_mut().find(|item| item.id == thread) else {
+                return (false, ());
+            };
+            let Some(issue) = &item.issue else {
+                return (false, ());
+            };
+            let before = item.rosen_issue.clone();
+            item.rosen_issue.confirm_build(issue, commit);
+            (item.rosen_issue != before, ())
+        })?;
+        Ok(())
     }
 
     pub fn observe_rosen_issue(
@@ -235,50 +231,41 @@ impl StateStore {
         sequence: u64,
         event: IssueObservation<'_>,
     ) -> Result<(), StoreError> {
-        let mut next = self.state.clone();
-        let Some(project) = next.projects.iter_mut().find(|item| item.id == project) else {
-            return Ok(());
-        };
-        let observed = project
-            .handoff_items
-            .get_mut(change)
-            .is_some_and(|item| item.observe_land(sequence, &event));
-        let index = project
-            .threads
-            .iter()
-            .position(|thread| thread.rosen_change.as_deref() == Some(change));
-        let Some(index) = index else {
-            return if observed {
-                self.store_snapshot(next)
-            } else {
-                Ok(())
+        self.edit_project_in_place(project, |project| {
+            let observed = project
+                .handoff_items
+                .get_mut(change)
+                .is_some_and(|item| item.observe_land(sequence, &event));
+            let Some(index) = project
+                .threads
+                .iter()
+                .position(|thread| thread.rosen_change.as_deref() == Some(change))
+            else {
+                return (observed, ());
             };
-        };
-        let close_enabled = close_enabled(project, project.threads[index].id);
-        let thread = &mut project.threads[index];
-        let Some(issue) = thread
-            .issue
-            .as_ref()
-            .filter(|_| sequence > thread.rosen_issue.sequence)
-        else {
-            return if observed {
-                self.store_snapshot(next)
-            } else {
-                Ok(())
+            let close_enabled = close_enabled(project, project.threads[index].id);
+            let thread = &mut project.threads[index];
+            let Some(issue) = thread
+                .issue
+                .as_ref()
+                .filter(|_| sequence > thread.rosen_issue.sequence)
+            else {
+                return (observed, ());
             };
-        };
-        // An upgrade can first hear the green event for a land the older app already
-        // acknowledged. R12's per-change green event carries that exact landed SHA.
-        if thread.rosen_issue.sequence == 0
-            && thread.state == ThreadState::Merged
-            && let IssueObservation::BuildPassed(commit) = &event
-        {
-            thread.rosen_issue.landed = Some((*commit).into());
-        }
-        thread
-            .rosen_issue
-            .observe(sequence, issue, event, close_enabled);
-        self.store_snapshot(next)
+            // An upgrade can first hear the green event for a land the older app already
+            // acknowledged. R12's per-change green event carries that exact landed SHA.
+            if thread.rosen_issue.sequence == 0
+                && thread.state == ThreadState::Merged
+                && let IssueObservation::BuildPassed(commit) = &event
+            {
+                thread.rosen_issue.landed = Some((*commit).into());
+            }
+            thread
+                .rosen_issue
+                .observe(sequence, issue, event, close_enabled);
+            (true, ())
+        })?;
+        Ok(())
     }
 
     pub fn finish_rosen_issue(
@@ -287,19 +274,18 @@ impl StateStore {
         thread: u32,
         action: &IssueAction,
     ) -> Result<(), StoreError> {
-        let mut next = self.state.clone();
-        if let Some(thread) = next
-            .projects
-            .iter_mut()
-            .find(|item| item.id == project)
-            .and_then(|project| project.threads.iter_mut().find(|item| item.id == thread))
-        {
+        self.edit_project_in_place(project, |project| {
+            let Some(thread) = project.threads.iter_mut().find(|item| item.id == thread) else {
+                return (false, ());
+            };
+            let before = thread.rosen_issue.pending.len();
             thread
                 .rosen_issue
                 .pending
                 .retain(|pending| pending != action);
-        }
-        self.store_snapshot(next)
+            (thread.rosen_issue.pending.len() != before, ())
+        })?;
+        Ok(())
     }
 }
 

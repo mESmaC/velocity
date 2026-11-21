@@ -249,6 +249,7 @@ impl StateStore {
             self.remember_project_thread(candidate.selected_thread())?;
             None
         };
+        self.hydrate_selected_thread(&mut candidate);
         *layout = candidate;
         Ok(ProjectDispatch {
             snapshot: layout.snapshot(),

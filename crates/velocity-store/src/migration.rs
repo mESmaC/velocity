@@ -35,12 +35,7 @@ impl StateStore {
         {
             return Ok(false);
         }
-        let mut next = self.state.clone();
-        if let Some(project) = next
-            .projects
-            .iter_mut()
-            .find(|project| project.id == expected.id)
-        {
+        self.edit_project_in_place(expected.id, |project| {
             project.version_control = VersionControl::Rosen;
             project.rosen_migration_notice = None;
             for thread in &mut project.threads {
@@ -52,8 +47,8 @@ impl StateStore {
                     thread.rosen_import_event = last_import_event;
                 }
             }
-        }
-        self.store_snapshot(next)?;
+            (true, ())
+        })?;
         Ok(true)
     }
 
@@ -68,15 +63,11 @@ impl StateStore {
         }) {
             return Ok(());
         }
-        let mut next = self.state.clone();
-        if let Some(project) = next
-            .projects
-            .iter_mut()
-            .find(|project| project.id == identifier)
-        {
+        self.edit_project_in_place(identifier, |project| {
             project.rosen_migration_notice = Some(notice);
-        }
-        self.store_snapshot(next)
+            (true, ())
+        })?;
+        Ok(())
     }
 }
 
@@ -133,8 +124,7 @@ mod tests {
         assert_eq!(legacy.version_control, VersionControl::Git);
         assert_eq!(legacy.rosen_migration_notice, None);
         drop(loaded);
-        std::fs::remove_file(directory.join(crate::STATE_FILE_NAME))?;
-        std::fs::remove_dir(directory)?;
+        std::fs::remove_dir_all(directory)?;
         Ok(())
     }
 }

@@ -131,7 +131,21 @@ Both timeouts are set in Settings → Agents (F13).
 - **Resuming after a release** *(proposed)*: an agent whose claims were released claims its piece again before it continues. If another agent holds the piece by then, the thread fails with "piece taken by <nick>" and keeps its workspace.
 - **Closed changes:** a closed PR keeps its claims until you delete the thread. Closing is a decision someone made, so it isn't treated as a failure.
 
-The native supervisor checks live build threads once a second. Its defaulted checkpoint in `state.json` retains completed turns, the session start, the last ACP update at a durable transition, the nudge, and the unavailability grace deadline. The exact live ACP heartbeat stays in memory; streaming batches do not write supervision checkpoints. Streaming batches save the live transcript to `state.json` at most once every 5 seconds per thread, and always at the end of a turn, so copying every chunk of every agent into the store no longer starves the window (#273). A change to saved state only updates memory; a background writer saves the newest state to `state.json` at most once a second, copying it under the store lock and serializing and writing it outside the lock, as compact JSON, and once more as Velocity exits or hands over to an installer (#285, #320). A crash loses at most the last second of changes, and mid-turn at most those last seconds of transcript. Session start, turn end, nudge and the first subsequent ACP update persist checkpoints; a resumed session starts a fresh silence clock. Recovery stops the owned ACP session and resumes in the registered checkout through the existing load/transcript path. Caps end the session; raising or disabling the cap resumes it. A usage-limit error pauses the session and picks the next available account within that provider. It uses a fresh session with transcript context after a change of account. Released Task List ownership is returned to todo; issues and SPEC pieces become available again. Optional prior pushed work is shown in the pool. Resumption must win the atomic claim again before starting ACP, and fails with the holder named if the piece was taken.
+The native supervisor checks live build threads once a second.
+Its defaulted checkpoint in `state.json` retains completed turns, the session start, the last ACP update at a durable transition, the nudge, and the unavailability grace deadline.
+The exact live ACP heartbeat stays in memory; streaming batches do not write supervision checkpoints.
+Streaming batches save each thread's live transcript at most once every 5 seconds per thread, and always at the end of a turn, into its own `transcripts/<project>/<thread>.jsonl` file so copying every chunk of every agent into the store no longer starves the window (#273, #552).
+Settled (`merged` and `done`) threads archive out of live state into per-project settled records (`projects/<project>.settled.json`) and load their transcripts on demand when opened in the UI (#552).
+A change to saved state only updates memory; a background writer takes an `Arc` handle under the store lock and writes only the changed root (`state.json`), active project (`projects/<project>.json`), settled archive, and transcript files outside the lock at most once a second, and once more as Velocity exits or hands over to an installer (#285, #320, #552).
+A crash loses at most the last second of changes, and mid-turn at most those last seconds of transcript.
+Session start, turn end, nudge and the first subsequent ACP update persist checkpoints; a resumed session starts a fresh silence clock.
+Recovery stops the owned ACP session and resumes in the registered checkout through the existing load/transcript path.
+Caps end the session; raising or disabling the cap resumes it.
+A usage-limit error pauses the session and picks the next available account within that provider.
+It uses a fresh session with transcript context after a change of account.
+Released Task List ownership is returned to todo; issues and SPEC pieces become available again.
+Optional prior pushed work is shown in the pool.
+Resumption must win the atomic claim again before starting ACP, and fails with the holder named if the piece was taken.
 
 **Context hand-off** (#467).
 Settings → Agents can enable the experiment for new Rosen work items.
