@@ -154,11 +154,31 @@ impl IssueClient {
         byline: &str,
         reason: &str,
     ) -> Result<(), GitHubCommandError> {
+        self.post_no_change_with_blocker_check(
+            number,
+            change,
+            byline,
+            reason,
+            GitHubIssue::has_open_blockers,
+        )
+    }
+
+    /// Like `post_no_change`, but lets the caller treat integration-green blockers as
+    /// satisfied so an issue whose only open blockers already passed integration still
+    /// takes `no-change` instead of looping dispatch (#529).
+    pub fn post_no_change_with_blocker_check(
+        &self,
+        number: u32,
+        change: &str,
+        byline: &str,
+        reason: &str,
+        has_blocking_dependencies: impl FnOnce(&GitHubIssue) -> bool,
+    ) -> Result<(), GitHubCommandError> {
         self.post_issue_for_verification(
             number,
             change,
             ("Ended with no change", byline, reason),
-            false,
+            has_blocking_dependencies,
         )
     }
 
@@ -181,7 +201,7 @@ impl IssueClient {
                 "Velocity continuous dispatch",
                 reason.as_str(),
             ),
-            true,
+            |_| false,
         )
     }
 
@@ -219,13 +239,14 @@ impl IssueClient {
         self.sync_rosen_issue(number, &marker, &body, None)
     }
 
-    /// `park_blocked` is whether an issue with open blockers still takes `no-change`.
+    /// `has_blocking_dependencies` is whether unsatisfied open blockers already hold the
+    /// issue so it should not take `no-change`.
     fn post_issue_for_verification(
         &self,
         number: u32,
         attempt: &str,
         (heading, byline, reason): (&str, &str, &str),
-        park_blocked: bool,
+        has_blocking_dependencies: impl FnOnce(&GitHubIssue) -> bool,
     ) -> Result<(), GitHubCommandError> {
         let marker = format!("{NO_CHANGE_MARKER}{attempt} -->");
         if self.has_rosen_comment(number, &marker)? {
@@ -237,7 +258,7 @@ impl IssueClient {
         if issue.state == IssueState::Open
             && !issue_has_no_change_label(&issue)
             && !issue_has_hold_state(&issue)
-            && (park_blocked || !issue.has_open_blockers())
+            && !has_blocking_dependencies(&issue)
         {
             self.label_issue(number, Self::NO_CHANGE_LABEL)?;
         }

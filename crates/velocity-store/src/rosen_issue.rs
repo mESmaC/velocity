@@ -157,6 +157,12 @@ impl IssueProgress {
     pub fn landed_commit(&self) -> Option<&str> {
         self.landed.as_deref()
     }
+
+    /// Whether this thread's landed commit has been covered by a green integration build
+    /// and has not been reverted (#529).
+    pub fn is_integration_green(&self) -> bool {
+        self.landed.is_some() && self.green_since.is_some()
+    }
 }
 
 fn unix_seconds() -> u64 {
@@ -322,8 +328,18 @@ mod tests {
         assert_eq!(landed.len(), 2);
         assert!(landed[0].land_comment);
         store.finish_rosen_issue(1, 4, &landed[0])?;
+        assert!(
+            store
+                .project(1)
+                .is_some_and(|project| !project.threads[0].rosen_issue.is_integration_green())
+        );
         store.confirm_rosen_issue_build(1, 4, &first)?;
         store = StateStore::load_or_default(&directory)?;
+        assert!(
+            store
+                .project(1)
+                .is_some_and(|project| project.threads[0].rosen_issue.is_integration_green())
+        );
         let close = pending(&store);
         assert_eq!(close.len(), 1);
         assert_eq!(close[0].commit, first);
@@ -348,6 +364,11 @@ mod tests {
             },
         )?;
         store = StateStore::load_or_default(&directory)?;
+        assert!(
+            store
+                .project(1)
+                .is_some_and(|project| !project.threads[0].rosen_issue.is_integration_green())
+        );
         let reopened = pending(&store);
         assert_eq!(reopened.len(), 1);
         assert_eq!(reopened[0].revert.as_deref(), Some("build failed"));

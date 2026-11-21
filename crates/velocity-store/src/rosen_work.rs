@@ -40,6 +40,43 @@ impl ProjectItem {
             })
     }
 
+    /// Whether `issue` has a landed Rosen change covered by a green integration build (#529).
+    /// A land waiting for its integration build, or a reverted land, returns `false`.
+    pub fn rosen_issue_integration_green(&self, issue: &ThreadIssue) -> bool {
+        let key = WorkKey::issue(&issue.repository, issue.number);
+        if let Some(item) = self.rosen_work_item(&key) {
+            return match item.status {
+                WorkStatus::Green => true,
+                WorkStatus::Landed => {
+                    self.issue_green_for_commit(issue, item.landed_commit.as_deref())
+                }
+                WorkStatus::Claimed | WorkStatus::InChange | WorkStatus::Reopened => false,
+            };
+        }
+        self.issue_green_for_commit(issue, None)
+    }
+
+    fn issue_green_for_commit(&self, issue: &ThreadIssue, commit: Option<&str>) -> bool {
+        let thread_green = self.threads.iter().any(|thread| {
+            thread
+                .issue
+                .as_ref()
+                .is_some_and(|assigned| same_issue(assigned, issue))
+                && thread.rosen_issue.is_integration_green()
+                && commit.is_none_or(|sha| thread.rosen_issue.landed_commit() == Some(sha))
+        });
+        thread_green
+            || self
+                .continuous_dispatch
+                .landed_holds
+                .get(&issue.number)
+                .is_some_and(|hold| {
+                    same_issue(&hold.issue, issue)
+                        && hold.green_since.is_some()
+                        && commit.is_none_or(|sha| hold.commit == sha)
+                })
+    }
+
     pub fn rosen_source_items(&self, identifier: u32) -> Vec<WorkKey> {
         self.threads
             .iter()
@@ -419,15 +456,20 @@ mod tests {
             RosenProgress::Landed,
             Some("first"),
         )?;
+        let issue = ThreadIssue::new("Owner/Repo".into(), 7);
         let mut store = StateStore::load_or_default(&directory)?;
         assert_eq!(store.rosen_event_cursor(1), 2);
         assert_items(&store, WorkStatus::Landed, "original", Some(4));
+        assert!(!store.state.projects[0].rosen_issue_integration_green(&issue));
         assert!(!store.confirm_rosen_work_build(1, 3, &[])?);
         assert_items(&store, WorkStatus::Landed, "original", Some(4));
+        assert!(!store.state.projects[0].rosen_issue_integration_green(&issue));
         assert!(store.confirm_rosen_work_build(1, 4, &["first".into()])?);
         assert_items(&store, WorkStatus::Green, "original", Some(4));
+        assert!(store.state.projects[0].rosen_issue_integration_green(&issue));
         event(&mut store, 5, "original", RosenProgress::Reverted, None)?;
         let mut store = StateStore::load_or_default(&directory)?;
+        assert!(!store.state.projects[0].rosen_issue_integration_green(&issue));
         event(
             &mut store,
             2,
@@ -447,15 +489,14 @@ mod tests {
             RosenProgress::Landed,
             Some("second"),
         )?;
+        assert!(!store.state.projects[0].rosen_issue_integration_green(&issue));
         assert!(!store.confirm_rosen_work_build(1, 8, &["first".into()])?);
         assert!(store.confirm_rosen_work_build(1, 9, &["second".into()])?);
         store.remove_thread(1, 4)?;
         let store = StateStore::load_or_default(&directory)?;
         assert_items(&store, WorkStatus::Green, "original", None);
-        assert!(
-            store.state.projects[0]
-                .rosen_issue_completed(&ThreadIssue::new("Owner/Repo".into(), 7))
-        );
+        assert!(store.state.projects[0].rosen_issue_completed(&issue));
+        assert!(store.state.projects[0].rosen_issue_integration_green(&issue));
         assert_eq!(store.state.projects[0].tasks[0].state, TaskState::Done);
         std::fs::remove_dir_all(directory)?;
         Ok(())
@@ -514,6 +555,28 @@ mod tests {
         assert_items(&store, WorkStatus::Landed, "original", Some(4));
         assert!(!store.confirm_rosen_work_build(1, 2, &["first".into()])?);
         assert!(store.confirm_rosen_work_build(1, 3, &["second".into()])?);
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#529): an orphaned landed hold or legacy thread must stay blocking until
+    // integration confirms its commit, and remain satisfied across a restart once green.
+    #[test]
+    fn integration_green_blocker_state_survives_save_and_load()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, mut store) = fixture()?;
+        let orphaned = ThreadIssue::new("Owner/Repo".into(), 133);
+        let commit = "c".repeat(40);
+        store.save_landed_hold(1, orphaned.clone(), commit.clone(), "v1".into(), 100)?;
+        let mut loaded = StateStore::load_or_default(&directory)?;
+        assert!(!loaded.state.projects[0].rosen_issue_integration_green(&orphaned));
+        loaded.confirm_landed_hold_build(1, 133, &commit, 200)?;
+        let loaded = StateStore::load_or_default(&directory)?;
+        assert!(loaded.state.projects[0].rosen_issue_integration_green(&orphaned));
+        assert!(
+            !loaded.state.projects[0]
+                .rosen_issue_integration_green(&ThreadIssue::new("Other/Repo".into(), 133))
+        );
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

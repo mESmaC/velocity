@@ -241,11 +241,12 @@ pub fn issue_skip_reason(
             reason: format!("overlap: {}", wait.reason()),
         });
     }
-    if issue.has_open_blockers() {
-        let blockers = if issue.open_blockers.is_empty() {
-            format!("{} open blocker(s)", issue.open_blocker_count)
+    let (named_blockers, unnamed_blockers) = unsatisfied_blockers(project, repository, issue);
+    if unnamed_blockers > 0 || !named_blockers.is_empty() {
+        let blockers = if named_blockers.is_empty() {
+            format!("{unnamed_blockers} open blocker(s)")
         } else {
-            format!("blocked by {}", issue.open_blockers.join(", "))
+            format!("blocked by {}", named_blockers.join(", "))
         };
         return Some(SkippedIssue {
             number: issue.number,
@@ -362,11 +363,49 @@ pub fn summarize_skipped_issues(skipped: &[SkippedIssue], limit: usize) -> Strin
     }
 }
 
-/// Shared automatic-work eligibility for continuous dispatch and the F16 work pool.
-/// Owner questions wait for an answer even before somebody labels them (#356, #389).
-pub fn actionable(issue: &GitHubIssue) -> bool {
+/// Unsatisfied open blockers for `issue` in `project` (#529).
+/// A blocker whose Rosen land Velocity has confirmed integration-green is satisfied for
+/// dispatch even while GitHub still lists it open during the after-land review window.
+fn unsatisfied_blockers<'a>(
+    project: &ProjectItem,
+    repository: &str,
+    issue: &'a GitHubIssue,
+) -> (Vec<&'a str>, u32) {
+    let unnamed = issue
+        .open_blocker_count
+        .saturating_sub(u32::try_from(issue.open_blockers.len()).unwrap_or(u32::MAX));
+    let named = issue
+        .open_blockers
+        .iter()
+        .map(String::as_str)
+        .filter(|blocker| !blocker_satisfied(project, repository, blocker))
+        .collect();
+    (named, unnamed)
+}
+
+fn blocker_satisfied(project: &ProjectItem, repository: &str, blocker: &str) -> bool {
+    let Some(reference) = velocity_core::issue_dependencies::IssueReference::parse(blocker) else {
+        return false;
+    };
+    let identity = ThreadIssue::new(
+        reference.repository_or(repository).to_owned(),
+        reference.number(),
+    );
+    project.rosen_issue_integration_green(&identity)
+}
+
+/// Whether `issue` still waits on any open blocker not yet confirmed integration-green (#529).
+pub fn has_unsatisfied_blockers(
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+) -> bool {
+    let (named, unnamed) = unsatisfied_blockers(project, repository, issue);
+    unnamed > 0 || !named.is_empty()
+}
+
+fn actionable_without_blockers(issue: &GitHubIssue) -> bool {
     if issue.state != IssueState::Open
-        || issue.has_open_blockers()
         || issue.is_spec_question()
         || has_label(&issue.labels, TRACKING_LABEL)
         || has_label(&issue.labels, BLOCKED_UPSTREAM_LABEL)
@@ -380,6 +419,18 @@ pub fn actionable(issue: &GitHubIssue) -> bool {
         return false;
     }
     !needs_owner_decision(&format!("{}\n{}", issue.title, issue.body))
+}
+
+/// Shared automatic-work eligibility for continuous dispatch and the F16 work pool.
+/// Owner questions wait for an answer even before somebody labels them (#356, #389).
+pub fn actionable(issue: &GitHubIssue) -> bool {
+    !issue.has_open_blockers() && actionable_without_blockers(issue)
+}
+
+/// Automatic-work eligibility in `project`, treating blockers whose Rosen land is
+/// confirmed integration-green as satisfied even while still open for review (#529).
+pub fn actionable_in_project(project: &ProjectItem, repository: &str, issue: &GitHubIssue) -> bool {
+    !has_unsatisfied_blockers(project, repository, issue) && actionable_without_blockers(issue)
 }
 
 fn needs_owner_decision(text: &str) -> bool {
@@ -410,7 +461,7 @@ pub fn dispatchable_issue(
     claimed: &HashSet<String>,
 ) -> bool {
     let identity = ThreadIssue::new(repository.into(), issue.number);
-    actionable(issue)
+    actionable_in_project(project, repository, issue)
         && !claimed.contains(&format!("issue:{}", issue.number))
         && issue_thread(project, &identity).is_none()
         && !project.rosen_issue_completed(&identity)

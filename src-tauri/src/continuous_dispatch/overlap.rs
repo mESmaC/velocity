@@ -14,7 +14,7 @@ use velocity_store::{
     ProjectItem, ThreadItem, ThreadState, VersionControl, continuous_dispatch::IssueOverlap,
     issues::ThreadIssue,
 };
-use velocity_threads::continuous_dispatch::actionable;
+use velocity_threads::continuous_dispatch::actionable_in_project;
 use velocity_threads::overlap_paths::{is_reference, widely_shared};
 
 use super::{Reader, dispatch_claims, unix_seconds};
@@ -281,12 +281,17 @@ impl<'a> OverlapContext<'a> {
             } else if skipped {
                 waits.remove(&number);
             } else if waits.contains_key(&number)
-                || (!blockers.is_empty() && actionable(issue) && !released.contains_key(&number))
+                || (!blockers.is_empty()
+                    && actionable_in_project(self.project, repository, issue)
+                    && !released.contains_key(&number))
             {
                 holdable.push(issue);
             }
             // The ready backlog: every issue being worked, held or free for dispatch.
-            if worked || waits.contains_key(&number) || (!skipped && actionable(issue)) {
+            if worked
+                || waits.contains_key(&number)
+                || (!skipped && actionable_in_project(self.project, repository, issue))
+            {
                 backlog.push(issue);
             }
         }
@@ -395,7 +400,7 @@ impl<'a> OverlapContext<'a> {
             }
         }
         let number = issue.number;
-        let ready = actionable(issue);
+        let ready = actionable_in_project(self.project, self.client.repository(), issue);
         if let Some(wait) = waits.get(&number) {
             // One hold per issue (#525): it lasts only while the same blocker's open
             // change still edits a file this issue names, and never moves to another.
@@ -462,7 +467,7 @@ impl<'a> OverlapContext<'a> {
             return Ok(LandCheck::Waiting);
         };
         let issue = self.client.get(number).map_err(|error| error.to_string())?;
-        if !actionable(&issue) {
+        if !actionable_in_project(self.project, self.client.repository(), &issue) {
             return Ok(LandCheck::Waiting);
         }
         Ok(match self.clear_of_land(&issue, wait.blocker, &commit)? {

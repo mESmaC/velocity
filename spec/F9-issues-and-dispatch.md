@@ -28,8 +28,9 @@ A reported discovery carries its blockers to the filed issue (F14).
 A link that already exists is kept, a blocker that does not exist is refused before `scout_file` runs the reproduction, and the comment names the linked issues.
 The tools refuse retired skip-only labels (`needs-owner`, `on-hold`, `needs-decision`, `owner-decision`) and refuse `issue_hold` when its reason only waits on other issues, names an upstream PR or release, or asks for an owner decision covered by spec defaults (Rule 1, #526).
 When a hold only waits on other issues, the refusal lists those issues and says to pass them as `blocked_by` instead.
-Dispatch starts a linked issue when its blockers close, with no label change.
-An empty dispatch turn on an issue with open blockers posts its **Ended with no change** comment without the `no-change` label.
+Dispatch starts a linked issue once its blockers close or Velocity records their land as covered by a green integration build, with no label change (#529).
+A blocker that has landed without a green integration build stays blocking until integration covers its commit.
+An empty dispatch turn on an issue with unsatisfied blockers posts its **Ended with no change** comment without the `no-change` label.
 Each issue read also converts any open issue whose body still carries a `Held for dependencies:` line that names issues.
 The conversion links those issues, removes `needs-owner` and rewrites the line to name the links, in that order, so a failure leaves the issue held and each note is converted once.
 At most five notes are converted per read, and a note that cannot be converted is retried hourly.

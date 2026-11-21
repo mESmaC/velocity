@@ -1259,11 +1259,18 @@ fn report_no_change_issues(
         let result =
             IssueClient::for_repository(Path::new(&reader.directory), &pending.issue.repository)
                 .and_then(|client| {
-                    client.post_no_change(
+                    client.post_no_change_with_blocker_check(
                         pending.issue.number,
                         &pending.change,
                         &byline,
                         &pending.reason,
+                        |issue| {
+                            velocity_threads::continuous_dispatch::has_unsatisfied_blockers(
+                                project,
+                                &pending.issue.repository,
+                                issue,
+                            )
+                        },
                     )
                 });
         if let Err(error) = result {

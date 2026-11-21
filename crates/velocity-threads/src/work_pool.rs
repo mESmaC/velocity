@@ -178,10 +178,9 @@ fn issue_pieces(
         // Unlabelled owner questions can also leave an agent holding a claim with
         // nothing to build (#389). Use the dispatch filter so both sources of work
         // wait for the owner's answer, including before a question is labelled.
-        for issue in issues
-            .iter()
-            .filter(|issue| crate::continuous_dispatch::actionable(issue))
-        {
+        for issue in issues.iter().filter(|issue| {
+            crate::continuous_dispatch::actionable_in_project(project, &repository, issue)
+        }) {
             let assignment = ThreadIssue::new(repository.clone(), issue.number);
             if project.rosen_issue_completed(&assignment) {
                 continue;
