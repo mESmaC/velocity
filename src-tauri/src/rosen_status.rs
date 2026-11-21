@@ -64,6 +64,7 @@ pub fn watch_rosen_status(
         old.abort();
     }
     if let Some((project, server)) = project.zip(server) {
+        crate::collapse_mirror::on_rosen_pane_opened(&application, project);
         let application = application.clone();
         *watch = Some(tauri::async_runtime::spawn(async move {
             follow(&application, project, server).await;

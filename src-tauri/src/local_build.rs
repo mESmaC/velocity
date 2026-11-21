@@ -131,7 +131,8 @@ pub fn cancel_local_build_restart(application: AppHandle) -> LocalBuildView {
 
 /// Catches the Velocity project up from its mirror, refreshes kept-build ancestry, and
 /// builds the project's last green commit only when it strictly descends from the running
-/// build's commit (#551).
+/// build's commit (#551). Collapse mirrors skip the idle 60-second probe and catch up right
+/// before starting a build so idle checks never keep Collapse awake (#572).
 async fn look(application: &AppHandle) {
     if crate::rosen::paused(application) {
         return;
@@ -142,16 +143,45 @@ async fn look(application: &AppHandle) {
     let Some(project) = velocity_project(application) else {
         return;
     };
-    // Catch up sequentially before choosing a commit so a stale server never builds an old green.
-    let caught_up = crate::rosen_mirror::ensure_caught_up(application, project.project.id).await;
+    let collapse = project.project.collapse_repository.is_some();
+    if !collapse
+        && crate::rosen_mirror::ensure_caught_up(application, project.project.id).await
+            != CatchUpCheck::Current
+    {
+        clear_waiting_for_memory(application);
+        return;
+    }
     let Ok(server) = crate::rosen::observation_server(application, project.project.id) else {
         return;
     };
     refresh_relations(application, &local, &server).await;
-    if caught_up != CatchUpCheck::Current {
-        clear_waiting_for_memory(application);
+    let Some((wanted, headroom)) = observe_candidate(&local, &server).await else {
         return;
+    };
+    match wanted {
+        Some(commit) if headroom => {
+            if collapse {
+                let Some(commit) =
+                    confirm_collapse_candidate(application, &local, &project, &server).await
+                else {
+                    return;
+                };
+                build(application, &local, &project, &server, &commit).await;
+            } else {
+                build(application, &local, &project, &server, &commit).await;
+            }
+        }
+        Some(commit) => change(application, |state| {
+            state.phase = LocalBuildPhase::WaitingForMemory(commit);
+        }),
+        None => clear_waiting_for_memory(application),
     }
+}
+
+async fn observe_candidate(
+    local: &ManagedLocalBuilds,
+    server: &ProjectServer,
+) -> Option<(Option<String>, bool)> {
     let green_server = server.clone();
     let observed = tauri::async_runtime::spawn_blocking(move || {
         let green = velocity_rosen::integration::last_green(&green_server);
@@ -159,19 +189,42 @@ async fn look(application: &AppHandle) {
     })
     .await;
     let Ok((Ok(green), headroom)) = observed else {
-        return;
+        return None;
     };
     let relation = match green.as_deref() {
-        Some(commit) => commit_relation(&local, &server, commit).await,
+        Some(commit) => commit_relation(local, server, commit).await,
         None => CommitRelation::Unknown,
     };
-    let wanted = state(&local).wanted(green.as_deref(), relation);
+    let wanted = state(local).wanted(green.as_deref(), relation);
+    Some((wanted, headroom))
+}
+
+async fn confirm_collapse_candidate(
+    application: &AppHandle,
+    local: &ManagedLocalBuilds,
+    project: &LandingProject,
+    server: &ProjectServer,
+) -> Option<String> {
+    if crate::rosen_mirror::ensure_caught_up(application, project.project.id).await
+        != CatchUpCheck::Current
+    {
+        clear_waiting_for_memory(application);
+        return None;
+    }
+    refresh_relations(application, local, server).await;
+    let (wanted, headroom) = observe_candidate(local, server).await?;
     match wanted {
-        Some(commit) if headroom => build(application, &local, &project, &server, &commit).await,
-        Some(commit) => change(application, |state| {
-            state.phase = LocalBuildPhase::WaitingForMemory(commit);
-        }),
-        None => clear_waiting_for_memory(application),
+        Some(commit) if headroom => Some(commit),
+        Some(commit) => {
+            change(application, |state| {
+                state.phase = LocalBuildPhase::WaitingForMemory(commit);
+            });
+            None
+        }
+        None => {
+            clear_waiting_for_memory(application);
+            None
+        }
     }
 }
 

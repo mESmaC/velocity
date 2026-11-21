@@ -120,6 +120,10 @@ async fn follow_connected(
         }
         if matches!(event.kind, Landed | Reverted) {
             crate::continuous_dispatch::overlap::invalidate_base_commit(project);
+            if event.seq > replay.boundary() {
+                crate::rosen_mirror::note_land(application, project);
+                crate::collapse_mirror::note_land(application, project);
+            }
             if let Some(warm) = warm {
                 let _ = warm.try_send(());
             }
@@ -164,7 +168,7 @@ async fn consume_connected(
     superseded: bool,
 ) -> Result<(), String> {
     if !superseded {
-        consume(application, project, event).await?;
+        consume(application, project, event, event.seq > replay.boundary()).await?;
     }
     // The last event of a rewind can be unrelated and carry no checkpoint of its own.
     if event.seq == replay.boundary() {
@@ -196,6 +200,7 @@ async fn consume(
     application: &AppHandle,
     project: u32,
     event: &velocity_rosen::ProjectEvent,
+    live: bool,
 ) -> Result<(), String> {
     if matches!(
         event.kind,
@@ -209,6 +214,9 @@ async fn consume(
     }
     if event.kind == velocity_rosen::ProjectEventKind::Mirror {
         report(crate::rosen_mirror::refresh(application, project).await);
+        if live {
+            crate::collapse_mirror::on_mirror_push(application, project);
+        }
     }
     if event.kind == velocity_rosen::ProjectEventKind::Review {
         crate::handoff::observe_review(application, project, event)?;
@@ -1059,6 +1067,8 @@ pub(crate) fn record_landed(
         store.layout_refresh()
     };
     publish_progress(application, refresh)?;
+    crate::rosen_mirror::note_land(application, project);
+    crate::collapse_mirror::note_land(application, project);
     let handle = application.clone();
     tauri::async_runtime::spawn(async move { run_follow_ups(&handle, project).await });
     Ok(())

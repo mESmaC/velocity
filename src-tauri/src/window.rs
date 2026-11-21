@@ -138,4 +138,7 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
             eprintln!("Could not publish native window state: {error}");
         }
     }
+    if window.label() == MAIN_WINDOW && matches!(event, WindowEvent::Focused(true)) {
+        crate::collapse_mirror::on_window_focused(window.app_handle());
+    }
 }

@@ -1,5 +1,39 @@
 //! Project-visible Rosen mirror failures (F5, #402).
 
+use std::time::Duration;
+
+/// Background mirror tip check interval for GitHub mirrors and recently active Collapse
+/// mirrors (#520, #572).
+pub const MIRROR_POLL_INTERVAL: Duration = Duration::from_secs(2 * 60);
+
+/// Background mirror tip check interval for a Collapse mirror after an hour with no lands (#572).
+pub const COLLAPSE_MIRROR_IDLE_INTERVAL: Duration = Duration::from_secs(30 * 60);
+
+/// How long to wait before the next background `ls-remote` tip check for a project (#572).
+///
+/// GitHub mirrors keep the fixed 2-minute interval. Collapse mirrors check every 2 minutes
+/// right after a land, then step past Collapse's 5-minute idle timeout (10, 15, 20 minutes)
+/// and settle at 30 minutes after an hour with no lands so Collapse's server can stop.
+pub fn mirror_poll_interval(collapse_mirror: bool, since_last_land: Option<Duration>) -> Duration {
+    if !collapse_mirror {
+        return MIRROR_POLL_INTERVAL;
+    }
+    let Some(elapsed) = since_last_land else {
+        return COLLAPSE_MIRROR_IDLE_INTERVAL;
+    };
+    if elapsed < Duration::from_secs(3 * 60) {
+        MIRROR_POLL_INTERVAL
+    } else if elapsed < Duration::from_secs(15 * 60) {
+        Duration::from_secs(10 * 60)
+    } else if elapsed < Duration::from_secs(30 * 60) {
+        Duration::from_secs(15 * 60)
+    } else if elapsed < Duration::from_secs(60 * 60) {
+        Duration::from_secs(20 * 60)
+    } else {
+        COLLAPSE_MIRROR_IDLE_INTERVAL
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 pub struct MirrorState {

@@ -4,6 +4,29 @@
 //! recognised Collapse remote with a plain `owner/repository` path produces a page, so
 //! an arbitrary or credential-bearing mirror URL never reaches the browser.
 
+use std::time::Duration;
+
+/// How often Collapse's dashboard is polled during the active window after a land (#572).
+pub const DASHBOARD_POLL_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How long after the last land Velocity continues polling Collapse's dashboard (#572).
+pub const DASHBOARD_POST_LAND_WINDOW: Duration = Duration::from_secs(5 * 60);
+
+/// Next sleep before reading Collapse's dashboard again, or `None` once the post-land
+/// window has elapsed and polling should stop until the next land (#572).
+pub fn dashboard_poll_delay(since_last_land: Option<Duration>) -> Option<Duration> {
+    let elapsed = since_last_land?;
+    // Stop once the next read would fall at or past the 5-minute boundary, leaving a
+    // full 5-minute quiet period so Collapse's server stops within 10 minutes of a land.
+    (elapsed.saturating_add(DASHBOARD_POLL_INTERVAL) < DASHBOARD_POST_LAND_WINDOW)
+        .then_some(DASHBOARD_POLL_INTERVAL)
+}
+
+/// Whether `since_last_land` is still inside the 5-minute post-land dashboard window (#572).
+pub fn dashboard_poll_active(since_last_land: Option<Duration>) -> bool {
+    since_last_land.is_some_and(|elapsed| elapsed < DASHBOARD_POST_LAND_WINDOW)
+}
+
 /// Hosts a Collapse mirror remote can name. New projects push to the API host (F2).
 const REMOTE_HOSTS: [&str; 3] = [
     "https://collapse.sh/",

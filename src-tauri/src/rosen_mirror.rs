@@ -2,48 +2,160 @@
 //! catch projects up from their mirror at start, while running, before lands and on
 //! fast-forward push refusals (#501, #520).
 
-use std::time::Duration;
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager};
-use velocity_core::rosen_mirror::{MirrorBehind, MirrorDivergence};
+use velocity_core::rosen_mirror::{
+    MIRROR_POLL_INTERVAL, MirrorBehind, MirrorDivergence, mirror_poll_interval,
+};
 use velocity_rosen::{CatchUp, MirrorTip, ProjectServer};
 
 use crate::layout::MainLayout;
 use crate::state::ManagedStateStore;
 use crate::threads::{lock, report};
 
-/// How often Velocity checks active Rosen projects' mirror tips while running (#520).
-const MIRROR_POLL_INTERVAL: Duration = Duration::from_secs(2 * 60);
-
 /// Delay before re-reading mirror status when catch-up woke a retry push that has not
 /// yet written its recovery event (#520).
 const RECOVERED_REFRESH_DELAY: Duration = Duration::from_secs(5);
 
+#[derive(Clone, Copy, Debug)]
+struct ProjectMirrorSchedule {
+    last_checked: Instant,
+    last_land: Option<Instant>,
+}
+
+#[derive(Default)]
+struct MirrorPoller {
+    schedules: Mutex<BTreeMap<u32, ProjectMirrorSchedule>>,
+    wake: tokio::sync::Notify,
+}
+
 /// Starts the background mirror tip poller so running servers catch up when another
-/// machine lands to the mirror (#520).
+/// machine lands to the mirror (#520). GitHub mirrors check every 2 minutes; Collapse
+/// mirrors back off to 30 minutes after an hour with no lands (#572).
 pub(crate) fn initialize(application: &AppHandle) {
+    application.manage(MirrorPoller::default());
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
-        loop {
-            tokio::time::sleep(MIRROR_POLL_INTERVAL).await;
-            if !crate::rosen::paused(&handle) {
-                poll_all_projects(&handle).await;
-            }
-        }
+        poll_loop(&handle).await;
     });
 }
 
-async fn poll_all_projects(application: &AppHandle) {
-    let projects = rosen_project_ids(application);
-    for project in projects {
+async fn poll_loop(application: &AppHandle) {
+    let Some(poller) = application.try_state::<MirrorPoller>() else {
+        return;
+    };
+    loop {
         if crate::rosen::paused(application) {
-            return;
+            tokio::select! {
+                _ = tokio::time::sleep(MIRROR_POLL_INTERVAL) => {}
+                _ = poller.wake.notified() => {}
+            }
+            continue;
         }
-        check_and_catch_up(application, project).await;
+        let projects = rosen_mirror_projects(application);
+        let (due, wait) = next_poll_step(&poller, &projects, Instant::now());
+        if !due.is_empty() {
+            for project in due {
+                if crate::rosen::paused(application) {
+                    break;
+                }
+                note_checked(application, project);
+                check_and_catch_up(application, project).await;
+            }
+            continue;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = poller.wake.notified() => {}
+        }
     }
 }
 
-fn rosen_project_ids(application: &AppHandle) -> Vec<u32> {
+fn next_poll_step(
+    poller: &MirrorPoller,
+    projects: &[(u32, bool)],
+    now: Instant,
+) -> (Vec<u32>, Duration) {
+    let mut schedules = poller
+        .schedules
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    schedules.retain(|id, _| projects.iter().any(|(project, _)| project == id));
+    let mut due = Vec::new();
+    let mut earliest: Option<Duration> = None;
+    for &(project, collapse) in projects {
+        let entry = schedules.entry(project).or_insert(ProjectMirrorSchedule {
+            last_checked: now,
+            last_land: None,
+        });
+        let interval = mirror_poll_interval(
+            collapse,
+            entry
+                .last_land
+                .map(|land| now.saturating_duration_since(land)),
+        );
+        let elapsed = now.saturating_duration_since(entry.last_checked);
+        if elapsed >= interval {
+            due.push(project);
+        } else {
+            let remaining = interval.saturating_sub(elapsed);
+            earliest = Some(earliest.map_or(remaining, |best| best.min(remaining)));
+        }
+    }
+    (due, earliest.unwrap_or(MIRROR_POLL_INTERVAL))
+}
+
+/// Records a land on `project` so a Collapse mirror resumes active 2-minute polling and
+/// backs off again once lands stop (#572).
+pub(crate) fn note_land(application: &AppHandle, project: u32) {
+    let Some(poller) = application.try_state::<MirrorPoller>() else {
+        return;
+    };
+    let now = Instant::now();
+    let mut schedules = poller
+        .schedules
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    // A land just checked the mirror beforehand (or fast-forwarded from it), so count the
+    // next active poll from now.
+    schedules.insert(
+        project,
+        ProjectMirrorSchedule {
+            last_checked: now,
+            last_land: Some(now),
+        },
+    );
+    drop(schedules);
+    poller.wake.notify_one();
+}
+
+fn note_checked(application: &AppHandle, project: u32) {
+    let Some(poller) = application.try_state::<MirrorPoller>() else {
+        return;
+    };
+    let now = Instant::now();
+    let mut schedules = poller
+        .schedules
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let inserted = !schedules.contains_key(&project);
+    schedules
+        .entry(project)
+        .and_modify(|entry| entry.last_checked = now)
+        .or_insert(ProjectMirrorSchedule {
+            last_checked: now,
+            last_land: None,
+        });
+    drop(schedules);
+    if inserted {
+        poller.wake.notify_one();
+    }
+}
+
+fn rosen_mirror_projects(application: &AppHandle) -> Vec<(u32, bool)> {
     let Ok(store) = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -55,7 +167,7 @@ fn rosen_project_ids(application: &AppHandle) -> Vec<u32> {
         .projects
         .iter()
         .filter(|item| item.rosen_in_use())
-        .map(|item| item.id)
+        .map(|item| (item.id, item.collapse_repository.is_some()))
         .collect()
 }
 
@@ -115,6 +227,7 @@ async fn check_and_catch_up_server(
     project: u32,
     server: &ProjectServer,
 ) -> (bool, CatchUpCheck) {
+    note_checked(application, project);
     let gate = application
         .state::<crate::rosen::ManagedRosen>()
         .catch_up_lock(project);
@@ -435,7 +548,7 @@ fn save_collapse_repository(
     live_state: Option<bool>,
 ) -> Result<(), String> {
     let mirrored = repository.is_some();
-    let refresh = {
+    let (changed, refresh) = {
         let mut store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
@@ -443,13 +556,13 @@ fn save_collapse_repository(
         let changed = store
             .save_collapse_repository(project, repository, live_state)
             .map_err(|error| error.to_string())?;
-        changed.then(|| store.layout_refresh())
+        (changed, changed.then(|| store.layout_refresh()))
     };
     if let Some(refresh) = refresh {
         crate::layout::apply_refresh_and_publish(application, refresh)?;
     }
-    if mirrored {
-        // A push just reached Collapse: read its land and forwarder state now (#427).
+    if changed && mirrored {
+        // The project just linked a Collapse mirror: read its initial dashboard state (#427, #572).
         crate::collapse_mirror::refresh_soon(application);
     }
     Ok(())
@@ -496,6 +609,7 @@ async fn run_startup_catch_up(
     project: u32,
     server: &ProjectServer,
 ) -> Result<(), String> {
+    note_checked(application, project);
     let gate = application
         .state::<crate::rosen::ManagedRosen>()
         .catch_up_lock(project);
@@ -646,6 +760,10 @@ pub(crate) async fn retry_for_health(
     let outcome = catch_up_for_health_locked(application, project, server).await?;
     let name = project_name(application, project)?;
     let (divergence, toast_message, result) = describe_health_retry(&name, outcome);
+    if matches!(result, MirrorRetryOutcome::CaughtUp { .. }) {
+        note_land(application, project);
+        crate::collapse_mirror::note_land(application, project);
+    }
     let changed = publish_divergence(application, project, divergence, None)?;
     if let Some(message) = toast_message
         && (changed || matches!(result, MirrorRetryOutcome::CaughtUp { .. }))
@@ -722,6 +840,7 @@ pub async fn catch_up_from_mirror(
     project_identifier: u32,
 ) -> Result<(), String> {
     let server = crate::rosen::server(&application, project_identifier).await?;
+    note_checked(&application, project_identifier);
     {
         let gate = application
             .state::<crate::rosen::ManagedRosen>()
@@ -802,6 +921,10 @@ fn record_catch_up_outcome(
         }
     }
     let (divergence, message, moved) = describe(&name, outcome);
+    if moved {
+        note_land(application, project);
+        crate::collapse_mirror::note_land(application, project);
+    }
     let diverged = divergence.clone();
     let is_diverged = diverged.is_some();
     let changed = publish_divergence(application, project, divergence, None)?;

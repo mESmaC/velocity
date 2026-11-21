@@ -11,13 +11,16 @@
 //! the account tokens stay in the OS credential store (§1, #430).
 
 use std::path::Path;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
 use velocity_collapse::{CollapseCredentials, MirrorRequest, RepositoryActivity};
-use velocity_core::collapse::{CollapseMirrorHealth, ForwarderState};
+use velocity_core::collapse::{
+    CollapseMirrorHealth, ForwarderState, dashboard_poll_active, dashboard_poll_delay,
+};
 use velocity_new_project::{NewProjectRequest, ProjectLocationRequest, ProjectMirror};
 use velocity_rosen::collapse_link::{CollapseLink, allow_collapse_relay, propose_collapse_link};
 use velocity_rosen::landing::{LandOutcome, LandRefusal};
@@ -29,8 +32,6 @@ use crate::threads::lock;
 
 const NOT_CONNECTED: &str = "Connect Collapse in Settings → Agents → Shared MCP servers first, so Velocity can create the repository";
 const NO_PUSH_TOKEN: &str = "Git's credential helper holds no push token for this project's Collapse mirror. Connect Collapse in Settings → Agents → Shared MCP servers so Velocity can create one";
-/// How often Collapse's forwarder state is read while any project mirrors to Collapse.
-const HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 /// New projects start their Rosen base on `main` (F2).
 const NEW_PROJECT_BRANCH: &str = "main";
 
@@ -368,19 +369,116 @@ fn toast(application: &AppHandle, message: String) -> Result<(), String> {
     crate::layout::publish(application, &layout.snapshot(), None)
 }
 
-/// Reads Collapse's forwarder state every minute while any project mirrors to Collapse.
+#[derive(Default)]
+struct DashboardPoller {
+    last_land: Mutex<Option<Instant>>,
+    wake: tokio::sync::Notify,
+}
+
+/// Polls Collapse's dashboard only during the 5-minute window after a land on a
+/// Collapse-mirrored project; outside that window, reads happen on mirror pushes, window
+/// focus, and opening the Rosen status pane (#572).
 pub(crate) fn initialize(application: &AppHandle) {
+    application.manage(DashboardPoller::default());
     let application = application.clone();
     tauri::async_runtime::spawn(async move {
-        loop {
-            tokio::time::sleep(HEALTH_INTERVAL).await;
-            // Collapse or the network being away shows as the last state Collapse gave.
-            let _ = refresh_health(&application).await;
-        }
+        poll_after_lands(&application).await;
     });
 }
 
-/// After a mirror push: Collapse has just recorded the land and told its forwarder.
+async fn poll_after_lands(application: &AppHandle) {
+    let Some(poller) = application.try_state::<DashboardPoller>() else {
+        return;
+    };
+    loop {
+        let Some(delay) = dashboard_poll_delay(elapsed_since_last_land(&poller)) else {
+            poller.wake.notified().await;
+            continue;
+        };
+        tokio::time::sleep(delay).await;
+        if dashboard_poll_active(elapsed_since_last_land(&poller)) {
+            // Collapse or the network being away shows as the last state Collapse gave.
+            let _ = refresh_health(application).await;
+        }
+    }
+}
+
+fn elapsed_since_last_land(poller: &DashboardPoller) -> Option<Duration> {
+    let last = *poller
+        .last_land
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    last.map(|instant| instant.elapsed())
+}
+
+/// Records a land on `project` and activates the 5-minute post-land dashboard polling
+/// window when `project` mirrors to Collapse (#572).
+pub(crate) fn note_land(application: &AppHandle, project: u32) {
+    if !project_mirrors_to_collapse(application, project) {
+        return;
+    }
+    if let Some(poller) = application.try_state::<DashboardPoller>() {
+        let mut last = poller
+            .last_land
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *last = Some(Instant::now());
+        drop(last);
+        poller.wake.notify_one();
+    }
+}
+
+/// Reads Collapse's dashboard after a mirror push on a Collapse-mirrored project (#572).
+pub(crate) fn on_mirror_push(application: &AppHandle, project: u32) {
+    if project_mirrors_to_collapse(application, project) {
+        refresh_soon(application);
+    }
+}
+
+/// Reads Collapse's dashboard when the main window gains focus (#572).
+pub(crate) fn on_window_focused(application: &AppHandle) {
+    if any_project_mirrors_to_collapse(application) {
+        refresh_soon(application);
+    }
+}
+
+/// Reads Collapse's dashboard when the Rosen status pane opens for a Collapse project (#572).
+pub(crate) fn on_rosen_pane_opened(application: &AppHandle, project: u32) {
+    if project_mirrors_to_collapse(application, project) {
+        refresh_soon(application);
+    }
+}
+
+fn project_mirrors_to_collapse(application: &AppHandle, project: u32) -> bool {
+    let Some(store) = application.try_state::<ManagedStateStore>() else {
+        return false;
+    };
+    lock(store.inner(), "persisted state")
+        .ok()
+        .and_then(|store| {
+            store
+                .project(project)
+                .map(|item| item.collapse_repository.is_some())
+        })
+        .unwrap_or(false)
+}
+
+fn any_project_mirrors_to_collapse(application: &AppHandle) -> bool {
+    let Some(store) = application.try_state::<ManagedStateStore>() else {
+        return false;
+    };
+    lock(store.inner(), "persisted state")
+        .ok()
+        .is_some_and(|store| {
+            store
+                .state()
+                .projects
+                .iter()
+                .any(|item| item.collapse_repository.is_some())
+        })
+}
+
+/// After a mirror push, focus or pane open: read Collapse's land and forwarder state.
 pub(crate) fn refresh_soon(application: &AppHandle) {
     let application = application.clone();
     tauri::async_runtime::spawn(async move {

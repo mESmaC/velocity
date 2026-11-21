@@ -24,7 +24,7 @@ There are two views of the same work, switched from the title bar or with `B`:
   - failed
   - landed today: changes that landed since local midnight, counted as each land arrives and kept across a restart
 - **Local build** (#512, #551): Velocity running its own landed fixes, shown only where a Rosen project's GitHub repository is Velocity's own (`mESmaC/velocity`).
-  - Once a minute Velocity first catches that project up from its mirror (sequentially, not in parallel) and then reads its last green integration commit.
+  - Once a minute Velocity reads its last green integration commit—catching up from a GitHub mirror sequentially before each check, and from a Collapse mirror right before starting a build so idle checks never wake Collapse (#572).
     Every release build (`release.yml`, `scripts/release-local.ps1` and local builds) embeds its commit in build metadata (`VELOCITY_BUILD_COMMIT`).
     Velocity builds and offers a commit only when it strictly descends from the running build's commit in Rosen's history.
     When that commit is not built yet and has not failed, Velocity stages it in the project's `local-release` folder, beside its workspaces, and runs `pnpm -C ui install --frozen-lockfile` and `scripts/release-local.ps1` there.
