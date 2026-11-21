@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 use velocity_core::base_ci::{
-    self, BaseCi, BaseCiState, CommitOrder, Failure, OpenRepair, RepairThreadState,
+    self, BaseCi, BaseCiState, CommitOrder, Failure, OpenRepair, RepairThreadState, ResolvedJob,
     SupersededRepair,
 };
 use velocity_core::project_health::short_commit;
@@ -122,27 +122,19 @@ fn look(
     let snapshot = client
         .runs(&subject.branch)
         .map_err(|error| error.to_string())?;
-    let verdict = base_ci::verdict(&snapshot.runs);
-    let mut failures = verdict
-        .failed
-        .iter()
-        .map(|run| {
-            // A commit status has no run and no jobs: it is its own failure.
-            let jobs = if run.run == 0 {
-                Vec::new()
-            } else {
-                client
-                    .failed_jobs(&snapshot, run)
-                    .map_err(|error| error.to_string())?
-            };
-            Ok(base_ci::failure(run, jobs))
-        })
-        .collect::<Result<Vec<Failure>, String>>()?;
-    let open = open_repairs(application, subject.project, &failures)?;
-    populate_signatures(&client, &open, &mut failures, run_logs);
-    let plan = base_ci::plan(&open, &verdict.passed, &failures);
-    publish(application, subject, base_ci::view(&verdict, &failures))?;
+    let mut verdict = base_ci::evaluate_jobs(&snapshot.runs, &snapshot.run_jobs);
+    let open = open_repairs(application, subject.project, &verdict.active_failures)?;
+    populate_signatures(
+        &client,
+        &open,
+        &mut verdict.active_failures,
+        &verdict.waiting_failures,
+        run_logs,
+    );
+    let plan = base_ci::plan_for_verdict(&open, &verdict);
+    publish(application, subject, base_ci::view_for_verdict(&verdict))?;
     close(application, subject, &plan.closed)?;
+    close_resolved(application, subject, &plan.resolved)?;
     close_superseded(application, subject, &plan.superseded)?;
     // A failure starting one repair must not hide another workflow's failure.
     let mut result = Ok(());
@@ -184,13 +176,20 @@ fn open_repairs(
             newly_landed.push((repair.thread, commit.clone()));
         }
         let thread_state = repair_thread_state(thread.as_ref(), landed_commit.as_deref(), live);
-        let commit_order =
-            match (
-                landed_commit.as_deref(),
+        let matching_failure = failures
+            .iter()
+            .find(|failure| {
+                failure.workflow == repair.workflow
+                    && failure.jobs.iter().any(|job| job.job == repair.job)
+            })
+            .or_else(|| {
                 failures
                     .iter()
-                    .find(|failure| failure.workflow == repair.workflow),
-            ) {
+                    .filter(|failure| failure.workflow == repair.workflow)
+                    .max_by_key(|failure| failure.run)
+            });
+        let commit_order =
+            match (landed_commit.as_deref(), matching_failure) {
                 (Some(landed), Some(failure)) => tauri::async_runtime::block_on(
                     resolve_commit_order(application, server.as_ref(), landed, &failure.commit),
                 ),
@@ -354,10 +353,12 @@ fn populate_signatures(
     client: &BaseCiWatch,
     open: &[OpenRepair],
     failures: &mut [Failure],
+    waiting: &[Failure],
     run_logs: &mut BTreeMap<u64, FailedLog>,
 ) {
     let active_runs: HashSet<u64> = failures
         .iter()
+        .chain(waiting)
         .filter(|failure| failure.run != 0)
         .map(|failure| failure.run)
         .collect();
@@ -455,6 +456,44 @@ fn close(application: &AppHandle, subject: &Subject, workflows: &[String]) -> Re
             workflows.join(", "),
             closed.len()
         );
+        crate::diagnostics::record(SOURCE, &message);
+    }
+    Ok(())
+}
+
+fn close_resolved(
+    application: &AppHandle,
+    subject: &Subject,
+    resolved: &[ResolvedJob],
+) -> Result<(), String> {
+    if resolved.is_empty() {
+        return Ok(());
+    }
+    let closed = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .close_resolved_ci_repairs(subject.project, resolved)
+    .map_err(|error| error.to_string())?;
+    for repair in &closed {
+        let job = base_ci::job_label(&repair.workflow, &repair.job);
+        let passer = resolved
+            .iter()
+            .find(|item| item.workflow == repair.workflow && item.job == repair.job);
+        let detail = match passer {
+            Some(item) if !item.commit.trim().is_empty() => format!(
+                "passed on {} (superseded thread #{} covering {})",
+                short_commit(&item.commit),
+                repair.thread,
+                short_commit(&repair.commit)
+            ),
+            _ => format!(
+                "passed on a newer run (superseded thread #{} covering {})",
+                repair.thread,
+                short_commit(&repair.commit)
+            ),
+        };
+        let message = format!("{}: closed CI repair for {job} ({detail})", subject.name);
         crate::diagnostics::record(SOURCE, &message);
     }
     Ok(())

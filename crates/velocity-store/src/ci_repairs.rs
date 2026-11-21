@@ -3,7 +3,7 @@
 //! until a green run of that workflow, even when its thread is deleted.
 
 use serde::{Deserialize, Serialize};
-use velocity_core::base_ci::{BaseCi, Failure, SupersededRepair, signatures_differ};
+use velocity_core::base_ci::{BaseCi, Failure, ResolvedJob, SupersededRepair, signatures_differ};
 
 use crate::threads::{NewThread, ThreadError, insert_thread};
 use crate::{StateStore, StoreError};
@@ -138,6 +138,37 @@ impl StateStore {
                     item.workflow == repair.workflow
                         && item.job == repair.job
                         && item.thread == repair.thread
+                })
+            });
+        if closed.is_empty() {
+            return Ok(closed);
+        }
+        current.ci_repairs = open;
+        self.store_snapshot(next)?;
+        Ok(closed)
+    }
+
+    /// Drops open repairs whose matching job passed in a newer run (even while the rest of
+    /// that run is still in progress), and returns the removed records (#587).
+    pub fn close_resolved_ci_repairs(
+        &mut self,
+        project: u32,
+        resolved: &[ResolvedJob],
+    ) -> Result<Vec<CiRepair>, StoreError> {
+        if resolved.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut next = self.state.clone();
+        let Some(current) = next.projects.iter_mut().find(|item| item.id == project) else {
+            return Ok(Vec::new());
+        };
+        let (closed, open): (Vec<_>, Vec<_>) = std::mem::take(&mut current.ci_repairs)
+            .into_iter()
+            .partition(|repair| {
+                resolved.iter().any(|item| {
+                    item.workflow == repair.workflow
+                        && item.job == repair.job
+                        && (item.run == 0 || repair.run == 0 || item.run >= repair.run)
                 })
             });
         if closed.is_empty() {
@@ -338,6 +369,70 @@ mod tests {
         };
         let second = store.add_ci_repair(1, &next_failure, make_thread("second"), "prompt")?;
         assert!(second.is_some() && second != Some(first));
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#587): closing a single job whose matching job passed on a newer, still-running
+    // workflow run must persist across save and reload without closing unresolved sibling jobs.
+    #[test]
+    fn resolved_job_closure_persists_across_reload_without_closing_sibling_jobs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use velocity_core::base_ci::ResolvedJob;
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-ci-repair-resolved-{unique}"));
+        let mut store = StateStore::load_or_default(&directory)?;
+        store.state.projects = vec![ProjectItem::new(1, "One".into(), r"C:\project one".into())];
+        store.store_snapshot(store.state.clone())?;
+        let settings = store.settings();
+        let thread = NewThread::new(
+            "Fix CI".into(),
+            "vel/fix-ci-100".into(),
+            r"C:\worktrees\fix-ci-100".into(),
+            &settings,
+        );
+        let failure = Failure {
+            workflow: "CI".into(),
+            run: 100,
+            commit: "a4d9b88".repeat(6)[..40].to_owned(),
+            url: "https://github.com/mESmaC/rosen/actions/runs/100".into(),
+            detail: String::new(),
+            jobs: vec![
+                FailedJob {
+                    job: "macOS (build, clippy, test)".into(),
+                    timed_out: true,
+                    ..FailedJob::default()
+                },
+                FailedJob {
+                    job: "Windows (build, clippy, test)".into(),
+                    ..FailedJob::default()
+                },
+            ],
+        };
+        assert!(
+            store
+                .add_ci_repair(1, &failure, thread, "prompt")?
+                .is_some()
+        );
+        let resolved = [ResolvedJob {
+            workflow: "CI".into(),
+            job: "macOS (build, clippy, test)".into(),
+            commit: "33426bb".repeat(6)[..40].to_owned(),
+            run: 101,
+        }];
+        let closed = store.close_resolved_ci_repairs(1, &resolved)?;
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].job, "macOS (build, clippy, test)");
+
+        let store = StateStore::load_or_default(&directory)?;
+        assert_eq!(store.state.projects[0].ci_repairs.len(), 1);
+        assert_eq!(
+            store.state.projects[0].ci_repairs[0].job,
+            "Windows (build, clippy, test)"
+        );
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

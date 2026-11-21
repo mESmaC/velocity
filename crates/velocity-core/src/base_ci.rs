@@ -1,10 +1,11 @@
 //! GitHub CI on a Rosen project's base (SPEC.md F5 "Rosen · Base CI", #507). Lands go
 //! through after-land review and the integration build runs on one machine, so a job that
-//! fails only on GitHub's runners is found here: the newest finished run of each workflow
-//! decides, a failed job gets one fix-forward thread, and a later green run closes it.
+//! fails only on GitHub's runners is found here: each job is decided by the newest run in
+//! which that job finished (whether or not the rest of the run finished, #587), a failed
+//! job gets one fix-forward thread, and a later passing run closes it.
 //! Pure decisions; `velocity-github` reads GitHub and the app starts the threads.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -104,6 +105,65 @@ pub fn job_failed(conclusion: Option<&str>) -> bool {
 /// Whether a job concluded `timed_out` directly.
 pub fn job_timed_out_directly(conclusion: Option<&str>) -> bool {
     conclusion == Some("timed_out")
+}
+
+/// What one job in a workflow run says about its commit (#587).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JobState {
+    Passed,
+    Failed,
+    /// Queued, waiting, or in progress.
+    Running,
+    /// Cancelled (without timing out), skipped, or neutral: says nothing about its commit.
+    Undecided,
+}
+
+/// Classifies a GitHub Actions job from its `status`, `conclusion`, and whether a `cancelled`
+/// conclusion was identified as a timeout (#587).
+pub fn job_state(
+    status: Option<&str>,
+    conclusion: Option<&str>,
+    timed_out_cancelled: bool,
+) -> JobState {
+    if matches!(status, Some(state) if state != "completed")
+        || (status.is_none() && conclusion.is_none())
+    {
+        return JobState::Running;
+    }
+    if timed_out_cancelled || job_failed(conclusion) {
+        return JobState::Failed;
+    }
+    match conclusion {
+        Some("success") => JobState::Passed,
+        _ => JobState::Undecided,
+    }
+}
+
+/// One job observed inside a workflow run (#587).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunJob {
+    Passed(String),
+    Failed(FailedJob),
+    Running(String),
+    Undecided(String),
+}
+
+impl RunJob {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Passed(name) | Self::Running(name) | Self::Undecided(name) => name,
+            Self::Failed(job) => &job.job,
+        }
+    }
+
+    pub fn state(&self) -> JobState {
+        match self {
+            Self::Passed(_) => JobState::Passed,
+            Self::Failed(_) => JobState::Failed,
+            Self::Running(_) => JobState::Running,
+            Self::Undecided(_) => JobState::Undecided,
+        }
+    }
 }
 
 /// Whether a check-run annotation message reports that a job hit its execution timeout (#584).
@@ -384,11 +444,363 @@ pub struct SupersededRepair {
     pub landed_commit: Option<String>,
 }
 
-/// What a look changes: workflows whose repairs a green run closes, open repairs
-/// superseded by a failure at or after their land, and failures needing a new thread.
+/// A job whose newest finished outcome is a pass (#587).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedJob {
+    pub workflow: String,
+    pub job: String,
+    pub commit: String,
+    pub run: u64,
+}
+
+/// A workflow's newest completed passing run (#587).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PassedWorkflow {
+    pub workflow: String,
+    pub commit: String,
+    pub run: u64,
+}
+
+/// Per-job evaluation across finished and in-progress runs of every workflow (#587).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JobVerdict {
+    /// Workflows whose newest deciding run passed and that have no failing job in any
+    /// newer in-progress run.
+    pub passed: Vec<String>,
+    /// Newest whole-workflow passing run for each workflow that has one.
+    pub passed_workflows: Vec<PassedWorkflow>,
+    /// Jobs whose newest finished outcome passed (including in-progress or cancelled runs).
+    pub resolved_jobs: Vec<ResolvedJob>,
+    /// Failing jobs whose newest finished run failed and that have no newer run currently
+    /// queued or running the same job, grouped by `(workflow, run)`.
+    pub active_failures: Vec<Failure>,
+    /// Failing jobs whose newest finished run failed while a newer run still has the same
+    /// job queued or running (shown as failing, but wait before starting or reopening a repair).
+    pub waiting_failures: Vec<Failure>,
+    /// A run newer than or without a finished workflow run is queued or in progress.
+    pub running: bool,
+    /// Commit of the newest failing run when any job is failing, or else the newest finished run.
+    pub commit: Option<String>,
+}
+
+/// Runs whose jobs should be read so each job is decided by the newest run in which it
+/// finished (#587): each workflow's newest failed run, plus up to
+/// `max_running_per_workflow` running runs newer than its newest decided run.
+pub fn runs_to_inspect(runs: &[BaseRun], max_running_per_workflow: usize) -> Vec<u64> {
+    let mut by_workflow: BTreeMap<&str, Vec<&BaseRun>> = BTreeMap::new();
+    for run in runs.iter().filter(|run| run.run != 0) {
+        by_workflow
+            .entry(run.workflow.as_str())
+            .or_default()
+            .push(run);
+    }
+    let mut selected = Vec::new();
+    for mut workflow_runs in by_workflow.into_values() {
+        workflow_runs.sort_by_key(|run| std::cmp::Reverse(run.run));
+        let newest_decided = workflow_runs
+            .iter()
+            .copied()
+            .find(|run| matches!(run.state, RunState::Passed | RunState::Failed));
+        for run in workflow_runs
+            .iter()
+            .copied()
+            .filter(|run| {
+                run.state == RunState::Running
+                    && newest_decided.is_none_or(|decided| run.run > decided.run)
+            })
+            .take(max_running_per_workflow)
+        {
+            selected.push(run.run);
+        }
+        if let Some(failed) = newest_decided.filter(|run| run.state == RunState::Failed) {
+            selected.push(failed.run);
+        }
+    }
+    selected
+}
+
+/// Decides every job by the newest run in which that job finished, whether or not the rest
+/// of that run has finished (#587).
+pub fn evaluate_jobs(runs: &[BaseRun], run_jobs: &BTreeMap<u64, Vec<RunJob>>) -> JobVerdict {
+    let mut by_workflow: BTreeMap<&str, Vec<&BaseRun>> = BTreeMap::new();
+    for run in runs {
+        by_workflow
+            .entry(run.workflow.as_str())
+            .or_default()
+            .push(run);
+    }
+    let mut verdict = JobVerdict::default();
+    for (workflow, workflow_runs) in by_workflow {
+        evaluate_workflow(workflow, workflow_runs, run_jobs, &mut verdict);
+    }
+    verdict.commit = newest_verdict_commit(&verdict);
+    verdict
+}
+
+fn evaluate_workflow(
+    workflow: &str,
+    mut runs: Vec<&BaseRun>,
+    run_jobs: &BTreeMap<u64, Vec<RunJob>>,
+    verdict: &mut JobVerdict,
+) {
+    if runs.iter().all(|run| run.run == 0) {
+        if let Some(status) = runs.last().copied() {
+            evaluate_status(status, verdict);
+        }
+        return;
+    }
+    runs.retain(|run| run.run != 0);
+    runs.sort_by_key(|run| std::cmp::Reverse(run.run));
+    let newest_decided = runs
+        .iter()
+        .copied()
+        .find(|run| matches!(run.state, RunState::Passed | RunState::Failed));
+    let newest_passed = runs
+        .iter()
+        .copied()
+        .find(|run| run.state == RunState::Passed);
+    if runs.iter().any(|run| {
+        run.state == RunState::Running
+            && newest_decided.is_none_or(|decided| run.run >= decided.run)
+    }) {
+        verdict.running = true;
+    }
+    let relevant: Vec<&BaseRun> = runs
+        .iter()
+        .copied()
+        .filter(|run| newest_decided.is_none_or(|decided| run.run >= decided.run))
+        .collect();
+    let has_failure = record_workflow_jobs(workflow, &relevant, run_jobs, verdict);
+    if let Some(passed_run) = newest_passed {
+        verdict.passed_workflows.push(PassedWorkflow {
+            workflow: workflow.to_owned(),
+            commit: passed_run.commit.clone(),
+            run: passed_run.run,
+        });
+        if !has_failure && newest_decided.is_some_and(|decided| decided.run == passed_run.run) {
+            verdict.passed.push(workflow.to_owned());
+        }
+    }
+}
+
+fn record_workflow_jobs(
+    workflow: &str,
+    relevant: &[&BaseRun],
+    run_jobs: &BTreeMap<u64, Vec<RunJob>>,
+    verdict: &mut JobVerdict,
+) -> bool {
+    let mut active_by_run: BTreeMap<u64, (&BaseRun, Vec<FailedJob>)> = BTreeMap::new();
+    let mut waiting_by_run: BTreeMap<u64, (&BaseRun, Vec<FailedJob>)> = BTreeMap::new();
+    for job_name in candidate_job_names(relevant, run_jobs) {
+        match decide_job(&job_name, relevant, run_jobs) {
+            JobDecision::Passed { commit, run } => verdict.resolved_jobs.push(ResolvedJob {
+                workflow: workflow.to_owned(),
+                job: job_name,
+                commit,
+                run,
+            }),
+            JobDecision::Failed {
+                run,
+                job,
+                waiting: false,
+            } => push_grouped_failure(&mut active_by_run, run, job),
+            JobDecision::Failed {
+                run,
+                job,
+                waiting: true,
+            } => push_grouped_failure(&mut waiting_by_run, run, job),
+            JobDecision::Undecided => {}
+        }
+    }
+    let has_failure = !active_by_run.is_empty() || !waiting_by_run.is_empty();
+    for (_, (run, jobs)) in active_by_run.into_iter().rev() {
+        verdict.active_failures.push(failure(run, jobs));
+    }
+    for (_, (run, jobs)) in waiting_by_run.into_iter().rev() {
+        verdict.waiting_failures.push(failure(run, jobs));
+    }
+    has_failure
+}
+
+fn evaluate_status(status: &BaseRun, verdict: &mut JobVerdict) {
+    match status.state {
+        RunState::Passed => {
+            verdict.passed.push(status.workflow.clone());
+            verdict.passed_workflows.push(PassedWorkflow {
+                workflow: status.workflow.clone(),
+                commit: status.commit.clone(),
+                run: 0,
+            });
+        }
+        RunState::Failed => verdict.active_failures.push(failure(status, Vec::new())),
+        RunState::Running => verdict.running = true,
+        RunState::Undecided => {}
+    }
+}
+
+fn candidate_job_names(
+    relevant_runs: &[&BaseRun],
+    run_jobs: &BTreeMap<u64, Vec<RunJob>>,
+) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for run in relevant_runs {
+        if let Some(jobs) = run_jobs.get(&run.run) {
+            for job in jobs {
+                names.insert(job.name().to_owned());
+            }
+            if run.state == RunState::Failed && !run_has_failed_job(jobs) {
+                names.insert(WHOLE_RUN.to_owned());
+            }
+        } else if run.state == RunState::Failed {
+            names.insert(WHOLE_RUN.to_owned());
+        }
+    }
+    names
+}
+
+fn run_has_failed_job(jobs: &[RunJob]) -> bool {
+    jobs.iter().any(|job| job.state() == JobState::Failed)
+}
+
+enum JobInRun {
+    Passed,
+    Failed(FailedJob),
+    Running,
+    Undecided,
+}
+
+enum JobDecision<'a> {
+    Passed {
+        commit: String,
+        run: u64,
+    },
+    Failed {
+        run: &'a BaseRun,
+        job: FailedJob,
+        waiting: bool,
+    },
+    Undecided,
+}
+
+fn decide_job<'a>(
+    job_name: &str,
+    relevant_runs: &[&'a BaseRun],
+    run_jobs: &BTreeMap<u64, Vec<RunJob>>,
+) -> JobDecision<'a> {
+    let mut pending_newer_run = false;
+    for &run in relevant_runs {
+        match job_outcome_in_run(job_name, run, run_jobs) {
+            JobInRun::Passed => {
+                return JobDecision::Passed {
+                    commit: run.commit.clone(),
+                    run: run.run,
+                };
+            }
+            JobInRun::Failed(job) => {
+                return JobDecision::Failed {
+                    run,
+                    job,
+                    waiting: pending_newer_run,
+                };
+            }
+            JobInRun::Running => pending_newer_run = true,
+            JobInRun::Undecided => {}
+        }
+    }
+    JobDecision::Undecided
+}
+
+fn job_outcome_in_run(
+    job_name: &str,
+    run: &BaseRun,
+    run_jobs: &BTreeMap<u64, Vec<RunJob>>,
+) -> JobInRun {
+    if let Some(jobs) = run_jobs.get(&run.run) {
+        let mut matched = jobs.iter().filter(|entry| entry.name() == job_name);
+        if let Some(first) = matched.next() {
+            return strongest_job_outcome(std::iter::once(first).chain(matched));
+        }
+        if job_name == WHOLE_RUN && run.state == RunState::Failed && !run_has_failed_job(jobs) {
+            return JobInRun::Failed(FailedJob {
+                job: WHOLE_RUN.into(),
+                ..FailedJob::default()
+            });
+        }
+        return match run.state {
+            RunState::Passed => JobInRun::Passed,
+            RunState::Running => JobInRun::Running,
+            RunState::Failed | RunState::Undecided => JobInRun::Undecided,
+        };
+    }
+    match run.state {
+        RunState::Passed => JobInRun::Passed,
+        RunState::Running => JobInRun::Running,
+        RunState::Failed if job_name == WHOLE_RUN => JobInRun::Failed(FailedJob {
+            job: WHOLE_RUN.into(),
+            ..FailedJob::default()
+        }),
+        RunState::Failed | RunState::Undecided => JobInRun::Undecided,
+    }
+}
+
+fn strongest_job_outcome<'a>(entries: impl Iterator<Item = &'a RunJob>) -> JobInRun {
+    let mut outcome = JobInRun::Undecided;
+    for entry in entries {
+        match entry {
+            RunJob::Failed(job) => return JobInRun::Failed(job.clone()),
+            RunJob::Running(_) => outcome = JobInRun::Running,
+            RunJob::Passed(_) if !matches!(outcome, JobInRun::Running) => {
+                outcome = JobInRun::Passed;
+            }
+            RunJob::Passed(_) | RunJob::Undecided(_) => {}
+        }
+    }
+    outcome
+}
+
+fn push_grouped_failure<'a>(
+    grouped: &mut BTreeMap<u64, (&'a BaseRun, Vec<FailedJob>)>,
+    run: &'a BaseRun,
+    job: FailedJob,
+) {
+    grouped
+        .entry(run.run)
+        .or_insert_with(|| (run, Vec::new()))
+        .1
+        .push(job);
+}
+
+fn newest_verdict_commit(verdict: &JobVerdict) -> Option<String> {
+    let failing_commit = verdict
+        .active_failures
+        .iter()
+        .chain(&verdict.waiting_failures)
+        .max_by_key(|failure| failure.run)
+        .map(|failure| failure.commit.clone());
+    if failing_commit.is_some() {
+        return failing_commit;
+    }
+    verdict
+        .passed_workflows
+        .iter()
+        .max_by_key(|workflow| workflow.run)
+        .map(|workflow| workflow.commit.clone())
+        .or_else(|| {
+            verdict
+                .resolved_jobs
+                .iter()
+                .max_by_key(|job| job.run)
+                .map(|job| job.commit.clone())
+        })
+}
+
+/// What a look changes: workflows whose repairs a green run closes, individual jobs resolved
+/// by a newer passing job, open repairs superseded by a failure at or after their land, and
+/// failures needing a new thread.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Plan {
     pub closed: Vec<String>,
+    pub resolved: Vec<ResolvedJob>,
     pub superseded: Vec<SupersededRepair>,
     pub start: Vec<Failure>,
 }
@@ -404,28 +816,32 @@ pub fn signatures_differ(existing: Option<&str>, current: Option<&str>) -> bool 
 /// still red at or after its land is superseded so a new fix-forward starts; while the
 /// failing commit strictly predates the land, the repair stays open waiting for CI.
 pub fn plan(open: &[OpenRepair], passed: &[String], failures: &[Failure]) -> Plan {
-    let closed = passed
+    let verdict = JobVerdict {
+        passed: passed.to_vec(),
+        active_failures: failures.to_vec(),
+        ..JobVerdict::default()
+    };
+    plan_for_verdict(open, &verdict)
+}
+
+/// Plans repair closures, individual resolved-job closures, reopens and new threads from a
+/// per-job [`JobVerdict`] (#558, #587).
+pub fn plan_for_verdict(open: &[OpenRepair], verdict: &JobVerdict) -> Plan {
+    let closed: Vec<String> = verdict
+        .passed
         .iter()
         .filter(|workflow| open.iter().any(|repair| repair.workflow == **workflow))
         .cloned()
         .collect();
+    let resolved = collect_resolved_repairs(open, verdict, &closed);
     let mut superseded = Vec::new();
     for repair in open {
-        let Some(failure) = failures
-            .iter()
-            .find(|failure| failure.workflow == repair.workflow)
-        else {
+        if repair_is_closed(repair, &closed, &resolved)
+            || repair_is_waiting(repair, &verdict.waiting_failures)
+        {
             continue;
-        };
-        let matching_job = failure.jobs.iter().find(|job| job.job == repair.job);
-        let stale = match matching_job {
-            Some(job) => is_repair_superseded(repair, failure, job),
-            None => {
-                repair.thread_state == RepairThreadState::Landed
-                    && effective_commit_order(repair, &failure.commit) == CommitOrder::AtOrAfterLand
-            }
-        };
-        if stale {
+        }
+        if repair_is_superseded_by_failures(repair, &verdict.active_failures) {
             superseded.push(SupersededRepair {
                 workflow: repair.workflow.clone(),
                 job: repair.job.clone(),
@@ -435,7 +851,8 @@ pub fn plan(open: &[OpenRepair], passed: &[String], failures: &[Failure]) -> Pla
             });
         }
     }
-    let start = failures
+    let start = verdict
+        .active_failures
         .iter()
         .filter_map(|failure| {
             let jobs: Vec<FailedJob> = failure
@@ -456,9 +873,99 @@ pub fn plan(open: &[OpenRepair], passed: &[String], failures: &[Failure]) -> Pla
         .collect();
     Plan {
         closed,
+        resolved,
         superseded,
         start,
     }
+}
+
+fn collect_resolved_repairs(
+    open: &[OpenRepair],
+    verdict: &JobVerdict,
+    closed: &[String],
+) -> Vec<ResolvedJob> {
+    let mut resolved: Vec<ResolvedJob> = Vec::new();
+    for repair in open {
+        if closed.contains(&repair.workflow) {
+            continue;
+        }
+        let candidate = verdict
+            .resolved_jobs
+            .iter()
+            .find(|item| {
+                item.workflow == repair.workflow
+                    && item.job == repair.job
+                    && (item.run == 0 || repair.run == 0 || item.run >= repair.run)
+            })
+            .cloned()
+            .or_else(|| resolved_by_passed_workflow(repair, verdict));
+        let Some(item) = candidate else {
+            continue;
+        };
+        if !resolved
+            .iter()
+            .any(|existing| existing.workflow == item.workflow && existing.job == item.job)
+        {
+            resolved.push(item);
+        }
+    }
+    resolved
+}
+
+fn resolved_by_passed_workflow(repair: &OpenRepair, verdict: &JobVerdict) -> Option<ResolvedJob> {
+    let passed = verdict.passed_workflows.iter().find(|workflow| {
+        workflow.workflow == repair.workflow
+            && (workflow.run == 0 || repair.run == 0 || workflow.run >= repair.run)
+    })?;
+    let failed_after = verdict
+        .active_failures
+        .iter()
+        .chain(&verdict.waiting_failures)
+        .any(|failure| {
+            failure.workflow == repair.workflow
+                && failure.run > passed.run
+                && failure.jobs.iter().any(|job| job.job == repair.job)
+        });
+    (!failed_after).then(|| ResolvedJob {
+        workflow: passed.workflow.clone(),
+        job: repair.job.clone(),
+        commit: passed.commit.clone(),
+        run: passed.run,
+    })
+}
+
+fn repair_is_closed(repair: &OpenRepair, closed: &[String], resolved: &[ResolvedJob]) -> bool {
+    closed.contains(&repair.workflow)
+        || resolved.iter().any(|item| {
+            item.workflow == repair.workflow
+                && item.job == repair.job
+                && (item.run == 0 || repair.run == 0 || item.run >= repair.run)
+        })
+}
+
+fn repair_is_waiting(repair: &OpenRepair, waiting_failures: &[Failure]) -> bool {
+    waiting_failures.iter().any(|failure| {
+        failure.workflow == repair.workflow && failure.jobs.iter().any(|job| job.job == repair.job)
+    })
+}
+
+fn repair_is_superseded_by_failures(repair: &OpenRepair, active_failures: &[Failure]) -> bool {
+    if let Some((failure, job)) = active_failures.iter().find_map(|failure| {
+        (failure.workflow == repair.workflow)
+            .then(|| failure.jobs.iter().find(|job| job.job == repair.job))
+            .flatten()
+            .map(|job| (failure, job))
+    }) {
+        return is_repair_superseded(repair, failure, job);
+    }
+    active_failures
+        .iter()
+        .filter(|failure| failure.workflow == repair.workflow)
+        .max_by_key(|failure| failure.run)
+        .is_some_and(|failure| {
+            repair.thread_state == RepairThreadState::Landed
+                && effective_commit_order(repair, &failure.commit) == CommitOrder::AtOrAfterLand
+        })
 }
 
 fn effective_commit_order(repair: &OpenRepair, failing_commit: &str) -> CommitOrder {
@@ -612,6 +1119,37 @@ pub fn view(verdict: &Verdict, failures: &[Failure]) -> BaseCi {
         })
         .collect();
     let state = if !verdict.failed.is_empty() {
+        BaseCiState::Failed
+    } else if verdict.running {
+        BaseCiState::Running
+    } else if verdict.passed.is_empty() {
+        BaseCiState::NotRun
+    } else {
+        BaseCiState::Green
+    };
+    BaseCi {
+        state,
+        commit: verdict.commit.clone(),
+        failing,
+        running: verdict.running,
+    }
+}
+
+/// What the project shows from a per-job [`JobVerdict`] (#587): any job whose newest
+/// finished run failed keeps the base failing until a newer run passes that job.
+pub fn view_for_verdict(verdict: &JobVerdict) -> BaseCi {
+    let failing: Vec<String> = verdict
+        .active_failures
+        .iter()
+        .chain(&verdict.waiting_failures)
+        .flat_map(|failure| {
+            failure
+                .jobs
+                .iter()
+                .map(|job| job_label(&failure.workflow, &job.job))
+        })
+        .collect();
+    let state = if !failing.is_empty() {
         BaseCiState::Failed
     } else if verdict.running {
         BaseCiState::Running
@@ -1563,6 +2101,202 @@ test collapse_link::collapse_link_and_unlink_round_trip_with_live_server has bee
         assert_eq!(
             error_signature("##[error]The operation was canceled."),
             None
+        );
+    }
+
+    // Risk (#587): when commit A's job fails or times out and a newer, still-running run on
+    // commit B has already passed the same job, the watcher must NOT reopen or start a
+    // repair for A and must close any open repair for A as resolved by B; when B's matching
+    // job is still queued or running, it must wait for B instead of starting a repair.
+    #[test]
+    fn per_job_evaluation_resolves_passed_jobs_and_waits_for_running_jobs_on_newer_runs() {
+        let macos = "macOS (build, clippy, test)";
+        let windows = "Windows (build, clippy, test)";
+        let linux = "Linux (build, clippy, test)";
+        let run_a = BaseRun {
+            commit: "a4d9b88000000000000000000000000000000000".into(),
+            ..run("CI", 100, RunState::Failed)
+        };
+        let run_b = BaseRun {
+            commit: "33426bb000000000000000000000000000000000".into(),
+            ..run("CI", 101, RunState::Running)
+        };
+        let open_macos = OpenRepair {
+            workflow: "CI".into(),
+            job: macos.into(),
+            commit: "6351d7bd81110000000000000000000000000000".into(),
+            run: 90,
+            thread: 205,
+            landed_commit: Some("520dcfcfed320000000000000000000000000000".into()),
+            signature: Some("timed out: collapse_link".into()),
+            thread_state: RepairThreadState::Landed,
+            commit_order: CommitOrder::AtOrAfterLand,
+        };
+        let timed_out_macos = FailedJob {
+            timed_out: true,
+            ..failed_job(macos)
+        };
+
+        // 1. Exact #587 sequence: macOS timed out on A, passed on still-running B while
+        // Windows is still in progress. No repair starts, open repair for A closes as
+        // resolved by B, and the base CI view transitions from Failed to Running.
+        let mut jobs = BTreeMap::new();
+        jobs.insert(
+            100,
+            vec![
+                RunJob::Failed(timed_out_macos.clone()),
+                RunJob::Passed(linux.into()),
+                RunJob::Passed(windows.into()),
+            ],
+        );
+        jobs.insert(
+            101,
+            vec![
+                RunJob::Passed(macos.into()),
+                RunJob::Passed(linux.into()),
+                RunJob::Running(windows.into()),
+            ],
+        );
+        let resolved_verdict = evaluate_jobs(&[run_a.clone(), run_b.clone()], &jobs);
+        assert!(resolved_verdict.active_failures.is_empty());
+        assert!(resolved_verdict.waiting_failures.is_empty());
+        assert!(resolved_verdict.running);
+        let resolved_plan = plan_for_verdict(std::slice::from_ref(&open_macos), &resolved_verdict);
+        assert!(resolved_plan.start.is_empty());
+        assert!(resolved_plan.superseded.is_empty());
+        assert_eq!(
+            resolved_plan.resolved,
+            vec![ResolvedJob {
+                workflow: "CI".into(),
+                job: macos.into(),
+                commit: run_b.commit.clone(),
+                run: 101,
+            }]
+        );
+        let resolved_view = view_for_verdict(&resolved_verdict);
+        assert_eq!(resolved_view.state, BaseCiState::Running);
+        assert!(resolved_view.failing.is_empty());
+        assert!(resolved_view.running);
+
+        // 2. While B's matching macOS job is still queued or running, wait for it: neither
+        // start a new repair nor reopen the landed repair, while keeping base view Failed.
+        jobs.insert(
+            101,
+            vec![
+                RunJob::Running(macos.into()),
+                RunJob::Passed(linux.into()),
+                RunJob::Running(windows.into()),
+            ],
+        );
+        let waiting_verdict = evaluate_jobs(&[run_a.clone(), run_b.clone()], &jobs);
+        assert!(waiting_verdict.active_failures.is_empty());
+        assert_eq!(waiting_verdict.waiting_failures.len(), 1);
+        let waiting_plan_no_open = plan_for_verdict(&[], &waiting_verdict);
+        assert!(waiting_plan_no_open.start.is_empty());
+        let waiting_plan_with_open =
+            plan_for_verdict(std::slice::from_ref(&open_macos), &waiting_verdict);
+        assert!(waiting_plan_with_open.start.is_empty());
+        assert!(waiting_plan_with_open.superseded.is_empty());
+        assert!(waiting_plan_with_open.resolved.is_empty());
+        let waiting_view = view_for_verdict(&waiting_verdict);
+        assert_eq!(waiting_view.state, BaseCiState::Failed);
+        assert_eq!(waiting_view.commit.as_deref(), Some(run_a.commit.as_str()));
+        assert_eq!(waiting_view.failing, [format!("CI · {macos}")]);
+        assert!(waiting_view.running);
+
+        // 3. Same when B is freshly queued with no jobs created yet.
+        jobs.insert(101, Vec::new());
+        let queued_verdict = evaluate_jobs(&[run_a.clone(), run_b.clone()], &jobs);
+        assert!(queued_verdict.active_failures.is_empty());
+        assert_eq!(queued_verdict.waiting_failures.len(), 1);
+        assert!(plan_for_verdict(&[], &queued_verdict).start.is_empty());
+
+        // 4. Mixed in-progress run: macOS passed (closes its repair), Linux failed (starts
+        // repair immediately), Windows still running.
+        jobs.insert(
+            101,
+            vec![
+                RunJob::Passed(macos.into()),
+                RunJob::Failed(failed_job(linux)),
+                RunJob::Running(windows.into()),
+            ],
+        );
+        let mixed_verdict = evaluate_jobs(&[run_a.clone(), run_b.clone()], &jobs);
+        let mixed_plan = plan_for_verdict(std::slice::from_ref(&open_macos), &mixed_verdict);
+        assert_eq!(mixed_plan.resolved.len(), 1);
+        assert_eq!(mixed_plan.resolved[0].job, macos);
+        assert!(mixed_plan.superseded.is_empty());
+        assert_eq!(mixed_plan.start.len(), 1);
+        assert_eq!(mixed_plan.start[0].run, 101);
+        assert_eq!(mixed_plan.start[0].jobs, vec![failed_job(linux)]);
+        assert_eq!(view_for_verdict(&mixed_verdict).state, BaseCiState::Failed);
+
+        // 5. Push-cancelled run B passed macOS before cancellation, and run C is now running
+        // macOS: newest finished outcome for macOS is B (Passed), so open repair closes.
+        let run_b_cancelled = BaseRun {
+            state: RunState::Undecided,
+            ..run_b.clone()
+        };
+        let run_c = BaseRun {
+            commit: "4455667000000000000000000000000000000000".into(),
+            ..run("CI", 102, RunState::Running)
+        };
+        let mut chain_jobs = BTreeMap::new();
+        chain_jobs.insert(100, vec![RunJob::Failed(timed_out_macos)]);
+        chain_jobs.insert(
+            101,
+            vec![
+                RunJob::Passed(macos.into()),
+                RunJob::Undecided(windows.into()),
+            ],
+        );
+        chain_jobs.insert(102, vec![RunJob::Running(macos.into())]);
+        let chain_verdict = evaluate_jobs(&[run_a, run_b_cancelled, run_c], &chain_jobs);
+        let chain_plan = plan_for_verdict(std::slice::from_ref(&open_macos), &chain_verdict);
+        assert!(chain_plan.start.is_empty());
+        assert!(chain_plan.superseded.is_empty());
+        assert_eq!(chain_plan.resolved.len(), 1);
+        assert_eq!(chain_plan.resolved[0].run, 101);
+
+        // 6. runs_to_inspect reads newest failed run + newer running runs, and skips clean
+        // green workflows with nothing running.
+        let inspect = runs_to_inspect(
+            &[
+                run("Green", 10, RunState::Passed),
+                run("CI", 100, RunState::Failed),
+                run("CI", 101, RunState::Running),
+                run("CI", 102, RunState::Running),
+                run("Fresh", 200, RunState::Running),
+            ],
+            1,
+        );
+        assert_eq!(inspect, vec![102, 100, 200]);
+
+        // 7. job_state classification covers running, passed, failed, timeout, undecided.
+        assert_eq!(job_state(Some("queued"), None, false), JobState::Running);
+        assert_eq!(
+            job_state(Some("in_progress"), None, false),
+            JobState::Running
+        );
+        assert_eq!(
+            job_state(Some("completed"), Some("success"), false),
+            JobState::Passed
+        );
+        assert_eq!(
+            job_state(Some("completed"), Some("failure"), false),
+            JobState::Failed
+        );
+        assert_eq!(
+            job_state(Some("completed"), Some("cancelled"), true),
+            JobState::Failed
+        );
+        assert_eq!(
+            job_state(Some("completed"), Some("cancelled"), false),
+            JobState::Undecided
+        );
+        assert_eq!(
+            job_state(Some("completed"), Some("skipped"), false),
+            JobState::Undecided
         );
     }
 }

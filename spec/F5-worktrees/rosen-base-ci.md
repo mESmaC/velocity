@@ -18,13 +18,14 @@ A commit status counts as a workflow named for its context, except `velocity/int
 | queued or in progress; a status of `pending` | running |
 | anything else, such as a push-cancelled or `skipped` run | nothing |
 
-The newest run of each workflow that passed or failed decides that workflow.
-An older failure under a newer pass is fixed, a run still going changes nothing until it finishes, and a run cancelled by a newer push is superseded rather than a failure.
+Each job is decided by the newest run of its workflow in which that job finished (passed or failed), whether or not the rest of that run has finished (#587).
+An older failure under a newer passing run or a newer run whose matching job already passed is resolved, and a run cancelled by a newer push is superseded rather than a failure.
 GitHub reports a job that hits its `timeout-minutes` as `cancelled`, so for cancelled runs newer than a workflow's latest decided run Velocity inspects the run's jobs (#584).
 A job failed when it concluded `failure` or `timed_out`, or when it concluded `cancelled` and timed out; a job cancelled because another failed or because a newer push superseded it did not.
 A cancelled job counts as timed out when its check run has an annotation matching `has exceeded the maximum execution time`, or, if annotations cannot be read, when no newer run of the same workflow exists on the branch and the job ran at least as long as its `timeout-minutes` read from the workflow file at that commit.
-For a workflow whose deciding run failed, Velocity reads that run's jobs.
+For each workflow, Velocity reads the jobs of its newest failed run and of any newer in-progress runs (up to five per workflow), in addition to any newer cancelled runs checked for timeouts (#587).
 A failed run with no failed job, and a failed status, is one failure named for the workflow.
+If a newer run's matching job is still queued or running, Velocity waits for that job to finish before starting or reopening a repair, while still showing the base as failing until the job passes (#587).
 
 **The fix-forward thread.**
 A failed job on the base is treated like a confirmed integration failure, whichever operating system it ran on.
@@ -45,6 +46,7 @@ The repair and its thread's opening prompt are saved together before the thread 
 
 **Closing.**
 A workflow whose deciding run passed has all of its repairs closed, so the fix landing closes them with no manual step.
+A job that passes in a newer run closes open repairs for that job immediately, even while other jobs in the newer run are still queued or running (#587).
 A landed repair whose job no longer fails in a run at or after its land is closed as superseded even if another job in that workflow failed.
 A later failure of that job is then a new failure with its own thread.
 

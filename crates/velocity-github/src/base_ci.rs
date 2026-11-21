@@ -9,18 +9,22 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use velocity_core::base_ci::{
-    self, BaseRun, CancelledJobEvidence, FailedJob, Failure, RunCandidateInput, RunState,
+    self, BaseRun, CancelledJobEvidence, FailedJob, Failure, JobState, RunCandidateInput, RunJob,
+    RunState,
 };
 
 use crate::GitHubCommandError;
 use crate::workflow_runs::{Annotation, WorkflowClient, WorkflowJob, WorkflowRun};
 
-/// How many of the branch's newest runs one look reads. Only the newest finished run of
-/// each workflow decides, so this covers several workflows with runs queued behind them.
+/// How many of the branch's newest runs one look reads. This covers several workflows with
+/// runs queued or running behind them.
 const RUNS_READ: usize = 50;
 /// Cap on cancelled runs inspected per workflow in one look so a burst of push-cancels
 /// cannot flood GitHub with job/annotation reads (#584).
 const MAX_CANCELLED_CHECKS_PER_WORKFLOW: usize = 5;
+/// Cap on in-progress runs inspected per workflow in one look so a backlog of queued runs
+/// cannot flood GitHub with job reads (#587).
+const MAX_RUNNING_CHECKS_PER_WORKFLOW: usize = 5;
 /// Cap on cancelled jobs whose check-run annotations are read in one run (#584).
 const MAXIMUM_ANNOTATED_JOBS: usize = 30;
 
@@ -29,13 +33,12 @@ pub struct BaseCiWatch {
     client: WorkflowClient,
 }
 
-/// Runs on the base branch together with any cancelled-run jobs already inspected for
-/// timeouts, avoiding redundant GitHub requests in the same look (#584).
+/// Runs on the base branch together with inspected per-run jobs, avoiding redundant GitHub
+/// requests in the same look (#584, #587).
 #[derive(Clone, Debug, Default)]
 pub struct BaseRunSnapshot {
     pub runs: Vec<BaseRun>,
-    resolved_jobs: BTreeMap<u64, Vec<FailedJob>>,
-    workflow_paths: BTreeMap<u64, String>,
+    pub run_jobs: BTreeMap<u64, Vec<RunJob>>,
 }
 
 /// A failed run's failed steps' output, and where the whole of it was saved.
@@ -89,14 +92,11 @@ impl BaseCiWatch {
             }
             runs.push(base_run(raw));
         }
-        let resolved_jobs =
+        let mut run_jobs =
             self.promote_timed_out_runs(&mut runs, &cancelled_ids, &workflow_paths)?;
+        self.inspect_relevant_runs(&runs, &workflow_paths, &mut run_jobs)?;
         runs.extend(self.statuses(branch)?);
-        Ok(BaseRunSnapshot {
-            runs,
-            resolved_jobs,
-            workflow_paths,
-        })
+        Ok(BaseRunSnapshot { runs, run_jobs })
     }
 
     fn promote_timed_out_runs(
@@ -104,7 +104,7 @@ impl BaseCiWatch {
         runs: &mut [BaseRun],
         cancelled_ids: &HashSet<u64>,
         workflow_paths: &BTreeMap<u64, String>,
-    ) -> Result<BTreeMap<u64, Vec<FailedJob>>, GitHubCommandError> {
+    ) -> Result<BTreeMap<u64, Vec<RunJob>>, GitHubCommandError> {
         let inputs: Vec<RunCandidateInput<'_>> = runs
             .iter()
             .map(|run| RunCandidateInput {
@@ -115,7 +115,7 @@ impl BaseCiWatch {
             })
             .collect();
         let candidates = base_ci::cancelled_candidates(&inputs);
-        let mut resolved_jobs = BTreeMap::new();
+        let mut run_jobs = BTreeMap::new();
         let mut resolved_workflows: HashSet<String> = HashSet::new();
         let mut checked_per_workflow: BTreeMap<String, usize> = BTreeMap::new();
         for candidate in candidates {
@@ -132,19 +132,49 @@ impl BaseCiWatch {
             let Some(run) = runs.iter_mut().find(|entry| entry.run == candidate.run) else {
                 continue;
             };
-            let jobs = self.inspect_run_failed_jobs(
+            let jobs = self.inspect_run_jobs(
                 run.run,
                 &run.commit,
                 workflow_paths.get(&run.run).map(String::as_str),
                 candidate.has_newer_workflow_run,
             )?;
-            if !jobs.is_empty() {
+            let has_failure = jobs.iter().any(|job| job.state() == JobState::Failed);
+            run_jobs.insert(run.run, jobs);
+            if has_failure {
                 run.state = RunState::Failed;
-                resolved_jobs.insert(run.run, jobs);
                 resolved_workflows.insert(candidate.workflow);
             }
         }
-        Ok(resolved_jobs)
+        Ok(run_jobs)
+    }
+
+    /// Reads jobs for each workflow's newest failed run and any newer in-progress runs so
+    /// each job is decided by the newest run in which that job finished (#587).
+    fn inspect_relevant_runs(
+        &self,
+        runs: &[BaseRun],
+        workflow_paths: &BTreeMap<u64, String>,
+        run_jobs: &mut BTreeMap<u64, Vec<RunJob>>,
+    ) -> Result<(), GitHubCommandError> {
+        for run_id in base_ci::runs_to_inspect(runs, MAX_RUNNING_CHECKS_PER_WORKFLOW) {
+            if run_jobs.contains_key(&run_id) {
+                continue;
+            }
+            let Some(run) = runs.iter().find(|entry| entry.run == run_id) else {
+                continue;
+            };
+            let has_newer = runs
+                .iter()
+                .any(|other| other.workflow == run.workflow && other.run > run.run);
+            let jobs = self.inspect_run_jobs(
+                run.run,
+                &run.commit,
+                workflow_paths.get(&run.run).map(String::as_str),
+                has_newer,
+            )?;
+            run_jobs.insert(run.run, jobs);
+        }
+        Ok(())
     }
 
     /// The tip's commit statuses, which is how CI other than GitHub Actions reports.
@@ -188,48 +218,37 @@ impl BaseCiWatch {
             .collect())
     }
 
-    /// The jobs that failed or timed out in the run's latest attempt, each with its first
-    /// failed (or cancelled-on-timeout) step (#584).
-    pub fn failed_jobs(
-        &self,
-        snapshot: &BaseRunSnapshot,
-        run: &BaseRun,
-    ) -> Result<Vec<FailedJob>, GitHubCommandError> {
-        if let Some(jobs) = snapshot.resolved_jobs.get(&run.run) {
-            return Ok(jobs.clone());
-        }
-        let has_newer_workflow_run = snapshot
-            .runs
-            .iter()
-            .any(|other| other.workflow == run.workflow && other.run > run.run);
-        self.inspect_run_failed_jobs(
-            run.run,
-            &run.commit,
-            snapshot.workflow_paths.get(&run.run).map(String::as_str),
-            has_newer_workflow_run,
-        )
-    }
-
-    fn inspect_run_failed_jobs(
+    fn inspect_run_jobs(
         &self,
         run: u64,
         commit: &str,
         workflow_path: Option<&str>,
         has_newer_workflow_run: bool,
-    ) -> Result<Vec<FailedJob>, GitHubCommandError> {
+    ) -> Result<Vec<RunJob>, GitHubCommandError> {
         let jobs = self.client.jobs(run)?;
         let timed_out_cancelled =
             self.timed_out_cancelled_indices(&jobs, commit, workflow_path, has_newer_workflow_run);
-        let mut failed = Vec::new();
+        let mut inspected = Vec::with_capacity(jobs.len());
         for (index, job) in jobs.into_iter().enumerate() {
-            if base_ci::job_failed(job.conclusion.as_deref()) {
-                let timed_out = base_ci::job_timed_out_directly(job.conclusion.as_deref());
-                failed.push(failed_job(job, timed_out));
-            } else if timed_out_cancelled.contains(&index) {
-                failed.push(failed_job(job, true));
-            }
+            let timed_out_cancelled = timed_out_cancelled.contains(&index);
+            let state = base_ci::job_state(
+                job.status.as_deref(),
+                job.conclusion.as_deref(),
+                timed_out_cancelled,
+            );
+            let entry = match state {
+                JobState::Passed => RunJob::Passed(job.name),
+                JobState::Failed => {
+                    let timed_out = timed_out_cancelled
+                        || base_ci::job_timed_out_directly(job.conclusion.as_deref());
+                    RunJob::Failed(failed_job(job, timed_out))
+                }
+                JobState::Running => RunJob::Running(job.name),
+                JobState::Undecided => RunJob::Undecided(job.name),
+            };
+            inspected.push(entry);
         }
-        Ok(failed)
+        Ok(inspected)
     }
 
     fn timed_out_cancelled_indices(
@@ -244,7 +263,12 @@ impl BaseCiWatch {
         let mut cancelled_indices: Vec<(usize, Option<u64>)> = jobs
             .iter()
             .enumerate()
-            .filter(|(_, job)| job.conclusion.as_deref() == Some("cancelled"))
+            .filter(|(_, job)| {
+                job.status
+                    .as_deref()
+                    .is_none_or(|state| state == "completed")
+                    && job.conclusion.as_deref() == Some("cancelled")
+            })
             .map(|(index, job)| {
                 let elapsed =
                     elapsed_seconds(job.started_at.as_deref(), job.completed_at.as_deref());

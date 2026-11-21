@@ -61,6 +61,8 @@ impl WorkflowRun {
 pub(crate) struct WorkflowJob {
     pub id: u64,
     pub name: String,
+    #[serde(default)]
+    pub status: Option<String>,
     pub conclusion: Option<String>,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
