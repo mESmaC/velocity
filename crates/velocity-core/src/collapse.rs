@@ -1,6 +1,6 @@
 //! Collapse pages for a project whose Rosen mirror is a Collapse repository (#429).
 //!
-//! A land's commit page is immutable on Collapse, so it is the link to share. Only a
+//! A land's page is immutable on Collapse, so it is the link to share. Only a
 //! recognised Collapse remote with a plain `owner/repository` path produces a page, so
 //! an arbitrary or credential-bearing mirror URL never reaches the browser.
 
@@ -113,13 +113,13 @@ pub fn unmatched_project_notice(repository: &str) -> String {
     )
 }
 
-/// A landed commit's page, which Collapse caches as immutable.
+/// A land's page (`/<owner>/<name>/land/<commit>`), which Collapse caches as immutable (#573).
 pub fn land_page(repository: &str, commit: &str) -> Option<String> {
     if !is_commit(commit) {
         return None;
     }
     Some(format!(
-        "{}/commit/{}",
+        "{}/land/{}",
         repository_page(repository)?,
         commit.to_ascii_lowercase()
     ))
@@ -238,4 +238,22 @@ fn valid_segment(segment: &str) -> bool {
 
 fn is_commit(commit: &str) -> bool {
     (7..=64).contains(&commit.len()) && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::land_page;
+
+    /// Risk (#573): Collapse serves landed commits at `/<owner>/<name>/land/<commit>`
+    /// (Collapse C5), not `/commit/<commit>`, which returns 404.
+    #[test]
+    fn land_page_uses_land_route() {
+        assert_eq!(
+            land_page("mESmaC/velocity", "6079AA13df4d"),
+            Some("https://collapse.sh/mESmaC/velocity/land/6079aa13df4d".into())
+        );
+        assert_eq!(land_page("mESmaC/velocity", "short"), None);
+        assert_eq!(land_page("mESmaC/velocity", "not-a-hex-sha"), None);
+        assert_eq!(land_page("not-a-repo", "6079aa13df4d"), None);
+    }
 }

@@ -41,7 +41,7 @@
   The warning clears on the next successful push, including a recovery after a server restart, and a later rejection starts a new incident.
   When the mirror remote is a Collapse repository, Velocity saves its `owner/repository` on each mirror refresh and offers Open on Collapse (#429).
   The project switcher menu and the palette open the repository page at `https://collapse.sh/<owner>/<repository>`.
-  A standing land opens its commit page at `…/commit/<commit>`, which Collapse caches as immutable, from the Rosen status pane's Changes, the thread's land history, AIRC `merged` events and the palette entry for the selected thread.
+  A standing land opens its land page at `…/land/<commit>`, which Collapse caches as immutable, from the Rosen status pane's Changes, the thread's land history, AIRC `merged` events and the palette entry for the selected thread (#573).
   A project without a Collapse mirror shows none of these actions.
   In the reverse direction, Velocity registers the `velocity://` scheme on install and keeps a single running instance so links from Collapse reach the running window (#479).
   Opening `velocity://collapse/<owner>/<name>` focuses the local project whose Collapse mirror matches `<owner>/<name>` and opens an unsent draft thread in it.
