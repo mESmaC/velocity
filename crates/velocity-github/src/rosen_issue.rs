@@ -462,41 +462,11 @@ impl IssueClient {
         if state == Some(IssueState::Closed) && !self.rosen_commit_mirrored(commit)? {
             return Ok(false);
         }
-        let (kind, body) = match effect {
-            RosenIssueEffect::Landed { change } => (
-                "landed",
-                format!("Velocity · Rosen change `{change}` landed as commit `{commit}`."),
-            ),
-            RosenIssueEffect::Reverted { reason } => {
-                let end = reason.floor_char_boundary(32_000);
-                let output = &reason[..end];
-                let truncated = if end < reason.len() {
-                    "\n\n[Output truncated.]"
-                } else {
-                    ""
-                };
-                (
-                    "reopen",
-                    format!(
-                        "Rosen reverted landed commit `{commit}`. Reopening this issue.\n\n{output}{truncated}"
-                    ),
-                )
-            }
-            RosenIssueEffect::Reviewed { by } => (
-                "close",
-                format!(
-                    "Velocity review swarm · `{by}` reviewed Rosen commit `{commit}` and confirmed it addresses this issue."
-                ),
-            ),
-            RosenIssueEffect::Watcher => (
-                "close",
-                format!(
-                    "Velocity post-land verification · Rosen commit `{commit}` passed its post-land build. \
-                     The 30-minute review window elapsed without review coverage."
-                ),
-            ),
-        };
-        let marker = format!("<!-- velocity-rosen-issue:{kind}:{commit}:{sequence} -->");
+        let (kind, message) = rosen_issue_effect_message(commit, effect);
+        // Deduplicate across machines by `(kind, commit)`, keeping the machine-local
+        // Rosen sequence in its own diagnostic comment above the marker (#550).
+        let body = format!("{message}\n\n<!-- velocity-rosen-sequence:{sequence} -->");
+        let marker = format!("<!-- velocity-rosen-issue:{kind}:{commit} -->");
         self.sync_rosen_issue(number, &marker, &body, state)?;
         Ok(true)
     }
@@ -682,8 +652,15 @@ impl IssueClient {
         state: Option<IssueState>,
     ) -> Result<(), GitHubCommandError> {
         let issue = self.read_issue(number)?;
-        if !self.has_rosen_comment(number, marker)? {
-            self.add_issue_comment(&issue.id, &format!("{body}\n\n{marker}"))?;
+        let comments = self.issue_comment_bodies(number)?;
+        if already_closed_for_commit(&issue, state, marker, &comments) {
+            return Ok(());
+        }
+        if !comments
+            .iter()
+            .any(|existing| comment_matches_marker(existing, marker))
+        {
+            self.add_issue_comment(&issue.id, &format_marked_comment(body, marker))?;
         }
         if state.is_some()
             && issue
@@ -760,7 +737,7 @@ impl IssueClient {
         Ok(self
             .issue_comment_bodies(number)?
             .iter()
-            .any(|body| body.lines().last() == Some(marker)))
+            .any(|body| comment_matches_marker(body, marker)))
     }
 
     pub(crate) fn issue_comment_bodies(
@@ -850,12 +827,8 @@ fn unix_seconds(timestamp: &str) -> Option<u64> {
 fn awaiting_integration(comments: &[String]) -> Option<String> {
     let mut landed = None;
     for marker in comments.iter().filter_map(|body| comment_marker(body)) {
-        if let Some(rest) = marker.strip_prefix("velocity-rosen-issue:") {
-            let mut fields = rest.split(':');
-            landed = match (fields.next(), fields.next()) {
-                (Some("landed"), Some(commit)) if !commit.is_empty() => Some(commit.to_owned()),
-                _ => None,
-            };
+        if let Some((kind, commit)) = parse_rosen_issue_marker_payload(marker) {
+            landed = (kind == "landed").then(|| commit.to_owned());
         } else if marker.starts_with("velocity-no-change-review:") && !marker.ends_with(":true") {
             // A reviewer returned the issue to dispatch with remaining work, or found
             // that it needs the owner.
@@ -874,12 +847,168 @@ fn validate_commit_sha(commit: &str) -> Result<(), GitHubCommandError> {
     Ok(())
 }
 
+fn rosen_issue_effect_message(
+    commit: &str,
+    effect: RosenIssueEffect<'_>,
+) -> (&'static str, String) {
+    match effect {
+        RosenIssueEffect::Landed { change } => (
+            "landed",
+            format!("Velocity · Rosen change `{change}` landed as commit `{commit}`."),
+        ),
+        RosenIssueEffect::Reverted { reason } => {
+            let end = reason.floor_char_boundary(32_000);
+            let output = &reason[..end];
+            let truncated = if end < reason.len() {
+                "\n\n[Output truncated.]"
+            } else {
+                ""
+            };
+            (
+                "reopen",
+                format!(
+                    "Rosen reverted landed commit `{commit}`. Reopening this issue.\n\n{output}{truncated}"
+                ),
+            )
+        }
+        RosenIssueEffect::Reviewed { by } => (
+            "close",
+            format!(
+                "Velocity review swarm · `{by}` reviewed Rosen commit `{commit}` and confirmed it addresses this issue."
+            ),
+        ),
+        RosenIssueEffect::Watcher => (
+            "close",
+            format!(
+                "Velocity post-land verification · Rosen commit `{commit}` passed its post-land build. \
+                 The 30-minute review window elapsed without review coverage."
+            ),
+        ),
+    }
+}
+
+fn format_marked_comment(body: &str, marker: &str) -> String {
+    if body.lines().last().is_some_and(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with("<!-- ") && trimmed.ends_with(" -->")
+    }) {
+        format!("{body}\n{marker}")
+    } else {
+        format!("{body}\n\n{marker}")
+    }
+}
+
 fn comment_marker(body: &str) -> Option<&str> {
     body.lines()
-        .last()?
+        .rev()
+        .find(|line| !line.trim().is_empty())?
         .trim()
         .strip_prefix("<!-- ")?
         .strip_suffix(" -->")
+}
+
+fn parse_rosen_issue_marker(line: &str) -> Option<(&str, &str)> {
+    let payload = line.trim().strip_prefix("<!-- ")?.strip_suffix(" -->")?;
+    parse_rosen_issue_marker_payload(payload)
+}
+
+fn parse_rosen_issue_marker_payload(payload: &str) -> Option<(&str, &str)> {
+    let rest = payload.strip_prefix("velocity-rosen-issue:")?;
+    let mut fields = rest.split(':');
+    let kind = fields.next()?;
+    let commit = fields.next()?;
+    if kind.is_empty() || commit.is_empty() {
+        return None;
+    }
+    // Accept both deduplicated (`kind:commit`) and legacy (`kind:commit:sequence`) markers (#550).
+    match (fields.next(), fields.next()) {
+        (None, _) => Some((kind, commit)),
+        (Some(sequence), None)
+            if !sequence.is_empty() && sequence.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            Some((kind, commit))
+        }
+        _ => None,
+    }
+}
+
+fn comment_matches_marker(body: &str, marker: &str) -> bool {
+    let Some(last) = body.lines().rev().find(|line| !line.trim().is_empty()) else {
+        return false;
+    };
+    let last = last.trim();
+    if last == marker {
+        return true;
+    }
+    if let (Some((expected_kind, expected_commit)), Some((actual_kind, actual_commit))) = (
+        parse_rosen_issue_marker(marker),
+        parse_rosen_issue_marker(last),
+    ) {
+        return expected_kind == actual_kind && expected_commit.eq_ignore_ascii_case(actual_commit);
+    }
+    false
+}
+
+/// Skips a close when the issue is already closed and an existing close comment covers
+/// the same commit (#550).
+fn already_closed_for_commit(
+    issue: &GitHubIssue,
+    state: Option<IssueState>,
+    marker: &str,
+    comments: &[String],
+) -> bool {
+    if issue.state != IssueState::Closed || state != Some(IssueState::Closed) {
+        return false;
+    }
+    let Some(("close", commit)) = parse_rosen_issue_marker(marker) else {
+        return false;
+    };
+    comments
+        .iter()
+        .any(|body| close_comment_covers_commit(body, commit))
+}
+
+fn close_comment_covers_commit(body: &str, commit: &str) -> bool {
+    if let Some(marker) = comment_marker(body) {
+        if let Some(("close", existing)) = parse_rosen_issue_marker_payload(marker) {
+            return commit_matches(existing, commit);
+        }
+        if let Some(existing) = marker.strip_prefix("velocity-spec-orphaned:") {
+            return commit_matches(existing, commit);
+        }
+        if marker.starts_with("velocity-no-change-review:") && marker.ends_with(":true") {
+            return body_mentions_commit(body, commit);
+        }
+        return false;
+    }
+    let trimmed = body.trim_start();
+    let is_velocity_close = trimmed.starts_with("Velocity post-land verification · ")
+        || (trimmed.starts_with("Velocity review swarm · ")
+            && (trimmed.contains("confirmed it addresses this issue")
+                || trimmed.contains("verified already fixed")));
+    is_velocity_close && body_mentions_commit(body, commit)
+}
+
+fn commit_matches(candidate: &str, commit: &str) -> bool {
+    if candidate.eq_ignore_ascii_case(commit) {
+        return true;
+    }
+    let (short, long) = if candidate.len() <= commit.len() {
+        (candidate, commit)
+    } else {
+        (commit, candidate)
+    };
+    short.len() >= 7
+        && short.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && long.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && long
+            .get(..short.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(short))
+}
+
+fn body_mentions_commit(body: &str, commit: &str) -> bool {
+    body.split(|character: char| !character.is_ascii_hexdigit())
+        .any(|token| commit_matches(token, commit))
 }
 
 /// Comments arrive oldest first. A land marker takes precedence over any later duplicate
@@ -895,14 +1024,8 @@ fn classify_external_issue_state(
     for comment in comments {
         let timestamp = unix_seconds(&comment.created_at);
         if let Some(marker) = comment_marker(&comment.body) {
-            if let Some(rest) = marker.strip_prefix("velocity-rosen-issue:") {
-                let mut fields = rest.split(':');
-                landed = match (fields.next(), fields.next()) {
-                    (Some("landed"), Some(commit)) if !commit.is_empty() => {
-                        Some((commit.to_owned(), timestamp))
-                    }
-                    _ => None,
-                };
+            if let Some((kind, commit)) = parse_rosen_issue_marker_payload(marker) {
+                landed = (kind == "landed").then(|| (commit.to_owned(), timestamp));
                 in_progress = None;
                 continue;
             }

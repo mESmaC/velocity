@@ -9,4 +9,5 @@
   Velocity can close after the 30-minute R12 window in F7, provided the land has no review claim or objection.
   A revert cancels a pending close and reopens the issue with the culprit SHA and output.
   These effects belong to the Rosen event follower, not the checker; they survive restarts, retry failed GitHub calls and mirror lag every half minute, and reuse their comments when replayed.
+  Follow-up markers deduplicate by action kind and commit without the machine-local event sequence, and closes are skipped when the issue is already closed with a close comment covering the same commit (#550).
   Swarms with Close issues switched off leave their issues open.
