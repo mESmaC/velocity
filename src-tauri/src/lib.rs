@@ -228,6 +228,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<duty::DutyEventPublished>()
         .typ::<window::WindowStateChanged>()
         .typ::<layout::LayoutStateChanged>()
+        .typ::<layout::LayoutDeltaChanged>()
         .typ::<layout::LayoutIntentRequested>()
         .typ::<local_build::LocalBuildStatusChanged>()
         .typ::<project_health::ProjectHealthChanged>()
@@ -239,6 +240,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .typ::<skills::SkillPackInstallationsChanged>()
         .typ::<threads::ThreadStatusChanged>()
         .typ::<threads::ThreadStepRecorded>()
+        .typ::<threads::ThreadTranscriptChanged>()
         .typ::<threads::ThreadSubagentChanged>()
         .typ::<updates::UpdateStatusChanged>()
         .constant("AIRC_EVENT", airc_events::AircEventPublished::NAME)
@@ -256,6 +258,7 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         .constant("ISSUE_PANEL_EVENT", issue_panel::IssuePanelChanged::NAME)
         .constant("WINDOW_STATE_EVENT", window::WindowStateChanged::NAME)
         .constant("LAYOUT_STATE_EVENT", layout::LayoutStateChanged::NAME)
+        .constant("LAYOUT_DELTA_EVENT", layout::LayoutDeltaChanged::NAME)
         .constant("LAYOUT_INTENT_EVENT", layout::LayoutIntentRequested::NAME)
         .constant(
             "LOCAL_BUILD_STATUS_EVENT",
@@ -272,6 +275,10 @@ fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         )
         .constant("THREAD_STATUS_EVENT", threads::ThreadStatusChanged::NAME)
         .constant("THREAD_STEP_EVENT", threads::ThreadStepRecorded::NAME)
+        .constant(
+            "THREAD_TRANSCRIPT_EVENT",
+            threads::ThreadTranscriptChanged::NAME,
+        )
         .constant(
             "THREAD_SUBAGENT_EVENT",
             threads::ThreadSubagentChanged::NAME,
@@ -347,6 +354,7 @@ pub fn run() -> anyhow::Result<()> {
         duty::DutyEventPublished,
         window::WindowStateChanged,
         layout::LayoutStateChanged,
+        layout::LayoutDeltaChanged,
         layout::LayoutIntentRequested,
         local_build::LocalBuildStatusChanged,
         project_health::ProjectHealthChanged,
@@ -358,6 +366,7 @@ pub fn run() -> anyhow::Result<()> {
         skills::SkillPackInstallationsChanged,
         threads::ThreadStatusChanged,
         threads::ThreadStepRecorded,
+        threads::ThreadTranscriptChanged,
         threads::ThreadSubagentChanged,
         updates::UpdateStatusChanged
     ]);

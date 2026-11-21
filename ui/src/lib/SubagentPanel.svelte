@@ -30,6 +30,7 @@
   } = $props();
 
   let closeButton: HTMLElement | undefined = $state();
+  let bodyEl: HTMLElement | null = $state(null);
 
   const meta = $derived(formatSubagentMeta(subagent, defaultModel, nowSeconds));
   const statusLabel = $derived(formatSubagentStatus(subagent.status));
@@ -101,7 +102,11 @@
     </span>
   </div>
 
-  <div class="subagent-panel-body" use:followTranscript={subagent.identifier}>
+  <div
+    class="subagent-panel-body"
+    bind:this={bodyEl}
+    use:followTranscript={subagent.identifier}
+  >
     <div class="transcript-inner">
       {#if subagent.blocks.length === 0}
         <PaneState
@@ -114,6 +119,8 @@
       {:else}
         <TranscriptBlocks
           blocks={subagent.blocks}
+          transcriptKey={subagent.identifier}
+          scrollContainer={bodyEl}
           subagents={nestedSubagents}
           {defaultModel}
           {nowSeconds}

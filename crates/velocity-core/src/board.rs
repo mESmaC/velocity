@@ -41,7 +41,7 @@ pub enum BoardCardKind {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoardCard {
     pub kind: BoardCardKind,
     /// The thread a click opens. A task or an issue has none.
@@ -61,7 +61,7 @@ pub struct BoardCard {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoardLane {
     pub kind: BoardLaneKind,
     pub title: String,

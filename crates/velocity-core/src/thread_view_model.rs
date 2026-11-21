@@ -25,7 +25,7 @@ pub enum WorktreeChipView {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SlashCommandItem {
     pub command: String,
     pub description: String,
@@ -297,7 +297,7 @@ pub struct RosenLandFailureView {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkedSummaryView {
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
     #[cfg_attr(feature = "bindings", specta(type = String))]
@@ -352,6 +352,9 @@ pub struct ThreadDetailSnapshot {
     pub transcript_mode: TranscriptModeView,
     pub worked_summary: Option<WorkedSummaryView>,
     pub rosen_change: Option<RosenChangeView>,
+    /// Monotonic revision of `blocks` for delta synchronization (#553).
+    #[cfg_attr(feature = "bindings", serde(default))]
+    pub transcript_revision: u32,
     pub blocks: SharedBlocks,
     pub agent_commands: Vec<AgentCommandView>,
     pub composer_placeholder: String,
@@ -417,6 +420,199 @@ pub struct SubagentView {
 /// entry, the live view and each snapshot all hold the same blocks, and a long transcript
 /// was copied three or four times on every agent burst (#319).
 pub type SharedBlocks = std::sync::Arc<Vec<TranscriptBlock>>;
+
+/// One incremental update to a thread's transcript blocks (#553).
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TranscriptPatch {
+    /// Appends streamed text to the last paragraph of an `AgentMessage` at `index`.
+    AppendAgentText {
+        #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+        #[cfg_attr(feature = "bindings", specta(type = String))]
+        index: usize,
+        delta: String,
+    },
+    /// Replaces one existing block in place without changing transcript length.
+    UpdateBlock {
+        #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+        #[cfg_attr(feature = "bindings", specta(type = String))]
+        index: usize,
+        block: TranscriptBlock,
+    },
+    /// Replaces `blocks[start..]` with `blocks` (appends, updates tail, or truncates).
+    ReplaceTail {
+        #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+        #[cfg_attr(feature = "bindings", specta(type = String))]
+        start: usize,
+        blocks: Vec<TranscriptBlock>,
+    },
+}
+
+impl TranscriptPatch {
+    /// Shifts indices forward by `offset` (for prepended earlier work-session history).
+    pub fn shifted(&self, offset: usize) -> Self {
+        if offset == 0 {
+            return self.clone();
+        }
+        match self {
+            Self::AppendAgentText { index, delta } => Self::AppendAgentText {
+                index: index.saturating_add(offset),
+                delta: delta.clone(),
+            },
+            Self::UpdateBlock { index, block } => Self::UpdateBlock {
+                index: index.saturating_add(offset),
+                block: block.clone(),
+            },
+            Self::ReplaceTail { start, blocks } => Self::ReplaceTail {
+                start: start.saturating_add(offset),
+                blocks: blocks.clone(),
+            },
+        }
+    }
+}
+
+/// Applies ordered transcript patches to `blocks`. Returns `false` if any patch index does
+/// not match the current block list (indicating the caller should resync from a full copy).
+pub fn apply_transcript_patches(
+    blocks: &mut Vec<TranscriptBlock>,
+    patches: &[TranscriptPatch],
+) -> bool {
+    for patch in patches {
+        match patch {
+            TranscriptPatch::AppendAgentText { index, delta } => {
+                let Some(TranscriptBlock::AgentMessage { paragraphs }) = blocks.get_mut(*index)
+                else {
+                    return false;
+                };
+                if let Some(last) = paragraphs.last_mut() {
+                    last.push_str(delta);
+                } else {
+                    paragraphs.push(delta.clone());
+                }
+            }
+            TranscriptPatch::UpdateBlock { index, block } => {
+                let Some(slot) = blocks.get_mut(*index) else {
+                    return false;
+                };
+                *slot = block.clone();
+            }
+            TranscriptPatch::ReplaceTail {
+                start,
+                blocks: tail,
+            } => {
+                if *start > blocks.len() {
+                    return false;
+                }
+                blocks.truncate(*start);
+                blocks.extend(tail.iter().cloned());
+            }
+        }
+    }
+    true
+}
+
+/// Transcript payload inside a layout delta (#553): either a full replacement (on thread
+/// switch or resync) or incremental patches from `base_revision` to `revision`.
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TranscriptUpdate {
+    Full {
+        revision: u32,
+        blocks: SharedBlocks,
+    },
+    Patches {
+        base_revision: u32,
+        revision: u32,
+        patches: Vec<TranscriptPatch>,
+    },
+}
+
+/// Every field of [`ThreadDetailSnapshot`] except `blocks` and `transcript_revision`, so
+/// header/status changes cross IPC without re-serializing a multi-megabyte transcript (#553).
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadDetailMeta {
+    pub account_label: Option<String>,
+    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+    #[cfg_attr(feature = "bindings", specta(type = String))]
+    pub identifier: usize,
+    pub title: String,
+    pub titling: bool,
+    pub title_model_name: String,
+    pub branch: String,
+    pub worktree_path: String,
+    pub worktree_short_path: String,
+    pub worktree_chip: WorktreeChipView,
+    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+    #[cfg_attr(feature = "bindings", specta(type = String))]
+    pub added: usize,
+    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+    #[cfg_attr(feature = "bindings", specta(type = String))]
+    pub deleted: usize,
+    pub elapsed_label: String,
+    pub has_diff_action: bool,
+    pub has_editor_action: bool,
+    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number::optional"))]
+    #[cfg_attr(feature = "bindings", specta(type = Option<String>))]
+    pub pull_request_number: Option<usize>,
+    pub has_ship_pr_button: bool,
+    pub agent_busy: bool,
+    pub read_only: bool,
+    pub no_change_reason: Option<String>,
+    pub show_work: bool,
+    pub transcript_mode: TranscriptModeView,
+    pub worked_summary: Option<WorkedSummaryView>,
+    pub rosen_change: Option<RosenChangeView>,
+    pub agent_commands: Vec<AgentCommandView>,
+    pub composer_placeholder: String,
+    pub model_pill: ModelPillView,
+    pub interview: Option<InterviewView>,
+    pub subagents: Vec<SubagentView>,
+}
+
+impl ThreadDetailMeta {
+    pub fn from_snapshot(snapshot: &ThreadDetailSnapshot) -> Self {
+        Self {
+            account_label: snapshot.account_label.clone(),
+            identifier: snapshot.identifier,
+            title: snapshot.title.clone(),
+            titling: snapshot.titling,
+            title_model_name: snapshot.title_model_name.clone(),
+            branch: snapshot.branch.clone(),
+            worktree_path: snapshot.worktree_path.clone(),
+            worktree_short_path: snapshot.worktree_short_path.clone(),
+            worktree_chip: snapshot.worktree_chip,
+            added: snapshot.added,
+            deleted: snapshot.deleted,
+            elapsed_label: snapshot.elapsed_label.clone(),
+            has_diff_action: snapshot.has_diff_action,
+            has_editor_action: snapshot.has_editor_action,
+            pull_request_number: snapshot.pull_request_number,
+            has_ship_pr_button: snapshot.has_ship_pr_button,
+            agent_busy: snapshot.agent_busy,
+            read_only: snapshot.read_only,
+            no_change_reason: snapshot.no_change_reason.clone(),
+            show_work: snapshot.show_work,
+            transcript_mode: snapshot.transcript_mode,
+            worked_summary: snapshot.worked_summary.clone(),
+            rosen_change: snapshot.rosen_change.clone(),
+            agent_commands: snapshot.agent_commands.clone(),
+            composer_placeholder: snapshot.composer_placeholder.clone(),
+            model_pill: snapshot.model_pill.clone(),
+            interview: snapshot.interview.clone(),
+            subagents: snapshot.subagents.clone(),
+        }
+    }
+}
 
 /// What a running agent session adds to a thread on top of `state.json`: the transcript
 /// (which is not persisted) and the agent's advertised slash commands (`SPEC.md §3.2`, F4).
@@ -776,6 +972,7 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
         transcript_mode: mode,
         worked_summary: worked_summary(entry),
         rosen_change: entry.rosen_change.clone(),
+        transcript_revision: 0,
         blocks: entry.blocks.clone(),
         agent_commands: entry.agent_commands.clone(),
         composer_placeholder: placeholder,

@@ -1,12 +1,14 @@
 //! A running thread's transcript as the thread view shows it (SPEC.md §3.2, F4, F5).
 //!
 //! The ACP client files every `session/update` under a transcript entry and reports where
-//! ([`Placement`]). This mirrors those entries and folds them into the thread view's blocks:
-//! messages, tool steps (consecutive calls share one group, as in the reference) and the
-//! diffs an edit carries. The worktree step comes first (F5), and messages sent while the
-//! agent is busy show as queued until a prompt carries them (Rule 1).
+//! ([`Placement`]). This mirrors those entries and folds them incrementally into the thread
+//! view's blocks: messages, tool steps (consecutive calls share one group, as in the
+//! reference) and the diffs an edit carries. Restored history stays in an immutable
+//! `Arc<[TranscriptBlock]>` and live blocks update in place so streaming chunks never copy
+//! the whole transcript (#553).
 
 use std::path::Path;
+use std::sync::Arc;
 
 use agent_client_protocol::v1::schema::{
     ContentBlock, ContentChunk, Diff, SessionUpdate, ToolCall, ToolCallContent, ToolCallStatus,
@@ -16,11 +18,18 @@ use similar::TextDiff;
 use velocity_acp::Placement;
 use velocity_core::skill_menu;
 use velocity_core::thread_view_model::{
-    DiffBlockView, ErrorCardView, ToolStepRow, TranscriptBlock, build_diff_block,
+    DiffBlockView, ErrorCardView, SharedBlocks, ToolStepRow, TranscriptBlock, TranscriptPatch,
+    build_diff_block,
 };
 
 /// Lines of unchanged context around each change in a diff, as `git diff` shows.
 const DIFF_CONTEXT_LINES: usize = 3;
+
+/// Bounds buffered text deltas on unselected threads before collapsing to a tail marker.
+const MAX_PENDING_TEXT_DELTA_BYTES: usize = 64 * 1024;
+
+/// Maximum individual block updates tracked before collapsing to a single tail patch.
+const MAX_PENDING_INDIVIDUAL_UPDATES: usize = 8;
 
 #[derive(Clone, Debug)]
 struct ToolView {
@@ -48,15 +57,53 @@ enum EntryView {
     Hidden,
 }
 
+/// Where one [`EntryView`] sits inside [`LiveTranscript::live_blocks`].
+#[derive(Clone, Copy, Debug)]
+enum EntryLocation {
+    None,
+    Block(usize),
+    Tool {
+        group_block: usize,
+        step_index: usize,
+        diff_start: usize,
+        diff_count: usize,
+    },
+}
+
+/// Compact summary of mutations to `live_blocks` + `queued` since the last delta drain.
+#[derive(Clone, Debug, Default)]
+enum PendingDelta {
+    #[default]
+    None,
+    AppendAgentText {
+        index: usize,
+        delta: String,
+    },
+    Updated(Vec<usize>),
+    ReplaceTail {
+        start: usize,
+    },
+}
+
 #[derive(Clone, Debug)]
 pub struct LiveTranscript {
     worktree: String,
     base_branch: String,
-    history: Vec<TranscriptBlock>,
+    /// Restored blocks from earlier sessions; immutable once loaded, never cloned per chunk.
+    history: Arc<[TranscriptBlock]>,
+    history_lines: (usize, usize),
     entries: Vec<EntryView>,
+    /// Incrementally maintained blocks for `entries` (excluding `history` and `queued`).
+    live_blocks: Vec<TranscriptBlock>,
+    entry_locations: Vec<EntryLocation>,
+    entries_lines: (usize, usize),
+    running_tools: usize,
     /// `acp_entries[i]` is where ACP transcript entry `i` sits in `entries`.
     acp_entries: Vec<usize>,
     queued: Vec<String>,
+    revision: u64,
+    cached_full: Option<(u64, SharedBlocks)>,
+    pending_delta: PendingDelta,
 }
 
 impl LiveTranscript {
@@ -67,27 +114,39 @@ impl LiveTranscript {
 
     /// Keep the launch's base branch while the title and setup state change (F5).
     pub fn on_base(worktree: &str, base_branch: &str) -> Self {
-        LiveTranscript {
-            worktree: worktree.to_owned(),
-            base_branch: base_branch.to_owned(),
-            history: Vec::new(),
-            entries: Vec::from([EntryView::Setup(setup_step(worktree, base_branch, true))]),
-            acp_entries: Vec::new(),
-            queued: Vec::new(),
-        }
+        let mut transcript = Self::empty(worktree, base_branch);
+        transcript.push_entry(EntryView::Setup(setup_step(worktree, base_branch, true)));
+        transcript.pending_delta = PendingDelta::None;
+        transcript
     }
 
     /// A subagent's transcript (§3.2 Subagents): its own ACP entries and no setup row.
     pub fn subagent(worktree: &str) -> Self {
-        let mut transcript = Self::new(worktree);
-        transcript.entries.clear();
-        transcript
+        Self::empty(worktree, "master")
+    }
+
+    fn empty(worktree: &str, base_branch: &str) -> Self {
+        LiveTranscript {
+            worktree: worktree.to_owned(),
+            base_branch: base_branch.to_owned(),
+            history: Arc::from([]),
+            history_lines: (0, 0),
+            entries: Vec::new(),
+            live_blocks: Vec::new(),
+            entry_locations: Vec::new(),
+            entries_lines: (0, 0),
+            running_tools: 0,
+            acp_entries: Vec::new(),
+            queued: Vec::new(),
+            revision: 0,
+            cached_full: None,
+            pending_delta: PendingDelta::None,
+        }
     }
 
     /// Saved blocks precede the next session's independently numbered ACP entries.
     pub fn restore(worktree: &str, mut blocks: Vec<TranscriptBlock>) -> Self {
-        let mut transcript = Self::new(worktree);
-        transcript.entries.clear();
+        let mut transcript = Self::empty(worktree, "master");
         for block in &mut blocks {
             if let TranscriptBlock::ToolGroup { steps } = block {
                 for step in steps {
@@ -99,7 +158,8 @@ impl LiveTranscript {
             }
         }
         blocks.retain(|block| !matches!(block, TranscriptBlock::UserMessage { queued: true, .. }));
-        transcript.history = blocks;
+        transcript.history_lines = count_block_lines(&blocks);
+        transcript.history = Arc::from(blocks);
         transcript
     }
 
@@ -115,17 +175,14 @@ impl LiveTranscript {
     /// The worktree took the title's name while setup was still running (F4).
     pub fn rename_worktree(&mut self, worktree: &str) {
         worktree.clone_into(&mut self.worktree);
-        if let Some(EntryView::Setup(step)) = self.entries.first_mut() {
-            *step = setup_step(worktree, &self.base_branch, true);
-        }
+        let step = setup_step(worktree, &self.base_branch, true);
+        self.update_setup_entry(step);
     }
 
     /// The worktree is ready and the agent may start (F5).
     pub fn worktree_ready(&mut self) {
-        let worktree = self.worktree.clone();
-        if let Some(EntryView::Setup(step)) = self.entries.first_mut() {
-            *step = setup_step(&worktree, &self.base_branch, false);
-        }
+        let step = setup_step(&self.worktree, &self.base_branch, false);
+        self.update_setup_entry(step);
     }
 
     /// Says what a workspace still being made waits on (#514), or clears it with `None`.
@@ -142,29 +199,53 @@ impl LiveTranscript {
             Some(reason) => format!("{creating} · {reason}"),
             None => creating,
         };
-        let changed = step.result_text != text;
+        if step.result_text == text {
+            return false;
+        }
         step.result_text = text;
-        changed
+        let updated = step.clone();
+        self.sync_setup_block(updated);
+        true
     }
 
     /// A Rosen workspace took the worktree's place (F5): the first step names its change.
     pub fn rosen_workspace_ready(&mut self, change: &str) {
-        let worktree = self.worktree.clone();
+        let mut step = setup_step(&self.worktree, &self.base_branch, false);
+        step.verb = "Workspace".into();
+        let short: String = change.chars().take(8).collect();
+        step.result_text = format!("Rosen change {short} from {}", self.base_branch);
+        self.update_setup_entry(step);
+    }
+
+    fn update_setup_entry(&mut self, updated: ToolStepRow) {
         if let Some(EntryView::Setup(step)) = self.entries.first_mut() {
-            *step = setup_step(&worktree, &self.base_branch, false);
-            step.verb = "Workspace".into();
-            let short: String = change.chars().take(8).collect();
-            step.result_text = format!("Rosen change {short} from {}", self.base_branch);
+            *step = updated.clone();
+            self.sync_setup_block(updated);
+        }
+    }
+
+    fn sync_setup_block(&mut self, updated: ToolStepRow) {
+        if let Some(EntryLocation::Tool {
+            group_block,
+            step_index,
+            ..
+        }) = self.entry_locations.first().copied()
+            && let Some(TranscriptBlock::ToolGroup { steps }) =
+                self.live_blocks.get_mut(group_block)
+            && let Some(slot) = steps.get_mut(step_index)
+        {
+            *slot = updated;
+            self.mark_updated(group_block);
+            self.bump_revision();
         }
     }
 
     pub fn handoff_boundary(&mut self) {
-        self.entries
-            .push(EntryView::Notice(crate::parking::HANDOFF_BOUNDARY.into()));
+        self.push_entry(EntryView::Notice(crate::parking::HANDOFF_BOUNDARY.into()));
     }
 
     pub fn record_error(&mut self, headline: &str, detail: &str) {
-        self.entries.push(EntryView::Error(ErrorCardView {
+        self.push_entry(EntryView::Error(ErrorCardView {
             headline: headline.to_owned(),
             detail: detail.to_owned(),
         }));
@@ -185,6 +266,8 @@ impl LiveTranscript {
     /// A message waiting for the agent's current turn to end.
     pub fn queue(&mut self, message: &str) {
         self.queued.push(message.to_owned());
+        self.mark_replace_tail(self.live_blocks.len());
+        self.bump_revision();
     }
 
     /// Withdraws a message you queued before the agent's turn ended. The first `sent`
@@ -194,6 +277,8 @@ impl LiveTranscript {
             return false;
         }
         self.queued.remove(index);
+        self.mark_replace_tail(self.live_blocks.len());
+        self.bump_revision();
         true
     }
 
@@ -206,7 +291,7 @@ impl LiveTranscript {
         if let Placement::Added(_) = placement {
             self.acp_entries.push(self.entries.len());
         }
-        self.entries.push(EntryView::Notice(chunk_text(chunk)));
+        self.push_entry(EntryView::Notice(chunk_text(chunk)));
     }
 
     /// Files one update where the ACP client placed it.
@@ -219,96 +304,425 @@ impl LiveTranscript {
                 // The client adds entries in order, so the next ACP index is the next one here.
                 let entry = new_entry(update, &self.worktree);
                 self.acp_entries.push(self.entries.len());
-                self.entries.push(entry);
+                self.push_entry(entry);
             }
-            Placement::Appended(index) => {
-                let Some(position) = self.acp_entries.get(index).copied() else {
-                    return;
-                };
-                // Your message after a notice in one prompt starts its own row.
-                if let (Some(EntryView::Notice(_)), SessionUpdate::UserMessageChunk(chunk)) =
-                    (self.entries.get(position), update)
+            Placement::Appended(index) => self.record_appended(index, update),
+        }
+    }
+
+    fn record_appended(&mut self, acp_index: usize, update: &SessionUpdate) {
+        let Some(position) = self.acp_entries.get(acp_index).copied() else {
+            return;
+        };
+        // Your message after a notice in one prompt starts its own row.
+        if let (Some(EntryView::Notice(_)), SessionUpdate::UserMessageChunk(chunk)) =
+            (self.entries.get(position), update)
+        {
+            self.acp_entries[acp_index] = self.entries.len();
+            self.push_entry(EntryView::User(chunk_text(chunk)));
+            return;
+        }
+        match (self.entries.get_mut(position), update) {
+            (Some(EntryView::Agent(_)), SessionUpdate::AgentMessageChunk(chunk)) => {
+                self.append_agent_chunk(position, &chunk_text(chunk));
+            }
+            (Some(EntryView::User(_)), SessionUpdate::UserMessageChunk(chunk)) => {
+                self.append_user_chunk(position, &chunk_text(chunk));
+            }
+            (
+                Some(EntryView::Tool(_)),
+                SessionUpdate::ToolCall(_) | SessionUpdate::ToolCallUpdate(_),
+            ) => {
+                self.update_tool_entry(position, update);
+            }
+            _ => {}
+        }
+    }
+
+    fn append_agent_chunk(&mut self, position: usize, chunk: &str) {
+        if chunk.is_empty() {
+            return;
+        }
+        let Some(EntryView::Agent(text)) = self.entries.get_mut(position) else {
+            return;
+        };
+        text.push_str(chunk);
+        match self.entry_locations.get(position).copied() {
+            Some(EntryLocation::Block(block_index)) => {
+                if let Some(TranscriptBlock::AgentMessage { paragraphs }) =
+                    self.live_blocks.get_mut(block_index)
                 {
-                    self.acp_entries[index] = self.entries.len();
-                    self.entries.push(EntryView::User(chunk_text(chunk)));
-                } else if let Some(entry) = self.entries.get_mut(position) {
-                    merge(entry, update, &self.worktree);
+                    if let Some(last) = paragraphs.last_mut() {
+                        last.push_str(chunk);
+                    } else {
+                        paragraphs.push(chunk.to_owned());
+                    }
+                    self.mark_append_agent_text(block_index, chunk);
+                    self.bump_revision();
                 }
             }
+            Some(EntryLocation::None) if !text.trim().is_empty() => {
+                let block = TranscriptBlock::AgentMessage {
+                    paragraphs: vec![text.clone()],
+                };
+                if position + 1 == self.entries.len() {
+                    let block_index = self.live_blocks.len();
+                    self.live_blocks.push(block);
+                    self.entry_locations[position] = EntryLocation::Block(block_index);
+                    self.mark_replace_tail(block_index);
+                    self.bump_revision();
+                } else {
+                    self.rebuild_live_blocks_from(position);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn append_user_chunk(&mut self, position: usize, chunk: &str) {
+        let Some(EntryView::User(text)) = self.entries.get_mut(position) else {
+            return;
+        };
+        text.push_str("\n\n");
+        text.push_str(chunk);
+        if let Some(EntryLocation::Block(block_index)) = self.entry_locations.get(position).copied()
+            && let Some(TranscriptBlock::UserMessage {
+                text: block_text, ..
+            }) = self.live_blocks.get_mut(block_index)
+        {
+            block_text.push_str("\n\n");
+            block_text.push_str(chunk);
+            self.mark_updated(block_index);
+            self.bump_revision();
+        }
+    }
+
+    fn update_tool_entry(&mut self, position: usize, update: &SessionUpdate) {
+        let worktree = self.worktree.clone();
+        let Some(entry) = self.entries.get_mut(position) else {
+            return;
+        };
+        let EntryView::Tool(tool) = entry else {
+            return;
+        };
+        let old_running = is_running(tool.status);
+        let old_lines = tool_lines(tool);
+        let old_diffs = tool.diffs.len();
+        merge(entry, update, &worktree);
+        let EntryView::Tool(tool) = entry else {
+            return;
+        };
+        let new_running = is_running(tool.status);
+        let new_lines = tool_lines(tool);
+        let new_diffs = tool.diffs.len();
+        let step = tool_step(tool);
+        let updated_diffs = (new_diffs == old_diffs).then(|| tool.diffs.clone());
+
+        self.adjust_running_tools(old_running, new_running);
+        self.entries_lines = (
+            self.entries_lines.0.saturating_sub(old_lines.0) + new_lines.0,
+            self.entries_lines.1.saturating_sub(old_lines.1) + new_lines.1,
+        );
+
+        if let (
+            Some(EntryLocation::Tool {
+                group_block,
+                step_index,
+                diff_start,
+                diff_count,
+            }),
+            Some(diffs),
+        ) = (self.entry_locations.get(position).copied(), updated_diffs)
+            && diff_count == diffs.len()
+        {
+            if let Some(TranscriptBlock::ToolGroup { steps }) =
+                self.live_blocks.get_mut(group_block)
+                && let Some(slot) = steps.get_mut(step_index)
+            {
+                *slot = step;
+                self.mark_updated(group_block);
+            }
+            for (offset, diff) in diffs.into_iter().enumerate() {
+                let target = diff_start + offset;
+                if let Some(slot) = self.live_blocks.get_mut(target) {
+                    *slot = TranscriptBlock::Diff { block: diff };
+                    self.mark_updated(target);
+                }
+            }
+            self.bump_revision();
+        } else {
+            self.rebuild_live_blocks_from(position);
+        }
+    }
+
+    fn push_entry(&mut self, entry: EntryView) {
+        if let EntryView::Tool(tool) = &entry {
+            if is_running(tool.status) {
+                self.running_tools += 1;
+            }
+            let (added, deleted) = tool_lines(tool);
+            self.entries_lines.0 += added;
+            self.entries_lines.1 += deleted;
+        }
+        let location = self.append_entry_block(&entry);
+        self.entries.push(entry);
+        self.entry_locations.push(location);
+        self.bump_revision();
+    }
+
+    fn append_entry_block(&mut self, entry: &EntryView) -> EntryLocation {
+        match entry {
+            EntryView::Setup(step) => self.push_tool_blocks(step.clone(), &[]),
+            EntryView::Tool(tool) => self.push_tool_blocks(tool_step(tool), &tool.diffs),
+            EntryView::Hidden => EntryLocation::None,
+            other => {
+                let Some(block) = message_block(other) else {
+                    return EntryLocation::None;
+                };
+                let block_index = self.live_blocks.len();
+                self.live_blocks.push(block);
+                self.mark_replace_tail(block_index);
+                EntryLocation::Block(block_index)
+            }
+        }
+    }
+
+    fn push_tool_blocks(&mut self, step: ToolStepRow, diffs: &[DiffBlockView]) -> EntryLocation {
+        let (group_block, step_index, pushed_group) = match self.live_blocks.last_mut() {
+            Some(TranscriptBlock::ToolGroup { steps }) => {
+                let step_index = steps.len();
+                steps.push(step);
+                (self.live_blocks.len() - 1, step_index, false)
+            }
+            _ => {
+                let group_block = self.live_blocks.len();
+                self.live_blocks
+                    .push(TranscriptBlock::ToolGroup { steps: vec![step] });
+                (group_block, 0, true)
+            }
+        };
+        let diff_start = self.live_blocks.len();
+        for diff in diffs {
+            self.live_blocks.push(TranscriptBlock::Diff {
+                block: diff.clone(),
+            });
+        }
+        if pushed_group || !diffs.is_empty() || !self.queued.is_empty() {
+            self.mark_replace_tail(group_block);
+        } else {
+            self.mark_updated(group_block);
+        }
+        EntryLocation::Tool {
+            group_block,
+            step_index,
+            diff_start,
+            diff_count: diffs.len(),
+        }
+    }
+
+    /// Rebuilds only the suffix of `live_blocks` starting from the block containing `position`.
+    fn rebuild_live_blocks_from(&mut self, position: usize) {
+        let start_block = self.block_start_for_entry(position);
+        let first_entry = self
+            .entry_locations
+            .iter()
+            .position(|location| location_block_index(*location) >= Some(start_block))
+            .unwrap_or(position)
+            .min(position);
+        self.live_blocks.truncate(start_block);
+        for index in first_entry..self.entries.len() {
+            let location = match &self.entries[index] {
+                EntryView::Setup(step) => {
+                    push_tool_blocks_raw(&mut self.live_blocks, step.clone(), &[])
+                }
+                EntryView::Tool(tool) => {
+                    push_tool_blocks_raw(&mut self.live_blocks, tool_step(tool), &tool.diffs)
+                }
+                EntryView::Hidden => EntryLocation::None,
+                other => match message_block(other) {
+                    Some(block) => {
+                        let block_index = self.live_blocks.len();
+                        self.live_blocks.push(block);
+                        EntryLocation::Block(block_index)
+                    }
+                    None => EntryLocation::None,
+                },
+            };
+            self.entry_locations[index] = location;
+        }
+        self.mark_replace_tail(start_block);
+        self.bump_revision();
+    }
+
+    fn block_start_for_entry(&self, position: usize) -> usize {
+        if let Some(index) = self
+            .entry_locations
+            .get(position)
+            .copied()
+            .and_then(location_block_index)
+        {
+            return index;
+        }
+        self.entry_locations[position..]
+            .iter()
+            .copied()
+            .find_map(location_block_index)
+            .unwrap_or(self.live_blocks.len())
+    }
+
+    fn adjust_running_tools(&mut self, was_running: bool, now_running: bool) {
+        match (was_running, now_running) {
+            (false, true) => self.running_tools += 1,
+            (true, false) => self.running_tools = self.running_tools.saturating_sub(1),
+            _ => {}
         }
     }
 
     /// The oldest `count` queued messages went out as the agent's next prompt. Only those
     /// leave the queue: a message queued after them still waits for the following turn.
     pub fn sent_queued(&mut self, count: usize) {
-        self.queued.drain(..count.min(self.queued.len()));
+        let removed = count.min(self.queued.len());
+        if removed == 0 {
+            return;
+        }
+        self.queued.drain(..removed);
+        self.mark_replace_tail(self.live_blocks.len());
+        self.bump_revision();
     }
 
     /// Whether a tool call is pending or running: activity `executing` (§2.2).
     pub fn has_running_tool(&self) -> bool {
-        self.entries.iter().any(|entry| match entry {
-            EntryView::Tool(tool) => is_running(tool.status),
-            _ => false,
-        })
+        self.running_tools > 0
     }
 
     /// Marks tool calls left running by the agent as finished when its turn or session
     /// ends (#544). Real Velocity runs (`queue_run`, `preflight`, `workflow_run`) keep the
     /// logical turn open until they complete, so active Velocity waits are unaffected.
     pub fn finish_running_tools(&mut self) {
-        for entry in &mut self.entries {
+        if self.running_tools == 0 {
+            return;
+        }
+        let mut updated_groups = Vec::new();
+        for (position, entry) in self.entries.iter_mut().enumerate() {
             if let EntryView::Tool(tool) = entry
                 && is_running(tool.status)
             {
                 tool.status = ToolCallStatus::Completed;
+                if let Some(EntryLocation::Tool {
+                    group_block,
+                    step_index,
+                    ..
+                }) = self.entry_locations.get(position).copied()
+                    && let Some(TranscriptBlock::ToolGroup { steps }) =
+                        self.live_blocks.get_mut(group_block)
+                    && let Some(step) = steps.get_mut(step_index)
+                {
+                    step.running = false;
+                    updated_groups.push(group_block);
+                }
             }
+        }
+        self.running_tools = 0;
+        if !updated_groups.is_empty() {
+            for group_block in updated_groups {
+                self.mark_updated(group_block);
+            }
+            self.bump_revision();
         }
     }
 
     /// `+added −deleted` across every edit the agent made, for the thread header (F4).
     pub fn line_counts(&self) -> (usize, usize) {
-        let saved = self
-            .history
-            .iter()
-            .fold((0, 0), |(added, deleted), block| match block {
-                TranscriptBlock::Diff { block } => (added + block.added, deleted + block.deleted),
-                _ => (added, deleted),
+        (
+            self.history_lines.0 + self.entries_lines.0,
+            self.history_lines.1 + self.entries_lines.1,
+        )
+    }
+
+    /// The newest block without copying earlier history or live blocks (#553).
+    pub fn last_block(&self) -> Option<TranscriptBlock> {
+        if let Some(text) = self.queued.last() {
+            return Some(TranscriptBlock::UserMessage {
+                text: text.clone(),
+                queued: true,
             });
-        self.entries
-            .iter()
-            .filter_map(|entry| match entry {
-                EntryView::Tool(tool) => Some(&tool.diffs),
-                _ => None,
-            })
-            .flatten()
-            .fold(saved, |(added, deleted), diff| {
-                (added + diff.added, deleted + diff.deleted)
-            })
+        }
+        if let Some(block) = self.live_blocks.last() {
+            return Some(block.clone());
+        }
+        self.history.last().cloned()
+    }
+
+    /// Whether there are un-drained incremental transcript changes.
+    pub fn has_pending_delta(&self) -> bool {
+        !matches!(self.pending_delta, PendingDelta::None)
+    }
+
+    /// Clears pending delta tracking after a full snapshot has been materialized.
+    pub fn clear_pending_delta(&mut self) {
+        self.pending_delta = PendingDelta::None;
+    }
+
+    /// Drains pending incremental changes as ordered [`TranscriptPatch`] entries (#553).
+    pub fn take_patches(&mut self) -> Vec<TranscriptPatch> {
+        let base = self.history.len();
+        match std::mem::take(&mut self.pending_delta) {
+            PendingDelta::None => Vec::new(),
+            PendingDelta::AppendAgentText { index, delta } => {
+                vec![TranscriptPatch::AppendAgentText {
+                    index: base + index,
+                    delta,
+                }]
+            }
+            PendingDelta::Updated(mut indices) => {
+                indices.sort_unstable();
+                indices.dedup();
+                indices
+                    .into_iter()
+                    .filter_map(|index| {
+                        self.live_blocks.get(index).cloned().map(|block| {
+                            TranscriptPatch::UpdateBlock {
+                                index: base + index,
+                                block,
+                            }
+                        })
+                    })
+                    .collect()
+            }
+            PendingDelta::ReplaceTail { start } => {
+                let start = start.min(self.live_blocks.len());
+                let mut blocks =
+                    Vec::with_capacity(self.live_blocks.len() - start + self.queued.len());
+                blocks.extend(self.live_blocks[start..].iter().cloned());
+                blocks.extend(self.queued.iter().map(|text| TranscriptBlock::UserMessage {
+                    text: text.clone(),
+                    queued: true,
+                }));
+                vec![TranscriptPatch::ReplaceTail {
+                    start: base + start,
+                    blocks,
+                }]
+            }
+        }
+    }
+
+    /// Full transcript as a cached `SharedBlocks`, materialized only when needed (save or open).
+    pub fn shared_blocks(&mut self) -> SharedBlocks {
+        if let Some((version, cached)) = &self.cached_full
+            && *version == self.revision
+        {
+            return Arc::clone(cached);
+        }
+        let shared: SharedBlocks = Arc::new(self.blocks());
+        self.cached_full = Some((self.revision, Arc::clone(&shared)));
+        shared
     }
 
     pub fn blocks(&self) -> Vec<TranscriptBlock> {
-        let mut blocks = self.history.clone();
-        let mut steps = Vec::new();
-        for entry in &self.entries {
-            match entry {
-                EntryView::Setup(step) => steps.push(step.clone()),
-                EntryView::Tool(tool) => {
-                    steps.push(tool_step(tool));
-                    if !tool.diffs.is_empty() {
-                        flush_steps(&mut blocks, &mut steps);
-                        blocks.extend(tool.diffs.iter().map(|diff| TranscriptBlock::Diff {
-                            block: diff.clone(),
-                        }));
-                    }
-                }
-                EntryView::Hidden => {}
-                other => {
-                    flush_steps(&mut blocks, &mut steps);
-                    blocks.extend(message_block(other));
-                }
-            }
-        }
-        flush_steps(&mut blocks, &mut steps);
+        let mut blocks =
+            Vec::with_capacity(self.history.len() + self.live_blocks.len() + self.queued.len());
+        blocks.extend(self.history.iter().cloned());
+        blocks.extend(self.live_blocks.iter().cloned());
         blocks.extend(self.queued.iter().map(|text| TranscriptBlock::UserMessage {
             text: text.clone(),
             queued: true,
@@ -340,6 +754,150 @@ impl LiveTranscript {
             }))
             .collect()
     }
+
+    fn bump_revision(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        self.cached_full = None;
+    }
+
+    fn mark_append_agent_text(&mut self, index: usize, chunk: &str) {
+        match &mut self.pending_delta {
+            PendingDelta::None => {
+                if chunk.len() > MAX_PENDING_TEXT_DELTA_BYTES {
+                    self.pending_delta = PendingDelta::ReplaceTail { start: index };
+                } else {
+                    self.pending_delta = PendingDelta::AppendAgentText {
+                        index,
+                        delta: chunk.to_owned(),
+                    };
+                }
+            }
+            PendingDelta::AppendAgentText {
+                index: existing,
+                delta,
+            } if *existing == index => {
+                if delta.len().saturating_add(chunk.len()) > MAX_PENDING_TEXT_DELTA_BYTES {
+                    self.pending_delta = PendingDelta::ReplaceTail { start: index };
+                } else {
+                    delta.push_str(chunk);
+                }
+            }
+            PendingDelta::AppendAgentText {
+                index: existing, ..
+            } => {
+                let start = (*existing).min(index);
+                self.pending_delta = PendingDelta::ReplaceTail { start };
+            }
+            PendingDelta::Updated(indices) => {
+                let current = std::mem::take(indices);
+                self.pending_delta = record_updated_index(current, index);
+            }
+            PendingDelta::ReplaceTail { start } => *start = (*start).min(index),
+        }
+    }
+
+    fn mark_updated(&mut self, index: usize) {
+        match &mut self.pending_delta {
+            PendingDelta::None => {
+                self.pending_delta = PendingDelta::Updated(vec![index]);
+            }
+            PendingDelta::AppendAgentText {
+                index: existing, ..
+            } => {
+                let indices = if *existing == index {
+                    vec![index]
+                } else {
+                    vec![*existing, index]
+                };
+                self.pending_delta = PendingDelta::Updated(indices);
+            }
+            PendingDelta::Updated(indices) => {
+                let current = std::mem::take(indices);
+                self.pending_delta = record_updated_index(current, index);
+            }
+            PendingDelta::ReplaceTail { start } => *start = (*start).min(index),
+        }
+    }
+
+    fn mark_replace_tail(&mut self, start: usize) {
+        let earliest = match &self.pending_delta {
+            PendingDelta::None => start,
+            PendingDelta::AppendAgentText { index, .. } => start.min(*index),
+            PendingDelta::Updated(indices) => indices
+                .iter()
+                .copied()
+                .min()
+                .map_or(start, |min| start.min(min)),
+            PendingDelta::ReplaceTail { start: existing } => start.min(*existing),
+        };
+        self.pending_delta = PendingDelta::ReplaceTail { start: earliest };
+    }
+}
+
+fn push_tool_blocks_raw(
+    live_blocks: &mut Vec<TranscriptBlock>,
+    step: ToolStepRow,
+    diffs: &[DiffBlockView],
+) -> EntryLocation {
+    let (group_block, step_index) = match live_blocks.last_mut() {
+        Some(TranscriptBlock::ToolGroup { steps }) => {
+            let step_index = steps.len();
+            steps.push(step);
+            (live_blocks.len() - 1, step_index)
+        }
+        _ => {
+            let group_block = live_blocks.len();
+            live_blocks.push(TranscriptBlock::ToolGroup { steps: vec![step] });
+            (group_block, 0)
+        }
+    };
+    let diff_start = live_blocks.len();
+    for diff in diffs {
+        live_blocks.push(TranscriptBlock::Diff {
+            block: diff.clone(),
+        });
+    }
+    EntryLocation::Tool {
+        group_block,
+        step_index,
+        diff_start,
+        diff_count: diffs.len(),
+    }
+}
+
+fn record_updated_index(mut indices: Vec<usize>, index: usize) -> PendingDelta {
+    if !indices.contains(&index) {
+        indices.push(index);
+    }
+    if indices.len() > MAX_PENDING_INDIVIDUAL_UPDATES {
+        let start = indices.into_iter().min().unwrap_or(index);
+        PendingDelta::ReplaceTail { start }
+    } else {
+        PendingDelta::Updated(indices)
+    }
+}
+
+fn location_block_index(location: EntryLocation) -> Option<usize> {
+    match location {
+        EntryLocation::None => None,
+        EntryLocation::Block(index) => Some(index),
+        EntryLocation::Tool { group_block, .. } => Some(group_block),
+    }
+}
+
+fn count_block_lines(blocks: &[TranscriptBlock]) -> (usize, usize) {
+    blocks
+        .iter()
+        .fold((0, 0), |(added, deleted), block| match block {
+            TranscriptBlock::Diff { block } => (added + block.added, deleted + block.deleted),
+            _ => (added, deleted),
+        })
+}
+
+fn tool_lines(tool: &ToolView) -> (usize, usize) {
+    tool.diffs.iter().fold((0, 0), |(added, deleted), diff| {
+        (added + diff.added, deleted + diff.deleted)
+    })
 }
 
 fn setup_step(worktree: &str, base_branch: &str, running: bool) -> ToolStepRow {
@@ -353,14 +911,6 @@ fn setup_step(worktree: &str, base_branch: &str, running: bool) -> ToolStepRow {
             format!("created from {base_branch}")
         },
         tool_call_id: None,
-    }
-}
-
-fn flush_steps(blocks: &mut Vec<TranscriptBlock>, steps: &mut Vec<ToolStepRow>) {
-    if !steps.is_empty() {
-        blocks.push(TranscriptBlock::ToolGroup {
-            steps: std::mem::take(steps),
-        });
     }
 }
 
@@ -541,9 +1091,7 @@ fn is_running(status: ToolCallStatus) -> bool {
 }
 
 fn tool_step(tool: &ToolView) -> ToolStepRow {
-    let (added, deleted) = tool.diffs.iter().fold((0, 0), |(added, deleted), diff| {
-        (added + diff.added, deleted + diff.deleted)
-    });
+    let (added, deleted) = tool_lines(tool);
     let result_text = if matches!(tool.status, ToolCallStatus::Failed) {
         "failed".into()
     } else if added + deleted > 0 {
@@ -583,4 +1131,87 @@ fn tool_verb(tool: &ToolView) -> String {
         _ => return tool.name.clone().unwrap_or_else(|| "Tool".into()),
     };
     verb.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_client_protocol::v1::schema::{ToolCallId, ToolCallUpdate};
+    use velocity_core::thread_view_model::apply_transcript_patches;
+
+    // Risk (#553): incremental transcript patches must stay identical to the full block
+    // projection across restored history, streamed chunks, tool updates, diffs and queued edits.
+    #[test]
+    fn incremental_patches_match_full_projection() {
+        let history = vec![TranscriptBlock::UserMessage {
+            text: "earlier prompt".into(),
+            queued: false,
+        }];
+        let mut transcript = LiveTranscript::restore("work", history);
+        let mut synced = transcript.blocks();
+
+        transcript.record(
+            Placement::Added(0),
+            &SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from(
+                "hello ".to_owned(),
+            ))),
+        );
+        let patches = transcript.take_patches();
+        assert!(apply_transcript_patches(&mut synced, &patches));
+        assert_eq!(synced, transcript.blocks());
+
+        transcript.record(
+            Placement::Appended(0),
+            &SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from(
+                "world".to_owned(),
+            ))),
+        );
+        let patches = transcript.take_patches();
+        assert_eq!(
+            patches,
+            vec![TranscriptPatch::AppendAgentText {
+                index: 1,
+                delta: "world".into(),
+            }]
+        );
+        assert!(apply_transcript_patches(&mut synced, &patches));
+        assert_eq!(synced, transcript.blocks());
+
+        let call = ToolCall::new(ToolCallId::new("c1"), "edit.rs")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::InProgress);
+        transcript.record(Placement::Added(1), &SessionUpdate::ToolCall(call));
+        assert!(transcript.has_running_tool());
+        let patches = transcript.take_patches();
+        assert!(apply_transcript_patches(&mut synced, &patches));
+        assert_eq!(synced, transcript.blocks());
+
+        let mut fields = ToolCallUpdateFields::new();
+        fields.status = Some(ToolCallStatus::Completed);
+        fields.content = Some(vec![ToolCallContent::Diff(Diff::new(
+            "work/a.rs",
+            "line1\nline2\n",
+        ))]);
+        let update = ToolCallUpdate::new(ToolCallId::new("c1"), fields);
+        transcript.record(
+            Placement::Appended(1),
+            &SessionUpdate::ToolCallUpdate(update),
+        );
+        assert!(!transcript.has_running_tool());
+        assert_eq!(transcript.line_counts(), (2, 0));
+        let patches = transcript.take_patches();
+        assert!(apply_transcript_patches(&mut synced, &patches));
+        assert_eq!(synced, transcript.blocks());
+
+        transcript.queue("follow up");
+        let patches = transcript.take_patches();
+        assert!(apply_transcript_patches(&mut synced, &patches));
+        assert_eq!(synced, transcript.blocks());
+        assert_eq!(transcript.last_block(), synced.last().cloned());
+
+        assert!(transcript.remove_queued(0, 0));
+        let patches = transcript.take_patches();
+        assert!(apply_transcript_patches(&mut synced, &patches));
+        assert_eq!(synced, transcript.blocks());
+    }
 }

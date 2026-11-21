@@ -18,7 +18,7 @@ use velocity_acp::client::{
     AgentEvent, AgentInput, AgentLaunch, ClientError, SessionSetup, run_session,
 };
 use velocity_core::thread_view_model::{
-    AgentCommandView, LiveThreadView, SessionWork, SubagentView,
+    AgentCommandView, LiveThreadView, SessionWork, SubagentView, TranscriptBlock, TranscriptPatch,
 };
 use velocity_store::AgentActivity;
 
@@ -39,6 +39,18 @@ const LOG_TAIL_LINES: usize = 20;
 pub enum SteerError {
     #[error("No agent session is running for this thread")]
     NoSession,
+}
+
+/// Incremental live-view update drained for one thread without copying its transcript (#553).
+#[derive(Clone, Debug)]
+pub struct LiveThreadDelta {
+    pub patches: Vec<TranscriptPatch>,
+    pub titling_model: Option<String>,
+    pub running_subagents: usize,
+    pub agent_commands: Option<Vec<AgentCommandView>>,
+    pub added: usize,
+    pub deleted: usize,
+    pub busy: bool,
 }
 
 /// What the thread's saved record should show after an agent event (§2.2, F4).
@@ -1039,7 +1051,9 @@ impl ThreadRuntimes {
         if !self.threads.contains_key(&key) || !self.transcript_saves.due(key, now, turn_over) {
             return None;
         }
-        self.view(key).map(|view| view.blocks)
+        self.threads
+            .get_mut(&key)
+            .map(|thread| thread.transcript.shared_blocks())
     }
 
     pub fn view(&self, key: ThreadKey) -> Option<LiveThreadView> {
@@ -1052,6 +1066,54 @@ impl ThreadRuntimes {
             )
             .with_subagents(thread.subagents.views()),
         )
+    }
+
+    /// Materializes the full live view for a thread (on open/select/refresh) and clears
+    /// pending incremental patches so subsequent updates stream as deltas (#553).
+    pub fn take_full_view(&mut self, key: ThreadKey) -> Option<LiveThreadView> {
+        let thread = self.threads.get_mut(&key)?;
+        let blocks = thread.transcript.shared_blocks();
+        thread.transcript.clear_pending_delta();
+        Some(
+            LiveThreadView::new(
+                blocks,
+                thread.agent_commands.clone(),
+                thread.titling_model.clone(),
+            )
+            .with_subagents(thread.subagents.views()),
+        )
+    }
+
+    /// The newest transcript block for `thread://step`, in O(1) without copying history (#553).
+    pub fn last_block(&self, key: ThreadKey) -> Option<TranscriptBlock> {
+        self.threads.get(&key)?.transcript.last_block()
+    }
+
+    /// Lightweight sidebar summary for an unselected thread without touching its transcript (#553).
+    pub fn live_summary(&self, key: ThreadKey) -> Option<(Option<String>, usize)> {
+        let thread = self.threads.get(&key)?;
+        Some((
+            thread.titling_model.clone(),
+            thread.subagents.running_count(),
+        ))
+    }
+
+    /// Drains incremental transcript patches and lightweight sidebar/header metadata without
+    /// cloning the full transcript or subagent transcripts (#553).
+    pub fn take_live_delta(&mut self, key: ThreadKey) -> Option<LiveThreadDelta> {
+        let thread = self.threads.get_mut(&key)?;
+        let patches = thread.transcript.take_patches();
+        let (parent_added, parent_deleted) = thread.transcript.line_counts();
+        let (subagent_added, subagent_deleted) = thread.subagents.line_counts();
+        Some(LiveThreadDelta {
+            patches,
+            titling_model: thread.titling_model.clone(),
+            running_subagents: thread.subagents.running_count(),
+            agent_commands: thread.agent_commands.clone(),
+            added: parent_added + subagent_added,
+            deleted: parent_deleted + subagent_deleted,
+            busy: thread.busy,
+        })
     }
 
     /// The thread's subagents that changed since the last call (`thread://subagent`).

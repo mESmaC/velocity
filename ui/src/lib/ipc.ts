@@ -30,13 +30,17 @@ import {
   commands,
   WINDOW_STATE_EVENT,
   LAYOUT_STATE_EVENT,
+  LAYOUT_DELTA_EVENT,
   LAYOUT_INTENT_EVENT,
   PROJECT_SELECTED_EVENT,
   THREAD_STATUS_EVENT,
   THREAD_STEP_EVENT,
+  THREAD_TRANSCRIPT_EVENT,
   type ThreadStatusChanged,
   type ThreadStepRecorded_Serialize,
+  type ThreadTranscriptChanged_Serialize,
   type WindowStateChanged,
+  type LayoutDeltaChanged_Serialize,
   type LayoutStateChanged_Serialize,
   type LayoutIntentRequested_Serialize,
   type ProjectSelected,
@@ -71,21 +75,30 @@ export type {
   TaskAttribution,
   TaskItem,
   TaskState,
+  ThreadDetailMeta_Serialize as ThreadDetailMeta,
   ThreadDetailSnapshot_Serialize as ThreadDetailSnapshot,
   ThreadItem,
   ThreadState,
   ThreadStatusChanged,
   ThreadStepRecorded_Serialize as ThreadStepRecorded,
+  ThreadTranscriptChanged_Serialize as ThreadTranscriptChanged,
   ToolStepRow,
   TranscriptBlock_Serialize as TranscriptBlock,
+  TranscriptPatch_Serialize as TranscriptPatch,
+  TranscriptUpdate_Serialize as TranscriptUpdate,
   TranscriptModeView,
   WindowStateChanged,
   WorkedSummaryView_Serialize as WorkedSummaryView,
   WorktreeChipView,
   WorktreeSettings,
   LayoutAction_Deserialize as LayoutAction,
+  LayoutChrome_Serialize as LayoutChrome,
+  LayoutDelta_Serialize as LayoutDelta,
   LayoutSnapshot_Serialize as LayoutSnapshot,
   LayoutIntent_Serialize as LayoutIntent,
+  PaletteSlice_Serialize as PaletteSlice,
+  RailSlice_Serialize as RailSlice,
+  SidebarSlice_Serialize as SidebarSlice,
   NavigationIntent_Deserialize as NavigationIntent,
   NewProjectDefaults_Serialize as NewProjectDefaults,
   NewProjectRequest_Deserialize as NewProjectRequest,
@@ -115,6 +128,10 @@ export const onProjectSelected = (callback: EventCallback<ProjectSelected>) =>
 export const onLayoutState = (
   callback: EventCallback<LayoutStateChanged_Serialize>,
 ) => listen(LAYOUT_STATE_EVENT, callback);
+
+export const onLayoutDelta = (
+  callback: EventCallback<LayoutDeltaChanged_Serialize>,
+) => listen(LAYOUT_DELTA_EVENT, callback);
 
 export const onLayoutIntent = (
   callback: EventCallback<LayoutIntentRequested_Serialize>,
@@ -153,6 +170,10 @@ export const onThreadStatus = (callback: EventCallback<ThreadStatusChanged>) =>
 export const onThreadStep = (
   callback: EventCallback<ThreadStepRecorded_Serialize>,
 ) => listen(THREAD_STEP_EVENT, callback);
+
+export const onThreadTranscript = (
+  callback: EventCallback<ThreadTranscriptChanged_Serialize>,
+) => listen(THREAD_TRANSCRIPT_EVENT, callback);
 
 export * from './ipc/board';
 export * from './ipc/duty';

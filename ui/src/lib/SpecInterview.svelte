@@ -14,14 +14,18 @@
   let {
     layout,
     thread,
+    blockIds,
     interview,
     send,
   }: {
     layout: LayoutSnapshot;
     thread: ThreadDetailSnapshot;
+    blockIds?: readonly number[];
     interview: InterviewView;
     send: (action: LayoutAction) => void;
   } = $props();
+
+  let transcriptEl: HTMLElement | null = $state(null);
 
   function request(intent: NavigationIntent) {
     send({ Request: { Navigation: intent } });
@@ -57,10 +61,19 @@
     </div>
   </header>
 
-  <div class="transcript" use:followTranscript={thread.identifier}>
+  <div
+    class="transcript"
+    bind:this={transcriptEl}
+    use:followTranscript={thread.identifier}
+  >
     <div class="transcript-inner">
       {#if thread.blocks.length}
-        <TranscriptBlocks blocks={thread.blocks} />
+        <TranscriptBlocks
+          blocks={thread.blocks}
+          {blockIds}
+          transcriptKey={`${layout.project_identifier}:${thread.identifier}`}
+          scrollContainer={transcriptEl}
+        />
       {:else}
         {#if interview.brief}<div class="msg-user">
             <Markdown text={interview.brief} />

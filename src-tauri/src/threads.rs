@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use velocity_acp::client::{AgentEvent, AgentInput, SessionSetup, TitleRequest};
 use velocity_core::layout_view::{LayoutIntent, LayoutSnapshot};
-use velocity_core::thread_view_model::{SubagentView, TranscriptBlock};
+use velocity_core::thread_view_model::{SubagentView, TranscriptBlock, TranscriptPatch};
 use velocity_core::work_pool::WorkPiece;
 use velocity_store::build_gate::{LaunchRequest, require_launch};
 use velocity_store::duty::clock_timestamp;
@@ -201,6 +201,26 @@ pub struct ThreadStepRecorded {
     pub thread_identifier: u32,
     /// The thread's newest transcript block after the update.
     pub block: TranscriptBlock,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type, Event)]
+#[tauri_specta(event_name = "thread://transcript")]
+pub struct ThreadTranscriptChanged {
+    pub project_identifier: u32,
+    #[serde(with = "velocity_core::ipc_number")]
+    #[specta(type = String)]
+    pub thread_identifier: usize,
+    pub base_transcript_revision: u32,
+    pub transcript_revision: u32,
+    pub patches: Vec<TranscriptPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_busy: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub titling: Option<(bool, String)>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type, Event)]
@@ -1933,22 +1953,23 @@ fn apply_batch(
         Some(progress) => save_progress(application, key, progress)?,
         None => false,
     };
-    // Most bursts are streamed text that changes nothing saved. Rebuilding the window from
-    // every thread's record and sending it all for each of them, on every agent at once,
-    // is what slowed Velocity down over a session (#319). Such a burst only moves its own
-    // thread's live transcript, and the window is told at most ten times a second.
+    // Most bursts are streamed text that changes nothing saved. Instead of copying the
+    // whole transcript or emitting full snapshots up to 10/s, saved status/line changes
+    // update the single thread row in `MainLayout` (for a tiny sidebar delta) and live
+    // transcript chunks flush via thread-scoped `thread://transcript` patches (#319, #553).
     if saved {
         rebuild_layout(application, key)?;
         crate::layout::publish_soon(application);
         emit_status(application, key);
-    } else if update_live_view(application, key)? {
-        crate::layout::publish_soon(application);
     }
-    if batch
+    let has_transcript = batch
         .iter()
-        .any(|event| matches!(event, AgentEvent::Transcript { .. }))
-    {
-        emit_step(application, key);
+        .any(|event| matches!(event, AgentEvent::Transcript { .. }));
+    let has_commands = batch
+        .iter()
+        .any(|event| matches!(event, AgentEvent::SessionUpdate(_)));
+    if progress.is_some() || has_transcript || has_commands {
+        publish_transcript_soon(application, key, has_transcript);
     }
     emit_subagents(application, key);
     Ok(())
@@ -2066,8 +2087,7 @@ pub(crate) fn save_activity(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
     )?
-    .view(key)
-    .map(|view| view.blocks);
+    .transcript_to_save(key, std::time::Instant::now(), true);
     save_thread(application, key, activity, progress, transcript)
 }
 
@@ -2175,6 +2195,32 @@ pub(crate) fn refresh_account_labels(application: &AppHandle) -> Result<(), Stri
     crate::layout::refresh_and_publish(application)
 }
 
+/// Materializes the selected thread's full live view into `MainLayout` on thread switch
+/// or startup so subsequent streaming chunks send only incremental patches (#553).
+pub(crate) fn sync_selected_live_view(
+    application: &AppHandle,
+    project: u32,
+    identifier: usize,
+) -> Result<Option<LayoutSnapshot>, String> {
+    let Ok(thread_id) = u32::try_from(identifier) else {
+        return Ok(None);
+    };
+    let view = lock(
+        application.state::<ManagedThreads>().inner(),
+        "thread sessions",
+    )?
+    .take_full_view((project, thread_id));
+    let Some(view) = view else {
+        return Ok(None);
+    };
+    let mut layout = lock(
+        application.state::<MainLayout>().inner(),
+        "main-window state",
+    )?;
+    layout.set_live_thread(project, identifier, view);
+    Ok(Some(layout.snapshot()))
+}
+
 /// Rebuilds the window from saved state plus the live transcript and publishes it.
 pub(crate) fn refresh(
     application: &AppHandle,
@@ -2185,7 +2231,7 @@ pub(crate) fn refresh(
         application.state::<ManagedThreads>().inner(),
         "thread sessions",
     )?
-    .view(key);
+    .take_full_view(key);
     let refresh = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -2212,41 +2258,29 @@ pub(crate) fn refresh(
     Ok(snapshot)
 }
 
-/// Updates the window's data for `key` plus its live transcript without holding the store
-/// and layout locks together or rebuilding every thread entry on streamed batches (#554).
+/// Updates the window's persisted thread row for `key` without holding the store and layout
+/// locks together or cloning the live transcript on every saved status/5s checkpoint (#553, #554).
 fn rebuild_layout(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
-    let view = lock(
-        application.state::<ManagedThreads>().inner(),
-        "thread sessions",
-    )?
-    .view(key);
     let patch = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )?
     .layout_thread_update(key.0, key.1);
-    let identifier = usize::try_from(key.1).map_err(|error| error.to_string())?;
     let applied = {
         let mut layout = lock(
             application.state::<MainLayout>().inner(),
             "main-window state",
         )?;
-        let applied = match patch {
+        match patch {
             Some((revision, entry, spec_locked)) => {
                 layout.replace_thread_entry(key.0, revision, entry, spec_locked)
             }
             None => true,
-        };
-        if applied {
-            match view {
-                Some(view) => layout.set_live_thread(key.0, identifier, view),
-                None => layout.forget_live_thread(key.0, identifier),
-            }
-            return Ok(());
         }
-        false
     };
-    debug_assert!(!applied);
+    if applied {
+        return Ok(());
+    }
     let refresh = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -2257,30 +2291,160 @@ fn rebuild_layout(application: &AppHandle, key: ThreadKey) -> Result<(), String>
         "main-window state",
     )?;
     let _ = refresh.apply(&mut layout);
-    match view {
-        Some(view) => layout.set_live_thread(key.0, identifier, view),
-        None => layout.forget_live_thread(key.0, identifier),
+    Ok(())
+}
+
+/// Coalescing interval for thread-scoped transcript deltas (30 Hz keeps streaming fluid
+/// while leaving ample frame budget for 60 fps UI interaction).
+const TRANSCRIPT_DELTA_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+
+/// Schedules incremental transcript patches (and optional `thread://step`) for `key` (#553).
+fn publish_transcript_soon(application: &AppHandle, key: ThreadKey, with_step: bool) {
+    static PENDING: std::sync::OnceLock<Mutex<std::collections::BTreeMap<ThreadKey, bool>>> =
+        std::sync::OnceLock::new();
+    static WORKER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    let pending = PENDING.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()));
+    {
+        let mut map = pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = map.entry(key).or_insert(false);
+        *entry |= with_step;
+    }
+    WORKER.get_or_init(|| {
+        let application = application.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(TRANSCRIPT_DELTA_INTERVAL);
+                let batch: Vec<(ThreadKey, bool)> = {
+                    let mut map = pending
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if map.is_empty() {
+                        continue;
+                    }
+                    std::mem::take(&mut *map).into_iter().collect()
+                };
+                for (dirty_key, emit_step_flag) in batch {
+                    report(flush_thread_delta(&application, dirty_key, emit_step_flag));
+                }
+            }
+        });
+    });
+}
+
+fn flush_thread_delta(
+    application: &AppHandle,
+    key: ThreadKey,
+    emit_step_flag: bool,
+) -> Result<(), String> {
+    let identifier = usize::try_from(key.1).map_err(|error| error.to_string())?;
+    let selected = lock(
+        application.state::<MainLayout>().inner(),
+        "main-window state",
+    )?
+    .is_selected(key.0, identifier);
+    if selected {
+        flush_selected_thread_delta(application, key, identifier, emit_step_flag)
+    } else {
+        flush_unselected_thread_delta(application, key, identifier, emit_step_flag)
+    }
+}
+
+fn flush_unselected_thread_delta(
+    application: &AppHandle,
+    key: ThreadKey,
+    identifier: usize,
+    emit_step_flag: bool,
+) -> Result<(), String> {
+    let (summary, step_block) = {
+        let runtimes = lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )?;
+        let summary = runtimes.live_summary(key);
+        let step = emit_step_flag.then(|| runtimes.last_block(key)).flatten();
+        (summary, step)
+    };
+    if let Some((titling, running_subagents)) = summary {
+        let sidebar_changed = lock(
+            application.state::<MainLayout>().inner(),
+            "main-window state",
+        )?
+        .update_live_summary(key.0, identifier, titling, running_subagents);
+        if sidebar_changed {
+            crate::layout::publish_soon(application);
+        }
+    }
+    if let Some(block) = step_block {
+        emit_step_block(application, key, block);
     }
     Ok(())
 }
 
-/// Replaces only `key`'s live transcript. Returns whether the change shows on screen.
-fn update_live_view(application: &AppHandle, key: ThreadKey) -> Result<bool, String> {
-    let Some(view) = lock(
-        application.state::<ManagedThreads>().inner(),
-        "thread sessions",
-    )?
-    .view(key) else {
-        return Ok(false);
+fn flush_selected_thread_delta(
+    application: &AppHandle,
+    key: ThreadKey,
+    identifier: usize,
+    emit_step_flag: bool,
+) -> Result<(), String> {
+    let (delta, step_block) = {
+        let mut runtimes = lock(
+            application.state::<ManagedThreads>().inner(),
+            "thread sessions",
+        )?;
+        let delta = runtimes.take_live_delta(key);
+        let step = emit_step_flag.then(|| runtimes.last_block(key)).flatten();
+        (delta, step)
     };
-    let identifier = usize::try_from(key.1).map_err(|error| error.to_string())?;
-    let mut layout = lock(
-        application.state::<MainLayout>().inner(),
-        "main-window state",
-    )?;
-    let visible = layout.live_view_shows(key.0, identifier, &view);
-    layout.set_live_thread(key.0, identifier, view);
-    Ok(visible)
+    if let Some(delta) = delta {
+        let applied = lock(
+            application.state::<MainLayout>().inner(),
+            "main-window state",
+        )?
+        .apply_live_patches(velocity_core::layout_state::LivePatchUpdate {
+            project: key.0,
+            identifier,
+            patches: &delta.patches,
+            titling_model: delta.titling_model.clone(),
+            running_subagents: delta.running_subagents,
+            agent_commands: delta.agent_commands,
+            added: delta.added,
+            deleted: delta.deleted,
+        });
+        match applied {
+            Some((base_rev, next_rev, patches, layout_changed)) => {
+                if !patches.is_empty() {
+                    let event = ThreadTranscriptChanged {
+                        project_identifier: key.0,
+                        thread_identifier: identifier,
+                        base_transcript_revision: base_rev,
+                        transcript_revision: next_rev,
+                        patches,
+                        added: u32::try_from(delta.added).ok(),
+                        deleted: u32::try_from(delta.deleted).ok(),
+                        agent_busy: None,
+                        titling: Some((
+                            delta.titling_model.is_some(),
+                            delta.titling_model.unwrap_or_default(),
+                        )),
+                    };
+                    crate::layout::publish_thread_transcript(application, event)?;
+                }
+                if layout_changed {
+                    crate::layout::publish_soon(application);
+                }
+            }
+            None => {
+                let _ = sync_selected_live_view(application, key.0, identifier)?;
+                crate::layout::publish_soon(application);
+            }
+        }
+    }
+    if let Some(block) = step_block {
+        emit_step_block(application, key, block);
+    }
+    Ok(())
 }
 
 pub(crate) fn emit_status(application: &AppHandle, key: ThreadKey) {
@@ -2306,22 +2470,13 @@ pub(crate) fn emit_status(application: &AppHandle, key: ThreadKey) {
     report(event.emit(application).map_err(|error| error.to_string()));
 }
 
-fn emit_step(application: &AppHandle, key: ThreadKey) {
-    let block = lock(
-        application.state::<ManagedThreads>().inner(),
-        "thread sessions",
-    )
-    .ok()
-    .and_then(|runtimes| runtimes.view(key))
-    .and_then(|view| view.blocks.last().cloned());
-    if let Some(block) = block {
-        let event = ThreadStepRecorded {
-            project_identifier: key.0,
-            thread_identifier: key.1,
-            block,
-        };
-        report(event.emit(application).map_err(|error| error.to_string()));
-    }
+fn emit_step_block(application: &AppHandle, key: ThreadKey, block: TranscriptBlock) {
+    let event = ThreadStepRecorded {
+        project_identifier: key.0,
+        thread_identifier: key.1,
+        block,
+    };
+    report(event.emit(application).map_err(|error| error.to_string()));
 }
 
 /// Sends each subagent that changed since the last call (§3.2 Subagents).

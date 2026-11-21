@@ -58,7 +58,7 @@ impl ThreadEntry {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RailItem {
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
     #[cfg_attr(feature = "bindings", specta(type = String))]
@@ -82,7 +82,7 @@ impl RailItem {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskView {
     pub identifier: String,
     pub title: String,
@@ -113,7 +113,7 @@ impl TaskView {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RosenWorkView {
     pub items: Vec<crate::work_pool::WorkItem>,
     pub expanded_issues: Vec<crate::work_pool::WorkKey>,
@@ -265,7 +265,7 @@ pub enum ProviderColor {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SidebarRow {
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
     #[cfg_attr(feature = "bindings", specta(type = String))]
@@ -302,7 +302,7 @@ pub struct SidebarRow {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SidebarGroup {
     pub collapsed: bool,
     pub group: ThreadGroup,
@@ -317,7 +317,7 @@ pub struct SidebarGroup {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PulseCount {
     pub kind: PulseKind,
     pub label: String,
@@ -330,7 +330,7 @@ pub struct PulseCount {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LayoutIntent {
     Navigation(NavigationIntent),
     SwitchProject(String),
@@ -390,7 +390,7 @@ pub enum LayoutIntent {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaletteTarget {
     Intent(LayoutIntent),
     Thread(
@@ -404,7 +404,7 @@ pub enum PaletteTarget {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PaletteItem {
     pub identifier: String,
     pub label: String,
@@ -599,5 +599,267 @@ impl ToastView {
             message,
             undo_deletion,
         }
+    }
+}
+
+/// Non-list shell state sent in a [`LayoutDelta`] only when one of its fields changed (#553).
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayoutChrome {
+    pub rosen_reconnecting: bool,
+    pub rosen_server_notice: Option<RosenServerNotice>,
+    pub project_identifier: Option<u32>,
+    pub project_name: String,
+    pub rosen_mirror: Option<crate::rosen_mirror::MirrorState>,
+    pub rosen_mirror_behind: Option<crate::rosen_mirror::MirrorBehind>,
+    pub rosen_mirror_divergence: Option<crate::rosen_mirror::MirrorDivergence>,
+    pub collapse_repository: Option<String>,
+    pub collapse_live_state: bool,
+    pub collapse_mirror_health: Option<crate::collapse::CollapseMirrorHealth>,
+    pub base_ci: Option<crate::base_ci::BaseCi>,
+    pub rosen_migration_notice: Option<String>,
+    pub view: NavigationView,
+    pub settings_tab: String,
+    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number::optional"))]
+    #[cfg_attr(feature = "bindings", specta(type = Option<String>))]
+    pub selected_thread: Option<usize>,
+    pub default_model_pill: ModelPillView,
+    pub composer_model_pill: ModelPillView,
+    pub search: String,
+    pub show_numbers: bool,
+    pub new_project_open: bool,
+    pub duty_dialog_open: bool,
+    pub duty_dialog_role: DutyRole,
+    pub swarm_dialog: Option<SwarmDialogRequest>,
+    pub goal_dialog: Option<crate::goal_swarm::GoalDialogRequest>,
+    pub slash_items: Vec<SlashCommandItem>,
+    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+    #[cfg_attr(feature = "bindings", specta(type = String))]
+    pub slash_selection: usize,
+    pub worktree_label: String,
+    pub providers: Vec<ProviderUsage>,
+    pub airc_open: bool,
+    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+    #[cfg_attr(feature = "bindings", specta(type = String))]
+    pub airc_unread: usize,
+    pub overlap_unread: bool,
+    pub composer_text: String,
+    pub draft_context: Option<String>,
+    pub draft_read_only: bool,
+    pub task_text: String,
+    pub build_allowed: bool,
+    pub build_block_reason: Option<String>,
+    pub composer_allowed: bool,
+    pub composer_block_reason: Option<String>,
+    pub blocked_navigation: Vec<NavigationIntent>,
+    pub launch_notice: Option<String>,
+    pub toast: Option<ToastView>,
+}
+
+impl LayoutChrome {
+    pub fn from_snapshot(snapshot: &LayoutSnapshot) -> Self {
+        Self {
+            rosen_reconnecting: snapshot.rosen_reconnecting,
+            rosen_server_notice: snapshot.rosen_server_notice.clone(),
+            project_identifier: snapshot.project_identifier,
+            project_name: snapshot.project_name.clone(),
+            rosen_mirror: snapshot.rosen_mirror.clone(),
+            rosen_mirror_behind: snapshot.rosen_mirror_behind.clone(),
+            rosen_mirror_divergence: snapshot.rosen_mirror_divergence.clone(),
+            collapse_repository: snapshot.collapse_repository.clone(),
+            collapse_live_state: snapshot.collapse_live_state,
+            collapse_mirror_health: snapshot.collapse_mirror_health.clone(),
+            base_ci: snapshot.base_ci.clone(),
+            rosen_migration_notice: snapshot.rosen_migration_notice.clone(),
+            view: snapshot.view,
+            settings_tab: snapshot.settings_tab.clone(),
+            selected_thread: snapshot.selected_thread,
+            default_model_pill: snapshot.default_model_pill.clone(),
+            composer_model_pill: snapshot.composer_model_pill.clone(),
+            search: snapshot.search.clone(),
+            show_numbers: snapshot.show_numbers,
+            new_project_open: snapshot.new_project_open,
+            duty_dialog_open: snapshot.duty_dialog_open,
+            duty_dialog_role: snapshot.duty_dialog_role,
+            swarm_dialog: snapshot.swarm_dialog,
+            goal_dialog: snapshot.goal_dialog.clone(),
+            slash_items: snapshot.slash_items.clone(),
+            slash_selection: snapshot.slash_selection,
+            worktree_label: snapshot.worktree_label.clone(),
+            providers: snapshot.providers.clone(),
+            airc_open: snapshot.airc_open,
+            airc_unread: snapshot.airc_unread,
+            overlap_unread: snapshot.overlap_unread,
+            composer_text: snapshot.composer_text.clone(),
+            draft_context: snapshot.draft_context.clone(),
+            draft_read_only: snapshot.draft_read_only,
+            task_text: snapshot.task_text.clone(),
+            build_allowed: snapshot.build_allowed,
+            build_block_reason: snapshot.build_block_reason.clone(),
+            composer_allowed: snapshot.composer_allowed,
+            composer_block_reason: snapshot.composer_block_reason.clone(),
+            blocked_navigation: snapshot.blocked_navigation.clone(),
+            launch_notice: snapshot.launch_notice.clone(),
+            toast: snapshot.toast.clone(),
+        }
+    }
+}
+
+/// Sidebar thread groups and title-bar pulse counts, sent only when rows change (#553).
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SidebarSlice {
+    pub groups: Vec<SidebarGroup>,
+    pub pulse: Vec<PulseCount>,
+}
+
+/// Right-rail tasks, issues, pull requests and Rosen work pool, sent only when changed (#553).
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RailSlice {
+    pub tasks: Vec<TaskView>,
+    pub pull_requests: Vec<RailItem>,
+    pub issues: Vec<RailItem>,
+    pub tasks_draft: bool,
+    pub task_count_label: String,
+    pub rosen_work: Option<RosenWorkView>,
+}
+
+impl RailSlice {
+    pub fn from_snapshot(snapshot: &LayoutSnapshot) -> Self {
+        Self {
+            tasks: snapshot.tasks.clone(),
+            pull_requests: snapshot.pull_requests.clone(),
+            issues: snapshot.issues.clone(),
+            tasks_draft: snapshot.tasks_draft,
+            task_count_label: snapshot.task_count_label.clone(),
+            rosen_work: snapshot.rosen_work.clone(),
+        }
+    }
+}
+
+/// Command palette state; `palette_results` is populated only while `palette_open` is true (#553).
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaletteSlice {
+    pub palette_open: bool,
+    pub palette_query: String,
+    pub palette_results: Vec<PaletteItem>,
+    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
+    #[cfg_attr(feature = "bindings", specta(type = String))]
+    pub palette_selection: usize,
+}
+
+impl PaletteSlice {
+    pub fn from_snapshot(snapshot: &LayoutSnapshot) -> Self {
+        Self {
+            palette_open: snapshot.palette_open,
+            palette_query: snapshot.palette_query.clone(),
+            palette_results: snapshot.palette_results.clone(),
+            palette_selection: snapshot.palette_selection,
+        }
+    }
+}
+
+/// Incremental update to the main window's [`LayoutSnapshot`] (#553).
+///
+/// Only slices that actually changed since `base_revision` are present; untouched slices
+/// are `None` so the frontend keeps their existing object references without deep-comparing.
+#[cfg_attr(
+    feature = "bindings",
+    derive(serde::Serialize, serde::Deserialize, specta::Type)
+)]
+#[derive(Clone, Debug)]
+pub struct LayoutDelta {
+    pub base_revision: u32,
+    pub revision: u32,
+    #[cfg_attr(
+        feature = "bindings",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub chrome: Option<LayoutChrome>,
+    #[cfg_attr(
+        feature = "bindings",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub sidebar: Option<SidebarSlice>,
+    #[cfg_attr(
+        feature = "bindings",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub board: Option<Vec<crate::board::BoardLane>>,
+    #[cfg_attr(
+        feature = "bindings",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub rail: Option<RailSlice>,
+    #[cfg_attr(
+        feature = "bindings",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub palette: Option<PaletteSlice>,
+    #[cfg_attr(
+        feature = "bindings",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub active_thread_meta: Option<crate::thread_view_model::ThreadDetailMeta>,
+    #[cfg_attr(
+        feature = "bindings",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub active_thread_blocks: Option<crate::thread_view_model::TranscriptUpdate>,
+    #[cfg_attr(feature = "bindings", serde(default))]
+    pub active_thread_cleared: bool,
+    #[cfg_attr(
+        feature = "bindings",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub active_duty: Option<DutyViewSnapshot>,
+    #[cfg_attr(feature = "bindings", serde(default))]
+    pub active_duty_cleared: bool,
+    #[cfg_attr(
+        feature = "bindings",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub active_swarm: Option<SwarmViewSnapshot>,
+    #[cfg_attr(feature = "bindings", serde(default))]
+    pub active_swarm_cleared: bool,
+    #[cfg_attr(
+        feature = "bindings",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub active_goal_swarm: Option<crate::goal_swarm_view::GoalSwarmViewSnapshot>,
+    #[cfg_attr(feature = "bindings", serde(default))]
+    pub active_goal_swarm_cleared: bool,
+}
+
+impl LayoutDelta {
+    pub fn is_empty(&self) -> bool {
+        self.chrome.is_none()
+            && self.sidebar.is_none()
+            && self.board.is_none()
+            && self.rail.is_none()
+            && self.palette.is_none()
+            && self.active_thread_meta.is_none()
+            && self.active_thread_blocks.is_none()
+            && !self.active_thread_cleared
+            && self.active_duty.is_none()
+            && !self.active_duty_cleared
+            && self.active_swarm.is_none()
+            && !self.active_swarm_cleared
+            && self.active_goal_swarm.is_none()
+            && !self.active_goal_swarm_cleared
     }
 }

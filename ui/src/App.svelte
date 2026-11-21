@@ -32,21 +32,30 @@
   import {
     layoutCommands,
     onCollapseLink,
+    onLayoutDelta,
     onLayoutState,
     onLayoutIntent,
+    onThreadTranscript,
     projectCommands,
     threadMenuCommands,
     aircRoutingCommands,
     reportWindowError,
     appearanceCommands,
   } from './lib/ipc';
-  import { reuseUnchanged } from './lib/reuse-unchanged';
+  import {
+    applyLayoutDelta,
+    applyThreadTranscript,
+    resetKeyedTranscript,
+    type KeyedTranscript,
+  } from './lib/transcript-state';
   import type {
     LayoutAction,
+    LayoutDelta,
     LayoutSnapshot,
     LayoutIntent,
     ThreadMenuAction,
     ThreadMenuView,
+    ThreadTranscriptChanged,
     MessageMode,
     UiZoomAdjustment,
     UiZoomView,
@@ -59,9 +68,10 @@
 
   const LAYOUT_TIMEOUT_MS = 10_000;
 
-  // Raw, not deep: Svelte would wrap every new snapshot, transcripts included, in fresh
-  // proxies (#321). Snapshots are replaced whole and never changed in place.
+  // Raw, not deep: Svelte would wrap every snapshot and transcript in fresh proxies (#321).
+  // Deltas preserve unchanged slice references directly without deep comparison (#553).
   let layout = $state.raw<LayoutSnapshot | null>(null);
+  let transcript = $state.raw<KeyedTranscript>(resetKeyedTranscript([], 0));
   $effect(() => {
     paneConnection.rosenReconnecting = layout?.rosen_reconnecting ?? false;
   });
@@ -69,6 +79,8 @@
   let error = $state('');
   let startupError = $state('');
   let latest: LayoutSnapshot | null = null;
+  let latestTranscript: KeyedTranscript = resetKeyedTranscript([], 0);
+  let resyncing = false;
   let pending = 0;
   let newProjectSubmits = $state(0);
   let dutySubmits = $state(0);
@@ -137,6 +149,27 @@
   }
 
   let frame = 0;
+  function scheduleFlush() {
+    // Draw at most once per animation frame so high-frequency bursts never starve 60 fps.
+    if (!frame)
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        flush();
+      });
+  }
+
+  function resyncLayout() {
+    if (resyncing) return;
+    resyncing = true;
+    void layoutCommands
+      .getState()
+      .then((snapshot) => receive(snapshot))
+      .catch(report)
+      .finally(() => {
+        resyncing = false;
+      });
+  }
+
   function receive(snapshot: LayoutSnapshot) {
     if (
       !latest ||
@@ -147,21 +180,73 @@
     ) {
       openPane = null;
     }
-    if (!latest || snapshot.revision >= latest.revision) latest = snapshot;
-    // A swarm publishes many snapshots a second (#273). Draw only the newest, once per
-    // frame, rather than re-rendering the whole window for each one.
-    if (!frame)
-      frame = window.requestAnimationFrame(() => {
-        frame = 0;
-        flush();
-      });
+    if (!latest || snapshot.revision >= latest.revision) {
+      const sameThread =
+        latest !== null &&
+        latest.project_identifier === snapshot.project_identifier &&
+        latest.active_thread?.identifier ===
+          snapshot.active_thread?.identifier &&
+        latestTranscript.revision ===
+          (snapshot.active_thread?.transcript_revision ?? 0) &&
+        latestTranscript.blocks.length ===
+          (snapshot.active_thread?.blocks.length ?? 0);
+      latest = snapshot;
+      if (!sameThread) {
+        latestTranscript = resetKeyedTranscript(
+          snapshot.active_thread?.blocks ?? [],
+          snapshot.active_thread?.transcript_revision ?? 0,
+        );
+      } else if (snapshot.active_thread) {
+        latest = {
+          ...snapshot,
+          active_thread: {
+            ...snapshot.active_thread,
+            blocks: latestTranscript.blocks,
+          },
+        };
+      }
+    }
+    scheduleFlush();
+  }
+
+  function receiveDelta(delta: LayoutDelta) {
+    const outcome = applyLayoutDelta(latest, latestTranscript, delta);
+    if (outcome.kind === 'ignored') return;
+    if (outcome.kind === 'resync') {
+      resyncLayout();
+      return;
+    }
+    if (
+      !latest ||
+      outcome.snapshot.view !== latest.view ||
+      outcome.snapshot.active_thread?.identifier !==
+        latest.active_thread?.identifier
+    ) {
+      openPane = null;
+    }
+    latest = outcome.snapshot;
+    latestTranscript = outcome.transcript;
+    scheduleFlush();
+  }
+
+  function receiveTranscript(event: ThreadTranscriptChanged) {
+    const outcome = applyThreadTranscript(latest, latestTranscript, event);
+    if (outcome.kind === 'ignored') return;
+    if (outcome.kind === 'resync') {
+      resyncLayout();
+      return;
+    }
+    latest = outcome.snapshot;
+    latestTranscript = outcome.transcript;
+    scheduleFlush();
   }
 
   function flush() {
-    // Coalesce acknowledgements while typing so an older snapshot cannot replace
+    // Coalesce acknowledgements while typing so an older update cannot replace
     // text entered since that request. All decisions still come from Rust.
     if (pending) return;
-    layout = reuseUnchanged(layout, latest);
+    layout = latest;
+    transcript = latestTranscript;
     const requested = intents.splice(0);
     void tick().then(() => requested.forEach(focusIntent));
   }
@@ -210,7 +295,7 @@
 
   function enqueue(
     operation: string,
-    request: () => Promise<LayoutSnapshot>,
+    request: () => Promise<LayoutSnapshot | LayoutDelta>,
     clearsError = true,
   ) {
     pending += 1;
@@ -228,10 +313,11 @@
             }, LAYOUT_TIMEOUT_MS);
           });
           // The IPC can still finish after the deadline. Rust publishes its own
-          // revisioned snapshot, so a late reply does not need to hold this queue.
-          const snapshot = await Promise.race([request(), deadline]);
+          // revisioned updates, so a late reply does not need to hold this queue.
+          const result = await Promise.race([request(), deadline]);
           if (clearsError) clearError();
-          receive(snapshot);
+          if ('base_revision' in result) receiveDelta(result);
+          else receive(result);
         } finally {
           window.clearTimeout(timeout);
         }
@@ -461,6 +547,22 @@
         return;
       }
       stops.push(stopState);
+      const stopDelta = await onLayoutDelta((event) => {
+        if (active) receiveDelta(event.payload.delta);
+      });
+      if (!active) {
+        stopDelta();
+        return;
+      }
+      stops.push(stopDelta);
+      const stopTranscript = await onThreadTranscript((event) => {
+        if (active) receiveTranscript(event.payload);
+      });
+      if (!active) {
+        stopTranscript();
+        return;
+      }
+      stops.push(stopTranscript);
       const stopIntent = await onLayoutIntent((event) => {
         if (active) {
           intents.push(event.payload.intent);
@@ -579,11 +681,13 @@
               />{:else if layout.view.startsWith('Spec') && layout.active_thread?.interview}<SpecInterview
                 {layout}
                 thread={layout.active_thread}
+                blockIds={transcript.ids}
                 interview={layout.active_thread.interview}
                 {send}
               />{:else if layout.view === 'Thread' && layout.active_thread}<ThreadView
                 {layout}
                 thread={layout.active_thread}
+                blockIds={transcript.ids}
                 browserRequested={requestedBrowser ===
                   `${layout.project_identifier}:${layout.active_thread.identifier}`}
                 {send}

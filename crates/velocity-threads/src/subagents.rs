@@ -117,6 +117,11 @@ impl Subagents {
         self.running_transcripts().next().is_some()
     }
 
+    /// How many subagents currently run, without cloning their transcripts (#553).
+    pub fn running_count(&self) -> usize {
+        self.running_transcripts().count()
+    }
+
     /// Whether a running subagent waits in, or runs at the head of, the build queue (§2.2).
     pub fn in_build_queue(&self) -> bool {
         self.running_transcripts()

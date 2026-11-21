@@ -96,7 +96,7 @@ export const commands = {
 	getUiZoom: () => __TAURI_INVOKE<UiZoomView>("get_ui_zoom"),
 	adjustUiZoom: (adjustment: UiZoomAdjustment) => __TAURI_INVOKE<UiZoomView>("adjust_ui_zoom", { adjustment }),
 	getLayoutState: () => __TAURI_INVOKE<LayoutSnapshot_Serialize>("get_layout_state"),
-	dispatchLayout: (action: LayoutAction_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("dispatch_layout", { action }),
+	dispatchLayout: (action: LayoutAction_Deserialize) => __TAURI_INVOKE<LayoutDelta_Serialize>("dispatch_layout", { action }),
 	getLocalBuildStatus: () => __TAURI_INVOKE<LocalBuildView_Serialize>("get_local_build_status"),
 	/**
 	 *  Restarts Velocity into the kept local build of `commit` (#512, #551). Never installs an
@@ -310,6 +310,8 @@ export const DUTY_EVENT = "duty://event" as const;
 
 export const ISSUE_PANEL_EVENT = "issue://panel" as const;
 
+export const LAYOUT_DELTA_EVENT = "layout://delta" as const;
+
 export const LAYOUT_INTENT_EVENT = "layout://intent" as const;
 
 export const LAYOUT_STATE_EVENT = "layout://state" as const;
@@ -333,6 +335,8 @@ export const THREAD_STATUS_EVENT = "thread://status" as const;
 export const THREAD_STEP_EVENT = "thread://step" as const;
 
 export const THREAD_SUBAGENT_EVENT = "thread://subagent" as const;
+
+export const THREAD_TRANSCRIPT_EVENT = "thread://transcript" as const;
 
 export const UPDATE_STATUS_EVENT = "update://status" as const;
 
@@ -2421,6 +2425,169 @@ export type LayoutAction_Serialize = "ToggleSettled" | ({ Request: LayoutIntent_
 /**  The goal swarm view's + Agents: the Goal swarm dialog adding agents on its prompt (F16). */
 ({ AddGoalAgents: string }) & { AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ Keyboard: KeyboardInput }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ NumberHints: NumberHintEvent }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ ComposerText: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; TaskText?: never; ToggleSwarm?: never } | ({ SlashSelect: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; TaskText?: never; ToggleSwarm?: never } | "SlashNext" | "SlashPrevious" | "SlashComplete" | "ToggleShowWork" | "ToggleDraftReadOnly" | "ClearDraftContext" | ({ TaskText: string }) & { AddGoalAgents?: never; AddSwarmItems?: never; ComposerText?: never; Keyboard?: never; NumberHints?: never; OpenThread?: never; PaletteSearch?: never; PaletteSelect?: never; Request?: never; SidebarSearch?: never; SlashSelect?: never; ToggleSwarm?: never } | "SubmitComposer" | "SubmitTask";
 
+/**  Non-list shell state sent in a [`LayoutDelta`] only when one of its fields changed (#553). */
+export type LayoutChrome = LayoutChrome_Serialize | LayoutChrome_Deserialize;
+
+/**  Non-list shell state sent in a [`LayoutDelta`] only when one of its fields changed (#553). */
+export type LayoutChrome_Deserialize = {
+	rosen_reconnecting: boolean,
+	rosen_server_notice?: RosenServerNotice | null,
+	project_identifier?: number | null,
+	project_name: string,
+	rosen_mirror?: MirrorState_Deserialize | null,
+	rosen_mirror_behind?: MirrorBehind_Deserialize | null,
+	rosen_mirror_divergence?: MirrorDivergence | null,
+	collapse_repository?: string | null,
+	collapse_live_state: boolean,
+	collapse_mirror_health?: CollapseMirrorHealth_Deserialize | null,
+	base_ci?: BaseCi_Deserialize | null,
+	rosen_migration_notice?: string | null,
+	view: NavigationView,
+	settings_tab: string,
+	selected_thread: string | null,
+	default_model_pill: ModelPillView_Deserialize,
+	composer_model_pill: ModelPillView_Deserialize,
+	search: string,
+	show_numbers: boolean,
+	new_project_open: boolean,
+	duty_dialog_open: boolean,
+	duty_dialog_role: DutyRole,
+	swarm_dialog?: SwarmDialogRequest_Deserialize | null,
+	goal_dialog?: GoalDialogRequest_Deserialize | null,
+	slash_items: SlashCommandItem[],
+	slash_selection: string,
+	worktree_label: string,
+	providers: ProviderUsage_Deserialize[],
+	airc_open: boolean,
+	airc_unread: string,
+	overlap_unread: boolean,
+	composer_text: string,
+	draft_context?: string | null,
+	draft_read_only: boolean,
+	task_text: string,
+	build_allowed: boolean,
+	build_block_reason?: string | null,
+	composer_allowed: boolean,
+	composer_block_reason?: string | null,
+	blocked_navigation: NavigationIntent_Deserialize[],
+	launch_notice?: string | null,
+	toast?: ToastView_Deserialize | null,
+};
+
+/**  Non-list shell state sent in a [`LayoutDelta`] only when one of its fields changed (#553). */
+export type LayoutChrome_Serialize = {
+	rosen_reconnecting: boolean,
+	rosen_server_notice: RosenServerNotice | null,
+	project_identifier: number | null,
+	project_name: string,
+	rosen_mirror: MirrorState_Serialize | null,
+	rosen_mirror_behind: MirrorBehind_Serialize | null,
+	rosen_mirror_divergence: MirrorDivergence | null,
+	collapse_repository: string | null,
+	collapse_live_state: boolean,
+	collapse_mirror_health: CollapseMirrorHealth_Serialize | null,
+	base_ci: BaseCi_Serialize | null,
+	rosen_migration_notice: string | null,
+	view: NavigationView,
+	settings_tab: string,
+	selected_thread: string | null,
+	default_model_pill: ModelPillView_Serialize,
+	composer_model_pill: ModelPillView_Serialize,
+	search: string,
+	show_numbers: boolean,
+	new_project_open: boolean,
+	duty_dialog_open: boolean,
+	duty_dialog_role: DutyRole,
+	swarm_dialog: SwarmDialogRequest_Serialize | null,
+	goal_dialog: GoalDialogRequest_Serialize | null,
+	slash_items: SlashCommandItem[],
+	slash_selection: string,
+	worktree_label: string,
+	providers: ProviderUsage_Serialize[],
+	airc_open: boolean,
+	airc_unread: string,
+	overlap_unread: boolean,
+	composer_text: string,
+	draft_context: string | null,
+	draft_read_only: boolean,
+	task_text: string,
+	build_allowed: boolean,
+	build_block_reason: string | null,
+	composer_allowed: boolean,
+	composer_block_reason: string | null,
+	blocked_navigation: NavigationIntent_Serialize[],
+	launch_notice: string | null,
+	toast: ToastView_Serialize | null,
+};
+
+/**
+ *  Incremental update to the main window's [`LayoutSnapshot`] (#553).
+ * 
+ *  Only slices that actually changed since `base_revision` are present; untouched slices
+ *  are `None` so the frontend keeps their existing object references without deep-comparing.
+ */
+export type LayoutDelta = LayoutDelta_Serialize | LayoutDelta_Deserialize;
+
+export type LayoutDeltaChanged = LayoutDeltaChanged_Serialize | LayoutDeltaChanged_Deserialize;
+
+export type LayoutDeltaChanged_Deserialize = {
+	delta: LayoutDelta_Deserialize,
+};
+
+export type LayoutDeltaChanged_Serialize = {
+	delta: LayoutDelta_Serialize,
+};
+
+/**
+ *  Incremental update to the main window's [`LayoutSnapshot`] (#553).
+ * 
+ *  Only slices that actually changed since `base_revision` are present; untouched slices
+ *  are `None` so the frontend keeps their existing object references without deep-comparing.
+ */
+export type LayoutDelta_Deserialize = {
+	base_revision: number,
+	revision: number,
+	chrome?: LayoutChrome_Deserialize | null,
+	sidebar?: SidebarSlice_Deserialize | null,
+	board?: BoardLane_Deserialize[] | null,
+	rail?: RailSlice_Deserialize | null,
+	palette?: PaletteSlice_Deserialize | null,
+	active_thread_meta?: ThreadDetailMeta_Deserialize | null,
+	active_thread_blocks?: TranscriptUpdate_Deserialize | null,
+	active_thread_cleared?: boolean,
+	active_duty?: DutyViewSnapshot_Deserialize | null,
+	active_duty_cleared?: boolean,
+	active_swarm?: SwarmViewSnapshot_Deserialize | null,
+	active_swarm_cleared?: boolean,
+	active_goal_swarm?: GoalSwarmViewSnapshot_Deserialize | null,
+	active_goal_swarm_cleared?: boolean,
+};
+
+/**
+ *  Incremental update to the main window's [`LayoutSnapshot`] (#553).
+ * 
+ *  Only slices that actually changed since `base_revision` are present; untouched slices
+ *  are `None` so the frontend keeps their existing object references without deep-comparing.
+ */
+export type LayoutDelta_Serialize = {
+	base_revision: number,
+	revision: number,
+	chrome?: LayoutChrome_Serialize,
+	sidebar?: SidebarSlice_Serialize,
+	board?: BoardLane_Serialize[],
+	rail?: RailSlice_Serialize,
+	palette?: PaletteSlice_Serialize,
+	active_thread_meta?: ThreadDetailMeta_Serialize,
+	active_thread_blocks?: TranscriptUpdate_Serialize,
+	active_thread_cleared: boolean,
+	active_duty?: DutyViewSnapshot_Serialize,
+	active_duty_cleared: boolean,
+	active_swarm?: SwarmViewSnapshot_Serialize,
+	active_swarm_cleared: boolean,
+	active_goal_swarm?: GoalSwarmViewSnapshot_Serialize,
+	active_goal_swarm_cleared: boolean,
+};
+
 export type LayoutIntent = LayoutIntent_Serialize | LayoutIntent_Deserialize;
 
 export type LayoutIntentRequested = LayoutIntentRequested_Serialize | LayoutIntentRequested_Deserialize;
@@ -3317,6 +3484,25 @@ export type PaletteItem_Serialize = {
 	target: PaletteTarget_Serialize,
 };
 
+/**  Command palette state; `palette_results` is populated only while `palette_open` is true (#553). */
+export type PaletteSlice = PaletteSlice_Serialize | PaletteSlice_Deserialize;
+
+/**  Command palette state; `palette_results` is populated only while `palette_open` is true (#553). */
+export type PaletteSlice_Deserialize = {
+	palette_open: boolean,
+	palette_query: string,
+	palette_results: PaletteItem_Deserialize[],
+	palette_selection: string,
+};
+
+/**  Command palette state; `palette_results` is populated only while `palette_open` is true (#553). */
+export type PaletteSlice_Serialize = {
+	palette_open: boolean,
+	palette_query: string,
+	palette_results: PaletteItem_Serialize[],
+	palette_selection: string,
+};
+
 export type PaletteTarget = PaletteTarget_Serialize | PaletteTarget_Deserialize;
 
 export type PaletteTarget_Deserialize = ({ Intent: LayoutIntent_Deserialize }) & { Thread?: never } | ({ Thread: string }) & { Intent?: never };
@@ -4197,6 +4383,29 @@ export type RailItem_Serialize = {
 	metadata: string,
 };
 
+/**  Right-rail tasks, issues, pull requests and Rosen work pool, sent only when changed (#553). */
+export type RailSlice = RailSlice_Serialize | RailSlice_Deserialize;
+
+/**  Right-rail tasks, issues, pull requests and Rosen work pool, sent only when changed (#553). */
+export type RailSlice_Deserialize = {
+	tasks: TaskView_Deserialize[],
+	pull_requests: RailItem_Deserialize[],
+	issues: RailItem_Deserialize[],
+	tasks_draft: boolean,
+	task_count_label: string,
+	rosen_work?: RosenWorkView_Deserialize | null,
+};
+
+/**  Right-rail tasks, issues, pull requests and Rosen work pool, sent only when changed (#553). */
+export type RailSlice_Serialize = {
+	tasks: TaskView_Serialize[],
+	pull_requests: RailItem_Serialize[],
+	issues: RailItem_Serialize[],
+	tasks_draft: boolean,
+	task_count_label: string,
+	rosen_work: RosenWorkView_Serialize | null,
+};
+
 /**  The release the workflow was started (or queued) for. */
 export type ReleaseCut = {
 	tag: string,
@@ -4529,6 +4738,21 @@ export type SidebarRow_Serialize = {
 	goal: boolean,
 	/**  How many subagents this thread currently has running (F4). */
 	running_subagents: string,
+};
+
+/**  Sidebar thread groups and title-bar pulse counts, sent only when rows change (#553). */
+export type SidebarSlice = SidebarSlice_Serialize | SidebarSlice_Deserialize;
+
+/**  Sidebar thread groups and title-bar pulse counts, sent only when rows change (#553). */
+export type SidebarSlice_Deserialize = {
+	groups: SidebarGroup_Deserialize[],
+	pulse: PulseCount_Deserialize[],
+};
+
+/**  Sidebar thread groups and title-bar pulse counts, sent only when rows change (#553). */
+export type SidebarSlice_Serialize = {
+	groups: SidebarGroup_Serialize[],
+	pulse: PulseCount_Serialize[],
 };
 
 /**  A dashed card for a provider you can't pick yet; clicking it starts its sign-in. */
@@ -5388,6 +5612,82 @@ export type TaskView_Serialize = {
 	completed_at: number | null,
 };
 
+/**
+ *  Every field of [`ThreadDetailSnapshot`] except `blocks` and `transcript_revision`, so
+ *  header/status changes cross IPC without re-serializing a multi-megabyte transcript (#553).
+ */
+export type ThreadDetailMeta = ThreadDetailMeta_Serialize | ThreadDetailMeta_Deserialize;
+
+/**
+ *  Every field of [`ThreadDetailSnapshot`] except `blocks` and `transcript_revision`, so
+ *  header/status changes cross IPC without re-serializing a multi-megabyte transcript (#553).
+ */
+export type ThreadDetailMeta_Deserialize = {
+	account_label?: string | null,
+	identifier: string,
+	title: string,
+	titling: boolean,
+	title_model_name: string,
+	branch: string,
+	worktree_path: string,
+	worktree_short_path: string,
+	worktree_chip: WorktreeChipView,
+	added: string,
+	deleted: string,
+	elapsed_label: string,
+	has_diff_action: boolean,
+	has_editor_action: boolean,
+	pull_request_number: string | null,
+	has_ship_pr_button: boolean,
+	agent_busy: boolean,
+	read_only: boolean,
+	no_change_reason?: string | null,
+	show_work: boolean,
+	transcript_mode: TranscriptModeView,
+	worked_summary?: WorkedSummaryView_Deserialize | null,
+	rosen_change?: RosenChangeView_Deserialize | null,
+	agent_commands: AgentCommandView[],
+	composer_placeholder: string,
+	model_pill: ModelPillView_Deserialize,
+	interview?: InterviewView_Deserialize | null,
+	subagents: SubagentView_Deserialize[],
+};
+
+/**
+ *  Every field of [`ThreadDetailSnapshot`] except `blocks` and `transcript_revision`, so
+ *  header/status changes cross IPC without re-serializing a multi-megabyte transcript (#553).
+ */
+export type ThreadDetailMeta_Serialize = {
+	account_label: string | null,
+	identifier: string,
+	title: string,
+	titling: boolean,
+	title_model_name: string,
+	branch: string,
+	worktree_path: string,
+	worktree_short_path: string,
+	worktree_chip: WorktreeChipView,
+	added: string,
+	deleted: string,
+	elapsed_label: string,
+	has_diff_action: boolean,
+	has_editor_action: boolean,
+	pull_request_number: string | null,
+	has_ship_pr_button: boolean,
+	agent_busy: boolean,
+	read_only: boolean,
+	no_change_reason: string | null,
+	show_work: boolean,
+	transcript_mode: TranscriptModeView,
+	worked_summary: WorkedSummaryView_Serialize | null,
+	rosen_change: RosenChangeView_Serialize | null,
+	agent_commands: AgentCommandView[],
+	composer_placeholder: string,
+	model_pill: ModelPillView_Serialize,
+	interview: InterviewView_Serialize | null,
+	subagents: SubagentView_Serialize[],
+};
+
 export type ThreadDetailSnapshot = ThreadDetailSnapshot_Serialize | ThreadDetailSnapshot_Deserialize;
 
 export type ThreadDetailSnapshot_Deserialize = {
@@ -5415,6 +5715,8 @@ export type ThreadDetailSnapshot_Deserialize = {
 	transcript_mode: TranscriptModeView,
 	worked_summary?: WorkedSummaryView_Deserialize | null,
 	rosen_change?: RosenChangeView_Deserialize | null,
+	/**  Monotonic revision of `blocks` for delta synchronization (#553). */
+	transcript_revision?: number,
 	blocks: TranscriptBlock_Deserialize[],
 	agent_commands: AgentCommandView[],
 	composer_placeholder: string,
@@ -5450,6 +5752,8 @@ export type ThreadDetailSnapshot_Serialize = {
 	transcript_mode: TranscriptModeView,
 	worked_summary: WorkedSummaryView_Serialize | null,
 	rosen_change: RosenChangeView_Serialize | null,
+	/**  Monotonic revision of `blocks` for delta synchronization (#553). */
+	transcript_revision: number,
 	blocks: TranscriptBlock_Serialize[],
 	agent_commands: AgentCommandView[],
 	composer_placeholder: string,
@@ -5664,6 +5968,32 @@ export type ThreadSubagentChanged_Serialize = {
 	subagent: SubagentView_Serialize,
 };
 
+export type ThreadTranscriptChanged = ThreadTranscriptChanged_Serialize | ThreadTranscriptChanged_Deserialize;
+
+export type ThreadTranscriptChanged_Deserialize = {
+	project_identifier: number,
+	thread_identifier: string,
+	base_transcript_revision: number,
+	transcript_revision: number,
+	patches: TranscriptPatch_Deserialize[],
+	added?: number | null,
+	deleted?: number | null,
+	agent_busy?: boolean | null,
+	titling?: [boolean, string] | null,
+};
+
+export type ThreadTranscriptChanged_Serialize = {
+	project_identifier: number,
+	thread_identifier: string,
+	base_transcript_revision: number,
+	transcript_revision: number,
+	patches: TranscriptPatch_Serialize[],
+	added?: number,
+	deleted?: number,
+	agent_busy?: boolean,
+	titling?: [boolean, string],
+};
+
 export type ThreadUsageRow = {
 	key: string,
 	name: string,
@@ -5800,6 +6130,77 @@ export type TranscriptBlock_Serialize = ({ UserMessage: {
 } }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
 
 export type TranscriptModeView = "FullTranscript" | "CollapsedWithPrHistory" | "ExpandedWithPrHistory" | "CollapsedWithLandHistory" | "ExpandedWithLandHistory";
+
+/**  One incremental update to a thread's transcript blocks (#553). */
+export type TranscriptPatch = TranscriptPatch_Serialize | TranscriptPatch_Deserialize;
+
+/**  One incremental update to a thread's transcript blocks (#553). */
+export type TranscriptPatch_Deserialize = 
+/**  Appends streamed text to the last paragraph of an `AgentMessage` at `index`. */
+({ AppendAgentText: {
+	index: string,
+	delta: string,
+} }) & { ReplaceTail?: never; UpdateBlock?: never } | 
+/**  Replaces one existing block in place without changing transcript length. */
+({ UpdateBlock: {
+	index: string,
+	block: TranscriptBlock_Deserialize,
+} }) & { AppendAgentText?: never; ReplaceTail?: never } | 
+/**  Replaces `blocks[start..]` with `blocks` (appends, updates tail, or truncates). */
+({ ReplaceTail: {
+	start: string,
+	blocks: TranscriptBlock_Deserialize[],
+} }) & { AppendAgentText?: never; UpdateBlock?: never };
+
+/**  One incremental update to a thread's transcript blocks (#553). */
+export type TranscriptPatch_Serialize = 
+/**  Appends streamed text to the last paragraph of an `AgentMessage` at `index`. */
+({ AppendAgentText: {
+	index: string,
+	delta: string,
+} }) & { ReplaceTail?: never; UpdateBlock?: never } | 
+/**  Replaces one existing block in place without changing transcript length. */
+({ UpdateBlock: {
+	index: string,
+	block: TranscriptBlock_Serialize,
+} }) & { AppendAgentText?: never; ReplaceTail?: never } | 
+/**  Replaces `blocks[start..]` with `blocks` (appends, updates tail, or truncates). */
+({ ReplaceTail: {
+	start: string,
+	blocks: TranscriptBlock_Serialize[],
+} }) & { AppendAgentText?: never; UpdateBlock?: never };
+
+/**
+ *  Transcript payload inside a layout delta (#553): either a full replacement (on thread
+ *  switch or resync) or incremental patches from `base_revision` to `revision`.
+ */
+export type TranscriptUpdate = TranscriptUpdate_Serialize | TranscriptUpdate_Deserialize;
+
+/**
+ *  Transcript payload inside a layout delta (#553): either a full replacement (on thread
+ *  switch or resync) or incremental patches from `base_revision` to `revision`.
+ */
+export type TranscriptUpdate_Deserialize = ({ Full: {
+	revision: number,
+	blocks: TranscriptBlock_Deserialize[],
+} }) & { Patches?: never } | ({ Patches: {
+	base_revision: number,
+	revision: number,
+	patches: TranscriptPatch_Deserialize[],
+} }) & { Full?: never };
+
+/**
+ *  Transcript payload inside a layout delta (#553): either a full replacement (on thread
+ *  switch or resync) or incremental patches from `base_revision` to `revision`.
+ */
+export type TranscriptUpdate_Serialize = ({ Full: {
+	revision: number,
+	blocks: TranscriptBlock_Serialize[],
+} }) & { Patches?: never } | ({ Patches: {
+	base_revision: number,
+	revision: number,
+	patches: TranscriptPatch_Serialize[],
+} }) & { Full?: never };
 
 export type TrialResult = "Collecting" | "Met" | "Missed";
 

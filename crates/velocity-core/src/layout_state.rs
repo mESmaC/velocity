@@ -19,7 +19,7 @@ use crate::swarm::{self, SwarmDialogRequest, SwarmSource, SwarmViewSnapshot};
 use crate::thread_view::{self, ComposerSubmitEffect};
 use crate::thread_view_model::{
     self, AgentCommandView, LiveThreadView, ModelPillView, SlashCommandItem, ThreadDetailEntry,
-    ThreadDetailSnapshot, TranscriptBlock,
+    ThreadDetailSnapshot, TranscriptBlock, TranscriptPatch,
 };
 use pending_sends::PendingSends;
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,8 +57,13 @@ pub struct LayoutState {
     /// Running sessions' transcripts by `(project, thread)`. Kept apart from `data` because the
     /// store rebuilds `data` from `state.json`, which has no transcript, after every change.
     live: BTreeMap<(u32, usize), LiveThreadView>,
+    /// Lightweight sidebar summaries `(titling_model, running_subagents)` updated without
+    /// cloning background threads' transcripts (#553).
+    live_summaries: BTreeMap<(u32, usize), (Option<String>, usize)>,
     store_revision: Option<u32>,
     revision: u32,
+    /// Monotonic revision of the active thread's transcript blocks for delta sync (#553).
+    transcript_revision: u32,
     view: NavigationView,
     settings_tab: String,
     selected_thread: Option<usize>,
@@ -98,6 +103,18 @@ pub struct LayoutState {
     hidden_threads: BTreeSet<(u32, usize)>,
     toast: Option<ToastView>,
     toast_count: u32,
+}
+
+/// Input bundle for [`LayoutState::apply_live_patches`] (#553).
+pub struct LivePatchUpdate<'a> {
+    pub project: u32,
+    pub identifier: usize,
+    pub patches: &'a [TranscriptPatch],
+    pub titling_model: Option<String>,
+    pub running_subagents: usize,
+    pub agent_commands: Option<Vec<AgentCommandView>>,
+    pub added: usize,
+    pub deleted: usize,
 }
 
 impl LayoutState {
@@ -159,8 +176,10 @@ impl Default for LayoutState {
             issue_rows: BTreeMap::new(),
             installed_skills: Vec::new(),
             live: BTreeMap::new(),
+            live_summaries: BTreeMap::new(),
             store_revision: None,
             revision: 0,
+            transcript_revision: 0,
             view: NavigationView::Home,
             settings_tab: "worktrees".into(),
             selected_thread: None,
@@ -272,6 +291,7 @@ impl LayoutState {
         if let Some(identifier) = selected_thread {
             self.open_thread(identifier);
         }
+        self.transcript_changed();
         self.changed();
     }
 
@@ -409,8 +429,11 @@ impl LayoutState {
         self.hide_pending_rows();
         self.follow_selected_view();
         self.deselect_hidden();
-        self.palette_selection =
-            layout::bounded_selection(self.palette_results().len(), self.palette_selection);
+        self.palette_selection = if self.palette_open {
+            layout::bounded_selection(self.palette_results().len(), self.palette_selection)
+        } else {
+            0
+        };
         self.changed();
     }
 
@@ -464,6 +487,7 @@ impl LayoutState {
         });
         if let Some(successor) = successor {
             self.selected_thread = Some(successor);
+            self.transcript_changed();
         } else if !data
             .threads
             .iter()
@@ -476,6 +500,7 @@ impl LayoutState {
                     .then_some(detail.previous_work_thread)
                     .flatten()
             });
+            self.transcript_changed();
         }
     }
 
@@ -555,19 +580,187 @@ impl LayoutState {
     pub fn set_live_thread(&mut self, project: u32, identifier: usize, mut view: LiveThreadView) {
         self.pending_sends
             .add_to((project, identifier), &mut view.blocks);
+        self.live_summaries.insert(
+            (project, identifier),
+            (view.titling_model.clone(), view.running_subagents()),
+        );
         self.live.insert((project, identifier), view);
+        if self.is_selected(project, identifier) {
+            self.transcript_changed();
+        }
         self.changed();
     }
 
-    /// Whether replacing a thread's live view with `view` changes what the window shows:
-    /// the thread is open, or its sidebar title starts or stops pulsing for titling.
     /// Drops a thread's live transcript once its session is gone (stopped, merged or
     /// deleted): its saved transcript shows from then on, and `live` holds only threads
     /// that have a session (#322).
     pub fn forget_live_thread(&mut self, project: u32, identifier: usize) {
-        if self.live.remove(&(project, identifier)).is_some() {
+        let removed_live = self.live.remove(&(project, identifier)).is_some();
+        let removed_summary = self.live_summaries.remove(&(project, identifier)).is_some();
+        if removed_live || removed_summary {
+            if self.is_selected(project, identifier) {
+                self.transcript_changed();
+            }
             self.changed();
         }
+    }
+
+    pub fn is_selected(&self, project: u32, identifier: usize) -> bool {
+        self.data.project_identifier == Some(project) && self.selected_thread == Some(identifier)
+    }
+
+    pub fn selected_thread_key(&self) -> Option<(u32, usize)> {
+        Some((self.data.project_identifier?, self.selected_thread?))
+    }
+
+    /// Updates only a background thread's sidebar summary without cloning its transcript (#553).
+    /// Returns whether the active project's sidebar display changed.
+    pub fn update_live_summary(
+        &mut self,
+        project: u32,
+        identifier: usize,
+        titling_model: Option<String>,
+        running_subagents: usize,
+    ) -> bool {
+        let next = (titling_model.is_some(), running_subagents);
+        let previous = self
+            .live_summaries
+            .get(&(project, identifier))
+            .map(|(titling, count)| (titling.is_some(), *count))
+            .or_else(|| {
+                self.live
+                    .get(&(project, identifier))
+                    .map(|live| (live.titling_model.is_some(), live.running_subagents()))
+            });
+        self.live_summaries.insert(
+            (project, identifier),
+            (titling_model.clone(), running_subagents),
+        );
+        if let Some(live) = self.live.get_mut(&(project, identifier)) {
+            live.titling_model = titling_model;
+        }
+        let changed = self.data.project_identifier == Some(project) && previous != Some(next);
+        if changed {
+            self.changed();
+        }
+        changed
+    }
+
+    /// Applies incremental transcript patches in place for the open thread without cloning
+    /// its transcript (#553). Returns `None` when the thread is not selected, has pending
+    /// composer sends waiting to reconcile, or lacks a live entry (caller falls back to a
+    /// full live-view sync).
+    pub fn apply_live_patches(
+        &mut self,
+        update: LivePatchUpdate<'_>,
+    ) -> Option<(u32, u32, Vec<TranscriptPatch>, bool)> {
+        let LivePatchUpdate {
+            project,
+            identifier,
+            patches,
+            titling_model,
+            running_subagents,
+            agent_commands,
+            added,
+            deleted,
+        } = update;
+        let mut layout_changed = self.update_live_summary(
+            project,
+            identifier,
+            titling_model.clone(),
+            running_subagents,
+        );
+        if !self.is_selected(project, identifier)
+            || self.pending_sends.has_waiting((project, identifier))
+        {
+            return None;
+        }
+        let prefix_len = self.work_history_prefix_len(identifier);
+        let live = self.live.get_mut(&(project, identifier))?;
+        live.titling_model = titling_model;
+        if let Some(commands) = agent_commands
+            && live.agent_commands.as_ref() != Some(&commands)
+        {
+            live.agent_commands = Some(commands);
+            layout_changed = true;
+            self.changed();
+        }
+        if let Some(detail) = self
+            .data
+            .threads
+            .iter_mut()
+            .find(|thread| thread.policy.identifier == identifier)
+            .and_then(|thread| thread.detail.as_mut())
+        {
+            detail.added = added;
+            detail.deleted = deleted;
+        }
+        if patches.is_empty() {
+            return Some((
+                self.transcript_revision,
+                self.transcript_revision,
+                Vec::new(),
+                layout_changed,
+            ));
+        }
+        let live = self.live.get_mut(&(project, identifier))?;
+        if !thread_view_model::apply_transcript_patches(
+            std::sync::Arc::make_mut(&mut live.blocks),
+            patches,
+        ) {
+            return None;
+        }
+        let base_revision = self.transcript_revision;
+        self.transcript_changed();
+        let shifted = if prefix_len == 0 {
+            patches.to_vec()
+        } else {
+            patches
+                .iter()
+                .map(|patch| patch.shifted(prefix_len))
+                .collect()
+        };
+        Some((
+            base_revision,
+            self.transcript_revision,
+            shifted,
+            layout_changed,
+        ))
+    }
+
+    /// Number of blocks prepended from earlier work sessions for `identifier`.
+    pub fn work_history_prefix_len(&self, identifier: usize) -> usize {
+        let Some(mut current) = self
+            .data
+            .threads
+            .iter()
+            .find(|thread| thread.policy.identifier == identifier)
+            .and_then(|thread| thread.detail.as_ref())
+        else {
+            return 0;
+        };
+        let mut total = 0;
+        while let Some(previous) = current.previous_work_thread {
+            if previous >= current.identifier {
+                break;
+            }
+            let Some(earlier) = self.data.threads.iter().find_map(|entry| {
+                entry
+                    .detail
+                    .as_ref()
+                    .filter(|detail| detail.identifier == previous)
+            }) else {
+                break;
+            };
+            let visible = earlier
+                .blocks
+                .iter()
+                .filter(|block| !matches!(block, TranscriptBlock::UserMessage { queued: true, .. }))
+                .count();
+            total += visible + 1;
+            current = earlier;
+        }
+        total
     }
 
     pub fn live_view_shows(&self, project: u32, identifier: usize, view: &LiveThreadView) -> bool {
@@ -600,6 +793,9 @@ impl LayoutState {
             .and_then(|entry| entry.detail.as_mut())
         {
             detail.blocks = blocks;
+            if self.selected_thread == Some(identifier) {
+                self.transcript_changed();
+            }
         }
     }
 
@@ -609,8 +805,23 @@ impl LayoutState {
     }
 
     fn running_subagents(&self, identifier: usize) -> usize {
+        if let Some(project) = self.data.project_identifier
+            && let Some((_, count)) = self.live_summaries.get(&(project, identifier))
+        {
+            return *count;
+        }
         self.live_thread(identifier)
             .map_or(0, LiveThreadView::running_subagents)
+    }
+
+    fn is_live_titling(&self, identifier: usize) -> bool {
+        if let Some(project) = self.data.project_identifier
+            && let Some((titling, _)) = self.live_summaries.get(&(project, identifier))
+        {
+            return titling.is_some();
+        }
+        self.live_thread(identifier)
+            .is_some_and(|live| live.titling_model.is_some())
     }
 
     /// A spec interview moves from scan to ask to ready while it is open, and each phase
@@ -657,6 +868,9 @@ impl LayoutState {
         {
             detail.blocks = blocks.into();
             detail.agent_busy = agent_busy;
+            if self.selected_thread == Some(identifier) {
+                self.transcript_changed();
+            }
             self.changed();
         }
     }
@@ -945,7 +1159,11 @@ impl LayoutState {
                 .clone()
                 .unwrap_or_else(|| self.default_model_pill()),
             search: self.search.clone(),
-            board: crate::board::board_lanes(&groups, &tasks, &issues),
+            board: if self.view == NavigationView::Board {
+                crate::board::board_lanes(&groups, &tasks, &issues)
+            } else {
+                Vec::new()
+            },
             groups,
             pulse: self.pulse(),
             show_numbers: self.show_numbers,
@@ -956,7 +1174,11 @@ impl LayoutState {
             swarm_dialog: self.swarm_dialog,
             goal_dialog: self.goal_dialog.clone(),
             palette_query: self.palette_query.clone(),
-            palette_results: self.palette_results(),
+            palette_results: if self.palette_open {
+                self.palette_results()
+            } else {
+                Vec::new()
+            },
             palette_selection: self.palette_selection,
             slash_items,
             slash_selection,
@@ -1089,6 +1311,10 @@ impl LayoutState {
         self.revision = self.revision.saturating_add(1);
     }
 
+    fn transcript_changed(&mut self) {
+        self.transcript_revision = self.transcript_revision.wrapping_add(1);
+    }
+
     fn active_thread_snapshot(&self) -> Option<ThreadDetailSnapshot> {
         let identifier = self.selected_thread?;
         let entry = self
@@ -1098,6 +1324,7 @@ impl LayoutState {
             .find(|thread| thread.policy.identifier == identifier && !thread.policy.hidden)?;
         let detail = entry.detail.as_ref()?;
         let mut snapshot = thread_view_model::project_thread_detail(detail);
+        snapshot.transcript_revision = self.transcript_revision;
         if let Some(live) = self.live_thread(identifier) {
             snapshot.blocks = live.blocks.clone();
             snapshot.subagents.clone_from(&live.subagents);
@@ -1422,6 +1649,9 @@ impl LayoutState {
             self.composer_text = typed;
             self.slash_selection = 0;
         }
+        if self.selected_thread == Some(identifier) {
+            self.transcript_changed();
+        }
         self.changed();
     }
 
@@ -1473,6 +1703,9 @@ impl LayoutState {
             && let Some(detail) = thread.detail.as_mut()
         {
             std::sync::Arc::make_mut(&mut detail.blocks).push(message);
+        }
+        if self.selected_thread == Some(*identifier) {
+            self.transcript_changed();
         }
     }
 
@@ -1640,8 +1873,12 @@ impl LayoutState {
         if entry.policy.hidden {
             return None;
         }
+        let view = entry.view;
+        if self.selected_thread != Some(identifier) {
+            self.transcript_changed();
+        }
         self.selected_thread = Some(identifier);
-        self.view = entry.view;
+        self.view = view;
         // Selection is published in layout://state; feature views consume it there.
         None
     }
@@ -1689,8 +1926,8 @@ impl LayoutState {
                     .iter()
                     .filter(|thread| {
                         let mut row = thread.policy;
-                        row.matches_search =
-                            layout::substring_match(&query, &normalized(&thread.title));
+                        row.matches_search = query.is_empty()
+                            || layout::substring_match(&query, &normalized(&thread.title));
                         let historical = row.group == ThreadGroup::Settled
                             && superseded.contains(&row.identifier)
                             && self.selected_thread != Some(row.identifier);
@@ -1728,7 +1965,8 @@ impl LayoutState {
     fn draft_group(&self, query: &[char], number: &mut usize) -> Option<SidebarGroup> {
         let shown = self.data.project_identifier.is_some()
             && self.selected_thread.is_none()
-            && layout::substring_match(query, &normalized(layout_catalog::DRAFT_ROW_TITLE));
+            && (query.is_empty()
+                || layout::substring_match(query, &normalized(layout_catalog::DRAFT_ROW_TITLE)));
         if !shown {
             return None;
         }
@@ -1788,16 +2026,18 @@ impl LayoutState {
         number: &mut usize,
     ) -> SidebarRow {
         *number = number.saturating_add(1);
-        let (agents, metadata) = self
-            .swarm_row_summary(entry.policy.identifier)
-            .unwrap_or_else(|| (entry.policy.agent_count, entry.metadata.clone()));
+        let is_swarm = matches!(entry.policy.group, ThreadGroup::Swarm);
+        let (agents, metadata) = if is_swarm {
+            self.swarm_row_summary(entry.policy.identifier)
+                .unwrap_or_else(|| (entry.policy.agent_count, entry.metadata.clone()))
+        } else {
+            (entry.policy.agent_count, entry.metadata.clone())
+        };
         SidebarRow {
             identifier: entry.policy.identifier,
             title: entry.title.clone(),
             titling: entry.detail.as_ref().is_some_and(|detail| detail.titling)
-                || self
-                    .live_thread(entry.policy.identifier)
-                    .is_some_and(|live| live.titling_model.is_some()),
+                || self.is_live_titling(entry.policy.identifier),
             metadata,
             change_stage: entry
                 .detail
@@ -1812,12 +2052,17 @@ impl LayoutState {
             paused: entry.policy.paused,
             agents,
             number: if *number <= 9 { Some(*number) } else { None },
-            segments: self.row_segments(entry.policy.identifier),
-            goal: self
-                .data
-                .goal_swarms
-                .iter()
-                .any(|goal| goal.identifier == entry.policy.identifier),
+            segments: if is_swarm {
+                self.row_segments(entry.policy.identifier)
+            } else {
+                Vec::new()
+            },
+            goal: is_swarm
+                && self
+                    .data
+                    .goal_swarms
+                    .iter()
+                    .any(|goal| goal.identifier == entry.policy.identifier),
             running_subagents: self.running_subagents(entry.policy.identifier),
         }
     }

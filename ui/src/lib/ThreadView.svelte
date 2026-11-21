@@ -31,17 +31,20 @@
   let {
     layout,
     thread,
+    blockIds,
     browserRequested,
     send,
   }: {
     layout: LayoutSnapshot;
     thread: ThreadDetailSnapshot;
+    blockIds?: readonly number[];
     browserRequested: boolean;
     send: (action: LayoutAction) => void;
   } = $props();
   let usageOpen = $state(false);
   let browserOpen = $state(false);
   let threadViewEl: HTMLElement | undefined = $state();
+  let transcriptEl: HTMLElement | null = $state(null);
   $effect(() => {
     const identifier = thread.identifier;
     browserOpen = Boolean(identifier && browserRequested);
@@ -550,7 +553,11 @@
       />
     {/key}
   {:else}
-    <div class="transcript" use:followTranscript={thread.identifier}>
+    <div
+      class="transcript"
+      bind:this={transcriptEl}
+      use:followTranscript={thread.identifier}
+    >
       <div class="transcript-inner">
         <PaneState
           name="Transcript"
@@ -595,6 +602,9 @@
         {#if thread.transcript_mode !== 'CollapsedWithLandHistory'}
           <TranscriptBlocks
             blocks={thread.blocks}
+            {blockIds}
+            transcriptKey={`${layout.project_identifier}:${thread.identifier}`}
+            scrollContainer={transcriptEl}
             subagents={liveSubagents}
             activeSubagentId={openSubagentView?.identifier ?? null}
             defaultModel={thread.model_pill.model_name}

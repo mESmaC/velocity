@@ -95,6 +95,11 @@ impl PendingSends {
         })
     }
 
+    /// Whether any composer send is still waiting to appear in `thread`'s live transcript.
+    pub(super) fn has_waiting(&self, thread: (u32, usize)) -> bool {
+        self.waiting.iter().any(|pending| pending.thread == thread)
+    }
+
     /// Forgets the messages the agent's transcript now shows, and appends the rest.
     pub(super) fn add_to(&mut self, thread: (u32, usize), blocks: &mut SharedBlocks) {
         let mut shown = Vec::new();
