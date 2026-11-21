@@ -1,7 +1,7 @@
 //! Run the command behind Rosen and keep the complete output outside the workspace.
 
 use std::collections::VecDeque;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -20,7 +20,10 @@ use velocity_rosen::queued_turn::{
 };
 
 use super::AgentLaunch;
-use super::process::{hidden_command, spawn_owned_command, stop_owned_process};
+use super::process::{
+    hidden_command, spawn_owned_command, spawn_owned_toolchain_command, stop_owned_process,
+};
+use super::program_path::{find_program_on_path, search_path};
 use super::queued_run_tool::RunCommand;
 use super::queued_runs::RunStatusSink;
 
@@ -215,7 +218,7 @@ impl QueuedRun {
             Ok(command) => command,
             Err(error) => return ExecutionOutcome::Failed(error),
         };
-        let mut child = match spawn_owned_command(command) {
+        let mut child = match self.spawn_command(command, &turn) {
             Ok(child) => child,
             Err(error) => return ExecutionOutcome::Failed(error),
         };
@@ -312,11 +315,13 @@ impl QueuedRun {
                 command
             }
             QueuedTurn::Utility { .. } => {
-                let mut command = hidden_command(&self.command.program);
+                let clean_path = clean_toolchain_path(launch)?;
+                let program = find_program_on_path(OsStr::new(&self.command.program), &clean_path);
+                let mut command = hidden_command(program);
                 launch.apply_environment(&mut command);
                 command
                     .args(&self.command.arguments)
-                    .env("PATH", clean_toolchain_path(launch)?);
+                    .env("PATH", clean_path);
                 command
             }
         };
@@ -327,6 +332,27 @@ impl QueuedRun {
             .stderr(self.output.try_clone()?)
             .kill_on_drop(true);
         Ok(command)
+    }
+
+    fn uses_toolchain_path(&self, turn: &QueuedTurn) -> bool {
+        match turn {
+            QueuedTurn::Light { .. } | QueuedTurn::Utility { .. } => true,
+            QueuedTurn::Rosen(_) => velocity_rosen::lean_cache::is_lake(&self.command.program),
+        }
+    }
+
+    fn spawn_command(
+        &self,
+        command: tokio::process::Command,
+        turn: &QueuedTurn,
+    ) -> io::Result<super::AgentProcess> {
+        if self.uses_toolchain_path(turn) {
+            // Keep clean_toolchain_path intact so Light, Utility and lake runs never
+            // re-prepend Velocity's agent shims onto PATH and deadlock (#548).
+            spawn_owned_toolchain_command(command)
+        } else {
+            spawn_owned_command(command)
+        }
     }
 
     /// Unpacks Mathlib's prebuilt cache on demand before running `lake` so a fresh workspace
@@ -357,7 +383,7 @@ impl QueuedRun {
             Ok(command) => command,
             Err(error) => return Some(ExecutionOutcome::Failed(error)),
         };
-        let mut child = match spawn_owned_command(command) {
+        let mut child = match spawn_owned_toolchain_command(command) {
             Ok(child) => child,
             Err(error) => return Some(ExecutionOutcome::Failed(error)),
         };
@@ -516,6 +542,7 @@ fn clean_toolchain_path(launch: &AgentLaunch) -> io::Result<OsString> {
     let existing = launch
         .env_value("PATH")
         .map(OsString::from)
+        .or_else(search_path)
         .or_else(|| std::env::var_os("PATH"))
         .unwrap_or_default();
     toolchain_path_from(&existing)
@@ -643,4 +670,192 @@ fn is_diagnostic(line: &str) -> bool {
         || line.contains(" ... FAILED")
         || line.contains(": error:")
         || line.contains("panicked at")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use velocity_core::queued_runs::QueuedRunClass;
+
+    struct TempFolder(PathBuf);
+
+    impl TempFolder {
+        fn new() -> io::Result<Self> {
+            let path = std::env::temp_dir()
+                .join(format!("velocity-queued-run-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&path)?;
+            Ok(Self(path))
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempFolder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn command_path_env(command: &tokio::process::Command) -> Option<OsString> {
+        command
+            .as_std()
+            .get_envs()
+            .find(|(name, _)| name.eq_ignore_ascii_case("PATH"))
+            .and_then(|(_, value)| value.map(OsStr::to_owned))
+    }
+
+    fn resolve_cargo_on(path: &OsStr) -> Option<PathBuf> {
+        let exe = format!("cargo{}", std::env::consts::EXE_SUFFIX);
+        std::env::split_paths(path)
+            .map(|folder| folder.join(&exe))
+            .find(|candidate| candidate.is_file())
+    }
+
+    fn make_light_turn(folder: &Path) -> io::Result<QueuedTurn> {
+        let project = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(folder.join("project.lock"))?;
+        let slot = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(folder.join("slot.lock"))?;
+        Ok(QueuedTurn::Light {
+            _project: project,
+            _slot: slot,
+            target: folder.join("target"),
+        })
+    }
+
+    struct TestEnv {
+        shim: PathBuf,
+        toolchain: PathBuf,
+        worktree: PathBuf,
+        cargo: String,
+        launch: AgentLaunch,
+    }
+
+    fn setup_shim_and_toolchain(dir: &Path) -> io::Result<TestEnv> {
+        let shim = dir.join("shim");
+        let toolchain = dir.join("toolchain");
+        let worktree = dir.join("worktree");
+        std::fs::create_dir_all(&shim)?;
+        std::fs::create_dir_all(&toolchain)?;
+        std::fs::create_dir_all(&worktree)?;
+        let cargo = format!("cargo{}", std::env::consts::EXE_SUFFIX);
+        std::fs::write(shim.join("velocity-program"), b"velocity")?;
+        std::fs::write(shim.join(&cargo), b"shim")?;
+        std::fs::write(toolchain.join(&cargo), b"real")?;
+        let joined = std::env::join_paths([&shim, &toolchain]).map_err(io::Error::other)?;
+        let mut launch = AgentLaunch::new(PathBuf::from("agent"));
+        launch
+            .env
+            .push(("Path".into(), joined.to_string_lossy().into_owned()));
+        Ok(TestEnv {
+            shim,
+            toolchain,
+            worktree,
+            cargo,
+            launch,
+        })
+    }
+
+    fn cargo_check_command() -> RunCommand {
+        let record = QueuedRunRecord::new(
+            "run-test".into(),
+            "cargo".into(),
+            vec!["check".into(), "-p".into(), "velocity-app".into()],
+            None,
+            QueuedRunClass::Build,
+        );
+        RunCommand::from_record(&record)
+    }
+
+    // Risk (#548): a Light queued run (fresh or restored after a restart, including Windows
+    // mixed-case `Path`) must drop the managed shim folder so its child resolves `cargo` to
+    // the real toolchain instead of re-entering the shim and deadlocking on the light lock.
+    #[test]
+    fn light_queued_run_child_resolves_cargo_to_real_toolchain() -> io::Result<()> {
+        let dir = TempFolder::new()?;
+        let env = setup_shim_and_toolchain(dir.path())?;
+        let fresh = QueuedRun::new(cargo_check_command(), &env.worktree, &env.launch)?;
+        let restored = QueuedRun::restored(&fresh.record(), &env.worktree, &env.launch)?;
+        let turn = make_light_turn(dir.path())?;
+        let rosen = dir.path().join("rosen");
+
+        for run in [&fresh, &restored] {
+            assert!(run.uses_toolchain_path(&turn));
+            let built = run.build_command(&rosen, &env.worktree, &env.launch, &turn)?;
+            let child_path = command_path_env(&built)
+                .ok_or_else(|| io::Error::other("Light command missing PATH"))?;
+            let entries: Vec<PathBuf> = std::env::split_paths(&child_path).collect();
+            assert!(
+                !entries.contains(&env.shim),
+                "shim survived on PATH: {entries:?}"
+            );
+            assert_eq!(
+                resolve_cargo_on(&child_path),
+                Some(env.toolchain.join(&env.cargo)),
+                "cargo did not resolve to real toolchain"
+            );
+            let _ = std::fs::remove_file(&run.log);
+        }
+        Ok(())
+    }
+
+    // Risk (#548): spawning a Light queued run must preserve `clean_toolchain_path` and never
+    // run `extend_search_path` (which would re-prepend Velocity's agent shim folder to PATH).
+    #[tokio::test]
+    async fn spawn_command_keeps_shim_off_light_run_path() -> io::Result<()> {
+        let dir = TempFolder::new()?;
+        let env = setup_shim_and_toolchain(dir.path())?;
+        let run = QueuedRun::new(cargo_check_command(), &env.worktree, &env.launch)?;
+        let turn = make_light_turn(dir.path())?;
+        let clean_path = clean_toolchain_path(&env.launch)?;
+        let mut probe = if cfg!(windows) {
+            let shell = std::env::var_os("COMSPEC")
+                .unwrap_or_else(|| OsString::from(r"C:\Windows\System32\cmd.exe"));
+            let mut command = hidden_command(shell);
+            command.args(["/C", "echo %PATH%"]);
+            command
+        } else {
+            let mut command = hidden_command("/bin/sh");
+            command.args(["-c", "printf '%s' \"$PATH\""]);
+            command
+        };
+        probe
+            .env("PATH", &clean_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+
+        let mut child = run.spawn_command(probe, &turn)?;
+        let mut stdout = child
+            .stdout()
+            .take()
+            .ok_or_else(|| io::Error::other("missing probe stdout"))?;
+        let mut bytes = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut stdout, &mut bytes).await?;
+        let status = child.wait().await?;
+        let _ = std::fs::remove_file(&run.log);
+        assert!(status.success(), "probe exited with {status}");
+        let observed = OsString::from(String::from_utf8_lossy(&bytes).trim());
+        let entries: Vec<PathBuf> = std::env::split_paths(&observed).collect();
+        assert!(
+            !entries.contains(&env.shim),
+            "shim survived on child PATH: {entries:?}"
+        );
+        assert_eq!(
+            resolve_cargo_on(&observed),
+            Some(env.toolchain.join(&env.cargo)),
+            "spawned child PATH did not resolve cargo to real toolchain: {observed:?}"
+        );
+        Ok(())
+    }
 }

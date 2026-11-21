@@ -9,10 +9,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::{OnceLock, PoisonError, RwLock};
+use std::time::{Duration, Instant};
 
 use rosen_client::run_queue::{HELD_ENV, POLL, RunClass, RunQueue};
 
 use crate::process::{background_command, hidden_command};
+use crate::queued_turn::DEFAULT_WAIT_TIMEOUT;
 
 static AGENT_COMMANDS: OnceLock<Option<AgentCommands>> = OnceLock::new();
 static PASSTHROUGH_ENV: RwLock<Vec<String>> = RwLock::new(Vec::new());
@@ -284,6 +286,22 @@ fn rosen_program(folder: &Path) -> io::Result<PathBuf> {
     std::fs::read_to_string(folder.join(ROSEN_RECORD)).map(PathBuf::from)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DirectAction {
+    Held,
+    Utility,
+    Light,
+}
+
+fn direct_action(arguments: &[OsString], held: bool) -> Result<DirectAction, &'static str> {
+    match cargo_policy(&policy_arguments(arguments), held)? {
+        AgentRun::RustUtility | AgentRun::RustCheck if held => Ok(DirectAction::Held),
+        AgentRun::RustUtility => Ok(DirectAction::Utility),
+        AgentRun::RustCheck => Ok(DirectAction::Light),
+        _ => Err(REFUSAL),
+    }
+}
+
 fn run_direct(
     folder: &Path,
     name: &str,
@@ -299,19 +317,16 @@ fn run_direct(
     if name != "cargo" {
         return Err(io::Error::other(REFUSAL));
     }
-    match cargo_policy(&policy_arguments(arguments), false).map_err(io::Error::other)? {
-        AgentRun::RustUtility | AgentRun::RustCheck if inside_held_turn() => {
-            run_held(name, arguments, passthrough)
-        }
-        AgentRun::RustUtility => run_utility(OsStr::new(name), arguments, passthrough),
-        AgentRun::RustCheck => run_light(
+    match direct_action(arguments, inside_held_turn()).map_err(io::Error::other)? {
+        DirectAction::Held => run_held(name, arguments, passthrough),
+        DirectAction::Utility => run_utility(OsStr::new(name), arguments, passthrough),
+        DirectAction::Light => run_light(
             &rosen_program(folder)?,
             &[],
             OsStr::new(name),
             arguments,
             passthrough,
         ),
-        _ => Err(io::Error::other(REFUSAL)),
     }
 }
 
@@ -360,7 +375,10 @@ fn run_rosen(
         // `rosen run` sees the held turn and starts at once (#548).
         let mut command = hidden_command(program);
         filter_environment(&mut command, passthrough);
-        return command.args(arguments).status();
+        return command
+            .args(arguments)
+            .env("PATH", toolchain_path()?)
+            .status();
     }
     match run {
         AgentRun::Ordinary => {
@@ -404,13 +422,35 @@ fn run_held(name: &str, arguments: &[OsString], passthrough: &[String]) -> io::R
     command.args(arguments).env("PATH", path).status()
 }
 
-/// The first `name` executable on `path` outside a managed command folder.
+/// The first `name` executable on `path` outside a managed command folder, falling back
+/// to Cargo's bin folder for Rust tools when `PATH` omits it.
 pub(crate) fn real_program(name: &str, path: &OsStr) -> Option<PathBuf> {
     let file = executable_file(name);
     std::env::split_paths(path)
         .filter(|folder| !is_command_folder(folder))
         .map(|folder| folder.join(&file))
         .find(|candidate| candidate.is_file())
+        .or_else(|| cargo_bin_program(name, &file))
+}
+
+fn cargo_bin_program(name: &str, file: &str) -> Option<PathBuf> {
+    if !RUST_COMMANDS.contains(&name) {
+        return None;
+    }
+    let bin_folder = std::env::var_os("CARGO_HOME")
+        .filter(|value| !value.is_empty())
+        .map(|home| PathBuf::from(home).join("bin"))
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .or_else(|| std::env::var_os("HOME"))
+                .filter(|value| !value.is_empty())
+                .map(|home| PathBuf::from(home).join(".cargo").join("bin"))
+        })?;
+    if is_command_folder(&bin_folder) {
+        return None;
+    }
+    let candidate = bin_folder.join(file);
+    candidate.is_file().then_some(candidate)
 }
 
 fn run_utility(
@@ -418,13 +458,23 @@ fn run_utility(
     arguments: &[OsString],
     passthrough: &[String],
 ) -> io::Result<ExitStatus> {
-    let _slot = light_slot()?;
-    let mut command = background_command(program);
+    let _slot = light_slot(Instant::now(), DEFAULT_WAIT_TIMEOUT)?;
+    let path = toolchain_path()?;
+    let resolved = resolve_utility_program(program, &path);
+    let mut command = background_command(resolved);
     filter_environment(&mut command, passthrough);
-    command
-        .args(arguments)
-        .env("PATH", toolchain_path()?)
-        .status()
+    command.args(arguments).env("PATH", path).status()
+}
+
+fn resolve_utility_program(program: &OsStr, path: &OsStr) -> PathBuf {
+    let candidate = Path::new(program);
+    if candidate.components().count() == 1
+        && let Some(text) = program.to_str()
+        && let Some(found) = real_program(&executable_name(text), path)
+    {
+        return found;
+    }
+    candidate.to_path_buf()
 }
 
 fn run_light(
@@ -476,11 +526,16 @@ struct LightTurn {
 /// target folder for `workspace_root`.
 fn light_turn(target: &Path, workspace_root: &Path, directory: &Path) -> io::Result<LightTurn> {
     std::fs::create_dir_all(target)?;
+    let started = Instant::now();
     // Cargo locks a target folder for a whole build, so runs that share one wait here
     // rather than in a machine slot.
-    let project = locked(&target.join(".velocity-light-run.lock"))?;
-    let slot = light_slot()?;
-    wait_for_memory()?;
+    let project = locked_with_timeout(
+        &target.join(".velocity-light-run.lock"),
+        started,
+        DEFAULT_WAIT_TIMEOUT,
+    )?;
+    let slot = light_slot(started, DEFAULT_WAIT_TIMEOUT)?;
+    wait_for_memory(started, DEFAULT_WAIT_TIMEOUT)?;
     crate::light_target::prepare(target, workspace_root, directory)?;
     Ok(LightTurn {
         _project: project,
@@ -545,12 +600,14 @@ pub fn project_target(project_root: &Path) -> PathBuf {
     project_root.join(PROJECT_TARGET)
 }
 
-fn wait_for_memory() -> io::Result<()> {
+fn wait_for_memory(started: Instant, timeout: Duration) -> io::Result<()> {
     let queue = RunQueue::machine()?;
-    while !queue.memory_headroom().fits(LIGHT_MEMORY) {
-        std::thread::sleep(POLL);
-    }
-    Ok(())
+    wait_for_light_resource(
+        started,
+        timeout,
+        "waiting for 3.0 GiB memory headroom above Rosen's reserve",
+        || Ok(queue.memory_headroom().fits(LIGHT_MEMORY).then_some(())),
+    )
 }
 
 fn subcommand_index(arguments: &[OsString]) -> usize {
@@ -602,7 +659,10 @@ fn policy_arguments(arguments: &[OsString]) -> Vec<String> {
 
 /// Tries to take the first free machine-wide light slot without blocking.
 pub(crate) fn try_light_slot() -> io::Result<Option<File>> {
-    let folder = std::env::temp_dir();
+    try_light_slot_in(&std::env::temp_dir())
+}
+
+fn try_light_slot_in(folder: &Path) -> io::Result<Option<File>> {
     for slot in 0..LIGHT_SLOTS {
         let name = light_slot_name(slot);
         if let Some(file) = try_lock_file(&folder.join(name))? {
@@ -631,15 +691,19 @@ fn light_slot_name(slot: usize) -> String {
     }
 }
 
-/// Takes the first free machine-wide light slot, waiting while all are taken. Slot 0
-/// keeps the single slot's old name, so older shims still count against it.
-fn light_slot() -> io::Result<File> {
-    loop {
-        if let Some(file) = try_light_slot()? {
-            return Ok(file);
-        }
-        std::thread::sleep(POLL);
-    }
+/// Takes the first free machine-wide light slot, timing out instead of blocking forever.
+/// Slot 0 keeps the single slot's old name, so older shims still count against it (#548).
+fn light_slot(started: Instant, timeout: Duration) -> io::Result<File> {
+    light_slot_in(&std::env::temp_dir(), started, timeout)
+}
+
+fn light_slot_in(folder: &Path, started: Instant, timeout: Duration) -> io::Result<File> {
+    wait_for_light_resource(
+        started,
+        timeout,
+        &format!("waiting for a free light Rust slot ({LIGHT_SLOTS} slots)"),
+        || try_light_slot_in(folder),
+    )
 }
 
 pub(crate) fn try_lock_file(path: &Path) -> io::Result<Option<File>> {
@@ -651,10 +715,52 @@ pub(crate) fn try_lock_file(path: &Path) -> io::Result<Option<File>> {
     }
 }
 
-fn locked(path: &Path) -> io::Result<File> {
-    let file = lock_file(path)?;
-    file.lock()?;
-    Ok(file)
+fn locked_with_timeout(path: &Path, started: Instant, timeout: Duration) -> io::Result<File> {
+    wait_for_light_resource(
+        started,
+        timeout,
+        &format!(
+            "waiting for the project's shared Rust target lock ({})",
+            path.display()
+        ),
+        || try_lock_file(path),
+    )
+}
+
+fn wait_for_light_resource<T>(
+    started: Instant,
+    timeout: Duration,
+    reason: &str,
+    mut attempt: impl FnMut() -> io::Result<Option<T>>,
+) -> io::Result<T> {
+    loop {
+        if let Some(value) = attempt()? {
+            return Ok(value);
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "Timed out after {} {reason}. Another light Rust run may still hold it.",
+                    format_wait_duration(elapsed)
+                ),
+            ));
+        }
+        let remaining = timeout.saturating_sub(elapsed);
+        std::thread::sleep(POLL.min(remaining));
+    }
+}
+
+fn format_wait_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds >= 60 {
+        format!("{}m {}s", seconds / 60, seconds % 60)
+    } else if seconds > 0 {
+        format!("{seconds}s")
+    } else {
+        format!("{}ms", duration.as_millis())
+    }
 }
 
 fn lock_file(path: &Path) -> io::Result<File> {
@@ -686,6 +792,90 @@ mod tests {
             super::real_program("cargo", &path),
             Some(toolchain.path().join(&cargo))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn held_turn_bypasses_light_locks() {
+        // Risk (#548): a cargo shim reached inside a held turn must never take a light
+        // lock its own ancestor already holds, while still refusing disallowed commands.
+        let check = ["check", "-p", "velocity-app"].map(std::ffi::OsString::from);
+        let fmt = ["fmt", "--check"].map(std::ffi::OsString::from);
+        let metadata = ["metadata", "--format-version", "1"].map(std::ffi::OsString::from);
+        let test = ["test"].map(std::ffi::OsString::from);
+        assert_eq!(
+            super::direct_action(&check, true),
+            Ok(super::DirectAction::Held)
+        );
+        assert_eq!(
+            super::direct_action(&fmt, true),
+            Ok(super::DirectAction::Held)
+        );
+        assert_eq!(
+            super::direct_action(&metadata, true),
+            Ok(super::DirectAction::Held)
+        );
+        assert!(super::direct_action(&test, true).is_err());
+        assert_eq!(
+            super::direct_action(&check, false),
+            Ok(super::DirectAction::Light)
+        );
+        assert_eq!(
+            super::direct_action(&fmt, false),
+            Ok(super::DirectAction::Utility)
+        );
+    }
+
+    #[test]
+    fn locked_times_out_when_lock_is_held() -> std::io::Result<()> {
+        // Risk (#548): the shim's project target lock wait must time out with a clear
+        // message instead of blocking forever.
+        let dir = tempfile::tempdir()?;
+        let lock_path = dir.path().join(".velocity-light-run.lock");
+        let _holder = super::try_lock_file(&lock_path)?
+            .ok_or_else(|| std::io::Error::other("expected fresh lock to succeed"))?;
+        let error = match super::locked_with_timeout(
+            &lock_path,
+            std::time::Instant::now(),
+            std::time::Duration::from_millis(60),
+        ) {
+            Ok(_) => return Err(std::io::Error::other("expected timeout while lock is held")),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            error.to_string().contains("shared Rust target lock"),
+            "{error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn light_slot_times_out_when_all_slots_are_held() -> std::io::Result<()> {
+        // Risk (#548): the shim's light-slot wait must time out with a clear message
+        // instead of blocking forever when all slots are busy.
+        let dir = tempfile::tempdir()?;
+        let mut holders = Vec::new();
+        for _ in 0..super::LIGHT_SLOTS {
+            let slot = super::try_light_slot_in(dir.path())?
+                .ok_or_else(|| std::io::Error::other("expected free slot"))?;
+            holders.push(slot);
+        }
+        let error = match super::light_slot_in(
+            dir.path(),
+            std::time::Instant::now(),
+            std::time::Duration::from_millis(60),
+        ) {
+            Ok(_) => {
+                return Err(std::io::Error::other(
+                    "expected timeout when slots are full",
+                ));
+            }
+            Err(error) => error,
+        };
+        drop(holders);
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("light Rust slot"), "{error}");
         Ok(())
     }
 

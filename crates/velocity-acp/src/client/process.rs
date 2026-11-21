@@ -124,7 +124,7 @@ impl AgentLaunch {
     pub(crate) fn env_value(&self, name: &str) -> Option<&str> {
         self.env
             .iter()
-            .find(|(variable, _)| variable == name)
+            .find(|(variable, _)| variable.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.as_str())
     }
 
@@ -239,8 +239,8 @@ pub fn spawn_owned_command(mut command: Command) -> std::io::Result<AgentProcess
 }
 
 /// Like [`spawn_owned_command`], but keeps the caller's `PATH` without prepending
-/// Velocity's agent shims. Used by Velocity-owned checks (`preflight`) that invoke real
-/// toolchain binaries (`cargo clippy`, `rustfmt`, `export-bindings`) directly.
+/// Velocity's agent shims. Used by Velocity-owned checks (`preflight`) and queued
+/// toolchain runs (`Light`, `Utility`, `lake`) that invoke real toolchain binaries directly.
 pub(super) fn spawn_owned_toolchain_command(command: Command) -> std::io::Result<AgentProcess> {
     wrap_owned_command(command)
 }
