@@ -1,11 +1,13 @@
 //! Integration scheduling reads Rosen's land ledger. Exact passes and the GitHub
 //! outbox are kept in a separate Velocity-owned database.
 
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use velocity_core::rosen_pin::{PostLandState, format_utc_seconds};
 
 use crate::{ProjectServer, RosenError};
 
@@ -245,6 +247,162 @@ pub fn commit_green_at(server: &ProjectServer, commit: &str) -> Result<Option<u6
            ON h.ref_name=?1 AND h.commit_id = json_extract(e.detail, '$.commit')
          WHERE e.kind IN ('green', 'built')
            AND (h.seq >= ?2 OR json_extract(e.detail, '$.commit') = ?3)",
+        params![reference, target_seq, commit],
+        |row| row.get(0),
+    )?;
+    Ok(green_ms.map(|ms| ms / 1000))
+}
+
+struct PostLandTables {
+    history: bool,
+    green: bool,
+    failures: bool,
+    reverts: bool,
+    bisections: bool,
+    events: bool,
+}
+
+impl PostLandTables {
+    fn inspect(connection: &Connection) -> Result<Self, RosenError> {
+        Ok(Self {
+            history: table_exists(connection, "base_history")?,
+            green: table_exists(connection, "post_land_green")?,
+            failures: table_exists(connection, "post_land_failures")?,
+            reverts: table_exists(connection, "auto_reverts")?,
+            bisections: table_exists(connection, "bisections")?,
+            events: table_exists(connection, "events")?,
+        })
+    }
+}
+
+/// Reads Rosen's post-land verdict (`Green` or `Failed`) for each candidate commit in
+/// `commits` from this project's local `metadata.sqlite` (#580). Commits absent from the
+/// ledger or still awaiting verification are omitted so callers may fall back to Collapse
+/// or GitHub CI.
+pub fn post_land_states(
+    server: &ProjectServer,
+    commits: &[String],
+) -> Result<BTreeMap<String, PostLandState>, RosenError> {
+    if commits.is_empty() || !server.data_dir().join("metadata.sqlite").is_file() {
+        return Ok(BTreeMap::new());
+    }
+    let connection = ledger(server)?;
+    let tables = PostLandTables::inspect(&connection)?;
+    let mut states = BTreeMap::new();
+    for commit in commits {
+        let key = commit.to_ascii_lowercase();
+        if let Some(state) = commit_post_land_state(&connection, &tables, &key)? {
+            states.insert(key, state);
+        }
+    }
+    Ok(states)
+}
+
+fn commit_post_land_state(
+    connection: &Connection,
+    tables: &PostLandTables,
+    commit: &str,
+) -> Result<Option<PostLandState>, RosenError> {
+    if commit_has_recorded_failure(connection, tables, commit)? {
+        return Ok(Some(PostLandState::Failed));
+    }
+    if !tables.history {
+        return Ok(None);
+    }
+    let Some((reference, target_seq)): Option<(String, i64)> = connection
+        .query_row(
+            "SELECT ref_name, seq FROM base_history WHERE lower(commit_id)=?1 LIMIT 1",
+            [commit],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let green_seq = if tables.green {
+        green_seq_for_ref(connection, &reference)?
+    } else {
+        0
+    };
+    if commit_failed_in_bisection(
+        connection, tables, &reference, commit, target_seq, green_seq,
+    )? {
+        return Ok(Some(PostLandState::Failed));
+    }
+    if green_seq > 0 && target_seq <= green_seq {
+        let at = green_event_time(connection, tables, &reference, target_seq, commit)?
+            .map(format_utc_seconds);
+        return Ok(Some(PostLandState::Green { at }));
+    }
+    Ok(None)
+}
+
+fn commit_has_recorded_failure(
+    connection: &Connection,
+    tables: &PostLandTables,
+    commit: &str,
+) -> Result<bool, RosenError> {
+    if tables.failures
+        && connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM post_land_failures WHERE lower(commit_id)=?1)",
+            [commit],
+            |row| row.get::<_, bool>(0),
+        )?
+    {
+        return Ok(true);
+    }
+    if tables.reverts
+        && connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM auto_reverts WHERE lower(culprit)=?1)",
+            [commit],
+            |row| row.get::<_, bool>(0),
+        )?
+    {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn commit_failed_in_bisection(
+    connection: &Connection,
+    tables: &PostLandTables,
+    reference: &str,
+    commit: &str,
+    target_seq: i64,
+    green_seq: i64,
+) -> Result<bool, RosenError> {
+    if !tables.bisections {
+        return Ok(false);
+    }
+    Ok(connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM bisections
+             WHERE ref_name=?1 AND lower(failed)=?2
+               AND (phase IN ('search','confirm','parent') OR ?3>?4)
+         )",
+        params![reference, commit, target_seq, green_seq],
+        |row| row.get(0),
+    )?)
+}
+
+/// Earliest Unix-second timestamp when Rosen recorded a `green` event (never `built`-only)
+/// covering `target_seq` on `reference` (#580).
+fn green_event_time(
+    connection: &Connection,
+    tables: &PostLandTables,
+    reference: &str,
+    target_seq: i64,
+    commit: &str,
+) -> Result<Option<u64>, RosenError> {
+    if !tables.events {
+        return Ok(None);
+    }
+    let green_ms: Option<u64> = connection.query_row(
+        "SELECT MIN(e.created_at) FROM events e
+         LEFT JOIN base_history h
+           ON h.ref_name=?1 AND lower(h.commit_id)=lower(json_extract(e.detail,'$.commit'))
+         WHERE e.kind='green'
+           AND (h.seq>=?2 OR lower(json_extract(e.detail,'$.commit'))=?3)",
         params![reference, target_seq, commit],
         |row| row.get(0),
     )?;
@@ -627,6 +785,43 @@ mod tests {
         // Close the SQLite handle before removing the temp directory on Windows.
         drop(conn);
         assert_eq!(post_land_stall(&server)?, None);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    // Risk (#580): Rosen's local metadata must report `Green` with the `green` event time
+    // (never `built`-only), mark failed/reverted commits as `Failed` even after a later fix
+    // advances `post_land_green`, and leave unverified commits absent for fallback.
+    #[test]
+    fn post_land_states_reports_green_timestamps_and_blocks_failed_commits()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, server) = seed_server("pin-post-land")?;
+        let broken = "a".repeat(40);
+        let fixed = "b".repeat(40);
+        let newer = "c".repeat(40);
+        let conn = Connection::open(server.data_dir().join("metadata.sqlite"))?;
+        conn.execute_batch(
+            "INSERT INTO base_history(ref_name, seq, commit_id, change_id) VALUES
+                 ('master', 4, 'cccccccccccccccccccccccccccccccccccccccc', 'c3');
+             UPDATE post_land_green
+                SET seq=3, commit_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+              WHERE ref_name='master';
+             INSERT INTO post_land_failures(session, change_id, commit_id, kind, output, requires_revert, revert)
+                 VALUES (1, 'c1', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'test', 'failed', 0, NULL);
+             INSERT INTO events(seq, kind, detail, created_at) VALUES
+                 (1, 'built', '{\"commit\":\"cccccccccccccccccccccccccccccccccccccccc\"}', 1795290500000),
+                 (2, 'green', '{\"commit\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}', 1795290000123);",
+        )?;
+        drop(conn);
+        let states = post_land_states(&server, &[newer.clone(), fixed.clone(), broken.clone()])?;
+        assert_eq!(states.get(&broken), Some(&PostLandState::Failed));
+        assert_eq!(
+            states.get(&fixed),
+            Some(&PostLandState::Green {
+                at: Some("2026-11-21T19:40:00Z".into()),
+            })
+        );
+        assert!(!states.contains_key(&newer));
         std::fs::remove_dir_all(root)?;
         Ok(())
     }

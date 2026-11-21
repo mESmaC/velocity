@@ -10,6 +10,7 @@ pub mod connect;
 pub mod credential;
 mod git_credential;
 pub mod health;
+pub mod post_land;
 pub mod provision;
 mod url_text;
 
@@ -20,6 +21,7 @@ pub use git_credential::{
     checkout_repository, clone_repository, ensure_proactive_auth,
 };
 pub use health::{RepositoryActivity, repository_activity, repository_downstream};
+pub use post_land::{RepositoryPostLand, repository_post_land};
 pub use provision::{
     MirrorRequest, ProvisionedMirror, check_push_token, prepare_existing_mirror, provision_mirror,
     share_push_token,

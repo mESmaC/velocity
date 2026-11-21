@@ -11,7 +11,8 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use velocity_core::rosen_pin::{
-    self, CheckRun, CiState, LandedIssue, OpenIssue, PinBump, PinBumpStep, RosenCommit, RosenPin,
+    self, CheckRun, CiState, GreenSource, LandedIssue, OpenIssue, PinBump, PinBumpStep, PinVerdict,
+    PostLandState, RosenCommit, RosenPin,
 };
 
 use crate::gh_command::{GitHubCommand, GitHubCommandError};
@@ -66,11 +67,12 @@ pub struct ReleaseLook {
 enum Ahead {
     Nothing,
     NoGreenCommit,
-    /// The commits from the newest green one down to the pin, newest first, and whether
-    /// more lie between them and the pin than GitHub's first page listed.
+    /// The commits from the newest green one down to the pin, newest first, whether more lie
+    /// between them and the pin than GitHub's first page listed, and which source certified it.
     Green {
         commits: Vec<RosenCommit>,
         more: bool,
+        green_source: GreenSource,
     },
 }
 
@@ -113,20 +115,38 @@ impl RosenPinWatch {
     /// Brings the pin-bump issue and the pinned Rosen release up to date. `known_release`
     /// is the release an earlier look found on Rosen. Fails only when the pin can't be read.
     pub fn look(&self, known_release: Option<&str>) -> Result<PinLook, GitHubCommandError> {
+        self.look_with_post_land(known_release, |_, _| BTreeMap::new())
+    }
+
+    /// Brings the pin-bump issue and the pinned Rosen release up to date, combining GitHub CI
+    /// with Rosen's own post-land verdicts supplied by `read_post_land` (#580).
+    pub fn look_with_post_land(
+        &self,
+        known_release: Option<&str>,
+        read_post_land: impl FnOnce(&RosenPin, &[RosenCommit]) -> BTreeMap<String, PostLandState>,
+    ) -> Result<PinLook, GitHubCommandError> {
         let pin = self.pin()?;
         Ok(PinLook {
-            issue: self.keep_issue_current(&pin),
+            issue: self.keep_issue_current(&pin, read_post_land),
             release: self.publish_release(&pin, known_release),
         })
     }
 
-    fn keep_issue_current(&self, pin: &RosenPin) -> Result<IssueLook, GitHubCommandError> {
+    fn keep_issue_current(
+        &self,
+        pin: &RosenPin,
+        read_post_land: impl FnOnce(&RosenPin, &[RosenCommit]) -> BTreeMap<String, PostLandState>,
+    ) -> Result<IssueLook, GitHubCommandError> {
         let open = self
             .open_issues(&self.velocity)?
             .ok_or_else(|| GitHubCommandError::Missing(format!("{}'s issues", self.velocity)))?;
-        let (issue, closed) = match self.ahead(pin)? {
-            Ahead::Green { commits, more } => {
-                let bump = self.bump(pin, &commits, more, &open)?;
+        let (issue, closed) = match self.ahead(pin, read_post_land)? {
+            Ahead::Green {
+                commits,
+                more,
+                green_source,
+            } => {
+                let bump = self.bump(pin, &commits, more, green_source, &open)?;
                 self.keep_one(&open, &bump)?
             }
             Ahead::Nothing => (PinIssue::Current, self.close_surplus(&open)?),
@@ -154,7 +174,11 @@ impl RosenPinWatch {
         self.command.text(&["api", "-H", RAW_CONTENT, &endpoint])
     }
 
-    fn ahead(&self, pin: &RosenPin) -> Result<Ahead, GitHubCommandError> {
+    fn ahead(
+        &self,
+        pin: &RosenPin,
+        read_post_land: impl FnOnce(&RosenPin, &[RosenCommit]) -> BTreeMap<String, PostLandState>,
+    ) -> Result<Ahead, GitHubCommandError> {
         let rosen = &pin.repository;
         let endpoint = format!("repos/{rosen}/commits?per_page=100");
         let commits: Vec<ApiCommit> = self.command.read(&["api", &endpoint])?;
@@ -168,11 +192,23 @@ impl RosenPinWatch {
         if !found && !self.contains(rosen, &newest.commit, &pin.revision)? {
             return Ok(Ahead::Nothing);
         }
+        let post_land = read_post_land(pin, ahead);
         for (index, commit) in ahead.iter().enumerate().take(GREEN_SCAN) {
-            if self.ci_state(rosen, &commit.commit)? == CiState::Green {
+            let rosen_state = post_land
+                .get(&commit.commit.to_ascii_lowercase())
+                .unwrap_or(&PostLandState::Unknown);
+            // A red post-land result blocks regardless of GitHub CI, so skip its CI reads.
+            if matches!(rosen_state, PostLandState::Failed) {
+                continue;
+            }
+            let github_state = self.ci_state(rosen, &commit.commit)?;
+            if let PinVerdict::Green(green_source) =
+                rosen_pin::pin_verdict(rosen_state, github_state)
+            {
                 return Ok(Ahead::Green {
                     commits: ahead[index..].to_vec(),
                     more: !found,
+                    green_source,
                 });
             }
         }
@@ -235,6 +271,7 @@ impl RosenPinWatch {
         pin: &RosenPin,
         commits: &[RosenCommit],
         more: bool,
+        green_source: GreenSource,
         velocity_open: &[OpenIssue],
     ) -> Result<PinBump, GitHubCommandError> {
         let rosen = pin.repository.clone();
@@ -269,6 +306,7 @@ impl RosenPinWatch {
             more_commits: more,
             pin: pin.clone(),
             target,
+            green_source,
             release,
             unread,
         })

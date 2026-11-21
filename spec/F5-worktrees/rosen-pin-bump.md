@@ -9,15 +9,19 @@ Two minutes after start and every ten minutes, Velocity reads the pin from `Carg
 It reads the newest 100 commits of Rosen's default branch.
 The commits above the pin are ahead of it.
 When the pin is not among the 100, Velocity asks GitHub whether the branch contains it, and a pin the branch does not contain is never bumped.
-The target is the newest of the 8 newest commits ahead whose CI is green.
-A commit is green when it has at least one check run, workflow run or commit status, every check run and workflow run completed with `success`, `neutral` or `skipped`, and no status is `pending`, `failure` or `error`.
-A commit whose checks or workflow runs are running, failed or never ran is passed over for the next older one.
+The target is the newest of the 8 newest commits ahead that is green.
+A commit is green when neither Rosen's post-land verification nor GitHub CI failed for it, and either (#580):
+- Rosen's own post-land verification published `green` covering it, read from this machine's local Rosen server when it runs Rosen's project or from Collapse's post-land read for Rosen's repository; or
+- GitHub CI is green: it has at least one check run, workflow run or commit status, every check run and workflow run completed with `success`, `neutral` or `skipped`, and no status is `pending`, `failure` or `error` (#569).
+
+A red result from either source blocks the commit even when the other source is green.
+A commit that is blocked or not yet green is passed over for the next older one.
 
 **The issue.**
 While a target exists, exactly one open issue titled "Bump the Rosen pin to `<7-character commit>`" asks for it.
 Velocity finds pin-bump issues by that title prefix.
 The issue says:
-- the target commit, how many commits it is ahead of the pin, and a compare link
+- the target commit, the verification source ("green by Rosen's post-land check at `<time>`" or "green on GitHub CI"), how many commits it is ahead of the pin, and a compare link
 - the change: set `rev` of every Rosen dependency to the target, set `release` to the target's release tag, regenerate `Cargo.lock` and adapt to Rosen's API changes
 - the Rosen issues landed since the pin: every `#N` in the messages of the commits from the pin to the target, with its title
 - the open Velocity and Collapse (`mESmaC/collapse`) issues that name one of them as `<owner>/rosen#N`, `rosen#N`, "Rosen #N", "Rosen issue #N" or a link to it
