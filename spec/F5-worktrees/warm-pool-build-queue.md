@@ -11,7 +11,7 @@
   Direct `cargo fmt` and `cargo check -p <crate>` take an agent light slot, and the shims refuse other direct invocations with the integration-build message shared by `rosen run` and `queue_run`.
   A shim reached inside a turn already held (`ROSEN_RUN_HELD` set, as in a queued light run) runs the real tool at once, found outside the shim folders, and never waits for a turn of its own: that turn's holder is its own ancestor (#548).
   Queued light, utility and `lake` runs keep Velocity's shim folder off the child `PATH` so they invoke the real toolchain directly, and direct shim lock or headroom waits time out after 20 minutes with a clear error instead of blocking forever (#548).
-  The managed paths also accept `cargo metadata --format-version 1` and `pnpm -C ui bindings` for generated-file repair.
+  The managed paths (including a `cargo` shim reached inside a held turn) also accept `cargo metadata --format-version 1`, `pnpm -C ui bindings` and `cargo run ... --bin export-bindings` for generated-file repair (#559).
   Agents use Rust formatting, UI type-check and lint as applicable.
   Warm pool prepares install UI dependencies and fetch the Lean cache.
   Integration builds use Rosen's `verify` class and wait for a memory-budgeted turn.

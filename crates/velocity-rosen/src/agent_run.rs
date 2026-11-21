@@ -42,14 +42,14 @@ pub(crate) const LIGHT_MEMORY: u64 = 3 << 30;
 /// The shared target folder beside a Rosen project's workspaces.
 const PROJECT_TARGET: &str = ".velocity-agent-target";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentRun {
     Ordinary,
     /// Rust formatting or the managed Cargo.lock generator.
     RustUtility,
     /// `cargo check -p <crate>`.
     RustCheck,
-    /// The UI's `bindings` script, which builds and runs `export-bindings`.
+    /// The UI's `bindings` script or managed `cargo run ... --bin export-bindings`.
     Bindings,
 }
 
@@ -92,8 +92,71 @@ fn cargo_policy(arguments: &[String], managed: bool) -> Result<AgentRun, &'stati
         {
             Ok(AgentRun::RustUtility)
         }
+        // Queued `pnpm -C ui bindings` invokes `cargo run ... --bin export-bindings` (#559).
+        _ if managed && runs_export_bindings(arguments) => Ok(AgentRun::Bindings),
         _ => Err(REFUSAL),
     }
+}
+
+/// `cargo run [--manifest-path <path>] [-p|--package <crate>] [--locked] --bin export-bindings [-- [--check]]`.
+fn runs_export_bindings(arguments: &[String]) -> bool {
+    let Some((command, mut rest)) = arguments.split_first() else {
+        return false;
+    };
+    if command != "run" {
+        return false;
+    }
+    let mut has_bin = false;
+    while let Some((first, tail)) = rest.split_first() {
+        if first == "--" {
+            return has_bin && (tail.is_empty() || matches!(tail, [flag] if flag == "--check"));
+        }
+        if first == "--locked" {
+            rest = tail;
+        } else if let Some((path, next)) = flag_value(first, tail, &["--manifest-path"]) {
+            if path.is_empty() || path.starts_with('-') {
+                return false;
+            }
+            rest = next;
+        } else if let Some((package, next)) = flag_value(first, tail, &["-p", "--package"]) {
+            if !package_name(package) {
+                return false;
+            }
+            rest = next;
+        } else if let Some((binary, next)) = flag_value(first, tail, &["--bin"]) {
+            if binary != "export-bindings" {
+                return false;
+            }
+            has_bin = true;
+            rest = next;
+        } else {
+            return false;
+        }
+    }
+    has_bin
+}
+
+fn flag_value<'a>(
+    first: &'a str,
+    tail: &'a [String],
+    names: &[&str],
+) -> Option<(&'a str, &'a [String])> {
+    for &name in names {
+        if first == name {
+            let (value, next) = tail.split_first()?;
+            return Some((value.as_str(), next));
+        }
+        if !name.starts_with("--") {
+            continue;
+        }
+        if let Some(value) = first
+            .strip_prefix(name)
+            .and_then(|rest| rest.strip_prefix('='))
+        {
+            return Some((value, tail));
+        }
+    }
+    None
 }
 
 /// `pnpm -C ui bindings`, `pnpm --dir ui bindings` or `pnpm run bindings`.
@@ -295,7 +358,9 @@ enum DirectAction {
 
 fn direct_action(arguments: &[OsString], held: bool) -> Result<DirectAction, &'static str> {
     match cargo_policy(&policy_arguments(arguments), held)? {
-        AgentRun::RustUtility | AgentRun::RustCheck if held => Ok(DirectAction::Held),
+        AgentRun::RustUtility | AgentRun::RustCheck | AgentRun::Bindings if held => {
+            Ok(DirectAction::Held)
+        }
         AgentRun::RustUtility => Ok(DirectAction::Utility),
         AgentRun::RustCheck => Ok(DirectAction::Light),
         _ => Err(REFUSAL),
@@ -900,6 +965,102 @@ mod tests {
             assert!(
                 policy("pnpm.cmd", &arguments) == Ok(*expected),
                 "Unexpected run policy for {arguments:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cargo_export_bindings_is_allowed_only_when_managed() {
+        // Risk (#559): queued `pnpm -C ui bindings` runs `cargo run --manifest-path ../Cargo.toml
+        // -p velocity-app --bin export-bindings`, which must be permitted under managed/held runs
+        // while unqueued shell invocations and arbitrary `cargo run` binaries stay refused.
+        let allowed: &[&[&str]] = &[
+            &[
+                "run",
+                "--manifest-path",
+                "../Cargo.toml",
+                "-p",
+                "velocity-app",
+                "--bin",
+                "export-bindings",
+            ],
+            &[
+                "run",
+                "--manifest-path",
+                "src-tauri/Cargo.toml",
+                "--bin",
+                "export-bindings",
+                "--",
+                "--check",
+            ],
+            &[
+                "run",
+                "--locked",
+                "-p",
+                "velocity-app",
+                "--bin",
+                "export-bindings",
+                "--",
+                "--check",
+            ],
+            &[
+                "run",
+                "--manifest-path=../Cargo.toml",
+                "--package=velocity-app",
+                "--bin=export-bindings",
+            ],
+            &["run", "--bin", "export-bindings"],
+        ];
+        for arguments in allowed {
+            let arguments: Vec<String> = arguments.iter().map(|&arg| arg.to_owned()).collect();
+            let os_arguments: Vec<std::ffi::OsString> =
+                arguments.iter().map(std::ffi::OsString::from).collect();
+            assert_eq!(
+                super::cargo_policy(&arguments, true),
+                Ok(AgentRun::Bindings),
+                "Expected managed policy to allow {arguments:?}"
+            );
+            assert_eq!(
+                policy("cargo", &arguments),
+                Ok(AgentRun::Bindings),
+                "Expected queue policy to allow {arguments:?}"
+            );
+            assert_eq!(
+                super::direct_action(&os_arguments, true),
+                Ok(super::DirectAction::Held),
+                "Expected held cargo shim to run {arguments:?}"
+            );
+            assert!(
+                super::cargo_policy(&arguments, false).is_err(),
+                "Expected unmanaged shell policy to refuse {arguments:?}"
+            );
+            assert!(
+                super::direct_action(&os_arguments, false).is_err(),
+                "Expected unqueued cargo shim to refuse {arguments:?}"
+            );
+        }
+
+        let refused: &[&[&str]] = &[
+            &["run", "-p", "velocity-app"],
+            &["run", "-p", "velocity-app", "--bin", "velocity-app"],
+            &[
+                "run",
+                "--manifest-path",
+                "../Cargo.toml",
+                "-p",
+                "velocity-app",
+                "--bin",
+                "export-bindings",
+                "--release",
+            ],
+            &["run", "--bin", "export-bindings", "--", "--unexpected"],
+            &["build", "-p", "velocity-app", "--bin", "export-bindings"],
+        ];
+        for arguments in refused {
+            let arguments: Vec<String> = arguments.iter().map(|&arg| arg.to_owned()).collect();
+            assert!(
+                super::cargo_policy(&arguments, true).is_err(),
+                "Expected managed policy to refuse {arguments:?}"
             );
         }
     }
