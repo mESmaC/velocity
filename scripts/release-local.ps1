@@ -68,14 +68,23 @@ function Get-RosenBinaries {
     $url, $rev = $Matches[1], $Matches[2]
     $install = Join-Path $target "rosen-bin\$rev"
     $bin = Join-Path $install 'bin'
-    if (Test-Path (Join-Path $bin 'rosen-server.exe')) {
+    if ((Test-Path -LiteralPath (Join-Path $bin 'rosen-server.exe')) -and (Test-Path -LiteralPath (Join-Path $bin 'rosen.exe'))) {
         Write-Step "Rosen $($rev.Substring(0, 7)) already built"
         return $bin
     }
     Write-Step "Building Rosen $($rev.Substring(0, 7)) (once per pinned commit)"
-    # A kept target folder makes the next pin's build reuse unchanged dependencies.
+    # Give each pinned commit its own target folder so Cargo never reuses stale
+    # workspace-member artifacts (like rosen-protocol) across pins (#561).
+    # Registry and git downloads remain shared via CARGO_HOME.
+    $buildRoot = Join-Path $target 'rosen-build'
+    $buildDir = Join-Path $buildRoot $rev
+    if (Test-Path -LiteralPath $buildRoot -PathType Container) {
+        Get-ChildItem -LiteralPath $buildRoot -Force |
+            Where-Object { $_.Name -ne $rev } |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    }
     $previous = $env:CARGO_TARGET_DIR
-    $env:CARGO_TARGET_DIR = Join-Path $target 'rosen-build'
+    $env:CARGO_TARGET_DIR = $buildDir
     try {
         cargo install --locked --git $url --rev $rev --root $install rosen-server rosen-cli
         if ($LASTEXITCODE -ne 0) { throw 'Could not build Rosen' }
