@@ -88,14 +88,19 @@ pub(crate) fn serve_with_options(
     result.and(cleanup)
 }
 
-fn instructions(nick: &str, continuous_dispatch: bool) -> String {
+fn instructions(nick: &str, continuous_dispatch: bool, has_issue_tools: bool) -> String {
     let task_rule = if continuous_dispatch {
         "Continuous dispatch started this thread. Use task_add, task_update and task_delete without waiting for a user request. Record concrete follow-up work and split work into actionable tasks. Velocity marks your assigned task done when your change lands, so leave it assigned while you work."
     } else {
         "Use task_add, task_update and task_delete only when the user explicitly asks you to add, change or remove Task List items. Otherwise file issues."
     };
+    let issue_rule = if has_issue_tools {
+        " Use issue_read to inspect any issue in this project's repository and issue_create to file spec questions, contradictions or findings on this project's repository."
+    } else {
+        ""
+    };
     format!(
-        "You joined this project's AIRC channel as {nick}. Check ownership with airc_claims using the candidate task or piece as the task filter. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so check the next candidate. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview. A discovery about Velocity itself (its worktrees, AIRC, duty tools, agent shells, build queue or app), not this project, goes in append_ledger with velocity_issue set, and Velocity files it on its own repository. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue instead and is filed on mESmaC/rosen. Use only one issue field. Search read_ledger with ledger discovery and the problem's terms before reporting it. An issue that waits on other issues names them in blocked_by, which records GitHub issue dependencies; never hold it with a label."
+        "You joined this project's AIRC channel as {nick}. Check ownership with airc_claims using the candidate task or piece as the task filter. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so check the next candidate. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file. Messages require named recipients and an intent. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview.{issue_rule} Use append_ledger with velocity_issue only to report a problem in the Velocity IDE/tooling running your session (its worktrees, AIRC, duty tools, agent shells, build queue, code graph or desktop app), which Velocity files on mESmaC/velocity regardless of which project you are in; for issues on this project's repository (including when this project is mESmaC/velocity), use issue_create instead. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue instead and is filed on mESmaC/rosen. Use at most one ledger issue field. Search read_ledger with ledger discovery and the problem's terms before reporting it. An issue that waits on other issues names them in blocked_by, which records GitHub issue dependencies; never hold it with a label."
     )
 }
 
@@ -125,8 +130,12 @@ fn respond(
             Ok(nick) => {
                 session.nick = Some(nick.clone());
                 json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},
-                        "serverInfo":{"name":"velocity-airc","version":env!("CARGO_PKG_VERSION")},
-                        "instructions":instructions(&nick, options.continuous_dispatch)})
+                "serverInfo":{"name":"velocity-airc","version":env!("CARGO_PKG_VERSION")},
+                "instructions":instructions(
+                    &nick,
+                    options.continuous_dispatch,
+                    options.issue_handler.is_some(),
+                )})
             }
             Err(error) => return Some(failure(id, -32603, &error.to_string())),
         },
@@ -188,9 +197,14 @@ fn call(
         name if crate::task_tools::TASK_TOOLS.contains(&name) => {
             crate::task_tools::call(channel, member, name, arguments)
         }
-        name @ ("issue_comment" | "issue_ready_to_close" | "issue_needs_owner") => {
-            issue_tools::call(channel, member, name, arguments, issue_handler)
-        }
+        name if issue_tools::ISSUE_TOOLS.contains(&name) => issue_tools::call(
+            channel,
+            member,
+            session.nick.as_deref().unwrap_or(nick),
+            name,
+            arguments,
+            issue_handler,
+        ),
         "join" => Ok(json!({"nick":channel.join_with_session(member, nick, true)?})),
         "leave" => {
             channel.leave(member)?;
@@ -333,14 +347,14 @@ fn writing_tools() -> Vec<Value> {
         ),
         tool(
             "append_ledger",
-            "Record a discovery or past work. When a discovery is a problem in Velocity itself (its worktrees and paths, AIRC, the review swarm or Scout tools, agent shells and sandboxes, the build queue, the code graph, or the app) rather than in this project's code, also pass velocity_issue: a one-line issue title. Velocity then files it on its own repository, or adds it to an open issue about the same problem. For a problem in Rosen itself (its server, workspaces, durability, claims, rebases or landing), pass rosen_issue instead to file on mESmaC/rosen. Use only one issue field. Read the discoveries first and omit the issue field when another agent already reported the same problem. When the reported problem waits on other issues, name them in blocked_by and Velocity links them as GitHub issue dependencies.",
+            "Record a discovery or past work in the project ledger. To file an issue on this project's own repository (including spec questions, contradictions or code findings), use issue_create instead. Pass velocity_issue (a one-line title) only when a discovery reports a problem in the Velocity IDE/tooling running your session (its worktrees and paths, AIRC, the review swarm or Scout tools, agent shells and sandboxes, the build queue, the code graph, or the desktop app); Velocity files it on mESmaC/velocity (or adds it to a matching open issue) regardless of which project you are in. Pass rosen_issue instead for a problem in Rosen itself (its server, workspaces, durability, claims, rebases or landing) to file on mESmaC/rosen. Use at most one issue field, and leave both out when another agent already reported the same problem or when you already filed it with issue_create. When velocity_issue or rosen_issue waits on other issues, name them in blocked_by as owner/name#12 and Velocity links them as GitHub issue dependencies.",
             json!({"ledger":ledger,"text":string.clone(),
                 "blocked_by":{"type":"array","items":{"type":"string"},
                     "description":"Only with velocity_issue or rosen_issue: issues that must close first, each as owner/name#12"},
                 "velocity_issue":{"type":"string","minLength":1,"maxLength":200,
-                    "description":"Only for a discovery about Velocity itself: the issue title"},
+                    "description":"One-line title to file this tooling discovery on mESmaC/velocity (for problems in the Velocity IDE/tooling running your session; use issue_create for this project's own issues, including when this project is mESmaC/velocity)"},
                 "rosen_issue":{"type":"string","minLength":1,"maxLength":200,
-                    "description":"Only for a discovery about Rosen itself: the issue title; cannot be combined with velocity_issue"}}),
+                    "description":"One-line title to file this discovery on mESmaC/rosen (for problems in Rosen itself; cannot be combined with velocity_issue)"}}),
             &["ledger", "text"],
         ),
         tool(

@@ -1,7 +1,19 @@
-use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::path::Path;
-use velocity_airc::{Error, IssueUpdate};
-use velocity_github::IssueClient;
+
+use serde::Deserialize;
+use serde_json::{Value, json};
+use velocity_airc::{Error, IssueCreate, IssueRead, IssueRequest, IssueUpdate};
+use velocity_core::text_budget::{json_text_page, preview};
+use velocity_github::{AgentIssueDraft, AgentIssueOutcome, IssueClient, IssueDetail};
+use velocity_rosen::ProjectServer;
+use velocity_store::VersionControl;
+
+/// Stays below `TOOL_ANSWER_BYTES` (8,000) so `issue_read` always returns unclipped JSON.
+const READ_RESPONSE_BUDGET: usize = 7_500;
+const FULL_BODY_BUDGET: usize = 6_000;
+const BODY_WITH_COMMENTS_BUDGET: usize = 4_200;
+const COMMENT_PREVIEW_BYTES: usize = 1_200;
 
 #[derive(Deserialize)]
 struct IssueProjects {
@@ -13,15 +25,32 @@ struct IssueProject {
     id: u32,
     repository_path: String,
     github_remote: Option<String>,
+    #[serde(default)]
+    version_control: VersionControl,
 }
 
 /// The tool process reads the project's GitHub identity from the app, since a Rosen
 /// workspace has no Git remote and the issue number alone is only repository-local.
-pub fn post_issue_update(
+pub fn handle_issue_request(
     app_data: &Path,
     project: &str,
-    update: IssueUpdate<'_>,
-) -> Result<String, Error> {
+    request: IssueRequest<'_>,
+) -> Result<Value, Error> {
+    let (project, client) = open_issue_project(app_data, project)?;
+    match request {
+        IssueRequest::Read(read) => read_issue(&client, read),
+        IssueRequest::Create(create) => create_issue(app_data, &project, &client, create),
+        IssueRequest::Update(update) => {
+            let url = post_update(project.id, &client, update)?;
+            Ok(json!({"url": url}))
+        }
+    }
+}
+
+fn open_issue_project(
+    app_data: &Path,
+    project: &str,
+) -> Result<(IssueProject, IssueClient), Error> {
     let invalid = |message: &str| Error::Invalid(message.into());
     let identifier = project
         .parse::<u32>()
@@ -43,6 +72,138 @@ pub fn post_issue_update(
         None => IssueClient::discover(directory),
     }
     .map_err(|error| Error::Invalid(error.to_string()))?;
+    Ok((project, client))
+}
+
+fn read_issue(client: &IssueClient, read: IssueRead) -> Result<Value, Error> {
+    let detail = client
+        .read_issue_detail(read.issue, if read.offset > 0 { 0 } else { read.comments })
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    format_issue_read(&detail, read.offset, read.comments)
+}
+
+fn format_issue_read(
+    detail: &IssueDetail,
+    offset: usize,
+    comment_limit: usize,
+) -> Result<Value, Error> {
+    let include_comments = offset == 0 && comment_limit > 0 && !detail.comments.is_empty();
+    let body_budget = if include_comments {
+        BODY_WITH_COMMENTS_BUDGET
+    } else {
+        FULL_BODY_BUDGET
+    };
+    let (body, next_offset) = json_text_page(&detail.body, offset, body_budget)
+        .ok_or_else(|| Error::Invalid("Use the returned byte offset".into()))?;
+    let mut answer = json!({
+        "number": detail.number,
+        "repository": detail.repository,
+        "url": detail.url,
+        "state": detail.state,
+        "title": preview(&detail.title, 300),
+        "author": detail.author,
+        "labels": detail.labels,
+        "blocked_by": detail.blocked_by,
+        "body": body,
+    });
+    if let Some(next) = next_offset {
+        answer["next_offset"] = json!(next);
+    }
+    if offset > 0 {
+        return Ok(answer);
+    }
+    answer["total_comments"] = json!(detail.total_comments);
+    let mut remaining = READ_RESPONSE_BUDGET.saturating_sub(answer.to_string().len() + 96);
+    let mut recent = Vec::new();
+    if include_comments {
+        for comment in detail.comments.iter().rev() {
+            let entry = json!({
+                "author": comment.author,
+                "created_at": comment.created_at,
+                "body": preview(&comment.body, COMMENT_PREVIEW_BYTES),
+            });
+            let size = entry.to_string().len() + 1;
+            if size > remaining {
+                break;
+            }
+            remaining -= size;
+            recent.push(entry);
+        }
+        recent.reverse();
+    }
+    let omitted = detail.total_comments.saturating_sub(recent.len());
+    answer["comments"] = json!(recent);
+    if omitted > 0 {
+        answer["comments_omitted"] = json!(omitted);
+    }
+    Ok(answer)
+}
+
+fn create_issue(
+    app_data: &Path,
+    project: &IssueProject,
+    client: &IssueClient,
+    create: IssueCreate<'_>,
+) -> Result<Value, Error> {
+    let blockers = velocity_core::issue_dependencies::parse_blockers(create.blocked_by)
+        .map_err(Error::Invalid)?;
+    let thread = create
+        .member
+        .strip_prefix("thread-")
+        .and_then(|member| member.parse::<u32>().ok());
+    let byline = issue_byline(project.id, thread, Some(create.nick));
+    let draft = AgentIssueDraft {
+        title: create.title,
+        body: create.body,
+        labels: create.labels,
+        blocked_by: &blockers,
+        byline: &byline,
+    };
+    let outcome = client
+        .create_agent_issue(&draft, |texts| {
+            mentioned_issue_paths(app_data, project, texts)
+        })
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    Ok(match outcome {
+        AgentIssueOutcome::Filed {
+            issue,
+            blocked_by,
+            unlinked,
+        } => {
+            let mut reply = json!({
+                "outcome": "filed",
+                "number": issue.number,
+                "url": issue.url,
+                "title": issue.title,
+                "labels": issue.labels,
+            });
+            if !blocked_by.is_empty() {
+                reply["blocked_by"] = json!(blocked_by);
+            }
+            if let Some(unlinked) = unlinked {
+                reply["unlinked"] = json!(unlinked);
+            }
+            reply
+        }
+        AgentIssueOutcome::Duplicate { issue, reason } => json!({
+            "outcome": "duplicate",
+            "issue": {
+                "number": issue.number,
+                "url": issue.url,
+                "title": issue.title,
+                "state": issue.state,
+                "labels": issue.labels,
+            },
+            "reason": reason,
+        }),
+    })
+}
+
+fn post_update(
+    identifier: u32,
+    client: &IssueClient,
+    update: IssueUpdate<'_>,
+) -> Result<String, Error> {
     let thread = update
         .claim
         .member
@@ -58,6 +219,26 @@ pub fn post_issue_update(
         client.post_issue_progress(update.issue, &byline, update.body, update.ready, &blockers)
     }
     .map_err(|error| Error::Invalid(error.to_string()))
+}
+
+fn mentioned_issue_paths(
+    app_data: &Path,
+    project: &IssueProject,
+    texts: &[(&str, &str)],
+) -> Vec<BTreeSet<String>> {
+    let Ok(executable) = std::env::current_exe() else {
+        return vec![BTreeSet::new(); texts.len()];
+    };
+    let endpoint = (project.version_control == VersionControl::Rosen)
+        .then(|| ProjectServer::new(app_data, project.id).endpoint().clone());
+    velocity_graph::mentioned_paths(
+        &executable,
+        app_data,
+        &project.id.to_string(),
+        Path::new(&project.repository_path),
+        endpoint,
+        texts,
+    )
 }
 
 pub fn issue_byline(project: u32, thread: Option<u32>, nick: Option<&str>) -> String {

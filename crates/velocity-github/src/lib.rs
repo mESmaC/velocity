@@ -4,6 +4,7 @@
 //! reports), for listing and cloning repositories (F2) and for the workflow runs an owner
 //! lets agents request (#508); changes land through Rosen.
 
+mod agent_issues;
 pub mod base_ci;
 mod command;
 mod dependency_graph;
@@ -33,6 +34,9 @@ mod workflow_report;
 mod workflow_runs;
 mod workflow_watch;
 
+pub use agent_issues::{
+    AgentIssueDraft, AgentIssueOutcome, IssueCommentEntry, IssueDependency, IssueDetail,
+};
 pub use dependency_graph::DependencyGraph;
 pub use gh_command::GitHubCommandError;
 pub use issue_panel::{

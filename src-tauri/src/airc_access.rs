@@ -17,7 +17,7 @@ pub fn serve_airc_server() -> anyhow::Result<bool> {
     if switch.to_str() != Some(SERVER_SWITCH) {
         return Ok(false);
     }
-    serve_stdio_with_issues(rest, velocity_threads::issue_activity::post_issue_update)
+    serve_stdio_with_issues(rest, velocity_threads::issue_activity::handle_issue_request)
         .context("The AIRC MCP connection failed")?;
     Ok(true)
 }

@@ -23,7 +23,7 @@ The review swarm can record dependencies between project issues with `scout_add_
 
 **Dependencies when filing (#511).** An issue that waits on other issues is held by GitHub `blocked_by` links alone, and never by a hold label.
 Every tool that files or updates an issue takes the blockers as `blocked_by`, a list of `#n` for the same repository or `owner/name#n` for another.
-`scout_file`, `issue_comment`, `issue_needs_owner`, `parked_review_resolve` and `review_swarm_no_change` link them on the issue they write, and `scout_add_blocker` takes `blocker_repository` for a blocker in another repository.
+`scout_file`, `issue_create`, `issue_comment`, `issue_needs_owner`, `parked_review_resolve` and `review_swarm_no_change` link them on the issue they write, and `scout_add_blocker` takes `blocker_repository` for a blocker in another repository.
 A reported discovery carries its blockers to the filed issue (F14).
 A link that already exists is kept, a blocker that does not exist is refused before `scout_file` runs the reproduction, and the comment names the linked issues.
 The tools refuse `needs-owner` when its reason only waits on other issues: it names issues beside waiting words and names no hardware, upstream release or owner decision.
@@ -66,7 +66,11 @@ Closure waits for the GitHub mirror to contain the landed commit and honours **C
 A revert cancels pending closure and reopens the issue with the culprit output or reason.
 Discussion and closure happen asynchronously alongside the Work projection and landing.
 
-**Issue comments (#441).** AIRC's `issue_comment { issue, body }` posts on any project issue the calling agent currently holds.
+**Issue tools (#441, #535).** AIRC's `issue_read { issue, offset?, comments? }` reads any issue in the project's mirror repository and returns its title, body (paged with `next_offset` when long), labels, state, `blocked_by` dependencies and recent comments.
+AIRC's `issue_create { title, body, labels?, blocked_by? }` files a new issue on the project's mirror repository with the calling agent's byline and records an `issue` event on the channel.
+Before filing, `issue_create` runs the #471 duplicate check against open issues using the project's code graph when available, returning the matching open issue instead of creating a duplicate.
+It resolves and links `blocked_by` issues as GitHub issue dependencies (#511) and refuses `needs-owner` when the body only waits on other issues.
+AIRC's `issue_comment { issue, body }` posts on any project issue the calling agent currently holds.
 The comment includes the agent's nick and a link to its saved Velocity thread when it has one.
 Agents comment when starting, when a finding changes the plan and when blocked.
 On Rosen, Velocity posts the land comment with the change ID and commit.

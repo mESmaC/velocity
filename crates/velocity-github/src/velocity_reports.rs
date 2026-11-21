@@ -11,6 +11,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use velocity_core::issue_dependencies::{IssueReference, declared_blockers};
 
+use crate::GitHubIssue;
 use crate::command::gh;
 use crate::gh_command::GitHubCommandError;
 
@@ -521,6 +522,42 @@ impl IssueProblem {
         (title_shared >= 2 && (title_overlap >= SAME_PROBLEM || corroborated))
             .then_some(title_overlap + evidence_overlap / 2.0)
     }
+}
+
+/// Returns the highest-scoring open issue matching `(title, body)` under the #471
+/// problem matcher, using code paths resolved through the project graph when available.
+pub fn find_matching_open_issue<'a>(
+    title: &str,
+    body: &str,
+    open: &'a [GitHubIssue],
+    mentioned_paths: impl FnOnce(&[(&str, &str)]) -> Vec<BTreeSet<String>>,
+) -> Option<&'a GitHubIssue> {
+    if open.is_empty() {
+        return None;
+    }
+    let mut descriptions = Vec::with_capacity(open.len() + 1);
+    descriptions.push((title, body));
+    for issue in open {
+        descriptions.push((issue.title.as_str(), issue.body.as_str()));
+    }
+    let mut paths = mentioned_paths(&descriptions).into_iter();
+    let wanted = IssueProblem::new(title, body, paths.next().unwrap_or_default());
+    let mut best: Option<(&'a GitHubIssue, f64)> = None;
+    for issue in open {
+        let candidate =
+            IssueProblem::new(&issue.title, &issue.body, paths.next().unwrap_or_default());
+        let Some(score) = wanted.match_score(&candidate) else {
+            continue;
+        };
+        let replaces = best.is_none_or(|(current, current_score)| {
+            score.total_cmp(&current_score).is_gt()
+                || (score.total_cmp(&current_score).is_eq() && issue.number < current.number)
+        });
+        if replaces {
+            best = Some((issue, score));
+        }
+    }
+    best.map(|(issue, _)| issue)
 }
 
 /// Normalize inflections so the same failure can be described in different words.

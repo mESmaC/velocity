@@ -8,9 +8,9 @@ use crate::issue_types::IssueState;
 use crate::repository_client::{Connection, RepositoryClient};
 use crate::{GitHubCommandError, GitHubIssue, IssueInventory};
 
-const ISSUE_FIELDS: &str = "id number title body url state author { login }
+pub(crate) const ISSUE_FIELDS: &str = "id number title body url state author { login }
     createdAt updatedAt closedAt milestone { number } labels(first:100) { nodes { name } totalCount }";
-const BLOCKER_FIELDS: &str = "number state repository { nameWithOwner }";
+pub(crate) const BLOCKER_FIELDS: &str = "number state repository { nameWithOwner }";
 
 /// Reads and writes one repository's issues through the signed-in gh transport, with
 /// long-path repository discovery. No credential, shell, or provider-specific path is
@@ -21,10 +21,10 @@ pub struct IssueClient {
 }
 
 #[derive(Deserialize)]
-struct IssueNode {
+pub(crate) struct IssueNode {
     #[serde(flatten)]
-    issue: GitHubIssue,
-    labels: Labels,
+    pub(crate) issue: GitHubIssue,
+    pub(crate) labels: Labels,
 }
 
 #[derive(Deserialize)]
@@ -43,16 +43,16 @@ struct IssueDependenciesSummary {
 }
 
 #[derive(Deserialize)]
-struct Blocker {
-    number: u32,
-    state: IssueState,
-    repository: BlockerRepository,
+pub(crate) struct Blocker {
+    pub(crate) number: u32,
+    pub(crate) state: IssueState,
+    pub(crate) repository: BlockerRepository,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct BlockerRepository {
-    name_with_owner: String,
+pub(crate) struct BlockerRepository {
+    pub(crate) name_with_owner: String,
 }
 
 fn dependency_fields() -> String {
@@ -64,7 +64,7 @@ fn dependency_fields() -> String {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Labels {
+pub(crate) struct Labels {
     nodes: Vec<Label>,
     total_count: usize,
 }
@@ -194,7 +194,10 @@ impl IssueClient {
         self.decode_issue(issue)
     }
 
-    fn decode_issue(&self, mut node: IssueNode) -> Result<GitHubIssue, GitHubCommandError> {
+    pub(crate) fn decode_issue(
+        &self,
+        mut node: IssueNode,
+    ) -> Result<GitHubIssue, GitHubCommandError> {
         if node.labels.total_count != node.labels.nodes.len() {
             let mut variables = self.transport.variables(node.issue.number);
             variables["cursor"] = serde_json::Value::Null;
@@ -246,15 +249,22 @@ impl IssueClient {
             .filter(|blocker| blocker.state == IssueState::Open)
             .map(|blocker| {
                 // `DependencyGraph` reads this form back.
-                let repository = blocker.repository.name_with_owner;
-                if repository.eq_ignore_ascii_case(self.repository()) {
-                    format!("#{}", blocker.number)
-                } else {
-                    format!("{repository}#{}", blocker.number)
-                }
+                relative_blocker_name(
+                    self.repository(),
+                    &blocker.repository.name_with_owner,
+                    blocker.number,
+                )
             })
             .collect();
         Ok(issue)
+    }
+}
+
+pub(crate) fn relative_blocker_name(home: &str, repository: &str, number: u32) -> String {
+    if repository.eq_ignore_ascii_case(home) {
+        format!("#{number}")
+    } else {
+        format!("{repository}#{number}")
     }
 }
 

@@ -4,7 +4,9 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::{Channel, Error, IssueUpdate, protocol::ToolOptions};
+use serde_json::Value;
+
+use crate::{Channel, Error, IssueRequest, protocol::ToolOptions};
 
 /// The switch that makes Velocity's own executable serve AIRC, so the server ships inside
 /// the app and needs no separate install.
@@ -38,12 +40,12 @@ pub fn serve_stdio(arguments: &[OsString]) -> Result<(), Error> {
 
 pub fn serve_stdio_with_issues(
     arguments: &[OsString],
-    handler: impl Fn(&Path, &str, IssueUpdate<'_>) -> Result<String, Error>,
+    handler: impl Fn(&Path, &str, IssueRequest<'_>) -> Result<Value, Error>,
 ) -> Result<(), Error> {
     serve_stdio_inner(arguments, Some(&handler))
 }
 
-type StdioIssueHandler<'a> = dyn Fn(&Path, &str, IssueUpdate<'_>) -> Result<String, Error> + 'a;
+type StdioIssueHandler<'a> = dyn Fn(&Path, &str, IssueRequest<'_>) -> Result<Value, Error> + 'a;
 
 fn serve_stdio_inner(
     arguments: &[OsString],
@@ -77,7 +79,7 @@ fn serve_stdio_inner(
             .map(|scope| text(scope, "member scope"))
             .transpose()?,
     )?;
-    let update = |request: IssueUpdate<'_>| {
+    let handle_issue = |request: IssueRequest<'_>| {
         handler.ok_or_else(|| Error::Invalid("No GitHub issue transport".into()))?(
             &app_data, &project, request,
         )
@@ -90,7 +92,7 @@ fn serve_stdio_inner(
         std::io::stdout(),
         ToolOptions::new(
             continuous_dispatch,
-            handler.map(|_| &update as &crate::issue_tools::IssueHandler<'_>),
+            handler.map(|_| &handle_issue as &crate::issue_tools::IssueHandler<'_>),
         ),
     )
 }

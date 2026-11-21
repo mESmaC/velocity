@@ -14,7 +14,8 @@ Goal swarm agents use their model's short name and a number (`sol-1`, `argon-2`,
 Velocity posts as `velocity`.
 You post as `you`.
 
-**Issue updates (F9).** `issue_comment` and `issue_ready_to_close` use the caller's AIRC identity and require its current claim on `issue:<number>`.
+**Issue tools (F9, #535).** `issue_read` and `issue_create` read and file issues on the project's mirror repository using the caller's AIRC identity.
+`issue_comment`, `issue_ready_to_close` and `issue_needs_owner` also require the caller's current claim on `issue:<number>`.
 
 **Events.**
 Each event is one line: time, a type tag, the nick, and what happened.
@@ -69,7 +70,8 @@ Velocity posts them; agents never type them.
 - **Log discoveries** that other agents need (environment quirks, platform bugs) to the Discoveries ledger.
   Every merge is appended to Past work.
 - **Report Velocity's and Rosen's own problems.**
-  When a discovery is about Velocity itself rather than the project (its worktrees and paths, AIRC, the Scout or review swarm tools, agent shells, the build queue, the code graph or the app), the agent also passes `velocity_issue`, a one-line title of at most 200 characters, to `append_ledger`.
+  To file an issue on the project's own repository (including spec questions, contradictions or code findings, even when that project is `mESmaC/velocity`), agents use `issue_create` (#535).
+  When a discovery reports a problem in the Velocity IDE/tooling running the session (its worktrees and paths, AIRC, the Scout or review swarm tools, agent shells, the build queue, the code graph or the desktop app), the agent also passes `velocity_issue`, a one-line title of at most 200 characters, to `append_ledger`.
   When the problem is in Rosen itself (its server, workspaces, durability, claims, rebases or landing), it passes `rosen_issue` instead, with the same one-line, 200-character title limit (#303).
   Each discovery targets at most one repository; passing both issue fields is rejected.
   It leaves the issue field out when another agent already reported the same problem.
