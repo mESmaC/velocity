@@ -389,6 +389,9 @@ pub fn run() -> anyhow::Result<()> {
             setup_recovery.set_intentional_exit(false)?;
             bindings.mount_events(application);
             diagnostics::initialize(application.handle());
+            if let Some(notice) = setup_recovery.take_restart_notice() {
+                diagnostics::record("recovery", &notice);
+            }
             let interrupted = state::initialize(application.handle())?;
             browser::initialize(application.handle())?;
             airc_access::initialize(application.handle())?;
@@ -439,7 +442,7 @@ pub fn run() -> anyhow::Result<()> {
             use tauri::Manager;
             if let Err(error) = application
                 .state::<std::sync::Arc<velocity_updates::supervision::RecoveryConnection>>()
-                .set_intentional_exit(true)
+                .finish_intentional_exit()
             {
                 diagnostics::record("recovery", &error.to_string());
             }
