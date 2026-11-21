@@ -15,6 +15,9 @@ use tauri_specta::Event;
 use velocity_core::base_ci::{
     BaseCiState, CommitOrder, OpenRepair, RepairThreadState, format_ci_repair_action,
 };
+use velocity_core::collapse::{
+    COLLAPSE_FORWARDING_SIGNAL, ForwarderState, collapse_forwarding_needs_attention,
+};
 use velocity_core::project_health::{
     DISPATCH_IDLE_LIMIT_SECONDS, HealthSeverity, HealthSignalKind, INTEGRATION_UNCOVERED_LANDS,
     INTEGRATION_UNCOVERED_SECONDS, MIRROR_BEHIND_LIMIT_SECONDS, POST_LAND_STALL_LIMIT_SECONDS,
@@ -39,6 +42,7 @@ use crate::continuous_dispatch::DispatchHealthSnapshot;
 use crate::rosen_mirror::MirrorRetryOutcome;
 
 const SOURCE: &str = "project health";
+const COLLAPSE_FORWARDING_KEY: &str = "collapse-forwarding";
 const FIRST_CHECK: Duration = Duration::from_secs(30);
 const CHECK_INTERVAL: Duration = Duration::from_secs(60);
 const MIRROR_RETRY_COOLDOWN_SECS: u64 = 10 * 60;
@@ -80,6 +84,16 @@ struct ProjectHealthTracker {
     release_health: Option<ReleaseHealthCache>,
     pending_release: Option<PendingRelease>,
     retried_release_runs: HashSet<u64>,
+    collapse_forwarding: Option<CollapseForwardingRecord>,
+}
+
+#[derive(Clone)]
+struct CollapseForwardingRecord {
+    collapse_repository: String,
+    github_repository: String,
+    reason: String,
+    opened_setup_page: bool,
+    acted_at_ms: u64,
 }
 
 #[derive(Clone)]
@@ -391,6 +405,117 @@ pub(crate) fn invalidate_release_health(application: &AppHandle, project: u32) {
     });
 }
 
+/// Records that Collapse could not automatically configure GitHub forwarding and publishes
+/// the "GitHub is not receiving lands: finish Collapse forwarding" project health row (#579).
+pub(crate) fn record_collapse_forwarding_needed(
+    application: &AppHandle,
+    project: u32,
+    collapse_repository: &str,
+    github_repository: &str,
+    reason: &str,
+    opened_setup_page: bool,
+) {
+    let now_ms = unix_millis();
+    let record = CollapseForwardingRecord {
+        collapse_repository: collapse_repository.to_owned(),
+        github_repository: github_repository.to_owned(),
+        reason: reason.to_owned(),
+        opened_setup_page,
+        acted_at_ms: now_ms,
+    };
+    let item = collapse_forwarding_item(
+        Some(collapse_repository),
+        Some(github_repository),
+        Some(&record),
+        now_ms,
+    );
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let updated = {
+        let mut reg = registry(&managed);
+        reg.projects.entry(project).or_default().collapse_forwarding = Some(record);
+        let list = reg.views.entry(project).or_default();
+        upsert_item(list, item);
+        list.clone()
+    };
+    emit_view(application, project, updated);
+}
+
+/// Clears any pending Collapse forwarding health row for `project` (#579).
+pub(crate) fn clear_collapse_forwarding(application: &AppHandle, project: u32) {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let updated = {
+        let mut reg = registry(&managed);
+        if let Some(tracker) = reg.projects.get_mut(&project) {
+            tracker.collapse_forwarding = None;
+        }
+        let list = reg.views.entry(project).or_default();
+        let before = list.len();
+        list.retain(|item| item.key != COLLAPSE_FORWARDING_KEY);
+        (list.len() != before).then(|| list.clone())
+    };
+    if let Some(items) = updated {
+        emit_view(application, project, items);
+    }
+}
+
+/// Synchronizes the Collapse forwarding health row immediately after Collapse's forwarder
+/// state or the project's GitHub repository changes, clearing it once in sync (#579).
+pub(crate) fn sync_collapse_forwarding(
+    application: &AppHandle,
+    project: u32,
+    collapse_repository: Option<&str>,
+    github_remote: Option<&str>,
+    forwarder: Option<ForwarderState>,
+) {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let now_ms = unix_millis();
+    let updated = {
+        let mut reg = registry(&managed);
+        let record = reg
+            .projects
+            .get(&project)
+            .and_then(|tracker| tracker.collapse_forwarding.clone());
+        let needs_attention = collapse_forwarding_needs_attention(
+            collapse_repository.is_some(),
+            github_remote.is_some(),
+            forwarder,
+            record.is_some(),
+        );
+        if !needs_attention {
+            if let Some(tracker) = reg.projects.get_mut(&project) {
+                tracker.collapse_forwarding = None;
+            }
+            let list = reg.views.entry(project).or_default();
+            let before = list.len();
+            list.retain(|item| item.key != COLLAPSE_FORWARDING_KEY);
+            (list.len() != before).then(|| list.clone())
+        } else {
+            let item = collapse_forwarding_item(
+                collapse_repository,
+                github_remote,
+                record.as_ref(),
+                now_ms,
+            );
+            let list = reg.views.entry(project).or_default();
+            let changed = list
+                .iter()
+                .find(|entry| entry.key == COLLAPSE_FORWARDING_KEY)
+                != Some(&item);
+            upsert_item(list, item);
+            changed.then(|| list.clone())
+        }
+    };
+    if let Some(items) = updated {
+        emit_view(application, project, items);
+    }
+}
+
 async fn check_all_projects(application: &AppHandle) {
     let Ok(app_data) = application.path().app_data_dir() else {
         return;
@@ -425,6 +550,9 @@ async fn check_project(application: &AppHandle, app_data: &Path, project: &Proje
     if let Some(item) =
         check_collapse_proactive_auth(application, project, &server, now, now_ms).await
     {
+        items.push(item);
+    }
+    if let Some(item) = check_collapse_forwarding(application, project, now_ms) {
         items.push(item);
     }
     if let Some(item) = check_mirror(application, project, &server, now, now_ms).await {
@@ -592,6 +720,92 @@ async fn collapse_mirror_target(
     let remote = velocity_rosen::mirror_remote(server).await.ok().flatten()?;
     let repository = velocity_core::collapse::repository_from_remote(&remote)?;
     Some((repository, remote))
+}
+
+/// Signal: GitHub is not receiving lands until Collapse downstream forwarding finishes (#579).
+fn check_collapse_forwarding(
+    application: &AppHandle,
+    project: &ProjectItem,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    let forwarder = project
+        .collapse_mirror_health
+        .as_ref()
+        .map(|health| health.forwarder);
+    let record = with_tracker(application, project.id, |tracker| {
+        tracker.collapse_forwarding.clone()
+    });
+    if !collapse_forwarding_needs_attention(
+        project.collapse_repository.is_some(),
+        project.github_remote.is_some(),
+        forwarder,
+        record.is_some(),
+    ) {
+        if record.is_some() {
+            with_tracker(application, project.id, |tracker| {
+                tracker.collapse_forwarding = None;
+            });
+        }
+        return None;
+    }
+    Some(collapse_forwarding_item(
+        project.collapse_repository.as_deref(),
+        project.github_remote.as_deref(),
+        record.as_ref(),
+        now_ms,
+    ))
+}
+
+fn collapse_forwarding_item(
+    collapse_repository: Option<&str>,
+    github_repository: Option<&str>,
+    record: Option<&CollapseForwardingRecord>,
+    now_ms: u64,
+) -> ProjectHealthItem {
+    let (action, detail, acted_at_ms) = match record {
+        Some(entry) => {
+            let trimmed = entry.reason.trim();
+            let action = if entry.opened_setup_page {
+                if trimmed.is_empty() {
+                    "Opened the Collapse GitHub App setup page; grant Contents and Workflows write and finish forwarding on Collapse".to_owned()
+                } else {
+                    format!("Opened setup page · {trimmed}")
+                }
+            } else if trimmed.is_empty() {
+                "Install the Collapse GitHub App with Contents and Workflows write and finish forwarding on Collapse".to_owned()
+            } else {
+                trimmed.to_owned()
+            };
+            let detail = Some(format!(
+                "{} → {}",
+                entry.collapse_repository, entry.github_repository
+            ));
+            (action, detail, entry.acted_at_ms)
+        }
+        None => {
+            let detail = match (collapse_repository, github_repository) {
+                (Some(collapse), Some(github)) => Some(format!("{collapse} → {github}")),
+                (_, Some(github)) => Some(github.to_owned()),
+                (Some(collapse), None) => Some(collapse.to_owned()),
+                (None, None) => None,
+            };
+            (
+                "Collapse has no downstream remote configured for this GitHub repository"
+                    .to_owned(),
+                detail,
+                now_ms,
+            )
+        }
+    };
+    ProjectHealthItem::new(
+        COLLAPSE_FORWARDING_KEY,
+        HealthSignalKind::CollapseForwarding,
+        HealthSeverity::Warning,
+        COLLAPSE_FORWARDING_SIGNAL,
+        action,
+        acted_at_ms,
+    )
+    .with_detail(detail)
 }
 
 /// Signal 1: Mirror behind the base for more than 10 min (#509).

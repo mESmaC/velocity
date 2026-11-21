@@ -132,16 +132,27 @@ pub async fn set_project_github_repository(
     let parsed = velocity_new_project::parse_github_repository(&repository)
         .map_err(|error| error.to_string())?
         .map(|name| name.full_name());
-    let (changed, refresh) = crate::state::try_with_store(&application, move |store| {
-        if store.project(project_identifier).is_none() {
-            return Err("Unknown project".into());
-        }
-        let changed = store
-            .save_github_remote(project_identifier, parsed)
-            .map_err(|error| error.to_string())?;
-        Ok((changed, changed.then(|| store.layout_refresh())))
-    })
-    .await?;
+    let (changed, refresh, forwarding_context) =
+        crate::state::try_with_store(&application, move |store| {
+            if store.project(project_identifier).is_none() {
+                return Err("Unknown project".into());
+            }
+            let changed = store
+                .save_github_remote(project_identifier, parsed)
+                .map_err(|error| error.to_string())?;
+            let context = store.project(project_identifier).map(|project| {
+                (
+                    project.collapse_repository.clone(),
+                    project.github_remote.clone(),
+                    project
+                        .collapse_mirror_health
+                        .as_ref()
+                        .map(|health| health.forwarder),
+                )
+            });
+            Ok((changed, changed.then(|| store.layout_refresh()), context))
+        })
+        .await?;
     if let Some(refresh) = refresh {
         let handle = application.clone();
         tauri::async_runtime::spawn_blocking(move || {
@@ -151,6 +162,15 @@ pub async fn set_project_github_repository(
         .map_err(|error| error.to_string())??;
     }
     if changed {
+        if let Some((collapse_repository, github_remote, forwarder)) = forwarding_context {
+            crate::project_health::sync_collapse_forwarding(
+                &application,
+                project_identifier,
+                collapse_repository.as_deref(),
+                github_remote.as_deref(),
+                forwarder,
+            );
+        }
         crate::base_ci::wake(&application);
     }
     project_github_view(&application, project_identifier).await

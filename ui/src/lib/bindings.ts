@@ -63,8 +63,10 @@ export const commands = {
 	 *  and lands a `rosen.toml` change pointing `[mirror] remote` at it and naming its
 	 *  `collapse` root, so Rosen also sends its live state and ledger entries and runs the
 	 *  owner's actions from Collapse (#517). A project that was on GitHub keeps its
-	 *  `github_remote` pointing at GitHub (#574) and opens the repository's Downstream remote
-	 *  settings, where the owner keeps GitHub fed through Collapse's forwarder (C4).
+	 *  `github_remote` pointing at GitHub (#574) and configures Collapse's downstream remote
+	 *  via `POST /api/downstream` (C4, #579), opening the Collapse GitHub App's install or
+	 *  permission page and showing a project health row if the App is missing or lacks write
+	 *  permissions.
 	 */
 	mirrorToCollapse: (projectIdentifier: number) => __TAURI_INVOKE<null>("mirror_to_collapse", { projectIdentifier }),
 	/**
@@ -2131,7 +2133,7 @@ export type GraphStatus_Serialize = {
 
 export type HealthSeverity = "Info" | "Warning" | "Error";
 
-export type HealthSignalKind = "MirrorBehind" | "CollapseProactiveAuth" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "PostLandStalled" | "UpdaterManifestBehind" | "ReleaseGateRefused";
+export type HealthSignalKind = "MirrorBehind" | "CollapseProactiveAuth" | "CollapseForwarding" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "PostLandStalled" | "UpdaterManifestBehind" | "ReleaseGateRefused";
 
 /**  A model you hid from the pickers by clicking its chip (F15 Models). */
 export type HiddenModel = {

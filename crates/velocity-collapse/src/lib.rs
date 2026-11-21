@@ -8,6 +8,7 @@
 
 pub mod connect;
 pub mod credential;
+pub mod downstream;
 mod git_credential;
 pub mod health;
 pub mod post_land;
@@ -16,6 +17,7 @@ mod url_text;
 
 pub use connect::connect;
 pub use credential::{CollapseCredentials, forget_credentials, load_credentials};
+pub use downstream::{DownstreamSetup, set_downstream};
 pub use git_credential::{
     MIN_PROACTIVE_AUTH_GIT_VERSION, PROACTIVE_AUTH_KEY, ProactiveAuthStatus, check_proactive_auth,
     checkout_repository, clone_repository, ensure_proactive_auth,

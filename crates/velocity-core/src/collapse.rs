@@ -154,13 +154,73 @@ pub fn land_page(repository: &str, commit: &str) -> Option<String> {
     ))
 }
 
-/// The repository's Settings → Downstream remote section, where the owner points Collapse's
-/// forwarder at GitHub (C4). Collapse accepts that change only from the owner's browser.
+/// The repository's Settings → Downstream remote section on Collapse, used as a fallback
+/// when the GitHub App needs setup and Collapse did not return a direct App page (C4, #579).
 pub fn downstream_settings_page(repository: &str) -> Option<String> {
     Some(format!(
         "{}/settings#downstream",
         repository_page(repository)?
     ))
+}
+
+/// Project health signal shown while a Collapse-mirrored GitHub project still needs its
+/// downstream forwarding finished (#579).
+pub const COLLAPSE_FORWARDING_SIGNAL: &str =
+    "GitHub is not receiving lands: finish Collapse forwarding";
+
+/// Hosts accepted for a Collapse-supplied GitHub App install or permission page (#579).
+const DOWNSTREAM_SETUP_HOSTS: [&str; 2] = ["https://github.com/", "https://collapse.sh/"];
+
+/// Validates a GitHub App install or permission page URL returned by Collapse (#579).
+/// Accepts only HTTPS pages on `github.com` or `collapse.sh`, rejecting whitespace,
+/// control characters, backslashes, credentials and other hosts.
+pub fn allowed_downstream_setup_page(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('\\')
+        || trimmed
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+    {
+        return None;
+    }
+    for host in DOWNSTREAM_SETUP_HOSTS {
+        if let Some(rest) = strip_prefix_ignoring_case(trimmed, host) {
+            return (!rest.is_empty()).then(|| format!("{host}{rest}"));
+        }
+    }
+    None
+}
+
+/// Resolves the browser page to open when Collapse's downstream API needs GitHub App
+/// installation or permissions: prefers Collapse's validated page and falls back to the
+/// repository's Downstream settings section (#579).
+pub fn downstream_setup_page(
+    collapse_repository: &str,
+    supplied_url: Option<&str>,
+) -> Option<String> {
+    supplied_url
+        .and_then(allowed_downstream_setup_page)
+        .or_else(|| downstream_settings_page(collapse_repository))
+}
+
+/// Whether a Collapse-mirrored project should show the "GitHub is not receiving lands"
+/// project health row (#579). Clears once Collapse's forwarder reports `Synced` or when
+/// the project no longer mirrors to Collapse or has no GitHub repository.
+pub fn collapse_forwarding_needs_attention(
+    has_collapse_repository: bool,
+    has_github_remote: bool,
+    forwarder: Option<ForwarderState>,
+    setup_incomplete: bool,
+) -> bool {
+    if !has_collapse_repository || !has_github_remote {
+        return false;
+    }
+    match forwarder {
+        Some(ForwarderState::Synced) => false,
+        Some(ForwarderState::Unconfigured) => true,
+        _ => setup_incomplete,
+    }
 }
 
 /// The Collapse git remote Rosen mirrors to for `owner/repository` (Collapse C3).

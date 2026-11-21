@@ -38,6 +38,7 @@ pub enum HealthSeverity {
 pub enum HealthSignalKind {
     MirrorBehind,
     CollapseProactiveAuth,
+    CollapseForwarding,
     IntegrationUncovered,
     BaseRed,
     LandedIssuesWaiting,

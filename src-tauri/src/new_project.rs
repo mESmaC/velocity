@@ -78,7 +78,7 @@ pub async fn create_project(
     mut request: NewProjectRequest,
 ) -> Result<CreatedProject, String> {
     // The initial import pushes at once, so a Collapse mirror must exist first (#427).
-    crate::collapse_mirror::prepare_new_project(&mut request).await?;
+    let collapse_downstream = crate::collapse_mirror::prepare_new_project(&mut request).await?;
     let mirrors_to_collapse = matches!(
         &request.location,
         ProjectLocationRequest::RosenFolder {
@@ -103,6 +103,14 @@ pub async fn create_project(
     if mirrors_to_collapse {
         // The new `rosen.toml` names the Collapse root; the relay is the server's setting.
         crate::collapse_mirror::allow_relay_after_create(&host, created.identifier).await;
+    }
+    if let Some(downstream) = collapse_downstream {
+        crate::collapse_mirror::finish_new_project_downstream(
+            &host,
+            created.identifier,
+            downstream,
+        )
+        .await;
     }
     crate::base_ci::wake(&host);
     crate::interview::start(&host);
