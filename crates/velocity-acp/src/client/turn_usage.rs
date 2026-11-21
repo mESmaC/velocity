@@ -78,7 +78,7 @@ impl UsageMeter {
             project: project.to_owned(),
             graph_on,
             worktree: setup.worktree.clone(),
-            thread: super::airc::usage_thread(airc).map(str::to_owned),
+            thread: super::airc::usage_thread(airc),
         })
     }
 

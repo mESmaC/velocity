@@ -162,14 +162,10 @@ impl StateStore {
             TaskMutation::Update(update) => update.task,
             TaskMutation::Delete(identifier) => *identifier,
         };
-        let dispatched = member
-            .strip_prefix("thread-")
-            .and_then(|value| value.parse::<u32>().ok())
-            .is_some_and(|identifier| {
-                item.threads
-                    .iter()
-                    .any(|thread| thread.id == identifier && thread.started_by_dispatch)
-            });
+        let dispatched = item
+            .threads
+            .iter()
+            .any(|thread| thread.matches_airc_member(member) && thread.started_by_dispatch);
         let before = item
             .tasks
             .iter()

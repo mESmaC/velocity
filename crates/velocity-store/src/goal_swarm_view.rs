@@ -169,12 +169,12 @@ pub fn goal_claims_board(
     Some(claims_board(&pieces, &landed))
 }
 
-/// Goal agents go by their nick; other threads by the AIRC member name they join as.
+/// Goal agents go by their nick; other threads by their unified agent name (#532).
 fn claim_holder(project: &ProjectItem, thread: &ThreadItem) -> ClaimHolder {
     let nick = thread
         .goal_member
         .as_ref()
-        .map_or_else(|| format!("thread-{}", thread.id), |goal| goal.nick.clone());
+        .map_or_else(|| thread.agent_name(), |goal| goal.nick.clone());
     let mut holder = ClaimHolder::new(&nick, thread.state.into());
     holder.rosen_change = thread.rosen_change.clone();
     holder.review_stage = thread.review_stage.map(Into::into);

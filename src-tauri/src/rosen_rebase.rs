@@ -142,7 +142,7 @@ async fn apply_or_recreate(
         let Some(change) = change else {
             return BoundaryOutcome::WorkspaceMissing("workspace missing".into());
         };
-        if let Some(outcome) = recreate_workspace(application, key.0, change, root).await {
+        if let Some(outcome) = recreate_workspace(application, key, change, root).await {
             return outcome;
         }
     }
@@ -151,21 +151,21 @@ async fn apply_or_recreate(
 
 async fn recreate_workspace(
     application: &AppHandle,
-    project: u32,
+    key: ThreadKey,
     change: &str,
     root: &Path,
 ) -> Option<BoundaryOutcome> {
-    let server = match crate::rosen::server(application, project).await {
+    let server = match crate::rosen::server(application, key.0).await {
         Ok(server) => server,
         Err(error) => return Some(BoundaryOutcome::Failed(error)),
     };
-    let agent = velocity_rosen::agent_name(root);
+    let agent = crate::rosen::thread_agent(application, key, root);
     if let Err(error) = velocity_rosen::reopen_workspace(&server, &agent, change, root).await {
         return Some(BoundaryOutcome::WorkspaceMissing(format!(
             "workspace missing and could not be recreated: {error}"
         )));
     }
-    if let Err(error) = crate::rosen::watch(application, &server, root).await {
+    if let Err(error) = crate::rosen::watch_as(application, &server, &agent, root).await {
         eprintln!(
             "Rosen watch for recreated workspace {}: {error}",
             root.display()
@@ -189,7 +189,7 @@ async fn apply_current_head(
     // Do not promise the agent it can edit until the marker actually names the head.
     let current = async {
         let server = crate::rosen::server(application, key.0).await?;
-        let agent = velocity_rosen::agent_name(root);
+        let agent = crate::rosen::thread_agent(application, key, root);
         velocity_rosen::rebase_pending(&server, &agent, root)
             .await
             .map_err(|error| error.to_string())

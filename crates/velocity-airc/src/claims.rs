@@ -16,6 +16,10 @@ pub struct Claim {
     pub task: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub branch: String,
+    /// The Rosen change ID this claim belongs to, when the member works on one (#532).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "bindings", specta(skip))]
+    pub change: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<String>,
     pub since: String,
@@ -197,7 +201,9 @@ impl Channel {
                 "{nick} refused {task}; held by {} since {}",
                 holder.nick, holder.since
             );
-            let record = entry(&entries, "refused", "velocity", &nick, &text);
+            let mut record = entry(&entries, "refused", "velocity", &nick, &text);
+            record.change =
+                member_change(&entries, member).or_else(|| member_change(&entries, &holder.member));
             storage.append(&record)?;
             return Ok(ClaimResult::Refused {
                 holder: holder.nick.clone(),
@@ -249,6 +255,10 @@ impl Channel {
                 return Err(Error::Invalid("Only the holder can release a claim".into()));
             }
             let mut record = entry(&entries, "released", "velocity", &claim.nick, note);
+            record.change = claim
+                .change
+                .clone()
+                .or_else(|| member_change(&entries, &claim.member));
             record.claim = Some(claim);
             storage.append(&record)?;
         }
@@ -273,13 +283,15 @@ impl Channel {
                 "The named holder has no claim on this file".into(),
             ));
         }
-        storage.append(&entry(
+        let mut record = entry(
             &entries,
             "shares",
             "velocity",
             &nick,
             &format!("shares {file} with {holder}"),
-        ))
+        );
+        record.change = member_change(&entries, member);
+        storage.append(&record)
     }
 
     /// Observed edits extend every piece this agent holds, without changing piece ownership.
@@ -364,6 +376,10 @@ fn post_overlaps(
             paths.join(", ")
         );
         let mut record = entry(entries, "overlap", "velocity", &claim.nick, &text);
+        record.change = claim
+            .change
+            .clone()
+            .or_else(|| member_change(entries, &claim.member));
         record.to = vec![claim.nick.clone(), nick.clone()];
         record.files = paths;
         storage.append(&record)?;
@@ -512,14 +528,25 @@ struct ClaimIdentity<'a> {
     branch: &'a str,
 }
 
+/// Latest Rosen change ID registered on `member`'s checkout, if any (#532).
+pub(crate) fn member_change(entries: &[Entry], member: &str) -> Option<String> {
+    entries
+        .iter()
+        .rev()
+        .find(|record| record.member == member && record.checkout.is_some())
+        .and_then(|record| record.change_id().map(str::to_owned))
+}
+
 fn claim_record(
     entries: &[Entry],
     identity: ClaimIdentity<'_>,
     files: Vec<String>,
     previous: Option<&Claim>,
 ) -> Result<(Entry, Claim), Error> {
+    let change = member_change(entries, identity.member)
+        .or_else(|| previous.and_then(|claim| claim.change.clone()));
     let mut record = entry(entries, "claim", "velocity", &identity.nick, "");
-    let claim = build_claim(identity, files, previous, &record.time);
+    let claim = build_claim(identity, files, previous, &record.time, change.clone());
     // The durable claim is also the event: keep its atomic write and metadata
     // rather than appending a second claim line from the native observer.
     record.text = crate::Event::claimed(
@@ -529,6 +556,7 @@ fn claim_record(
     )?
     .text()
     .to_owned();
+    record.change = change;
     record.claim = Some(claim.clone());
     Ok((record, claim))
 }
@@ -538,6 +566,7 @@ fn build_claim(
     files: Vec<String>,
     previous: Option<&Claim>,
     time: &str,
+    change: Option<String>,
 ) -> Claim {
     let mut paths = previous
         .map(|claim| claim.files.clone())
@@ -556,6 +585,7 @@ fn build_claim(
         piece: identity.piece,
         task: identity.task.into(),
         branch: identity.branch.into(),
+        change,
         files: paths,
         since: previous.map_or_else(|| time.into(), |claim| claim.since.clone()),
     }
@@ -569,6 +599,7 @@ pub(crate) fn from_server(
     piece: &str,
     task: &str,
     branch: &str,
+    change: Option<String>,
     files: Vec<String>,
     since: String,
 ) -> Claim {
@@ -578,6 +609,7 @@ pub(crate) fn from_server(
         piece: piece.into(),
         task: task.into(),
         branch: branch.into(),
+        change,
         files,
         since,
     }
@@ -670,6 +702,164 @@ mod tests {
                 fields[2].parse::<bool>()?
             );
         }
+        Ok(())
+    }
+
+    // Two threads sharing a long title prefix must keep distinct nicks and never collide (#532).
+    #[test]
+    fn shared_prefix_thread_names_do_not_collide() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::{Channel, Event};
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "velocity-nick-collision-{}-{stamp}",
+            std::process::id()
+        ));
+        let channel = Channel::open(&directory, "project")?;
+        let first = channel.join("i-d-like-your-honest-49", "i-d-like-your-honest-49")?;
+        let second = channel.join("i-d-like-your-honest-50", "i-d-like-your-honest-50")?;
+        assert_eq!(first.nick, "i-d-like-your-honest-49");
+        assert_eq!(second.nick, "i-d-like-your-honest-50");
+        assert_ne!(first.nick, second.nick);
+        let event_one = Event::claimed(
+            "i-d-like-your-honest-49",
+            "I'd like your honest feedback on the architecture",
+            &["src/a.rs"],
+        )?;
+        let event_two = Event::claimed(
+            "i-d-like-your-honest-50",
+            "I'd like your honest feedback on the architecture",
+            &["src/b.rs"],
+        )?;
+        assert_eq!(event_one.nick(), "i-d-like-your-honest-49");
+        assert_eq!(event_two.nick(), "i-d-like-your-honest-50");
+        assert_ne!(event_one.nick(), event_two.nick());
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Change-related AIRC entries must carry the Rosen change ID and preserve full claim task text (#532).
+    #[test]
+    fn change_ids_and_full_claim_text_survive_compaction() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use crate::{Channel, ClaimResult, Event, waits::Checkout};
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "velocity-change-id-claim-{}-{stamp}",
+            std::process::id()
+        ));
+        let channel = Channel::open(&directory, "project")?;
+        let change_a = "zrqrpzzruukpynwnvyporzrwpxplrvqq";
+        let change_b = "kmnopqrstuvwxzabcdefghijklmnopqr";
+        let long_task = "Investigate intermittent race condition in Rosen rebase boundary delivery when multiple agents land simultaneously on Windows";
+        let many_files: Vec<String> = (0..45)
+            .map(|index| format!("crates/velocity-airc/src/module_with_long_name_{index:02}.rs"))
+            .collect();
+        channel.register_checkout(
+            "honest-feedback-49",
+            Checkout::rosen(
+                "repo".into(),
+                "ws/49".into(),
+                Some(change_a.into()),
+                "master".into(),
+            ),
+        )?;
+        channel.join("honest-feedback-49", "honest-feedback-49")?;
+        let granted = channel.claim_piece(
+            "honest-feedback-49",
+            "issue:532",
+            long_task,
+            "vel/honest-feedback-49",
+            many_files,
+        )?;
+        let ClaimResult::Granted { claim } = granted else {
+            return Err("expected first claim to be granted".into());
+        };
+        assert_eq!(claim.change.as_deref(), Some(change_a));
+        assert_eq!(claim.task, long_task);
+
+        channel.register_checkout(
+            "honest-feedback-50",
+            Checkout::rosen(
+                "repo".into(),
+                "ws/50".into(),
+                Some(change_b.into()),
+                "master".into(),
+            ),
+        )?;
+        channel.join("honest-feedback-50", "honest-feedback-50")?;
+        let _ = channel.claim_piece(
+            "honest-feedback-50",
+            "issue:533",
+            "Overlapping follow-up work",
+            "vel/honest-feedback-50",
+            vec!["crates/velocity-airc/src/module_with_long_name_00.rs".into()],
+        )?;
+        let _ = channel.share(
+            "honest-feedback-50",
+            "honest-feedback-49",
+            "crates/velocity-airc/src/module_with_long_name_00.rs",
+        )?;
+        let failed_event =
+            Event::agent_failed("honest-feedback-49", "check failed")?.for_change(change_a);
+        channel.post_event(failed_event)?;
+        let _ = channel.release("honest-feedback-49", "issue:532")?;
+
+        let entries = channel.read(0)?;
+        for kind in ["checkout", "claim", "failed", "released"] {
+            assert!(
+                entries
+                    .iter()
+                    .any(|entry| entry.kind == kind && entry.change_id() == Some(change_a)),
+                "expected {kind} entry to carry {change_a}"
+            );
+        }
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.kind == "overlap" && entry.change_id() == Some(change_b))
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.kind == "shares" && entry.change_id() == Some(change_b))
+        );
+        let claim_entry = entries
+            .iter()
+            .find(|entry| entry.kind == "claim" && entry.change_id() == Some(change_a))
+            .ok_or("missing claim entry")?;
+        assert!(
+            claim_entry.text.contains(long_task),
+            "claim event text truncated: {}",
+            claim_entry.text
+        );
+
+        // Verify read_tools::claims keeps full task text and change ID even when compacting files.
+        channel.claim_piece(
+            "honest-feedback-49",
+            "issue:532",
+            long_task,
+            "vel/honest-feedback-49",
+            (0..45)
+                .map(|index| {
+                    format!("crates/velocity-airc/src/module_with_long_name_{index:02}.rs")
+                })
+                .collect(),
+        )?;
+        let summary = crate::read_tools::claims(
+            &channel,
+            "honest-feedback-49",
+            &serde_json::json!({"task": "issue:532"}),
+        )?;
+        let rows = summary["claims"].as_array().ok_or("missing claims array")?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["task"].as_str(), Some(long_task));
+        assert_eq!(rows[0]["change"].as_str(), Some(change_a));
+        assert_eq!(rows[0]["details_omitted"].as_bool(), Some(true));
+        std::fs::remove_dir_all(directory)?;
         Ok(())
     }
 }

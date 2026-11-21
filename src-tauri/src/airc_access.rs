@@ -51,9 +51,15 @@ pub fn managed(application: &AppHandle) -> Option<AircLaunch> {
 pub fn for_thread(
     application: &AppHandle,
     key: velocity_threads::ThreadKey,
-    path: &Path,
+    _path: &Path,
     thread: &velocity_store::ThreadItem,
 ) -> Option<agent_client_protocol::v1::schema::McpServer> {
-    managed(application)
-        .map(|airc| airc.thread_with_origin(key.0, key.1, path, thread.started_by_dispatch))
+    managed(application).map(|airc| {
+        airc.thread_member(
+            key.0,
+            &thread.airc_member(),
+            &thread.agent_name(),
+            thread.started_by_dispatch,
+        )
+    })
 }

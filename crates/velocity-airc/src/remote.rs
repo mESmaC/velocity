@@ -241,7 +241,7 @@ impl Remote {
             {
                 return Ok(known.nick.clone());
             }
-            let base = crate::channel::nick(requested, 16);
+            let base = crate::channel::nick(requested, crate::channel::NICK_LIMIT);
             let machine = std::env::var("COMPUTERNAME")
                 .or_else(|_| std::env::var("HOSTNAME"))
                 .unwrap_or_else(|_| "velocity".into());
@@ -253,7 +253,10 @@ impl Remote {
                 };
                 let nick = format!(
                     "{}{}",
-                    crate::channel::nick(&base, 16 - ending.len()),
+                    crate::channel::nick(
+                        &base,
+                        crate::channel::NICK_LIMIT.saturating_sub(ending.len())
+                    ),
                     ending
                 );
                 if matches!(nick.as_str(), "you" | "velocity") {

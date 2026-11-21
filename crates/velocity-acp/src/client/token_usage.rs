@@ -28,10 +28,11 @@ impl Ledger {
         } else {
             Role::Implementation
         });
-        let thread = member
-            .strip_prefix("thread-")
-            .or_else(|| member.strip_prefix("spec-"))
-            .and_then(|value| value.parse().ok());
+        let thread = velocity_core::thread_titles::thread_id_from_member(member).or_else(|| {
+            member
+                .strip_prefix("spec-")
+                .and_then(|value| value.parse().ok())
+        });
         Some(Self {
             data: PathBuf::from(data),
             project: project.parse().ok()?,

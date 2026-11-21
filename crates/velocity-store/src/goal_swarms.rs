@@ -326,6 +326,9 @@ impl StateStore {
             .find(|item| item.id == identifier)
         {
             record.goal_member = Some(GoalThreadMember::choosing(slot.swarm_id, slot.nick.clone()));
+            record.agent_name = Some(velocity_core::thread_titles::thread_agent_name(
+                &slot.nick, identifier,
+            ));
             record.previous_work_thread = slot.previous_work_thread;
         }
         let swarm = goal_swarm_mut(project, project_id, slot.swarm_id)?;

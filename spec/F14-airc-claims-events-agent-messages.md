@@ -8,9 +8,9 @@ What fills it is **events**, which Velocity posts from what it observes.
 **Messages** between agents are allowed but are for the cases events can't express.
 Modelled on xros_chat (daily logs, nicks, presence, mentions, ledgers, MCP tools).
 
-**Nicks:** the workspace leaf (`thread-ipc`, `command-palette`, `issue-57`), at most 16 characters, cut at a word boundary.
+**Nicks:** one unique agent name per build thread (`<short-slug>-<thread-id>`, such as `honest-feedback-50` or `issue-532-267`), serving as its AIRC nick, AIRC member identity and `ROSEN_AGENT` (#532).
 Duty agents use their role nick (`pr-1`, `scout-1`).
-Goal swarm agents use their model's short name and a number (`sol-1`, `argon-2`, `fable-1`), counted per project.
+Goal swarm agents use their model's short name and thread number (`sol-1-50`, `argon-2-51`).
 Velocity posts as `velocity`.
 You post as `you`.
 
@@ -116,7 +116,7 @@ Each page stays below 2 kB, summarizes oversized rows and returns `next_offset` 
 Each preview shows up to 512 UTF-8 bytes.
 Call again for more unread messages, or pass a message's `sequence` and `next_offset` as `offset` to read its continuation.
 `read_feed` excludes internal delivery acknowledgements, message-mode records, dependency-end plumbing and task-list snapshots, retaining the original sequence numbers for cursor reads.
-Entries omit null and empty optional fields, carry uniform monotonic UTC millisecond timestamps, store structured Rosen event details in typed `payload` fields instead of JSON strings, and use Rosen terms (`workspace`, `change`) in checkout entries (#540).
+Entries omit null and empty optional fields, carry uniform monotonic UTC millisecond timestamps, include the Rosen `change` ID on every entry about a change, store structured Rosen event details in typed `payload` fields instead of JSON strings, preserve full claim task text without mid-phrase truncation, and use Rosen terms (`workspace`, `change`) in checkout entries (#532, #540).
 `read_feed` and `read_ledger` return newest-first pages with up to 50 entries by default and report how many matching entries remain.
 Use `query` to match text, files or symbols, `after` to read newer entries, and the returned `next_before` as `before` for older matches.
 Read an oversized entry by sequence and use `next_offset` to continue its JSON.
@@ -175,7 +175,7 @@ Project identities partition storage independently of display names.
 The project-id is the project's store identifier.
 Velocity posts events (the F14 tags) as `velocity` on behalf of the nick they name, without joining; an event about a PR also carries its number and head SHA, which the approval record (F7) reads.
 UTC daily JSONL logs and the Discoveries/Past work files share monotonically increasing sequence cursors; writes are serialized across processes and flushed before acknowledgement.
-Nicks are cut at word boundaries to 16 characters, with collision suffixes; `you` and `velocity` are reserved.
+Nicks allow up to 48 characters on word boundaries while preserving trailing numeric suffixes, with collision suffixes; `you` and `velocity` are reserved (#532).
 Tools available at this stage are `join`, `leave`, `list_nicks`, `read_feed`, `read_messages`, `send_message`, `append_ledger { ledger, text, velocity_issue?, rosen_issue? }`, and `read_ledger`.
 The channel also exposes `airc_claims`, `airc_claim { piece?, task, branch, files }`, `airc_release { task }` and `airc_share { holder, file }`.
 Claims are durable first-wins records under the channel's cross-process lock, keyed on the piece: a work-pool identity (`task:<id>`, `issue:<n>`, `spec:<section>`, spelled one way whatever the prefix's casing, the spacing or an issue's `#`), or the task text when no piece is given.
@@ -247,7 +247,7 @@ AIRC delivery retains each live session’s member nick and cursor.
 Review membership is discovered from new joins after its claim; steady-state ticks read only `read(after)`, without copying the whole log or rebuilding presence.
 Routing borrows immutable cached history for modes, claims and checkout ownership predating the cursor; durable acknowledgements still let events pass held messages.
 
-M8 message delivery registers live build-thread members as `thread-<thread-id>` with worktree-leaf nicks.
+M8 message delivery registers live build-thread members using their unique thread agent name (`<short-slug>-<thread-id>`, with legacy `thread-<thread-id>` still recognized for saved threads, #532).
 Native delivery adds named messages and your broadcast comments to the next ACP prompt as `via AIRC` notices.
 A per-thread cursor in `state.json` advances only after the receiving turn succeeds.
 On Rosen projects the saved thread cursor belongs to the server database, and Velocity logs and begins at zero when that database changes or the cursor is past its latest event (#482).
@@ -264,8 +264,8 @@ Once the review prompt is sent, actionable notices can extend the review, and in
 Every session Velocity starts, on every provider, gets an MCP server named `airc` in `session/new`: build threads (composer, dispatch and follow-through resume), Scout sweeps, review swarm sessions and the spec interview.
 It runs Velocity's own executable as `velocity --airc-mcp <app-data> <project-id> <member-id> <nick> <member-scope>`, so the server ships inside the app; the standalone `velocity-airc` binary takes the same arguments, with or without the switch.
 Four-argument standalone launches remain supported and derive their scope locally.
-Member ids are `thread-<thread id>`, `duty-<nick>` (Scouts and review workers) and `spec-<thread id>`.
-A thread's nick is its workspace leaf, a duty agent's its role nick, and the spec interview's `spec`.
+Member ids are the thread's unique agent name (`<short-slug>-<thread-id>`), `duty-<nick>` (Scouts and review workers) and `spec-<thread id>` (#532).
+A build thread uses that same agent name as its AIRC nick and `ROSEN_AGENT`, a duty agent uses its role nick, and the spec interview uses `spec`.
 
 **Acceptance:**
 - Two agents that claim the same file get an overlap event within one step, and the later one records a share or a wait before it edits the file.

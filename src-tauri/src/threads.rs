@@ -746,7 +746,13 @@ async fn run_thread_session(
         setup.shared_servers.extend(server);
     }
     let branch = branch_name.as_deref().unwrap_or(&plan.thread.branch_name);
-    if let Err(error) = crate::airc_claims::attach(&application, key, &setup, branch) {
+    if let Err(error) = crate::airc_claims::attach_with_prompt(
+        &application,
+        key,
+        &setup,
+        branch,
+        Some(&plan.prompt),
+    ) {
         return fail(&application, key, "Could not claim work", &error);
     }
     add_work_handoff(&application, key, &mut setup);
@@ -1278,12 +1284,12 @@ fn saved_work_handoff(application: &AppHandle, key: ThreadKey) -> Option<(String
         "Velocity work handoff\nItem: {}\nWorkspace: {workspace} ({change})",
         handoff_line(&thread.title)
     );
-    let mut members = vec![format!("thread-{}", key.1)];
+    let mut members = vec![thread.airc_member()];
     if let Some(previous) = thread
         .previous_work_thread
         .and_then(|id| project.threads.iter().find(|thread| thread.id == id))
     {
-        members.push(format!("thread-{}", previous.id));
+        members.push(previous.airc_member());
         let outcome = if previous.state == ThreadState::Merged {
             "landed"
         } else {
@@ -1406,6 +1412,7 @@ async fn settle_title(
         runtimes.set_titling(key, None);
     }
     if let Ok(title) = title {
+        let mut updated = false;
         let saved = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
@@ -1414,12 +1421,16 @@ async fn settle_title(
             store
                 .update_thread(key.0, key.1, |thread| {
                     if thread.title == fallback {
-                        thread.title = title;
+                        thread.title = title.clone();
+                        updated = true;
                     }
                 })
                 .map_err(|error| error.to_string())
         });
         report(saved);
+        if updated {
+            report(crate::airc_claims::update_title(application, key, &title));
+        }
     }
     report(refresh(application, key, false));
 }

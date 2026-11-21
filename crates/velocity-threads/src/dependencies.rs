@@ -12,13 +12,13 @@ pub fn refresh(
         // leaves their lifecycle to the holder's machine and the shared server.
         // Duty and spec members have their own lifecycle; absence from the build
         // thread list says nothing about whether their work has ended.
-        if !waiting.holder.starts_with("thread-") {
+        if velocity_core::thread_titles::thread_id_from_member(&waiting.holder).is_none() {
             continue;
         }
         let holder = project
             .threads
             .iter()
-            .find(|thread| waiting.holder == format!("thread-{}", thread.id));
+            .find(|thread| thread.matches_airc_member(&waiting.holder));
         let outcome = match holder.map(|thread| thread.state) {
             Some(ThreadState::Merged) => Some("merged"),
             Some(ThreadState::Closed) => Some("closed"),
@@ -44,7 +44,7 @@ pub fn refresh(
             }
             let description = waits
                 .iter()
-                .find(|wait| wait.member == format!("thread-{}", thread.id))
+                .find(|wait| thread.matches_airc_member(&wait.member))
                 .map(|wait| description(project, wait));
             (description != thread.dependency_wait).then_some((thread.id, description))
         })
@@ -55,7 +55,7 @@ fn description(project: &ProjectItem, wait: &DependencyWait) -> String {
     let number = project
         .threads
         .iter()
-        .find(|other| wait.holder == format!("thread-{}", other.id))
+        .find(|other| other.matches_airc_member(&wait.holder))
         .and_then(|other| other.pull_request_number)
         .map_or(String::new(), |number| format!(" · #{number}"));
     format!(

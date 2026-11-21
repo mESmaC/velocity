@@ -1198,10 +1198,9 @@ fn finish_empty_thread(
     )?;
     if finishable && crate::threads::stop_idle_thread(application, key)? {
         let nick = if thread.started_by_dispatch && thread.issue.is_some() {
-            let member = format!("thread-{}", thread.id);
             dispatch_claims(application, project)?
                 .into_iter()
-                .find(|claim| claim.member == member)
+                .find(|claim| thread.matches_airc_member(&claim.member))
                 .map(|claim| claim.nick)
         } else {
             None

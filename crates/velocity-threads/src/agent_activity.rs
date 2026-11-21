@@ -490,7 +490,6 @@ pub fn release_claims(
     thread: &ThreadItem,
     pushed: Option<&str>,
 ) -> Result<(), velocity_airc::Error> {
-    let member = format!("thread-{}", thread.id);
     let text = match pushed {
         Some(commit) => format!(
             "Grace period expired; optional prior work on {} at {commit}",
@@ -504,9 +503,9 @@ pub fn release_claims(
     for claim in channel
         .claims()?
         .into_iter()
-        .filter(|claim| claim.member == member)
+        .filter(|claim| thread.matches_airc_member(&claim.member))
     {
-        channel.release_with_note(&member, claim.key(), &text)?;
+        channel.release_with_note(&claim.member, claim.key(), &text)?;
     }
     Ok(())
 }

@@ -234,6 +234,63 @@ pub(crate) fn end_following(application: &AppHandle, project: u32) {
     }
 }
 
+/// One Rosen agent name for thread `key`, falling back to its workspace leaf for
+/// pre-#532 threads that still own a change created under the folder name.
+pub(crate) fn thread_agent(application: &AppHandle, key: ThreadKey, root: &Path) -> String {
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .ok()
+    .and_then(|store| {
+        store
+            .project(key.0)?
+            .threads
+            .iter()
+            .find(|thread| thread.id == key.1)
+            .map(ThreadItem::rosen_agent_name)
+    })
+    .unwrap_or_else(|| velocity_rosen::agent_name(root))
+}
+
+/// Resolves the Rosen agent name for workspace `root` in `project`.
+pub(crate) fn agent_for_root(application: &AppHandle, project: u32, root: &Path) -> String {
+    let target = root.to_string_lossy();
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .ok()
+    .and_then(|store| {
+        store
+            .project(project)?
+            .threads
+            .iter()
+            .find(|thread| thread.worktree_path.as_deref() == Some(target.as_ref()))
+            .map(ThreadItem::rosen_agent_name)
+    })
+    .unwrap_or_else(|| velocity_rosen::agent_name(root))
+}
+
+fn agent_for_workspace(application: &AppHandle, root: &Path) -> String {
+    let target = root.to_string_lossy();
+    lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .ok()
+    .and_then(|store| {
+        store
+            .state()
+            .projects
+            .iter()
+            .flat_map(|project| project.threads.iter())
+            .find(|thread| thread.worktree_path.as_deref() == Some(target.as_ref()))
+            .map(ThreadItem::rosen_agent_name)
+    })
+    .unwrap_or_else(|| velocity_rosen::agent_name(root))
+}
+
 /// Writes the server's rebase into the workspace at `root`, if one waits, between its
 /// watcher's stop and restart (Rosen R2). Returns the head written, if any.
 pub(crate) async fn apply_rebase(
@@ -242,7 +299,7 @@ pub(crate) async fn apply_rebase(
     root: &Path,
 ) -> Result<Option<String>, String> {
     let server = server(application, project).await?;
-    let agent = velocity_rosen::agent_name(root);
+    let agent = agent_for_root(application, project, root);
     application
         .state::<ManagedRosen>()
         .watches
@@ -434,12 +491,12 @@ async fn take_workspace_once(
     request: &WorktreeSetupRequest,
 ) -> Result<ThreadWorkspace, String> {
     let server = server(application, key.0).await?;
-    let agent = velocity_rosen::agent_name(&request.worktree_path);
+    let agent = thread_agent(application, key, &request.worktree_path);
     let workspace = acquire_workspace(application, key, request, &server, &agent).await?;
     // Install local ignore rules and links before the first watcher can store them.
     let setup = finish_setup(application, key.0, request, &workspace.root).await;
     crate::rosen_issue::record_source(application, key, &server, &agent, &workspace.change).await?;
-    watch(application, &server, &workspace.root).await?;
+    watch_as(application, &server, &agent, &workspace.root).await?;
     crate::rosen_events::follow(application, key.0);
     Ok(ThreadWorkspace {
         environment: velocity_rosen::agent_environment(&server, &agent, &workspace.change),
@@ -700,7 +757,7 @@ pub(crate) async fn record_work_sources(
     change: &str,
 ) -> Result<(), String> {
     let server = server(application, key.0).await?;
-    let agent = velocity_rosen::agent_name(root);
+    let agent = thread_agent(application, key, root);
     crate::rosen_issue::record_source(application, key, &server, &agent, change).await
 }
 
@@ -716,10 +773,7 @@ pub(crate) async fn abandon(
         return Ok(());
     }
     let root = thread.worktree_path.as_deref().map(PathBuf::from);
-    let agent = root
-        .as_deref()
-        .map(velocity_rosen::agent_name)
-        .unwrap_or_default();
+    let agent = thread.rosen_agent_name();
     if let Some(root) = &root {
         application.state::<ManagedRosen>().watches.stop(root).await;
     }
@@ -760,7 +814,7 @@ pub(crate) fn prepare_resume(
         Err(error) => return Some(Err(error.to_string())),
     };
     let server = ProjectServer::new(&app_data, project);
-    let name = velocity_rosen::agent_name(root);
+    let name = thread.rosen_agent_name();
     agent
         .env
         .extend(velocity_rosen::agent_environment(&server, &name, change));
@@ -793,7 +847,7 @@ pub(crate) async fn abandon_unstarted(
 ) -> Result<(), String> {
     application.state::<ManagedRosen>().watches.stop(root).await;
     let server = server(application, project).await?;
-    let agent = velocity_rosen::agent_name(root);
+    let agent = agent_for_root(application, project, root);
     velocity_rosen::abandon_change(&server, &agent, change)
         .await
         .map_err(|error| error.to_string())
@@ -890,11 +944,20 @@ pub(crate) async fn watch(
     server: &ProjectServer,
     root: &Path,
 ) -> Result<(), String> {
-    let agent = velocity_rosen::agent_name(root);
+    let agent = agent_for_workspace(application, root);
+    watch_as(application, server, &agent, root).await
+}
+
+pub(crate) async fn watch_as(
+    application: &AppHandle,
+    server: &ProjectServer,
+    agent: &str,
+    root: &Path,
+) -> Result<(), String> {
     application
         .state::<ManagedRosen>()
         .watches
-        .start(server, &agent, root)
+        .start(server, agent, root)
         .await
         .map_err(|error| error.to_string())
 }

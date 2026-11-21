@@ -857,7 +857,7 @@ async fn reopen_reverted(
         return Ok(());
     };
     let server = crate::rosen::server(application, key.0).await?;
-    let agent = velocity_rosen::agent_name(&root);
+    let agent = crate::rosen::thread_agent(application, key, &root);
     velocity_rosen::reopen_workspace(&server, &agent, change, &root)
         .await
         .map_err(|error| error.to_string())?;
@@ -1022,7 +1022,7 @@ async fn tick_spec_section_on_land(application: &AppHandle, key: ThreadKey) {
         let label = issue
             .map(|number| format!("#{number}"))
             .or_else(|| section.clone())
-            .unwrap_or_else(|| format!("thread-{}", thread.id));
+            .unwrap_or_else(|| thread.agent_name());
         Some((project.spec_path.clone(), section, issue, title, label))
     });
     let Some((spec_path, section, issue, title, label)) = target else {

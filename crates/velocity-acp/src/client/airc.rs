@@ -62,16 +62,17 @@ pub(super) fn airc_project(airc: &McpServer) -> Option<(&McpServerStdio, &str, &
 }
 
 /// Saved threads keep their identity across sessions and workspace renames.
-pub(super) fn usage_thread(airc: &McpServerStdio) -> Option<&str> {
+/// Maps unified thread agent names (`<slug>-<id>`) back to `thread-<id>` so code-graph
+/// usage records stay keyed by thread identifier across #532.
+pub(super) fn usage_thread(airc: &McpServerStdio) -> Option<String> {
     let member = airc.args.get(3)?.as_str();
-    ["thread-", "spec-"]
-        .iter()
-        .any(|prefix| {
-            member
-                .strip_prefix(prefix)
-                .is_some_and(|id| id.parse::<u32>().is_ok())
-        })
-        .then_some(member)
+    if member
+        .strip_prefix("spec-")
+        .is_some_and(|id| id.parse::<u32>().is_ok())
+    {
+        return Some(member.to_owned());
+    }
+    velocity_core::thread_titles::thread_id_from_member(member).map(|id| format!("thread-{id}"))
 }
 
 /// The code graph server (F19) for a session that has AIRC: the same executable and project,
@@ -90,7 +91,7 @@ pub fn graph_server(airc: &McpServer, worktree: &Path) -> Option<McpServer> {
         project,
         worktree,
     ));
-    arguments.extend(usage_thread(airc).map(str::to_owned));
+    arguments.extend(usage_thread(airc));
     Some(McpServer::Stdio(
         McpServerStdio::new(velocity_graph::SERVER_NAME, &airc.command).args(arguments),
     ))
@@ -117,7 +118,7 @@ impl AircLaunch {
         }
     }
 
-    /// A build thread's connection. Its nick is the worktree leaf (F14 Nicks).
+    /// A build thread's connection using its unified unique agent name (#532).
     pub fn thread(&self, project: u32, thread: u32, worktree: &Path) -> McpServer {
         self.thread_with_origin(project, thread, worktree, false)
     }
@@ -129,14 +130,25 @@ impl AircLaunch {
         worktree: &Path,
         continuous_dispatch: bool,
     ) -> McpServer {
-        let member = format!("thread-{thread}");
-        let nick = worktree
+        let leaf = worktree
             .file_name()
             .and_then(|leaf| leaf.to_str())
             .filter(|leaf| !leaf.trim().is_empty())
-            .unwrap_or(&member)
-            .to_owned();
-        let mut server = self.stdio(project, &member, &nick);
+            .unwrap_or("thread");
+        let name = velocity_core::thread_titles::thread_agent_name(leaf, thread);
+        self.thread_member(project, &name, &name, continuous_dispatch)
+    }
+
+    /// A build thread's connection with explicit member and nick (unified name for new
+    /// threads, preserving `thread-<id>` member for pre-#532 saved threads).
+    pub fn thread_member(
+        &self,
+        project: u32,
+        member: &str,
+        nick: &str,
+        continuous_dispatch: bool,
+    ) -> McpServer {
+        let mut server = self.stdio(project, member, nick);
         if continuous_dispatch {
             server.args.push(CONTINUOUS_DISPATCH_ARGUMENT.to_owned());
         }

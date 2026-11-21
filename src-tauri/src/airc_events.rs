@@ -52,13 +52,7 @@ fn open_channel(application: &AppHandle, project_identifier: u32) -> Result<Chan
 }
 
 fn thread_nick(thread: &ThreadItem) -> String {
-    thread
-        .worktree_path
-        .as_deref()
-        .filter(|path| !path.trim().is_empty())
-        .or_else(|| (!thread.branch_name.trim().is_empty()).then_some(thread.branch_name.as_str()))
-        .unwrap_or(thread.title.as_str())
-        .to_owned()
+    thread.agent_name()
 }
 
 pub(crate) fn post_event(
@@ -159,7 +153,7 @@ pub(crate) fn record_thread_failed(
     headline: &str,
     detail: &str,
 ) {
-    let nick = lock(
+    let info = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )
@@ -173,9 +167,9 @@ pub(crate) fn record_thread_failed(
                     .iter()
                     .find(|thread| thread.id == thread_identifier)
             })
-            .map(thread_nick)
+            .map(|thread| (thread_nick(thread), thread.rosen_change.clone()))
     });
-    let Some(nick) = nick else {
+    let Some((nick, change)) = info else {
         return;
     };
     let reason = if detail.trim().is_empty() {
@@ -185,6 +179,10 @@ pub(crate) fn record_thread_failed(
     };
     report(
         Event::thread_failed(&nick, &reason)
+            .map(|event| match change.as_deref() {
+                Some(change) => event.for_change(change),
+                None => event,
+            })
             .map_err(|error| error.to_string())
             .and_then(|event| post_event(application, project_identifier, event)),
     );

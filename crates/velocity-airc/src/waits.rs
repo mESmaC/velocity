@@ -140,7 +140,12 @@ impl Channel {
         } else {
             ("thread checkout", checkout, None)
         };
-        let mut record = entry(&entries, "checkout", member, member, text);
+        let actor_nick = entries
+            .iter()
+            .rev()
+            .find(|record| record.member == member && record.kind == "join")
+            .map_or(member, |record| record.nick.as_str());
+        let mut record = entry(&entries, "checkout", member, actor_nick, text);
         record.change = change;
         record.checkout = Some(checkout);
         storage.append(&record)
@@ -182,6 +187,10 @@ impl Channel {
             &own.nick,
             &format!("waiting for {} · shares {}", other.nick, dependency.file),
         );
+        record.change = own
+            .change
+            .clone()
+            .or_else(|| crate::claims::member_change(&entries, member));
         record.dependency = Some(dependency);
         storage.append(&record)?;
         Ok(record)
@@ -288,13 +297,19 @@ impl Channel {
         };
         let storage = Storage::open(self)?;
         let entries = storage.snapshot()?;
+        let change = crate::claims::member_change(&entries, member);
         let mut record = entry(&entries, "unblocked", "velocity", &dependency.nick, &text);
+        record.change = change.clone();
         record.dependency = Some(dependency.clone());
         record.pull_request = ended.pull_request;
         storage.append(&record)?;
         drop(storage);
         if let Err(error) = result {
-            self.post_event(Event::new("conflict", &dependency.nick, &text))?;
+            let mut event = Event::new("conflict", &dependency.nick, &text);
+            if let Some(change) = &change {
+                event = event.for_change(change);
+            }
+            self.post_event(event)?;
             return Err(error);
         }
         Ok(

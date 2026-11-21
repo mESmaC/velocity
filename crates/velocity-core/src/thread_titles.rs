@@ -54,6 +54,44 @@ fn strip_title_label(line: &str) -> &str {
 }
 
 /// Whole words up to `limit` characters; a single word longer than the limit is cut.
+pub fn word_boundary_preview(text: &str, limit: usize) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    cut_at_word_boundary(&words, limit)
+}
+
+/// Complete-phrase task text for an AIRC claim started from a composer prompt (#532).
+/// Keeps the full first non-empty line on one line; only splits at a sentence boundary
+/// when a single line is very long, so claim text is never cut off mid-phrase.
+pub fn claim_task_from_prompt(prompt: &str) -> String {
+    let first_line = prompt
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    let single_line = first_line.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single_line.chars().count() <= 240 {
+        return single_line;
+    }
+    first_sentence(&single_line).unwrap_or(single_line)
+}
+
+fn first_sentence(text: &str) -> Option<String> {
+    let mut chars = text.char_indices().peekable();
+    while let Some((index, character)) = chars.next() {
+        if matches!(character, '.' | '!' | '?') {
+            let end = index + character.len_utf8();
+            if chars.peek().is_none_or(|(_, next)| next.is_whitespace()) {
+                let candidate = text[..end].trim();
+                if !candidate.is_empty() {
+                    return Some(candidate.to_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Whole words up to `limit` characters; a single word longer than the limit is cut.
 fn cut_at_word_boundary(words: &[&str], limit: usize) -> String {
     let mut title = String::new();
     for word in words {
@@ -124,10 +162,112 @@ pub fn capped_slug(slug: &str) -> String {
     format!("{}-{hash:06x}", words.trim_end_matches('-'))
 }
 
+/// Maximum length of the slug prefix in a thread's unified agent name (`<slug>-<id>`).
+pub const AGENT_SLUG_LENGTH: usize = 24;
+
+/// Builds one project-unique agent name for a thread (`<short-slug>-<thread_id>`, e.g.
+/// `honest-feedback-50` or `issue-532-267`) used as its AIRC nick, AIRC member identity,
+/// `ROSEN_AGENT` and member label (#532).
+pub fn thread_agent_name(source: &str, thread_id: u32) -> String {
+    let leaf = source
+        .rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(FALLBACK_SLUG);
+    let mut words: Vec<String> = leaf
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let id_text = thread_id.to_string();
+    if words.len() > 1 && words.last().is_some_and(|last| last == &id_text) {
+        words.pop();
+    }
+    let mut slug = String::new();
+    for word in &words {
+        let separator = usize::from(!slug.is_empty());
+        if slug.len() + separator + word.len() > AGENT_SLUG_LENGTH {
+            break;
+        }
+        if separator == 1 {
+            slug.push('-');
+        }
+        slug.push_str(word);
+    }
+    if slug.is_empty() {
+        slug = words
+            .first()
+            .map(|word| word.chars().take(AGENT_SLUG_LENGTH).collect())
+            .filter(|word: &String| !word.is_empty())
+            .unwrap_or_else(|| FALLBACK_SLUG.to_owned());
+    }
+    format!("{slug}-{thread_id}")
+}
+
+/// Extracts the local build thread identifier from an AIRC member identity: either the
+/// unified `<short-slug>-<thread_id>` name (#532) or legacy `thread-<id>`. Returns `None`
+/// for foreign machine-scoped members (`<scope>/...`), duty agents (`duty-*`), spec
+/// interviews (`spec-*`), and reserved names (`you`, `velocity`).
+pub fn thread_id_from_member(member: &str) -> Option<u32> {
+    if member.contains('/')
+        || member.starts_with("duty-")
+        || member.starts_with("spec-")
+        || matches!(member, "you" | "velocity")
+    {
+        return None;
+    }
+    if let Some(id) = member
+        .strip_prefix("thread-")
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        return Some(id);
+    }
+    member.rsplit_once('-').and_then(|(prefix, suffix)| {
+        (!prefix.is_empty())
+            .then(|| suffix.parse::<u32>().ok())
+            .flatten()
+    })
+}
+
 /// FNV-1a: the same value on every machine and Rust version, unlike `DefaultHasher`, so a
 /// cut slug never changes between runs.
 fn stable_hash(text: &str) -> u32 {
     text.bytes().fold(0x811C_9DC5, |hash: u32, byte| {
         (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Risk (#532): threads sharing a title/workspace prefix must never collide in AIRC or Rosen.
+    #[test]
+    fn thread_agent_names_are_unique_and_parseable() {
+        let first = thread_agent_name(r"Z:\work\i-d-like-your-honest", 49);
+        let second = thread_agent_name(r"Z:\work\i-d-like-your-honest-2", 50);
+        assert_ne!(first, second);
+        assert_eq!(first, "i-d-like-your-honest-49");
+        assert_eq!(second, "i-d-like-your-honest-2-50");
+        assert_eq!(
+            thread_agent_name("honest-feedback", 50),
+            "honest-feedback-50"
+        );
+        assert_eq!(
+            thread_agent_name("honest-feedback-50", 50),
+            "honest-feedback-50"
+        );
+        assert_eq!(thread_agent_name("you", 7), "you-7");
+        assert_eq!(thread_id_from_member(&first), Some(49));
+        assert_eq!(thread_id_from_member(&second), Some(50));
+        assert_eq!(thread_id_from_member("thread-48"), Some(48));
+        assert_eq!(thread_id_from_member("duty-scout-1"), None);
+        assert_eq!(thread_id_from_member("spec-12"), None);
+        assert_eq!(thread_id_from_member("0123456789abcdef/honest-50"), None);
+    }
+
+    #[test]
+    fn claim_task_from_prompt_avoids_mid_phrase_truncation() {
+        let prompt = "I'd like your honest feedback on the AIRC naming and event log architecture.";
+        assert_eq!(claim_task_from_prompt(prompt), prompt);
+    }
 }

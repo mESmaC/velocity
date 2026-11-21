@@ -5,10 +5,10 @@ const SLUG_LENGTH: usize = 20;
 /// Used when a message has no letters or digits to name a branch after.
 const FALLBACK_SLUG: &str = "thread";
 
-/// The message's first 48 characters, on one line.
+/// The message's first 48 characters on one line, cut at a word boundary so provisional
+/// titles and claims are never cut mid-word (#532).
 pub fn fallback_title(message: &str) -> String {
-    let single_line = message.split_whitespace().collect::<Vec<_>>().join(" ");
-    single_line.chars().take(TITLE_LENGTH).collect()
+    velocity_core::thread_titles::word_boundary_preview(message, TITLE_LENGTH)
 }
 
 /// `vel/`-less branch slug from the message: lowercase ASCII letters and digits, other runs

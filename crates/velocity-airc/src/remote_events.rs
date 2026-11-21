@@ -26,6 +26,10 @@ struct RemoteEventCache {
     checkouts: BTreeMap<String, String>,
     /// Change ID -> scoped member from checkout records.
     change_members: BTreeMap<String, String>,
+    /// Scoped member -> latest AIRC nick.
+    member_nicks: BTreeMap<String, String>,
+    /// AIRC nick -> latest registered checkout change ID.
+    nick_changes: BTreeMap<String, String>,
 }
 
 impl RemoteEventCache {
@@ -35,24 +39,107 @@ impl RemoteEventCache {
         self.entries.clear();
         self.checkouts.clear();
         self.change_members.clear();
+        self.member_nicks.clear();
+        self.nick_changes.clear();
     }
 
     fn push_all(&mut self, delta: Vec<Entry>) {
-        for record in delta {
+        for mut record in delta {
             if record.sequence > self.tip {
                 self.tip = record.sequence;
             }
-            if record.checkout.is_some()
-                && let Some(change) = record.change_id()
+            if matches!(record.kind.as_str(), "join" | "leave")
+                && !record.member.is_empty()
+                && !record.nick.is_empty()
             {
-                self.checkouts
-                    .insert(record.member.clone(), change.to_owned());
-                self.change_members
-                    .insert(change.to_owned(), record.member.clone());
+                self.member_nicks
+                    .insert(record.member.clone(), record.nick.clone());
+                if let Some(change) = self.checkouts.get(&record.member) {
+                    self.nick_changes
+                        .insert(record.nick.clone(), change.clone());
+                }
             }
+            if record.checkout.is_some()
+                && let Some(change) = record.change_id().map(str::to_owned)
+            {
+                self.checkouts.insert(record.member.clone(), change.clone());
+                self.change_members
+                    .insert(change.clone(), record.member.clone());
+                if let Some(nick) = self.member_nicks.get(&record.member) {
+                    self.nick_changes.insert(nick.clone(), change.clone());
+                }
+                if !matches!(record.nick.as_str(), "" | "velocity" | "you") {
+                    self.nick_changes.insert(record.nick.clone(), change);
+                }
+            }
+            self.attach_change(&mut record);
             self.entries.push(record);
         }
     }
+
+    /// Attaches the active Rosen change ID to change-related AIRC entries that did not
+    /// carry one directly from Rosen (#532).
+    fn attach_change(&self, record: &mut Entry) {
+        if record.change.is_none() && is_change_related(&record.kind) {
+            let resolved = record
+                .claim
+                .as_ref()
+                .and_then(|claim| self.checkouts.get(&claim.member))
+                .or_else(|| {
+                    record
+                        .dependency
+                        .as_ref()
+                        .and_then(|wait| self.checkouts.get(&wait.member))
+                })
+                .or_else(|| {
+                    (!matches!(record.member.as_str(), "" | "velocity" | "you"))
+                        .then(|| self.checkouts.get(&record.member))
+                        .flatten()
+                })
+                .or_else(|| {
+                    (!matches!(record.nick.as_str(), "" | "velocity" | "you"))
+                        .then(|| self.nick_changes.get(&record.nick))
+                        .flatten()
+                });
+            record.change = resolved.cloned();
+        }
+        if let Some(claim) = &mut record.claim
+            && claim.change.is_none()
+        {
+            claim.change = record.change.clone();
+        }
+    }
+}
+
+fn is_change_related(kind: &str) -> bool {
+    matches!(
+        kind,
+        "claim"
+            | "refused"
+            | "overlap"
+            | "shares"
+            | "waits"
+            | "unblocked"
+            | "PR"
+            | "changes"
+            | "pushed"
+            | "approved"
+            | "merged"
+            | "failed"
+            | "left"
+            | "rebased"
+            | "updated"
+            | "conflict"
+            | "stalled"
+            | "at limit"
+            | "released"
+            | "broken"
+            | "reverted"
+            | "past_work"
+            | "discovery"
+            | "join"
+            | "leave"
+    )
 }
 
 type EndpointCaches = Mutex<HashMap<String, Arc<Mutex<RemoteEventCache>>>>;
@@ -98,13 +185,18 @@ pub(crate) fn message_entry(message: &ChannelMessage) -> Entry {
     record
 }
 
-pub(crate) fn claim(claim: &PieceClaim, files: Vec<String>) -> crate::Claim {
+pub(crate) fn claim(
+    claim: &PieceClaim,
+    files: Vec<String>,
+    change: Option<String>,
+) -> crate::Claim {
     crate::claims::from_server(
         &claim.member,
         &claim.nick,
         &claim.piece,
         &claim.task,
         &claim.branch,
+        change,
         files,
         time(claim.since),
     )
@@ -161,7 +253,7 @@ pub(crate) fn channel_entry(event: ChannelEvent) -> Result<Vec<Entry>, Error> {
                 let mut record =
                     crate::channel::entry(&[], "released", "velocity", &held.nick, &held.task);
                 record.time.clear();
-                record.claim = Some(claim(held, Vec::new()));
+                record.claim = Some(claim(held, Vec::new(), None));
                 record
             })
             .collect(),
@@ -184,7 +276,7 @@ fn claim_entry(held: &PieceClaim, extended: bool) -> Entry {
     } else {
         record.time = time(held.since);
     }
-    record.claim = Some(claim(held, Vec::new()));
+    record.claim = Some(claim(held, Vec::new(), None));
     record
 }
 
@@ -386,7 +478,10 @@ impl Remote {
                 .entries
                 .partition_point(|record| record.sequence <= after);
             let slice = cache.entries[start..].to_vec();
-            let needs_routing = slice.iter().any(|record| record.change_id().is_some());
+            let needs_routing = slice.iter().any(|record| {
+                record.change_id().is_some()
+                    || (record.change.is_none() && is_change_related(&record.kind))
+            });
             let members = if needs_routing {
                 Some(cache.change_members.clone())
             } else {
@@ -676,10 +771,15 @@ async fn route_project_entries(
             nicks.insert(change.clone(), member.nick.clone());
         }
     }
+    let mut owner_changes = BTreeMap::new();
     for change in &changes {
-        nicks
-            .entry(change.change.id.to_string())
-            .or_insert_with(|| change.change.owner.to_string());
+        let id = change.change.id.to_string();
+        let owner = change.change.owner.to_string();
+        nicks.entry(id.clone()).or_insert_with(|| owner.clone());
+        owner_changes.insert(owner, id.clone());
+        if let Some(nick) = nicks.get(&id) {
+            owner_changes.insert(nick.clone(), id);
+        }
     }
     let owners: BTreeMap<_, _> = changes
         .iter()
@@ -690,10 +790,24 @@ async fn route_project_entries(
         })
         .collect();
     for record in records {
+        if record.change.is_none()
+            && is_change_related(&record.kind)
+            && !matches!(record.nick.as_str(), "" | "velocity" | "you")
+            && let Some(change) = owner_changes.get(&record.nick)
+        {
+            record.change = Some(change.clone());
+            if let Some(claim) = &mut record.claim
+                && claim.change.is_none()
+            {
+                claim.change = Some(change.clone());
+            }
+        }
         let Some(nick) = record.change_id().and_then(|change| nicks.get(change)) else {
             continue;
         };
-        record.nick = nick.clone();
+        if record.payload.is_some() || record.kind == "checkout" {
+            record.nick = nick.clone();
+        }
         match record.kind.as_str() {
             "conflict" | "rebased" => record.to.push(nick.clone()),
             "claim" if record.claim.is_none() => route_overlap(record, nick, &owners),

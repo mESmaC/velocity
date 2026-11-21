@@ -210,11 +210,17 @@ fn claim_row(claim: &Claim, own: bool, files: &[&String], rosen: bool) -> Value 
     if !rosen || !files.is_empty() {
         row["files"] = json!(files);
     }
+    if let Some(change) = &claim.change {
+        row["change"] = json!(change);
+    }
     if row.to_string().len() > 1_000 {
-        let preview = |text: &str, limit| text[..text.floor_char_boundary(limit)].to_owned();
+        // Omit the file list when it pushes the row over budget, but keep the full task
+        // text intact so claims are never cut off mid-phrase (#532).
         row = json!({"nick": claim.nick, "own": own, "path_count": files.len(),
-            "task": preview(&claim.task, 48), "piece": preview(claim.key(), 80),
-            "details_omitted": true});
+            "task": claim.task, "piece": claim.key(), "details_omitted": true});
+        if let Some(change) = &claim.change {
+            row["change"] = json!(change);
+        }
     }
     row
 }

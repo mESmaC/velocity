@@ -43,7 +43,7 @@ pub struct ThreadMessageMode {
 fn thread_message_mode(
     application: &AppHandle,
     project: u32,
-    thread: u32,
+    thread: &ThreadItem,
 ) -> Result<Option<ThreadMessageMode>, String> {
     let directory = application
         .path()
@@ -52,12 +52,14 @@ fn thread_message_mode(
     let entries = velocity_airc::Channel::open(&directory, &project.to_string())
         .and_then(|channel| channel.read(0))
         .map_err(|error| error.to_string())?;
-    // Nicks may be shortened or collision-suffixed: use the stable member identity.
-    let member = format!("thread-{thread}");
+    // Match the thread's unified agent name as well as pre-#532 `thread-<id>` logs.
     Ok(entries
         .iter()
         .rev()
-        .find(|entry| entry.member == member && matches!(entry.kind.as_str(), "join" | "leave"))
+        .find(|entry| {
+            thread.matches_airc_member(&entry.member)
+                && matches!(entry.kind.as_str(), "join" | "leave")
+        })
         .filter(|entry| entry.kind == "join")
         .map(|entry| ThreadMessageMode {
             nick: entry.nick.clone(),
@@ -137,7 +139,7 @@ pub async fn get_thread_menu(
     })
     .await
     .map_err(|error| error.to_string())?;
-    let message_mode = thread_message_mode(&application, project_identifier, thread_identifier)?;
+    let message_mode = thread_message_mode(&application, project_identifier, &thread)?;
     let facts = ThreadMenuFacts {
         retry_workspace: thread.pending_rosen_launch.is_some(),
         worktree_path: thread.worktree_path,

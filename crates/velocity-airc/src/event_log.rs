@@ -1,6 +1,6 @@
 //! F14 event log posted by Velocity from claims, GitHub and the Task List, with
 //! agent messages and ledgers kept separate.
-use crate::channel::{EVENT_TAGS, nick, require_text};
+use crate::channel::{EVENT_TAGS, NICK_LIMIT, nick, require_text};
 use crate::{Channel, Entry, Error, Event};
 
 impl Entry {
@@ -121,10 +121,10 @@ impl Channel {
 }
 
 impl Event {
-    /// `claim`: `<nick> claimed <task> · <files>` (F14).
+    /// `claim`: `<nick> claimed <task> · <files>` (F14). Keeps the complete task text (#532).
     pub fn claimed(owner_nick: &str, task: &str, files: &[&str]) -> Result<Self, Error> {
         require_text(task)?;
-        let actor = nick(owner_nick, 16);
+        let actor = nick(owner_nick, NICK_LIMIT);
         let suffix = if files.is_empty() {
             String::new()
         } else {
@@ -133,7 +133,7 @@ impl Event {
         Ok(Self::new(
             "claim",
             &actor,
-            &format!("claimed {}{suffix}", one_line(task)),
+            &format!("claimed {}{suffix}", collapse_whitespace(task)),
         ))
     }
 
@@ -146,7 +146,7 @@ impl Event {
     ) -> Result<Self, Error> {
         require_text(title)?;
         require_text(head)?;
-        let actor = nick(owner_nick, 16);
+        let actor = nick(owner_nick, NICK_LIMIT);
         Ok(Self::new(
             "PR",
             &actor,
@@ -158,7 +158,7 @@ impl Event {
     /// `pushed`: `<nick> pushed <sha7> to #<n>` (F6, F14).
     pub fn pull_request_pushed(owner_nick: &str, number: u32, head: &str) -> Result<Self, Error> {
         require_text(head)?;
-        let actor = nick(owner_nick, 16);
+        let actor = nick(owner_nick, NICK_LIMIT);
         Ok(Self::new(
             "pushed",
             &actor,
@@ -176,7 +176,7 @@ impl Event {
     ) -> Result<Self, Error> {
         require_text(title)?;
         require_text(head)?;
-        let actor = nick(owner_nick, 16);
+        let actor = nick(owner_nick, NICK_LIMIT);
         Ok(Self::new(
             "merged",
             &actor,
@@ -188,7 +188,7 @@ impl Event {
     /// `issue`: `<scout> filed #<n> <title>` (F7, F9, F14).
     pub fn issue_filed(actor_nick: &str, number: u32, title: &str) -> Result<Self, Error> {
         require_text(title)?;
-        let actor = nick(actor_nick, 16);
+        let actor = nick(actor_nick, NICK_LIMIT);
         Ok(Self::new(
             "issue",
             &actor,
@@ -202,7 +202,7 @@ impl Event {
         let actor = if actor_nick == "you" {
             String::from("you")
         } else {
-            nick(actor_nick, 16)
+            nick(actor_nick, NICK_LIMIT)
         };
         Ok(Self::new(
             "task",
@@ -229,7 +229,7 @@ impl Event {
         let actor = if actor_nick == "you" {
             String::from("you")
         } else {
-            nick(actor_nick, 16)
+            nick(actor_nick, NICK_LIMIT)
         };
         Ok(Self::new("task", &actor, &one_line(change)))
     }
@@ -247,7 +247,7 @@ impl Event {
     /// `failed`: `<nick> failed · <reason> · its claim is held` (§2.1, F14).
     pub fn thread_failed(owner_nick: &str, reason: &str) -> Result<Self, Error> {
         require_text(reason)?;
-        let actor = nick(owner_nick, 16);
+        let actor = nick(owner_nick, NICK_LIMIT);
         Ok(Self::new(
             "failed",
             &actor,
@@ -272,7 +272,7 @@ impl Event {
     /// left: <nick> left · <reason> when a goal swarm agent leaves with nothing unclaimed (F16).
     pub fn agent_left(owner_nick: &str, reason: &str) -> Result<Self, Error> {
         require_text(reason)?;
-        let actor = nick(owner_nick, 16);
+        let actor = nick(owner_nick, NICK_LIMIT);
         Ok(Self::new(
             "left",
             &actor,
@@ -287,6 +287,7 @@ fn matches_event(entry: &Entry, event: &Event) -> bool {
         && entry.acknowledged == event.task_request
         && entry.pull_request == event.pull_request()
         && entry.head.as_deref() == event.head()
+        && entry.change.as_deref() == event.change()
         && (entry.pull_request.is_some() || entry.text == event.text())
 }
 
@@ -294,11 +295,10 @@ fn short_sha(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
 
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn one_line(text: &str) -> String {
-    text.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(240)
-        .collect()
+    collapse_whitespace(text).chars().take(240).collect()
 }

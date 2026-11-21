@@ -97,7 +97,7 @@ impl Remote {
                         .collect();
                     let mut local = held.clone();
                     local.member = self.local_member(&local.member);
-                    claim(&local, files)
+                    claim(&local, files, change)
                 })
                 .collect();
             let paths = paths
@@ -149,9 +149,9 @@ impl Remote {
                 }
                 PieceOutcome::Granted { claim, extended } => (claim, extended),
             };
-            if let Some(change) = change
+            if let Some(change_id) = change.as_deref()
                 && let Some(refused) = self
-                    .claim_files(client, &change, &held, extended, &files)
+                    .claim_files(client, change_id, &held, extended, &files)
                     .await?
             {
                 return Ok(refused);
@@ -159,7 +159,7 @@ impl Remote {
             let mut local = held;
             local.member = self.local_member(&local.member);
             Ok(ClaimResult::Granted {
-                claim: claim(&local, files),
+                claim: claim(&local, files, change),
             })
         })
     }
@@ -206,6 +206,7 @@ impl Remote {
                 held.nick, holder.held.owner, holder.requested
             ),
         );
+        record.change = Some(change.to_owned());
         record.to = vec![held.nick.clone(), holder.held.owner.to_string()];
         self.append_record(&record)?;
         Ok(Some(ClaimResult::Refused {
@@ -225,14 +226,16 @@ impl Remote {
             return Ok(());
         };
         let change = if claim.files.is_empty() {
-            None
+            claim.change.clone()
         } else {
             Some(self.change_for(member)?)
         };
+        let release_paths = !claim.files.is_empty();
         self.run(async |client| {
             // Release paths first: if transport fails, retry still finds the held
             // piece and cannot strand an exclusive path behind a released piece.
-            if let Some(change) = change
+            if release_paths
+                && let Some(change) = &change
                 && !client
                     .pieces()
                     .await?
@@ -247,6 +250,7 @@ impl Remote {
                 .release_piece(&self.member(member), Some(claim.key()))
                 .await?;
             let mut record = self.record("released", "velocity", &claim.nick, note);
+            record.change = change;
             record.claim = Some(claim.clone());
             self.append_record(&record)?;
             Ok(())
@@ -273,6 +277,7 @@ impl Remote {
                 nick,
                 &format!("shares {file} with {holder}"),
             );
+            record.change = Some(change);
             record.to.push(holder.into());
             self.append_record(&record)?;
             Ok(())

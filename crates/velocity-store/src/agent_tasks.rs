@@ -39,9 +39,15 @@ fn agent_attribution(
     project: &crate::ProjectItem,
     member: &str,
 ) -> Result<TaskAttribution, ThreadError> {
+    if let Some(thread) = project
+        .threads
+        .iter()
+        .find(|thread| thread.matches_airc_member(member))
+    {
+        return Ok(TaskAttribution::Thread(thread.id));
+    }
     if let Some(identifier) = member
-        .strip_prefix("thread-")
-        .or_else(|| member.strip_prefix("spec-"))
+        .strip_prefix("spec-")
         .and_then(|text| text.parse::<u32>().ok())
         .filter(|identifier| {
             project

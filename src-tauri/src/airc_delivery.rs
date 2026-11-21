@@ -129,7 +129,7 @@ fn deliver(
     members: &mut Members,
 ) -> Result<(), String> {
     let key = (project, thread.id);
-    let member = format!("thread-{}", key.1);
+    let member = thread.airc_member();
     let (live, setting_up, session) = {
         let runtimes = lock(
             application.state::<ManagedThreads>().inner(),
@@ -154,12 +154,21 @@ fn deliver(
     if setting_up {
         return Ok(());
     }
-    let Some(path) = &thread.worktree_path else {
+    if thread.worktree_path.is_none() {
         return Ok(());
-    };
+    }
     let session = session.ok_or("Missing live AIRC session")?;
     let identity = head.map(|head| head.identity.as_str());
-    let nick = member_nick(channel, key, &member, path, &session, identity, members)?;
+    let requested_nick = thread.agent_name();
+    let nick = member_nick(
+        channel,
+        key,
+        &member,
+        &requested_nick,
+        &session,
+        identity,
+        members,
+    )?;
     deliver_pending(application, key, thread, channel, &nick, head)
 }
 
@@ -167,7 +176,7 @@ fn member_nick(
     channel: &Channel,
     key: velocity_threads::ThreadKey,
     member: &str,
-    path: &str,
+    requested_nick: &str,
     session: &str,
     server_identity: Option<&str>,
     members: &mut Members,
@@ -179,7 +188,7 @@ fn member_nick(
         return Ok(known.nick.clone());
     }
     let nick = channel
-        .join(member, path)
+        .join(member, requested_nick)
         .map_err(|error| error.to_string())?;
     members.insert(
         key,
@@ -211,7 +220,7 @@ fn deliver_pending(
         thread.airc_cursor
     } else {
         channel
-            .delivery_cursor(&format!("thread-{}", key.1), thread.airc_cursor)
+            .delivery_cursor(&thread.airc_member(), thread.airc_cursor)
             .map_err(|error| error.to_string())?
     };
     let cursor = velocity_airc::deliver_targeted(

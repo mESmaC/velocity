@@ -260,17 +260,47 @@ fn checkpoint_unavailable(application: &AppHandle, key: ThreadKey) -> Result<(),
         .map_err(|error| error.to_string())
 }
 
-fn post(channel: &Channel, key: ThreadKey, tag: &str, text: &str) -> Result<(), String> {
-    let member = format!("thread-{}", key.1);
+fn post(
+    application: &AppHandle,
+    channel: &Channel,
+    key: ThreadKey,
+    tag: &str,
+    text: &str,
+) -> Result<(), String> {
+    let (member, fallback_nick, change) = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .ok()
+    .and_then(|store| {
+        let thread = store
+            .project(key.0)?
+            .threads
+            .iter()
+            .find(|thread| thread.id == key.1)?;
+        Some((
+            thread.airc_member(),
+            thread.agent_name(),
+            thread.rosen_change.clone(),
+        ))
+    })
+    .unwrap_or_else(|| {
+        let legacy = format!("thread-{}", key.1);
+        (legacy.clone(), legacy, None)
+    });
     let nick = channel
         .claims()
         .map_err(|error| error.to_string())?
         .into_iter()
         .find(|claim| claim.member == member)
         .map(|claim| claim.nick)
-        .unwrap_or(member);
+        .unwrap_or(fallback_nick);
+    let mut event = Event::new(tag, &nick, text);
+    if let Some(change) = change {
+        event = event.for_change(&change);
+    }
     channel
-        .post_event(Event::new(tag, &nick, text))
+        .post_event(event)
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
@@ -298,7 +328,13 @@ fn nudge(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<(
     .map_err(|error| error.to_string())?;
     runtimes.nudge_supervision(key, now());
     drop(runtimes);
-    post(channel, key, "stalled", "No output; sent a recovery prompt")?;
+    post(
+        application,
+        channel,
+        key,
+        "stalled",
+        "No output; sent a recovery prompt",
+    )?;
     publish(application, key)
 }
 
@@ -346,7 +382,7 @@ fn idle_nudge(
         ),
         None => "Idle in working with nothing outstanding; sent a recovery prompt".into(),
     };
-    post(channel, key, "stalled", &note)
+    post(application, channel, key, "stalled", &note)
 }
 
 fn unnamed_open_change(
@@ -409,6 +445,7 @@ fn end(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
 fn restart(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<(), String> {
     end(application, key)?;
     post(
+        application,
         channel,
         key,
         "stalled",
@@ -434,7 +471,7 @@ fn limit(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<(
     };
     end(application, key)?;
     crate::threads::save_activity(application, key, AgentActivity::AtLimit, None)?;
-    post(channel, key, "at limit", &message)?;
+    post(application, channel, key, "at limit", &message)?;
     publish(application, key)
 }
 
@@ -454,7 +491,7 @@ fn release(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result
     } else {
         "Piece returned to the pool; setup left no workspace"
     };
-    post(channel, key, "released", note)?;
+    post(application, channel, key, "released", note)?;
     publish(application, key)
 }
 

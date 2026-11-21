@@ -13,6 +13,7 @@ impl Channel {
         let storage = Storage::open(self)?;
         let entries = storage.read()?;
         let mut record = entry(&entries, "unblocked", "velocity", &wait.nick, message);
+        record.change = crate::claims::member_change(&entries, member);
         record.dependency = Some(wait);
         storage.append(&record)
     }

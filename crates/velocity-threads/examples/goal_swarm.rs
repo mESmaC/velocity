@@ -222,10 +222,15 @@ fn verify_choosing_members(harness: &Harness, prepared: &[PreparedSlot]) -> Outc
     let project = store.project(1).ok_or("missing project 1")?;
     let members = airc_members(project);
     for slot in prepared {
-        let expected = AircMember::new(
-            &format!("thread-{}", slot.thread_id),
-            AircMemberState::Choosing,
-        );
+        let member = project
+            .threads
+            .iter()
+            .find(|thread| thread.id == slot.thread_id)
+            .map_or_else(
+                || format!("thread-{}", slot.thread_id),
+                |thread| thread.airc_member(),
+            );
+        let expected = AircMember::new(&member, AircMemberState::Choosing);
         if !members.contains(&expected) {
             return Err(format!("missing Choosing AIRC member for {}", slot.slot.nick).into());
         }
@@ -477,7 +482,7 @@ fn run_followup_round(harness: &Harness, slot: &GoalAgentSlot) -> Outcome<u32> {
 }
 
 fn land_merge(harness: &Harness, thread_id: u32, pr_number: u32) -> Outcome {
-    let (worktree, branch) = {
+    let (worktree, branch, member) = {
         let store = harness
             .store
             .lock()
@@ -489,10 +494,10 @@ fn land_merge(harness: &Harness, thread_id: u32, pr_number: u32) -> Outcome {
         (
             PathBuf::from(thread.worktree_path.clone().ok_or("missing worktree")?),
             thread.branch_name.clone(),
+            thread.airc_member(),
         )
     };
     remove_merged_worktree(&harness.repository, &worktree, &branch, true)?;
-    let member = format!("thread-{thread_id}");
     for claim in harness.channel.claims()? {
         if claim.member == member {
             harness.channel.release(&member, claim.key())?;

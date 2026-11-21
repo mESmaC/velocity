@@ -69,8 +69,9 @@ fn step(
     {
         return Ok(());
     }
+    let member = thread.airc_member();
     let wait = channel
-        .wait_state(&member(key))
+        .wait_state(&member)
         .map_err(|error| error.to_string())?;
     let input = ParkingInput {
         state: thread.state,
@@ -83,7 +84,7 @@ fn step(
     }
     match parking_action(input) {
         ParkingAction::Park => park(application, key),
-        ParkingAction::Wake => wake(application, key, channel),
+        ParkingAction::Wake => wake(application, key, &member, channel),
         ParkingAction::Nothing => Ok(()),
     }
 }
@@ -226,10 +227,6 @@ fn continue_live_rosen(application: &AppHandle, key: ThreadKey) -> Result<(), St
     Ok(())
 }
 
-fn member(key: ThreadKey) -> String {
-    format!("thread-{}", key.1)
-}
-
 /// Ends the session and waits for its processes, including its AIRC server, to stop.
 fn park(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
     let Some(ended) = lock(
@@ -263,13 +260,18 @@ fn park(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
 }
 
 /// Ends the wait the way the parked `airc_wait` call would have, then resumes the session.
-fn wake(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result<(), String> {
+fn wake(
+    application: &AppHandle,
+    key: ThreadKey,
+    member: &str,
+    channel: &Channel,
+) -> Result<(), String> {
     let lease = crate::threads::action_lock(application, key)?;
     let Ok(_guard) = lease.try_lock() else {
         return Ok(());
     };
     // A wait record that cannot be read still resumes the agent: it re-reads its claims.
-    let ended = match channel.wake_parked(&member(key)) {
+    let ended = match channel.wake_parked(member) {
         Ok(None) => return Ok(()),
         Ok(Some(ended)) => Some(ended),
         Err(_) => None,

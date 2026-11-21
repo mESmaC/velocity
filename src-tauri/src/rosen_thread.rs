@@ -265,11 +265,11 @@ async fn update_workspace(
                 .map_err(|error| error.to_string())
         }
         RosenThreadAction::Rebase => {
-            apply_waiting_rebase(application, server, key.0, root).await?;
+            apply_waiting_rebase(application, server, key, root).await?;
             thread_change::rebase(server, root, change)
                 .await
                 .map_err(|error| error.to_string())?;
-            apply_waiting_rebase(application, server, key.0, root).await
+            apply_waiting_rebase(application, server, key, root).await
         }
         RosenThreadAction::Abandon | RosenThreadAction::Resolve => Ok(()),
     }
@@ -278,11 +278,11 @@ async fn update_workspace(
 async fn apply_waiting_rebase(
     application: &AppHandle,
     server: &velocity_rosen::ProjectServer,
-    project: u32,
+    key: ThreadKey,
     root: &Path,
 ) -> Result<(), String> {
-    crate::rosen::apply_rebase(application, project, root).await?;
-    let agent = velocity_rosen::agent_name(root);
+    crate::rosen::apply_rebase(application, key.0, root).await?;
+    let agent = crate::rosen::thread_agent(application, key, root);
     if velocity_rosen::rebase_pending(server, &agent, root)
         .await
         .map_err(|error| error.to_string())?

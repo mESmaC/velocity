@@ -83,10 +83,22 @@ async fn scenario(root: &Path, server: &ProjectServer) -> Outcome {
         take_land(&store, &mut events, &member.workspace.change).await?;
     }
     let first = &members[0];
+    let first_member = store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .project(1)
+        .and_then(|project| {
+            project
+                .threads
+                .iter()
+                .find(|thread| thread.id == first.thread)
+                .map(velocity_store::ThreadItem::airc_member)
+        })
+        .unwrap_or_else(|| format!("thread-{}", first.thread));
     for claim in channel
         .claims()?
         .into_iter()
-        .filter(|claim| claim.member == format!("thread-{}", first.thread))
+        .filter(|claim| claim.member == first_member)
     {
         channel.release(&claim.member, claim.key())?;
     }

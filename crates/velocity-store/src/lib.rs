@@ -913,6 +913,10 @@ pub struct ThreadItem {
     /// Goal swarm membership and choosing-work phase (F16).
     #[serde(default)]
     pub goal_member: Option<goal_swarms::GoalThreadMember>,
+    /// One project-unique agent name across AIRC, Rosen (`ROSEN_AGENT`) and member labels (#532).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub agent_name: Option<String>,
 }
 
 impl ThreadItem {
@@ -970,6 +974,7 @@ impl ThreadItem {
             model_supports_fast: false,
             interview: None,
             goal_member: None,
+            agent_name: None,
             rosen_follow_ups: Vec::new(),
             rosen_resolution_status: None,
             rosen_follow_up_error: None,
@@ -978,6 +983,16 @@ impl ThreadItem {
     }
 
     pub(crate) fn for_build(thread: threads::NewThread, identifier: u32) -> Self {
+        let agent_source = (!thread.worktree_path.trim().is_empty())
+            .then_some(thread.worktree_path.as_str())
+            .or_else(|| {
+                (!thread.branch_name.trim().is_empty()).then_some(thread.branch_name.as_str())
+            })
+            .unwrap_or(thread.title.as_str());
+        let agent_name = Some(velocity_core::thread_titles::thread_agent_name(
+            agent_source,
+            identifier,
+        ));
         Self {
             id: identifier,
             title: thread.title,
@@ -1032,12 +1047,77 @@ impl ThreadItem {
             model_supports_fast: thread.model_supports_fast,
             interview: None,
             goal_member: None,
+            agent_name,
             rosen_follow_ups: Vec::new(),
             rosen_resolution_status: None,
             rosen_follow_up_error: None,
             rosen_issue: Default::default(),
         }
         .normalize()
+    }
+
+    /// One project-unique name for this thread across AIRC, Rosen and member labels (#532).
+    pub fn agent_name(&self) -> String {
+        if let Some(name) = self
+            .agent_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+        {
+            return name.to_owned();
+        }
+        if let Some(goal) = self
+            .goal_member
+            .as_ref()
+            .filter(|goal| !goal.nick.trim().is_empty())
+        {
+            return velocity_core::thread_titles::thread_agent_name(&goal.nick, self.id);
+        }
+        let source = self
+            .worktree_path
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+            .or_else(|| (!self.branch_name.trim().is_empty()).then_some(self.branch_name.as_str()))
+            .unwrap_or(self.title.as_str());
+        velocity_core::thread_titles::thread_agent_name(source, self.id)
+    }
+
+    /// AIRC member identity for this thread: its unified `agent_name`, falling back to
+    /// legacy `thread-<id>` for threads saved before #532 so existing claims stay linked.
+    pub fn airc_member(&self) -> String {
+        self.agent_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("thread-{}", self.id))
+    }
+
+    /// Rosen `ROSEN_AGENT` / change owner: the unified `agent_name`, falling back to the
+    /// workspace folder leaf only for pre-#532 threads that already own a Rosen change.
+    pub fn rosen_agent_name(&self) -> String {
+        if let Some(name) = self
+            .agent_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+        {
+            return name.to_owned();
+        }
+        if self.rosen_change.is_some()
+            && let Some(leaf) = self
+                .worktree_path
+                .as_deref()
+                .and_then(|path| std::path::Path::new(path).file_name())
+                .map(|name| name.to_string_lossy().replace(char::is_whitespace, "-"))
+                .filter(|name| !name.is_empty())
+        {
+            return leaf;
+        }
+        self.agent_name()
+    }
+
+    /// True when `member` names this thread under either its unified agent name or legacy
+    /// `thread-<id>`.
+    pub fn matches_airc_member(&self, member: &str) -> bool {
+        self.airc_member() == member || member == format!("thread-{}", self.id)
     }
 
     fn into_core_record(self) -> (Self, CoreThreadRecord<String, String>) {

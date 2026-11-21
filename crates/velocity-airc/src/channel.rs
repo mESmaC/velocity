@@ -59,7 +59,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// The Rosen change ID recorded on this entry, falling back to pre-#540 `head`.
+    /// The Rosen change ID recorded on this entry, falling back to checkout, claim or pre-#540 `head`.
     pub fn change_id(&self) -> Option<&str> {
         self.change
             .as_deref()
@@ -67,6 +67,11 @@ impl Entry {
                 self.checkout
                     .as_ref()
                     .and_then(|checkout| checkout.change.as_deref())
+            })
+            .or_else(|| {
+                self.claim
+                    .as_ref()
+                    .and_then(|claim| claim.change.as_deref())
             })
             .or(self.head.as_deref())
     }
@@ -110,6 +115,10 @@ pub const EVENT_TAGS: &[&str] = &[
     "stress",
 ];
 
+/// Maximum length of a normalized AIRC nick (#532: long enough for `<short-slug>-<thread_id>`
+/// without truncating distinguishing suffixes).
+pub(crate) const NICK_LIMIT: usize = 48;
+
 /// One event line: its type tag, the nick it is about, and what happened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Event {
@@ -118,6 +127,7 @@ pub struct Event {
     text: String,
     pull_request: Option<u32>,
     head: Option<String>,
+    change: Option<String>,
     recipients: Vec<String>,
     files: Vec<String>,
     pub(crate) task_request: Option<u64>,
@@ -131,6 +141,7 @@ impl Event {
             text: text.into(),
             pull_request: None,
             head: None,
+            change: None,
             recipients: Vec::new(),
             files: Vec::new(),
             task_request: None,
@@ -140,6 +151,15 @@ impl Event {
     pub fn for_pull_request(mut self, number: u32, head: Option<&str>) -> Self {
         self.pull_request = Some(number);
         self.head = head.map(Into::into);
+        self
+    }
+
+    /// Attaches the Rosen change ID this event is about (#532).
+    pub fn for_change(mut self, change: &str) -> Self {
+        let change = change.trim();
+        if !change.is_empty() {
+            self.change = Some(change.to_owned());
+        }
         self
     }
 
@@ -178,6 +198,10 @@ impl Event {
 
     pub fn head(&self) -> Option<&str> {
         self.head.as_deref()
+    }
+
+    pub fn change(&self) -> Option<&str> {
+        self.change.as_deref()
     }
 }
 
@@ -468,17 +492,28 @@ impl Channel {
     /// Velocity records a Past work ledger entry (for example on every merge, F14)
     /// on behalf of `nick` without requiring `nick` to hold an active session.
     pub fn record_past_work(&self, nick_name: &str, text: &str) -> Result<Entry, Error> {
+        self.record_past_work_for_change(nick_name, None, text)
+    }
+
+    /// Velocity records a Past work ledger entry tied to an optional Rosen change ID (#532).
+    pub fn record_past_work_for_change(
+        &self,
+        nick_name: &str,
+        change: Option<&str>,
+        text: &str,
+    ) -> Result<Entry, Error> {
         require_text(nick_name)?;
         require_text(text)?;
         let storage = Storage::open(self)?;
         let entries = self.read_presence_log(&storage)?;
-        let record = entry(
+        let mut record = entry(
             &entries,
             "past_work",
             "velocity",
-            &nick(nick_name, 16),
+            &nick(nick_name, NICK_LIMIT),
             text,
         );
+        record.change = change.filter(|id| !id.trim().is_empty()).map(str::to_owned);
         if let Some(remote) = &self.remote {
             return remote.append_record(&record);
         }
@@ -502,7 +537,7 @@ impl Channel {
             &entries,
             "discovery",
             "velocity",
-            &nick(nick_name, 16),
+            &nick(nick_name, NICK_LIMIT),
             text,
         );
         record.change = change.filter(|id| !id.trim().is_empty()).map(str::to_owned);
@@ -544,6 +579,7 @@ impl Channel {
         let mut record = entry(&entries, &event.tag, "velocity", &event.nick, &event.text);
         record.pull_request = event.pull_request;
         record.head = event.head;
+        record.change = event.change;
         record.to = event.recipients;
         record.files = event.files;
         record.acknowledged = event.task_request;
@@ -685,6 +721,41 @@ pub(crate) fn nick(value: &str, limit: usize) -> String {
         .split(|character: char| !character.is_alphanumeric())
         .filter(|word| !word.is_empty())
         .collect();
+    // Preserve a trailing numeric suffix (such as a thread ID or `-2`) when shortening
+    // a long name so distinct threads never collapse onto the same prefix (#532).
+    let joined_len: usize = words.iter().map(|word| word.chars().count()).sum::<usize>()
+        + words.len().saturating_sub(1);
+    let suffix = (joined_len > limit && words.len() > 1)
+        .then(|| words.last().copied())
+        .flatten()
+        .filter(|word| word.chars().all(|character| character.is_ascii_digit()))
+        .filter(|word| word.len() + 2 <= limit);
+    let (body_words, body_limit) = match suffix {
+        Some(digits) => (
+            &words[..words.len() - 1],
+            limit.saturating_sub(digits.len() + 1),
+        ),
+        None => (&words[..], limit),
+    };
+    let mut result = join_words(body_words, body_limit);
+    if result.is_empty() {
+        result = leaf
+            .chars()
+            .filter(|character| character.is_alphanumeric())
+            .take(body_limit)
+            .collect();
+    }
+    if result.is_empty() {
+        result = "agent".chars().take(body_limit).collect();
+    }
+    if let Some(digits) = suffix {
+        result.push('-');
+        result.push_str(digits);
+    }
+    result
+}
+
+fn join_words(words: &[&str], limit: usize) -> String {
     let mut result = String::new();
     for word in words {
         let separator = if result.is_empty() { "" } else { "-" };
@@ -693,16 +764,6 @@ pub(crate) fn nick(value: &str, limit: usize) -> String {
         }
         result.push_str(separator);
         result.push_str(word);
-    }
-    if result.is_empty() {
-        result = leaf
-            .chars()
-            .filter(|c| c.is_alphanumeric())
-            .take(limit)
-            .collect();
-    }
-    if result.is_empty() {
-        result = "agent".chars().take(limit).collect();
     }
     result
 }
@@ -715,7 +776,7 @@ pub(crate) fn require_text(text: &str) -> Result<(), Error> {
 }
 
 fn available_nick(requested: &str, members: &BTreeMap<String, Presence>) -> String {
-    let base = nick(requested, 16);
+    let base = nick(requested, NICK_LIMIT);
     let mut candidate = base.clone();
     let mut suffix = 1_u64;
     while candidate == "you"
@@ -727,7 +788,7 @@ fn available_nick(requested: &str, members: &BTreeMap<String, Presence>) -> Stri
         let ending = format!("-{suffix}");
         candidate = format!(
             "{}{}",
-            nick(&base, 16_usize.saturating_sub(ending.len())),
+            nick(&base, NICK_LIMIT.saturating_sub(ending.len())),
             ending
         );
         suffix += 1;

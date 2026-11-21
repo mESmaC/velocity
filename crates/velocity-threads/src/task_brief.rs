@@ -566,12 +566,11 @@ pub fn revert_brief_input<'a>(
     let nick = thread_nick(thread);
     let owner_note = match &thread.issue {
         Some(issue) => format!(
-            "thread-{} ({nick}) owns issue:{} and this post-land revert fix-forward through re-land and review.",
-            thread.id, issue.number
+            "{nick} owns issue:{} and this post-land revert fix-forward through re-land and review.",
+            issue.number
         ),
         None => format!(
-            "thread-{} ({nick}) owns this post-land revert fix-forward through re-land and verification.",
-            thread.id
+            "{nick} owns this post-land revert fix-forward through re-land and verification."
         ),
     };
     BriefInput {
@@ -596,13 +595,7 @@ pub fn revert_brief_input<'a>(
 }
 
 fn thread_nick(thread: &ThreadItem) -> String {
-    thread
-        .worktree_path
-        .as_deref()
-        .and_then(|path| Path::new(path).file_name())
-        .and_then(|name| name.to_str())
-        .unwrap_or("thread")
-        .to_owned()
+    thread.agent_name()
 }
 
 fn build_repair_brief_input<'a>(
@@ -628,8 +621,7 @@ fn build_repair_brief_input<'a>(
         evidence_texts: vec![thread.title.clone(), prompt.to_owned()],
         dependencies: open_blockers.to_vec(),
         owner_note: format!(
-            "thread-{} ({nick}) owns this fix-forward repair through land and post-land verification.",
-            thread.id
+            "{nick} owns this fix-forward repair through land and post-land verification."
         ),
         exclude_change: thread.rosen_change.clone(),
         fix_forward: Some(FixForwardDetail {
@@ -672,8 +664,8 @@ fn ci_repair_brief_input<'a>(
         evidence_texts: vec![thread.title.clone(), prompt.to_owned()],
         dependencies: open_blockers.to_vec(),
         owner_note: format!(
-            "thread-{} ({nick}) owns this CI fix-forward through land until `{}` passes on the base.",
-            thread.id, first.workflow
+            "{nick} owns this CI fix-forward through land until `{}` passes on the base.",
+            first.workflow
         ),
         exclude_change: thread.rosen_change.clone(),
         fix_forward: Some(FixForwardDetail {
@@ -709,8 +701,8 @@ fn issue_brief_input<'a>(
         evidence_texts: vec![thread.title.clone(), prompt.to_owned()],
         dependencies,
         owner_note: format!(
-            "thread-{} ({nick}) holds issue:{} through land and after-land review. Leave the issue open; call issue_ready_to_close with evidence when naming the change.",
-            thread.id, issue.number
+            "{nick} holds issue:{} through land and after-land review. Leave the issue open; call issue_ready_to_close with evidence when naming the change.",
+            issue.number
         ),
         exclude_change: thread.rosen_change.clone(),
         fix_forward: None,
@@ -736,8 +728,7 @@ fn spec_or_task_brief_input<'a>(
             evidence_texts: vec![section.clone(), thread.title.clone(), prompt.to_owned()],
             dependencies,
             owner_note: format!(
-                "thread-{} ({nick}) owns §7 item `{section}` through land and after-land review. Velocity ticks §7 on land.",
-                thread.id
+                "{nick} owns §7 item `{section}` through land and after-land review. Velocity ticks §7 on land."
             ),
             exclude_change: thread.rosen_change.clone(),
             fix_forward: None,
@@ -759,8 +750,7 @@ fn spec_or_task_brief_input<'a>(
         evidence_texts: vec![task_text, prompt.to_owned()],
         dependencies,
         owner_note: format!(
-            "thread-{} ({nick}) owns task:{task_id} through land and after-land review. Velocity marks the task done on land.",
-            thread.id
+            "{nick} owns task:{task_id} through land and after-land review. Velocity marks the task done on land."
         ),
         exclude_change: thread.rosen_change.clone(),
         fix_forward: None,

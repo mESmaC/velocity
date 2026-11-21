@@ -22,7 +22,7 @@ pub(crate) fn continue_wait(
     {
         return Ok(false);
     }
-    let member = format!("thread-{}", key.1);
+    let member = thread.airc_member();
     let air_wait = channel
         .dependency_waits()
         .map_err(|error| error.to_string())?
@@ -120,7 +120,7 @@ fn parent_change(
         .project(project)
         .and_then(|project| {
             project.threads.iter().find(|other| {
-                holder == format!("thread-{}", other.id)
+                other.matches_airc_member(holder)
                     && matches!(other.state, ThreadState::Working | ThreadState::Review)
             })
         })
@@ -154,7 +154,7 @@ async fn stack(
     crate::rosen::stop_watch(application, original).await;
     let created = velocity_rosen::stack_workspace(
         &server,
-        &velocity_rosen::agent_name(&root),
+        &thread.rosen_agent_name(),
         original,
         parent,
         &root,

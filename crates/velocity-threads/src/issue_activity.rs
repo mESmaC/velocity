@@ -148,10 +148,7 @@ fn create_issue(
 ) -> Result<Value, Error> {
     let blockers = velocity_core::issue_dependencies::parse_blockers(create.blocked_by)
         .map_err(Error::Invalid)?;
-    let thread = create
-        .member
-        .strip_prefix("thread-")
-        .and_then(|member| member.parse::<u32>().ok());
+    let thread = velocity_core::thread_titles::thread_id_from_member(create.member);
     let byline = issue_byline(project.id, thread, Some(create.nick));
     let draft = AgentIssueDraft {
         title: create.title,
@@ -205,11 +202,7 @@ fn post_update(
     client: &IssueClient,
     update: IssueUpdate<'_>,
 ) -> Result<String, Error> {
-    let thread = update
-        .claim
-        .member
-        .strip_prefix("thread-")
-        .and_then(|member| member.parse::<u32>().ok());
+    let thread = velocity_core::thread_titles::thread_id_from_member(&update.claim.member);
     let byline = issue_byline(identifier, thread, Some(&update.claim.nick));
     // The issues this one waits on become GitHub dependencies, never a hold label (#511).
     let blockers = velocity_core::issue_dependencies::parse_blockers(update.blocked_by)

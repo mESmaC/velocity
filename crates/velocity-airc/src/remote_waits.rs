@@ -41,6 +41,7 @@ impl Remote {
             &own.nick,
             &format!("waiting for {holder} · shares {file}"),
         );
+        record.change = Some(change);
         record.dependency = Some(crate::waits::dependency(
             member,
             &own.nick,

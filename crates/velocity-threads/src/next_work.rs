@@ -81,6 +81,7 @@ impl CandidateWork {
         spec_path: &'a Path,
     ) -> BriefInput<'a> {
         let piece = self.piece_key();
+        let owner = owner_label(request);
         match self {
             Self::Task(task) => BriefInput {
                 heading: format!("Task #{}: {}", task.id, task.text),
@@ -89,8 +90,8 @@ impl CandidateWork {
                 evidence_texts: vec![task.text.clone()],
                 dependencies: Vec::new(),
                 owner_note: format!(
-                    "{} ({}) holds task:{} through land and after-land review. Velocity marks the task done on land.",
-                    request.member, request.nick, task.id
+                    "{owner} holds task:{} through land and after-land review. Velocity marks the task done on land.",
+                    task.id
                 ),
                 exclude_change: Some(branch.to_owned()),
                 fix_forward: None,
@@ -113,8 +114,8 @@ impl CandidateWork {
                     evidence_texts: vec![issue.title.clone(), issue.body.clone()],
                     dependencies,
                     owner_note: format!(
-                        "{} ({}) holds issue:{} through land and after-land review. Leave the issue open; call issue_ready_to_close with evidence when naming the change.",
-                        request.member, request.nick, issue.number
+                        "{owner} holds issue:{} through land and after-land review. Leave the issue open; call issue_ready_to_close with evidence when naming the change.",
+                        issue.number
                     ),
                     exclude_change: Some(branch.to_owned()),
                     fix_forward: None,
@@ -133,8 +134,7 @@ impl CandidateWork {
                 evidence_texts: vec![section.clone(), title.clone()],
                 dependencies: Vec::new(),
                 owner_note: format!(
-                    "{} ({}) holds §7 item `{section}` through land and after-land review. Velocity ticks §7 on land.",
-                    request.member, request.nick
+                    "{owner} holds §7 item `{section}` through land and after-land review. Velocity ticks §7 on land."
                 ),
                 exclude_change: Some(branch.to_owned()),
                 fix_forward: None,
@@ -142,6 +142,14 @@ impl CandidateWork {
                 spec_path,
             },
         }
+    }
+}
+
+fn owner_label(request: &NextWorkRequest<'_>) -> String {
+    if request.member == request.nick || request.member.is_empty() {
+        request.nick.to_owned()
+    } else {
+        format!("{} ({})", request.member, request.nick)
     }
 }
 
@@ -434,11 +442,10 @@ fn resolve_branch(project: &ProjectItem, request: &NextWorkRequest<'_>) -> Strin
     {
         return change;
     }
-    if let Some(thread_id) = request
-        .member
-        .strip_prefix("thread-")
-        .and_then(|id| id.parse::<u32>().ok())
-        && let Some(thread) = project.threads.iter().find(|thread| thread.id == thread_id)
+    if let Some(thread) = project
+        .threads
+        .iter()
+        .find(|thread| thread.matches_airc_member(request.member))
     {
         if let Some(change) = &thread.rosen_change {
             return change.clone();

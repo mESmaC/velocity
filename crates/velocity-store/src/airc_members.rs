@@ -6,7 +6,7 @@ use velocity_core::airc_modal::{AircMember, AircMemberState};
 use crate::project_layout::thread_metadata;
 use crate::{ProjectItem, ThreadItem, ThreadState};
 
-/// Duty agents join as `duty-<nick>` and threads as `thread-<id>` (F14 runtime injection).
+/// Duty agents join as `duty-<nick>` and threads under their unified `airc_member` (#532).
 pub fn airc_members(project: &ProjectItem) -> Vec<AircMember> {
     let duty = project.duty_roles.iter().flat_map(|role| {
         role.agents.iter().map(move |agent| {
@@ -25,7 +25,7 @@ pub fn airc_members(project: &ProjectItem) -> Vec<AircMember> {
         })
     });
     let threads = project.threads.iter().filter_map(|thread| {
-        thread_state(thread).map(|state| AircMember::new(&format!("thread-{}", thread.id), state))
+        thread_state(thread).map(|state| AircMember::new(&thread.airc_member(), state))
     });
     duty.chain(threads).collect()
 }

@@ -104,6 +104,7 @@ struct ClaimContext<'a> {
     store: &'a Mutex<StateStore>,
     channel: &'a Channel,
     member: String,
+    nick: String,
     project_id: u32,
     thread_id: u32,
     slot: &'a GoalAgentSlot,
@@ -189,10 +190,13 @@ pub fn choose_and_claim_selecting(
     subsystems: Option<&SubsystemMap>,
     selector: &mut dyn GoalChoice,
 ) -> Result<ClaimPhaseOutcome, GoalSwarmError> {
+    let project = read_project(store, project_id)?;
+    let (member, nick) = thread_identity(&project, thread_id, &slot.nick);
     let context = ClaimContext {
         store,
         channel,
-        member: format!("thread-{thread_id}"),
+        member,
+        nick,
         project_id,
         thread_id,
         slot,
@@ -200,7 +204,6 @@ pub fn choose_and_claim_selecting(
         initial_branch,
         timestamp,
     };
-    let project = read_project(store, project_id)?;
     let inventory = read_goal_work_pool(&project, slot.sources, worktree_path)?;
     let candidates = candidates(
         inventory.pool,
@@ -227,10 +230,13 @@ pub fn choose_and_claim_with<Reader>(
 where
     Reader: Fn(&ProjectItem) -> Result<WorkPool, WorkPoolError>,
 {
+    let project = read_project(store, project_id)?;
+    let (member, nick) = thread_identity(&project, thread_id, &slot.nick);
     let context = ClaimContext {
         store,
         channel,
-        member: format!("thread-{thread_id}"),
+        member,
+        nick,
         project_id,
         thread_id,
         slot,
@@ -238,10 +244,18 @@ where
         initial_branch,
         timestamp,
     };
-    let project = read_project(store, project_id)?;
     let pool = slot.sources.filter(pool_reader(&project)?);
     let candidates = candidates(pool, worktree_path, Default::default(), None);
     context.choose(&project, &candidates, None, None)
+}
+
+fn thread_identity(project: &ProjectItem, thread_id: u32, fallback_nick: &str) -> (String, String) {
+    if let Some(thread) = project.threads.iter().find(|item| item.id == thread_id) {
+        (thread.airc_member(), thread.agent_name())
+    } else {
+        let name = velocity_core::thread_titles::thread_agent_name(fallback_nick, thread_id);
+        (name.clone(), name)
+    }
 }
 
 /// Evaluates `keep_going` after `merged_thread` lands (`SPEC.md` F16 step 5).
@@ -390,12 +404,19 @@ impl ClaimContext<'_> {
         subsystems: Option<&SubsystemMap>,
         mut selector: Option<&mut dyn GoalChoice>,
     ) -> Result<ClaimPhaseOutcome, GoalSwarmError> {
+        let change = project
+            .threads
+            .iter()
+            .find(|thread| thread.id == self.thread_id)
+            .and_then(|thread| thread.rosen_change.as_deref());
         register_and_join(
             self.channel,
             &self.member,
+            &self.nick,
             project,
             self.worktree_path,
             self.initial_branch,
+            change,
         )?;
         let held = HeldWork::new(
             self.channel.goal_claims(&self.member)?,
@@ -474,17 +495,21 @@ impl ClaimContext<'_> {
             return Ok(None);
         };
         let final_branch = self.settle_branch(&project, planned_branch)?;
+        let change = project
+            .threads
+            .iter()
+            .find(|thread| thread.id == self.thread_id)
+            .and_then(|thread| thread.rosen_change.as_deref());
         register_and_join(
             self.channel,
             &self.member,
+            &self.nick,
             &project,
             self.worktree_path,
             &final_branch,
+            change,
         )?;
-        let is_rosen = project
-            .threads
-            .iter()
-            .any(|thread| thread.id == self.thread_id && thread.rosen_change.is_some());
+        let is_rosen = change.is_some();
         let _ = if is_rosen {
             self.channel
                 .claim_work_item(&self.member, &key, &piece.title)?
@@ -655,10 +680,17 @@ impl ClaimContext<'_> {
                 "nothing unclaimed matches the goal and work sources".into(),
             )?;
         }
-        let left_entry = self.channel.post_event_once(Event::agent_left(
-            &self.slot.nick,
-            "nothing unclaimed \u{00b7} worktree removed",
-        )?)?;
+        let mut left_event =
+            Event::agent_left(&self.nick, "nothing unclaimed \u{00b7} worktree removed")?;
+        if let Some(change) = project
+            .threads
+            .iter()
+            .find(|thread| thread.id == self.thread_id)
+            .and_then(|thread| thread.rosen_change.as_deref())
+        {
+            left_event = left_event.for_change(change);
+        }
+        let left_entry = self.channel.post_event_once(left_event)?;
         feed_events.push(record_feed(
             self.store,
             project.id,
@@ -793,21 +825,29 @@ fn held_keys(channel: &Channel) -> Result<BTreeSet<String>, velocity_airc::Error
 fn register_and_join(
     channel: &Channel,
     member: &str,
+    nick: &str,
     project: &ProjectItem,
     worktree_path: &Path,
     branch: &str,
+    change: Option<&str>,
 ) -> Result<(), velocity_airc::Error> {
     let display = worktree_path.display().to_string();
-    channel.register_checkout(
-        member,
-        Checkout::new(
+    let checkout = match change {
+        Some(change) => Checkout::rosen(
             project.repository_path.clone(),
-            display.clone(),
+            display,
+            Some(change.to_owned()),
+            base_branch(project),
+        ),
+        None => Checkout::new(
+            project.repository_path.clone(),
+            display,
             branch.into(),
             base_branch(project),
         ),
-    )?;
-    channel.join(member, &display)?;
+    };
+    channel.register_checkout(member, checkout)?;
+    channel.join(member, nick)?;
     Ok(())
 }
 
