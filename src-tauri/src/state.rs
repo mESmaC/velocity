@@ -8,42 +8,47 @@ pub type ManagedStateStore = StoreLock;
 
 /// Runs `work` against the persisted state store on Tokio's blocking pool so async tasks
 /// never block a runtime worker on the `std::sync::Mutex`, while keeping the caller's own
-/// source location in store-lock diagnostics (#554).
+/// source location in store-lock diagnostics (#554). Not `async`: `#[track_caller]` does
+/// nothing on an async fn, so the caller is read synchronously and the future returned.
 #[track_caller]
-pub(crate) async fn with_store<Value: Send + 'static>(
+pub(crate) fn with_store<Value: Send + 'static>(
     application: &AppHandle,
     work: impl FnOnce(&mut StateStore) -> Value + Send + 'static,
-) -> Result<Value, String> {
+) -> impl Future<Output = Result<Value, String>> {
     let caller = std::panic::Location::caller();
     let application = application.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let managed = application.state::<ManagedStateStore>();
-        let mut store = managed
-            .lock_from(caller)
-            .map_err(|error| format!("Could not read persisted state: {error}"))?;
-        Ok(work(&mut store))
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    async move {
+        tauri::async_runtime::spawn_blocking(move || {
+            let managed = application.state::<ManagedStateStore>();
+            let mut store = managed
+                .lock_from(caller)
+                .map_err(|error| format!("Could not read persisted state: {error}"))?;
+            Ok(work(&mut store))
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
 }
 
 /// Same as [`with_store`] for fallible closures.
 #[track_caller]
-pub(crate) async fn try_with_store<Value: Send + 'static>(
+pub(crate) fn try_with_store<Value: Send + 'static>(
     application: &AppHandle,
     work: impl FnOnce(&mut StateStore) -> Result<Value, String> + Send + 'static,
-) -> Result<Value, String> {
+) -> impl Future<Output = Result<Value, String>> {
     let caller = std::panic::Location::caller();
     let application = application.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let managed = application.state::<ManagedStateStore>();
-        let mut store = managed
-            .lock_from(caller)
-            .map_err(|error| format!("Could not read persisted state: {error}"))?;
-        work(&mut store)
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    async move {
+        tauri::async_runtime::spawn_blocking(move || {
+            let managed = application.state::<ManagedStateStore>();
+            let mut store = managed
+                .lock_from(caller)
+                .map_err(|error| format!("Could not read persisted state: {error}"))?;
+            work(&mut store)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
 }
 
 fn resolve_store_directory(application: &AppHandle) -> anyhow::Result<PathBuf> {

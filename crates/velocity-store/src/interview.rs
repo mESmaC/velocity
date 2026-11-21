@@ -81,7 +81,7 @@ impl StateStore {
             .projects
             .iter()
             .position(|project| project.id == project_identifier)
-            .ok_or_else(|| ProjectError::UnknownProject(project_identifier).into())?;
+            .ok_or(ProjectError::UnknownProject(project_identifier))?;
         let before = self.state.projects[index].clone();
         let value = match change(&mut self.state.projects[index]) {
             Ok(value) => value,
