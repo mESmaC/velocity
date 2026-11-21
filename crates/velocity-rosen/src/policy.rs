@@ -43,6 +43,29 @@ pub struct MergedPaths {
 }
 
 impl MergedPaths {
+    /// Builds the matcher from a parsed `rosen.toml` configuration.
+    pub fn from_config(config: rosen_core::ProjectConfig) -> Self {
+        Self {
+            patterns: config
+                .generated
+                .into_iter()
+                .chain(config.registration_lists)
+                .collect(),
+        }
+    }
+
+    /// Parses a `rosen.toml` document into its generated and registration list matcher.
+    pub fn parse_toml(source: &str) -> Result<Self, RosenError> {
+        let config = rosen_core::ProjectConfig::parse(source)
+            .map_err(|error| RosenError::StatusData(error.to_string()))?;
+        Ok(Self::from_config(config))
+    }
+
+    /// Reads the generated and registration lists in force at the server's current base.
+    pub async fn read(client: &rosen_client::Client) -> Result<Self, rosen_client::Error> {
+        Ok(Self::from_config(client.base_config().await?))
+    }
+
     /// Whether Rosen merges two changes' edits to `path` without a conflict.
     pub fn contains(&self, path: &str) -> bool {
         let path = path.replace('\\', "/");
@@ -54,14 +77,7 @@ impl MergedPaths {
 /// without a base has none.
 pub async fn merged_paths(server: &ProjectServer) -> Result<MergedPaths, RosenError> {
     let client = crate::connection::requests(server.endpoint()).await?;
-    let config = client.base_config().await?;
-    Ok(MergedPaths {
-        patterns: config
-            .generated
-            .into_iter()
-            .chain(config.registration_lists)
-            .collect(),
-    })
+    Ok(MergedPaths::read(&client).await?)
 }
 
 pub(crate) fn object(id: &str) -> Result<ObjectId, RosenError> {

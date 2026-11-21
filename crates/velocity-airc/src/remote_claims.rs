@@ -8,48 +8,58 @@ use crate::{
 use rosen_client::protocol::channel::PieceOutcome;
 use rosen_client::protocol::{ClaimFilter, ClaimKind, ClaimOutcome, ClaimRequest};
 use serde_json::json;
+use velocity_rosen::policy::MergedPaths;
 
 impl Remote {
     pub(crate) fn change_for(&self, member: &str) -> Result<String, Error> {
+        if let Some(change) = self.checkout_change(member)? {
+            return Ok(change);
+        }
+        self.run(async |client| self.resolve_change(client, member).await)
+    }
+
+    fn checkout_change(&self, member: &str) -> Result<Option<String>, Error> {
         let checkouts = self.checkouts()?;
-        if let Some(change) = checkouts
+        Ok(checkouts
             .get(&self.member(member))
             .or_else(|| checkouts.get(member))
+            .cloned())
+    }
+
+    async fn resolve_change(
+        &self,
+        client: &rosen_client::Client,
+        member: &str,
+    ) -> Result<String, Error> {
+        let presence = client.channel_presence().await?;
+        let nick = presence
+            .iter()
+            .find(|known| known.member == self.member(member))
+            .map(|known| known.nick.as_str())
+            .ok_or_else(|| Error::Invalid("Join the channel first".into()))?;
+        let filter = wire(json!({"owner":nick}))?;
+        if let Some(change) = client
+            .change_list(filter)
+            .await?
+            .into_iter()
+            .rev()
+            .find(|change| {
+                matches!(
+                    change.change.state,
+                    rosen_client::ChangeState::Open | rosen_client::ChangeState::Ready
+                )
+            })
         {
-            return Ok(change.clone());
+            return Ok(change.change.id.to_string());
         }
-        self.run(async |client| {
-            let presence = client.channel_presence().await?;
-            let nick = presence
-                .iter()
-                .find(|known| known.member == self.member(member))
-                .map(|known| known.nick.as_str())
-                .ok_or_else(|| Error::Invalid("Join the channel first".into()))?;
-            let filter = wire(json!({"owner":nick}))?;
-            if let Some(change) =
-                client
-                    .change_list(filter)
-                    .await?
-                    .into_iter()
-                    .rev()
-                    .find(|change| {
-                        matches!(
-                            change.change.state,
-                            rosen_client::ChangeState::Open | rosen_client::ChangeState::Ready
-                        )
-                    })
-            {
-                return Ok(change.change.id.to_string());
-            }
-            // Duty agents have no build workspace. Their paths still need an R6
-            // owner; a server change gives them one without any machine-local lock.
-            Ok(client
-                .change_new(wire(json!({"owner":nick}))?)
-                .await?
-                .change
-                .id
-                .to_string())
-        })
+        // Duty agents have no build workspace. Their paths still need an R6
+        // owner; a server change gives them one without any machine-local lock.
+        Ok(client
+            .change_new(wire(json!({"owner":nick}))?)
+            .await?
+            .change
+            .id
+            .to_string())
     }
 
     pub(crate) fn claims(&self) -> Result<Vec<Claim>, Error> {
@@ -126,12 +136,20 @@ impl Remote {
             .filter(|file| crate::claims::repository_relative(file))
             .map(|file| crate::claims::normalize_file(&file))
             .collect();
-        let change = if files.is_empty() {
+        let checkout_change = if files.is_empty() {
             None
         } else {
-            Some(self.change_for(member)?)
+            self.checkout_change(member)?
         };
         self.run(async |client| {
+            let exclusive_files = exclusive_paths_for(client, &files).await;
+            let change = if exclusive_files.is_empty() {
+                None
+            } else if let Some(change) = checkout_change {
+                Some(change)
+            } else {
+                Some(self.resolve_change(client, member).await?)
+            };
             let outcome = client
                 .claim_piece(
                     &self.member(member),
@@ -151,7 +169,7 @@ impl Remote {
             };
             if let Some(change_id) = change.as_deref()
                 && let Some(refused) = self
-                    .claim_files(client, change_id, &held, extended, &files)
+                    .claim_files(client, change_id, &held, extended, &exclusive_files)
                     .await?
             {
                 return Ok(refused);
@@ -159,7 +177,7 @@ impl Remote {
             let mut local = held;
             local.member = self.local_member(&local.member);
             Ok(ClaimResult::Granted {
-                claim: claim(&local, files, change),
+                claim: claim(&local, exclusive_files, change),
             })
         })
     }
@@ -304,5 +322,87 @@ impl Remote {
             }
             Ok(claim)
         })
+    }
+}
+
+async fn exclusive_paths_for(client: &rosen_client::Client, files: &[String]) -> Vec<String> {
+    if files.is_empty() {
+        return Vec::new();
+    }
+    // Rosen refuses exclusive claims on generated artifacts and registration lists
+    // declared in the base's rosen.toml (#545).
+    let merged = MergedPaths::read(client).await.unwrap_or_default();
+    exclusive_claim_paths(files, &merged)
+}
+
+/// Filters out paths Rosen refuses for exclusive claims: generated artifacts and
+/// registration lists from the base's `rosen.toml`, plus legacy AIRC `::registration`
+/// markers (#545).
+fn exclusive_claim_paths(files: &[String], merged: &MergedPaths) -> Vec<String> {
+    files
+        .iter()
+        .filter(|file| !file.ends_with("::registration") && !merged.contains(file))
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::exclusive_claim_paths;
+    use crate::Channel;
+    use velocity_rosen::policy::MergedPaths;
+
+    // Risk (#545): sending generated artifacts or registration lists from rosen.toml in an
+    // exclusive Rosen path claim fails with `exclusive claims cannot cover generated files or
+    // registration lists` and rolls back the piece claim.
+    #[test]
+    fn exclusive_claim_paths_skips_generated_and_registration_lists()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let merged = MergedPaths::parse_toml(include_str!("../../../rosen.toml"))?;
+        let requested = vec![
+            "src-tauri/src/lib.rs".into(),
+            "crates/velocity-core/src/lib.rs".into(),
+            "crates/velocity-rosen/src/lib.rs".into(),
+            "ui/src/lib/ipc.ts".into(),
+            "Cargo.lock".into(),
+            "ui/src/lib/bindings.ts".into(),
+            "Cargo.toml::registration".into(),
+            "crates/velocity-airc/src/remote_claims.rs".into(),
+            "ui/src/lib/Home.svelte".into(),
+        ];
+        let filtered = exclusive_claim_paths(&requested, &merged);
+        assert_eq!(
+            filtered,
+            vec![
+                "crates/velocity-airc/src/remote_claims.rs".to_owned(),
+                "ui/src/lib/Home.svelte".to_owned(),
+            ]
+        );
+        Ok(())
+    }
+
+    // Risk (#545, #531): editing registration lists or ordinary files on a Rosen-backed
+    // channel must never trigger a server round trip or an `exclusive claims cannot cover` error.
+    #[test]
+    fn observe_file_on_rosen_channel_skips_server_calls() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "velocity-observe-rosen-{}-{stamp}",
+            std::process::id()
+        ));
+        let channel = Channel::at_endpoint(&directory, "tcp://127.0.0.1:1");
+        for path in [
+            "src-tauri/src/lib.rs",
+            "crates/velocity-core/src/lib.rs",
+            "crates/velocity-rosen/src/lib.rs",
+            "ui/src/lib/ipc.ts",
+            "crates/velocity-airc/src/remote_claims.rs",
+        ] {
+            channel.observe_file("issue-545", path)?;
+        }
+        Ok(())
     }
 }

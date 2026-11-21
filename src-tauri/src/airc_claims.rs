@@ -201,6 +201,10 @@ pub fn observe(
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     let channel = Channel::open(&data, &key.0.to_string()).map_err(|error| error.to_string())?;
+    // On Rosen projects, Rosen owns path claims; skip store lookup and path normalization (#531, #545).
+    if channel.server_backed() {
+        return Ok(());
+    }
     let member = thread_member(application, key);
     let worktree = worktree.display().to_string();
     // Files outside the worktree (scratch files, temp folders) are not repository files:
