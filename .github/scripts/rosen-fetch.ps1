@@ -44,12 +44,27 @@ if (-not $Release) {
     exit 0
 }
 
-$base = "$($Url -replace '\.git$', '')/releases/download/$Release"
+$cleanUrl = ($Url -replace '\.git$', '').TrimEnd('/')
+$bases = @()
+if ($cleanUrl -match '^https://(?:github\.com|api\.collapse\.sh|collapse\.sh|git\.collapse\.sh)/([^/]+/[^/]+)$') {
+    $repo = $Matches[1]
+    $bases += "https://api.collapse.sh/$repo/releases/download/$Release"
+    $bases += "https://github.com/$repo/releases/download/$Release"
+} else {
+    $bases += "$cleanUrl/releases/download/$Release"
+}
 $download = New-Item -ItemType Directory -Force (Join-Path $env:RUNNER_TEMP 'rosen-download')
 
 $commitFile = Join-Path $download 'rosen-client-commit.txt'
-if (-not (Get-Asset $base 'rosen-client-commit.txt' $commitFile)) {
-    Write-Warning "Rosen $Release has no binaries attached; building $Rev from source."
+$base = $null
+foreach ($candidate in $bases) {
+    if (Get-Asset $candidate 'rosen-client-commit.txt' $commitFile) {
+        $base = $candidate
+        break
+    }
+}
+if (-not $base) {
+    Write-Warning "Rosen $Release has no binaries attached on Collapse or GitHub; building $Rev from source."
     Write-Found $false
     exit 0
 }

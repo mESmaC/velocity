@@ -1,9 +1,18 @@
-import { commands } from '../bindings';
+import { commands, type ReleaseCredentialsStatus } from '../bindings';
 
-// Cut release (#431). Rust reads Rosen's last green commit, waits until GitHub has it
-// and starts the release workflow, which creates the tag on the commit itself. A null
-// commit releases the last green commit; any other must be a land it covers.
+export type { ReleaseCredentialsStatus };
+
+// Cut release (#431, #593). For projects mirrored to Collapse, Rust builds and signs
+// locally with Windows Credential Manager's updater key and publishes to Collapse
+// (including rolling updater/latest.json). GitHub-only projects dispatch release.yml.
 export const releaseCommands = {
   cut: (project: number, version: string, commit: string | null = null) =>
     commands.cutRelease(project, version, commit),
+  credentialsStatus: () => commands.getReleaseCredentialsStatus(),
+  setUpdaterSigningKey: (privateKey: string, password: string | null = null) =>
+    commands.setUpdaterSigningKey(privateKey, password),
+  clearUpdaterSigningKey: () => commands.clearUpdaterSigningKey(),
+  setCollapseReleaseToken: (token: string) =>
+    commands.setCollapseReleaseToken(token),
+  clearCollapseReleaseToken: () => commands.clearCollapseReleaseToken(),
 };

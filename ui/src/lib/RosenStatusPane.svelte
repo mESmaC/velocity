@@ -235,7 +235,7 @@
   async function cutRelease() {
     if (project === null || releasing) return;
     releasing = true;
-    releaseNote = 'Checking green integration status on GitHub…';
+    releaseNote = 'Preparing release…';
     try {
       const cut = await releaseCommands.cut(
         project,
@@ -244,7 +244,7 @@
       );
       releaseNote =
         cut.note ||
-        `Release workflow started for ${cut.tag} at ${cut.commit.slice(0, 10)}`;
+        `Release started for ${cut.tag} at ${cut.commit.slice(0, 10)}`;
       releaseVersion = '';
       releaseCommit = '';
     } catch (reason) {

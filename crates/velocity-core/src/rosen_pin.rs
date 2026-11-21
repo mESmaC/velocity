@@ -29,8 +29,8 @@ pub struct RosenPin {
 
 impl RosenPin {
     /// Reads the pin as `.github/scripts/rosen-pin.ps1` does: the `rosen-client` dependency's
-    /// `git` and `rev`, and `release` in `[workspace.metadata.rosen]`. `None` when the
-    /// manifest pins no Rosen commit on GitHub.
+    /// `git` and `rev`, and `release` in `[workspace.metadata.rosen]`. Accepts GitHub and
+    /// Collapse repository URLs. `None` when the manifest pins no Rosen commit.
     pub fn parse(manifest: &str) -> Option<Self> {
         let dependency = manifest
             .lines()
@@ -38,10 +38,16 @@ impl RosenPin {
             .find(|line| key_of(line) == Some("rosen-client"))?;
         let url = string_value(dependency, "git")?;
         let revision = string_value(dependency, "rev")?;
-        let repository = url
-            .strip_prefix("https://github.com/")?
-            .trim_end_matches('/')
-            .trim_end_matches(".git");
+        let repository = [
+            "https://github.com/",
+            "https://api.collapse.sh/",
+            "https://collapse.sh/",
+            "https://git.collapse.sh/",
+        ]
+        .iter()
+        .find_map(|prefix| url.strip_prefix(prefix))?
+        .trim_end_matches('/')
+        .trim_end_matches(".git");
         let named = repository
             .split('/')
             .filter(|part| !part.is_empty())
@@ -622,8 +628,8 @@ impl PinBump {
                 "**Change.**\n\
                  - In the workspace `Cargo.toml`, set `rev` of every Rosen dependency to `{target}`.\n\
                  - Set `[workspace.metadata.rosen]` `release = \"{release}\"`. Once that lands, \
-                 Velocity publishes the Rosen release `{release}` at the pinned commit, and Rosen's \
-                 release workflow attaches the prebuilt binaries Velocity's release downloads.\n\
+                 Velocity builds Rosen at the pinned commit from source and publishes `{release}` \
+                 with its binaries to Collapse.\n\
                  - Regenerate `Cargo.lock` and adapt Velocity to Rosen's API changes."
             ),
             format!("**Rosen issues landed since the pin.**\n{}", self.landed_list()),

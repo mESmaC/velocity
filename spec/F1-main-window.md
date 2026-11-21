@@ -78,7 +78,7 @@ There are two views of the same work, switched from the title bar or with `B`:
 - a footer with settings, usage, updates, a live workspace count ("8 on D:", click → Settings · Workspaces) and a subscription-limit meter: one bar per signed-in provider, filled to the share of its limit used, coloured by provider.
   The usage button and the meter both open the usage modal (F15 Usage modal).
   There is no dollar spend: every provider runs on a subscription.
-  - **Updates:** Velocity checks its GitHub Releases for a newer version 30 seconds after it starts, every 6 hours, and when you press Check for updates.
+  - **Updates:** Velocity checks its Collapse Releases first (`https://api.collapse.sh/mESmaC/velocity/releases/download/updater/latest.json`) and falls back to GitHub Releases (`https://github.com/mESmaC/velocity/releases/download/updater/latest.json`) 30 seconds after it starts, every 6 hours, and when you press Check for updates (#593).
     While one is available, the Updates button turns accent-coloured.
     It opens the Updates modal, a centred dialog like the usage modal (Esc or a click outside closes it), which shows the new version, its release notes, how this copy was installed (setup, MSI or portable), how many agents are mid-turn, and **Restart to update**.
     Restarting stops running turns; workspaces and transcripts are kept, and each stopped turn continues by itself when Velocity starts again (§3.2 Resume after a restart).
@@ -87,11 +87,12 @@ There are two views of the same work, switched from the title bar or with `B`:
     A portable copy replaces its own executable and starts again.
     Installing an update restarts Velocity only when you press the button; fatal process exits recover automatically (§3.2).
     There is one channel: the newest release, betas included.
-    A `v*` tag publishes a release (`.github/workflows/release.yml`); development builds check only when asked and never install.
-    A local build (`scripts/release-local.ps1`) never signs downloads or moves `updater/latest.json`, uploads only as a draft labelled as an unsigned local build (`--draft --prerelease --latest=false`), and clearly states that the updater manifest was not moved (#521).
+    Development builds check only when asked and never install.
+    Cut release on a Collapse-mirrored project builds on this machine via `scripts/release-local.ps1 -Sign`, signs every download with the updater key held in Windows Credential Manager (`velocity:updater-signing-key`), publishes the release, signed assets and standalone Linux `velocity-graph` archive to Collapse, and rewrites `latest.json` on Collapse's rolling `updater` release (#593).
+    An unsigned local build (`scripts/release-local.ps1` without `-Sign`) never signs downloads or moves `updater/latest.json`, and clearly states that the updater manifest was not moved (#521).
     Any published `v*` release missing signed updater assets (`latest.json` and `.sig`) is marked `--latest=false` and labelled as not offered to installed copies, and `release.yml` reports when `updater/latest.json` was not moved (#521).
-    Each update check also compares `updater/latest.json` against the newest published `v*` release and reports in the Updates modal and sidebar trigger when the manifest is behind (#521).
-    A mirror forwarder delivers only the default branch, so Cut release in the Rosen status pane (F6) dispatches that workflow with the tag and landed commit, and the workflow creates the tag when it publishes (#431).
+    Each update check also compares `updater/latest.json` against the newest published `v*` release (checking Collapse first, then GitHub) and reports in the Updates modal and sidebar trigger when the manifest is behind (#521, #593).
+    For GitHub-only projects without a Collapse mirror, Cut release in the Rosen status pane (F6) dispatches `release.yml` with the tag and landed commit, and the workflow creates the tag when it publishes (#431).
     The release build runs beside the release gate, and publishing waits for both (#498).
     A `-beta` release whose exact commit Rosen reports green, with no open release-blocker issue, skips the gate's stress suite and proofs; numbered releases always run the full gate (#434).
     The default branch's build keeps the pinned Rosen built in a cache every release restores, so the release build does not wait for a Rosen source build (#434).

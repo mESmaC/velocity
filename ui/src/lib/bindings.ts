@@ -149,11 +149,38 @@ export const commands = {
 	setProjectGithubRepository: (projectIdentifier: number, repository: string) => __TAURI_INVOKE<ProjectGitHubRepository_Serialize>("set_project_github_repository", { projectIdentifier, repository }),
 	switchProject: (identifier: number) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("switch_project", { identifier }),
 	/**
-	 *  `cut_release` (§3.1): without `commit`, releases the newest commit with a green
-	 *  `velocity/integration` status; with an unverified commit, starts an integration build
-	 *  immediately and queues the release so the release gate is never left refused (#431, #521).
+	 *  `clear_collapse_release_token` (§3.1): removes the Collapse release token from Windows
+	 *  Credential Manager (#593).
+	 */
+	clearCollapseReleaseToken: () => __TAURI_INVOKE<ReleaseCredentialsStatus>("clear_collapse_release_token"),
+	/**
+	 *  `clear_updater_signing_key` (§3.1): removes the Tauri updater signing key from Windows
+	 *  Credential Manager (#593).
+	 */
+	clearUpdaterSigningKey: () => __TAURI_INVOKE<ReleaseCredentialsStatus>("clear_updater_signing_key"),
+	/**
+	 *  `cut_release` (§3.1): without `commit`, releases the newest green landed commit; with
+	 *  an unverified commit, starts an integration build and queues the release. Projects
+	 *  mirrored to Collapse build locally, sign with Windows Credential Manager's updater key
+	 *  and publish to Collapse (including the rolling `updater/latest.json`) (#593); GitHub-only
+	 *  projects dispatch `release.yml` (#431, #521).
 	 */
 	cutRelease: (projectIdentifier: number, version: string, commit: string | null) => __TAURI_INVOKE<ReleaseCut>("cut_release", { projectIdentifier, version, commit }),
+	/**
+	 *  `get_release_credentials_status` (§3.1): reports whether the Tauri updater signing key
+	 *  and optional Collapse release token are saved in Windows Credential Manager (#593).
+	 */
+	getReleaseCredentialsStatus: () => __TAURI_INVOKE<ReleaseCredentialsStatus>("get_release_credentials_status"),
+	/**
+	 *  `set_collapse_release_token` (§3.1): saves or replaces a Collapse personal access token
+	 *  with `releases` scope in Windows Credential Manager (`velocity:collapse.sh:releases`) (#593).
+	 */
+	setCollapseReleaseToken: (token: string) => __TAURI_INVOKE<ReleaseCredentialsStatus>("set_collapse_release_token", { token }),
+	/**
+	 *  `set_updater_signing_key` (§3.1): saves or replaces the Tauri updater signing key and
+	 *  optional password in Windows Credential Manager (`velocity:updater-signing-key`) (#593).
+	 */
+	setUpdaterSigningKey: (privateKey: string, password: string | null) => __TAURI_INVOKE<ReleaseCredentialsStatus>("set_updater_signing_key", { privateKey, password }),
 	getProofsSettings: (projectIdentifier: number) => __TAURI_INVOKE<ProofsSettingsView_Serialize>("get_proofs_settings", { projectIdentifier }),
 	/**
 	 *  Sets `provider`'s ACP agent command from its card: the program and its arguments as one
@@ -4656,7 +4683,17 @@ export type RailSlice_Serialize = {
 	rosen_work: RosenWorkView_Serialize | null,
 };
 
-/**  The release the workflow was started (or queued) for. */
+/**
+ *  Presence of local release credentials in Windows Credential Manager (#593).
+ *  Never exposes any secret bytes or tokens to the window.
+ */
+export type ReleaseCredentialsStatus = {
+	updater_key_stored: boolean,
+	collapse_release_token_stored: boolean,
+	collapse_connected: boolean,
+};
+
+/**  The release the build/publish or workflow was started (or queued) for. */
 export type ReleaseCut = {
 	tag: string,
 	commit: string,
@@ -4664,7 +4701,7 @@ export type ReleaseCut = {
 	green: string,
 	/**
 	 *  True when Velocity started an integration build and queued the release instead of
-	 *  dispatching `release.yml` immediately (#521).
+	 *  building or dispatching immediately (#521).
 	 */
 	waiting_for_integration: boolean,
 	/**  Human-readable status for the Rosen status pane (#521). */

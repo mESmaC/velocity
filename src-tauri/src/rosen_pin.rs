@@ -5,16 +5,27 @@
 //! other. It also publishes the Rosen release a landed bump names. No thread, agent session
 //! or window is involved; `velocity-core` decides and `velocity-github` talks to GitHub.
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
-use velocity_core::rosen_pin::{
-    PostLandSnapshot, PostLandState, RosenCommit, RosenPin, merge_post_land_states,
+use velocity_collapse::releases::{
+    self as collapse_releases, CollapseRelease, CreateReleaseRequest, ROSEN_REPOSITORY,
 };
-use velocity_github::rosen_pin::{IssueLook, PinIssue, PinLook, ReleaseLook, RosenPinWatch};
+use velocity_core::rosen_pin::{
+    PostLandSnapshot, PostLandState, RosenCommit, RosenPin, merge_post_land_states, short_commit,
+};
+use velocity_github::rosen_pin::{IssueLook, PinIssue, ReleaseLook, RosenPinWatch};
 use velocity_github::velocity_reports::VELOCITY_REPOSITORY;
 
 use crate::state::ManagedStateStore;
+
+const ROSEN_REQUIRED_ASSETS: [&str; 4] = [
+    "rosen-x86_64-pc-windows-msvc.exe",
+    "rosen-server-x86_64-pc-windows-msvc.exe",
+    "rosen-client-commit.txt",
+    "SHA256SUMS.txt",
+];
 
 /// How many newest commits ahead of the pin are checked for green status.
 const GREEN_SCAN: usize = 8;
@@ -72,9 +83,14 @@ fn has_velocity_project(application: &AppHandle) -> bool {
     })
 }
 
+struct ObservedLook {
+    issue: Result<IssueLook, velocity_github::GitHubCommandError>,
+    release: Result<ReleaseLook, String>,
+}
+
 fn look(application: &AppHandle, watch: &mut Watch) {
     let (done, failures) = match observe(application, watch) {
-        Ok(Some(PinLook { issue, release })) => {
+        Ok(Some(ObservedLook { issue, release })) => {
             let mut done = Vec::new();
             let mut failures = Vec::new();
             match issue {
@@ -88,7 +104,7 @@ fn look(application: &AppHandle, watch: &mut Watch) {
                 }
                 Err(error) => {
                     failures.push(format!(
-                        "The pinned Rosen release was not published: {error}"
+                        "The pinned Rosen release was not published to Collapse: {error}"
                     ));
                 }
             }
@@ -111,10 +127,12 @@ fn look(application: &AppHandle, watch: &mut Watch) {
 }
 
 /// One look, or `None` when the signed-in account does not maintain Velocity's repository.
+/// Builds and publishes the pinned Rosen release from source to Collapse without touching
+/// GitHub's release workflow (#561, #593).
 fn observe(
     application: &AppHandle,
     watch: &mut Watch,
-) -> Result<Option<PinLook>, velocity_github::GitHubCommandError> {
+) -> Result<Option<ObservedLook>, velocity_github::GitHubCommandError> {
     let client = RosenPinWatch::new(VELOCITY_REPOSITORY)?;
     if !watch.maintainer {
         watch.maintainer = client.can_maintain()?;
@@ -122,11 +140,178 @@ fn observe(
     if !watch.maintainer {
         return Ok(None);
     }
-    client
-        .look_with_post_land(watch.known_release.as_deref(), |pin, ahead| {
-            read_post_land(application, pin, ahead)
+    let (pin, issue) =
+        client.look_issue_with_post_land(|pin, ahead| read_post_land(application, pin, ahead))?;
+    let release = publish_collapse_rosen_release(application, &pin, watch.known_release.as_deref());
+    Ok(Some(ObservedLook { issue, release }))
+}
+
+/// Builds Rosen binaries from source at `pin.revision` (#561) and publishes them to the
+/// Collapse Rosen repository when `pin.release_to_publish()` is missing or incomplete (#593).
+fn publish_collapse_rosen_release(
+    application: &AppHandle,
+    pin: &RosenPin,
+    known: Option<&str>,
+) -> Result<ReleaseLook, String> {
+    let Some(tag) = pin.release_to_publish() else {
+        return Ok(ReleaseLook::default());
+    };
+    if known == Some(tag) {
+        return Ok(ReleaseLook {
+            release: Some(tag.to_owned()),
+            published: false,
+        });
+    }
+    let app_data = application
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve app data directory: {error}"))?;
+    let (collapse_repo, local_repo_path) = resolve_rosen_collapse_target(application, pin);
+    let (owner, name) = velocity_core::collapse::parse_repository(&collapse_repo)
+        .ok_or_else(|| format!("Invalid Collapse Rosen repository {collapse_repo}"))?;
+    let token = velocity_collapse::resolve_release_token().map_err(|error| error.to_string())?;
+    let existing = tauri::async_runtime::block_on(collapse_releases::get_release_by_tag(
+        token.as_deref(),
+        &owner,
+        &name,
+        tag,
+    ))
+    .map_err(|error| error.to_string())?;
+    if existing.as_ref().is_some_and(has_all_rosen_assets) {
+        return Ok(ReleaseLook {
+            release: Some(tag.to_owned()),
+            published: false,
+        });
+    }
+    let token = token.ok_or(
+        "No Collapse release token is available; save one in Settings → Collapse → Release credentials",
+    )?;
+    let git_url = format!("{}/{}/{}.git", collapse_releases::API_HOST, owner, name);
+    let source_url = format!("https://github.com/{}.git", pin.repository);
+    let out_dir = app_data.join("rosen-pin-release").join(tag);
+    if out_dir.exists() {
+        let _ = std::fs::remove_dir_all(&out_dir);
+    }
+    let built =
+        tauri::async_runtime::block_on(velocity_threads::local_release::build_rosen_pin_binaries(
+            &app_data,
+            &source_url,
+            &pin.revision,
+            &out_dir,
+        ))?;
+    let publish = tauri::async_runtime::block_on(upload_rosen_pin_release(
+        &token,
+        &owner,
+        &name,
+        &git_url,
+        local_repo_path.as_deref(),
+        pin,
+        tag,
+        &built,
+    ));
+    let _ = std::fs::remove_dir_all(&out_dir);
+    publish?;
+    Ok(ReleaseLook {
+        release: Some(tag.to_owned()),
+        published: true,
+    })
+}
+
+fn has_all_rosen_assets(release: &CollapseRelease) -> bool {
+    ROSEN_REQUIRED_ASSETS
+        .iter()
+        .all(|expected| release.assets.iter().any(|asset| asset.name == *expected))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn upload_rosen_pin_release(
+    token: &str,
+    owner: &str,
+    name: &str,
+    mirror_url: &str,
+    local_repo: Option<&std::path::Path>,
+    pin: &RosenPin,
+    tag: &str,
+    built: &velocity_threads::local_release::BuiltRosenPinAssets,
+) -> Result<(), String> {
+    let mirror = mirror_url.to_owned();
+    let rev = pin.revision.clone();
+    let tag_copy = tag.to_owned();
+    let local = local_repo.map(PathBuf::from);
+    tokio::task::spawn_blocking(move || {
+        velocity_collapse::ensure_remote_tag(&mirror, &rev, &tag_copy, false, local.as_deref())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    let short = short_commit(&pin.revision);
+    let title = format!("Rosen at {short}, pinned by Velocity");
+    let notes = format!(
+        "Prebuilt Windows Rosen binaries built from source at `{}` for Velocity ({}).",
+        pin.revision, VELOCITY_REPOSITORY
+    );
+    let release = collapse_releases::ensure_release(
+        token,
+        owner,
+        name,
+        &CreateReleaseRequest {
+            tag,
+            name: &title,
+            notes: &notes,
+            prerelease: true,
+            draft: false,
+            rolling: false,
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let files: [(&std::path::Path, &str); 4] = [
+        (&built.rosen_exe, "application/octet-stream"),
+        (&built.rosen_server_exe, "application/octet-stream"),
+        (&built.commit_file, "text/plain; charset=utf-8"),
+        (&built.sha256sums, "text/plain; charset=utf-8"),
+    ];
+    for (path, mime) in files {
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| format!("Invalid Rosen asset path {}", path.display()))?;
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+        collapse_releases::upload_or_replace_asset(
+            token, owner, name, &release, file_name, mime, bytes,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn resolve_rosen_collapse_target(
+    application: &AppHandle,
+    pin: &RosenPin,
+) -> (String, Option<PathBuf>) {
+    if let Some(store) = application.try_state::<ManagedStateStore>()
+        && let Ok(store) = store.lock()
+        && let Some(project) = store.state().projects.iter().find(|project| {
+            project.rosen_in_use()
+                && (project
+                    .github_remote
+                    .as_deref()
+                    .is_some_and(|remote| remote.eq_ignore_ascii_case(&pin.repository))
+                    || project
+                        .collapse_repository
+                        .as_deref()
+                        .is_some_and(|remote| remote.eq_ignore_ascii_case(&pin.repository)))
         })
-        .map(Some)
+    {
+        let repo = project
+            .collapse_repository
+            .clone()
+            .unwrap_or_else(|| ROSEN_REPOSITORY.to_owned());
+        return (repo, Some(PathBuf::from(&project.repository_path)));
+    }
+    (ROSEN_REPOSITORY.to_owned(), None)
 }
 
 /// Reads Rosen's post-land verdicts from this machine's local Rosen server for `pin.repository`
@@ -288,6 +473,6 @@ fn issue_notes(look: &IssueLook) -> Vec<String> {
 fn release_note(look: &ReleaseLook) -> Option<String> {
     let release = look.release.as_deref().filter(|_| look.published)?;
     Some(format!(
-        "Published Rosen release {release} for the pinned commit."
+        "Built and published Rosen release {release} to Collapse for the pinned commit."
     ))
 }

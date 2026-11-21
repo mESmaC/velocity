@@ -13,14 +13,19 @@ mod git_credential;
 pub mod health;
 pub mod post_land;
 pub mod provision;
+pub mod releases;
 mod url_text;
 
 pub use connect::connect;
-pub use credential::{CollapseCredentials, forget_credentials, load_credentials};
+pub use credential::{
+    CollapseCredentials, UpdaterSigningKey, forget_credentials, forget_release_token,
+    forget_updater_signing_key, load_credentials, load_release_token, load_updater_signing_key,
+    resolve_release_token, save_release_token, save_updater_signing_key,
+};
 pub use downstream::{DownstreamSetup, set_downstream};
 pub use git_credential::{
     MIN_PROACTIVE_AUTH_GIT_VERSION, PROACTIVE_AUTH_KEY, ProactiveAuthStatus, check_proactive_auth,
-    checkout_repository, clone_repository, ensure_proactive_auth,
+    checkout_repository, clone_repository, ensure_proactive_auth, ensure_remote_tag,
 };
 pub use health::{RepositoryActivity, repository_activity, repository_downstream};
 pub use post_land::{RepositoryPostLand, repository_post_land};

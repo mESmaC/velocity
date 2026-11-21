@@ -31,11 +31,20 @@ pub const SCHEMA_VERSION_PATH: &str = "crates/velocity-graph/src/command_line.rs
 /// The last line of a pin-bump issue's body names the version it asks for.
 const TARGET_MARKER: &str = "<!-- velocity-graph-pin-bump:";
 
+/// Which release host Collapse's `ops/Dockerfile` currently downloads `velocity-graph` from (#593).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinReleaseHost {
+    Collapse,
+    GitHub,
+}
+
 /// The `velocity-graph` release Collapse's `ops/Dockerfile` pins.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CollapseGraphPin {
-    /// Velocity's GitHub repository from the download URL, when present (`owner/name`).
+    /// Velocity's repository from the download URL, when present (`owner/name`).
     pub repository: Option<String>,
+    /// Whether `ops/Dockerfile` downloads the archive from Collapse or GitHub (#593).
+    pub host: PinReleaseHost,
     /// The pinned release version without a leading `v`, e.g. `0.1.0-beta.17`.
     pub version: String,
     /// The release tag, e.g. `v0.1.0-beta.17`.
@@ -51,7 +60,7 @@ impl CollapseGraphPin {
     pub fn parse(dockerfile: &str) -> Option<Self> {
         let instructions = parse_instructions(dockerfile);
         let mut variables = BTreeMap::new();
-        let mut matched: Option<(Option<String>, String, Option<String>)> = None;
+        let mut matched: Option<(PinReleaseHost, Option<String>, String, Option<String>)> = None;
 
         for instruction in &instructions {
             let Some((keyword, rest)) = split_instruction(instruction) else {
@@ -70,19 +79,21 @@ impl CollapseGraphPin {
                     collect_shell_assignments(&mut local, rest);
                 }
                 let expanded = expand_variables(rest, &local);
-                if let Some((repository, version)) = extract_archive_pin(&expanded) {
+                if let Some((host, repository, version)) = extract_archive_pin(&expanded) {
                     let sha256 =
                         extract_sha256_token(&expanded).or_else(|| named_sha256_variable(&local));
-                    matched = Some((repository, version, sha256));
+                    matched = Some((host, repository, version, sha256));
                 }
             }
         }
 
-        let (repository, version, sha256) = matched.or_else(|| pin_from_variables(&variables))?;
+        let (host, repository, version, sha256) =
+            matched.or_else(|| pin_from_variables(&variables))?;
         let tag = release_tag(&version)?;
         let normalized = version_from_release_tag(&tag)?;
         Some(Self {
             repository,
+            host,
             version: normalized,
             tag,
             sha256: sha256.or_else(|| named_sha256_variable(&variables)),
@@ -215,6 +226,25 @@ pub fn should_bump(
     is_newer_version(release_version, pin_version) && pin != release
 }
 
+/// Whether `ops/Dockerfile` should be updated to `release_version` on `release_host`:
+/// either parser/schema changed on a newer release, or `ops/Dockerfile` still points to
+/// GitHub while the release is published on Collapse at the same or newer version (#593).
+pub fn should_bump_or_migrate(
+    pin: &CollapseGraphPin,
+    pin_indexer: IndexerVersion,
+    release_version: &str,
+    release_indexer: IndexerVersion,
+    release_host: PinReleaseHost,
+) -> bool {
+    if should_bump(&pin.version, pin_indexer, release_version, release_indexer) {
+        return true;
+    }
+    pin.host == PinReleaseHost::GitHub
+        && release_host == PinReleaseHost::Collapse
+        && compare_versions(release_version, &pin.version)
+            .is_some_and(|ordering| ordering != Ordering::Less)
+}
+
 /// An open issue read from Collapse's GitHub repository.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenIssue {
@@ -276,16 +306,32 @@ impl GraphPinBump {
             self.pin_indexer.schema,
             self.target_indexer.schema,
         );
-        [
+        let release_link = if crate::collapse::is_collapse_download_url(&self.archive_url) {
+            crate::collapse::release_page(velocity, tag)
+                .unwrap_or_else(|| format!("https://collapse.sh/{velocity}/releases/{tag}"))
+        } else {
+            format!("https://github.com/{velocity}/releases/tag/{tag}")
+        };
+        let reason_line = if self.pin_indexer != self.target_indexer {
             format!(
                 "Velocity release `{tag}` publishes a `velocity-graph` indexer with a different \
-                 parser or schema version than Collapse's pin (`{pinned}`).\n\
+                 parser or schema version than Collapse's pin (`{pinned}`)."
+            )
+        } else {
+            format!(
+                "Velocity release `{tag}` publishes the `velocity-graph` indexer archive on \
+                 Collapse, replacing the GitHub download URL pinned at `{pinned}`."
+            )
+        };
+        [
+            format!(
+                "{reason_line}\n\
                  Velocity keeps this issue current: a newer release rewrites it."
             ),
             format!("**What changed.**\n- {parser_line}\n- {schema_line}"),
             format!(
                 "**New pin.**\n\
-                 - Version: `{version}` (release [`{tag}`](https://github.com/{velocity}/releases/tag/{tag}))\n\
+                 - Version: `{version}` (release [`{tag}`]({release_link}))\n\
                  - Archive URL: `{}`\n\
                  - SHA-256: `{}`",
                 self.archive_url, self.sha256
@@ -698,8 +744,8 @@ fn unquote(text: &str) -> &str {
     }
 }
 
-fn extract_archive_pin(text: &str) -> Option<(Option<String>, String)> {
-    let repository = extract_github_release_repository(text);
+fn extract_archive_pin(text: &str) -> Option<(PinReleaseHost, Option<String>, String)> {
+    let (host, repository) = extract_release_host_and_repository(text);
     let mut search = 0;
     while let Some(found) = text[search..].find("velocity-graph-") {
         let start = search + found + "velocity-graph-".len();
@@ -712,7 +758,7 @@ fn extract_archive_pin(text: &str) -> Option<(Option<String>, String)> {
             .unwrap_or(rest.len());
         let token = &rest[..token_end];
         if let Some(version) = version_from_archive_suffix(token) {
-            return Some((repository, version));
+            return Some((host, repository, version));
         }
     }
     None
@@ -731,8 +777,20 @@ fn version_from_archive_suffix(token: &str) -> Option<String> {
     Some(trimmed.to_owned())
 }
 
-fn extract_github_release_repository(text: &str) -> Option<String> {
-    let prefix = "https://github.com/";
+fn extract_release_host_and_repository(text: &str) -> (PinReleaseHost, Option<String>) {
+    for (prefix, host) in [
+        ("https://api.collapse.sh/", PinReleaseHost::Collapse),
+        ("https://collapse.sh/", PinReleaseHost::Collapse),
+        ("https://github.com/", PinReleaseHost::GitHub),
+    ] {
+        if let Some(repo) = extract_repository_for_prefix(text, prefix) {
+            return (host, Some(repo));
+        }
+    }
+    (PinReleaseHost::GitHub, None)
+}
+
+fn extract_repository_for_prefix(text: &str, prefix: &str) -> Option<String> {
     let mut search = 0;
     while let Some(found) = text[search..].find(prefix) {
         let start = search + found + prefix.len();
@@ -756,10 +814,10 @@ fn extract_sha256_token(text: &str) -> Option<String> {
 
 fn pin_from_variables(
     variables: &BTreeMap<String, String>,
-) -> Option<(Option<String>, String, Option<String>)> {
+) -> Option<(PinReleaseHost, Option<String>, String, Option<String>)> {
     for value in variables.values() {
-        if let Some((repository, version)) = extract_archive_pin(value) {
-            return Some((repository, version, named_sha256_variable(variables)));
+        if let Some((host, repository, version)) = extract_archive_pin(value) {
+            return Some((host, repository, version, named_sha256_variable(variables)));
         }
     }
     for (name, value) in variables {
@@ -770,7 +828,12 @@ fn pin_from_variables(
         if names_indexer && names_version {
             let trimmed = value.trim().strip_prefix('v').unwrap_or(value.trim());
             if parse_release_version(trimmed).is_some() {
-                return Some((None, trimmed.to_owned(), named_sha256_variable(variables)));
+                return Some((
+                    PinReleaseHost::GitHub,
+                    None,
+                    trimmed.to_owned(),
+                    named_sha256_variable(variables),
+                ));
             }
         }
     }
@@ -822,9 +885,35 @@ RUN curl -fsSL \
             pin,
             Some(CollapseGraphPin {
                 repository: Some("mESmaC/velocity".into()),
+                host: PinReleaseHost::GitHub,
                 version: "0.1.0-beta.17".into(),
                 tag: "v0.1.0-beta.17".into(),
                 sha256: Some(SAMPLE_SHA_OLD.into()),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_collapse_release_url_in_dockerfile() {
+        let dockerfile = format!(
+            r#"
+ARG VELOCITY_GRAPH_VERSION=0.1.0-beta.21
+ARG VELOCITY_GRAPH_SHA256={SAMPLE_SHA_NEW}
+RUN curl -fsSL \
+      "https://api.collapse.sh/mESmaC/velocity/releases/download/v${{VELOCITY_GRAPH_VERSION}}/velocity-graph-${{VELOCITY_GRAPH_VERSION}}-x86_64-unknown-linux-gnu.tar.gz" \
+      -o /tmp/velocity-graph.tar.gz \
+ && echo "${{VELOCITY_GRAPH_SHA256}}  /tmp/velocity-graph.tar.gz" | sha256sum -c -
+"#
+        );
+        let pin = CollapseGraphPin::parse(&dockerfile);
+        assert_eq!(
+            pin,
+            Some(CollapseGraphPin {
+                repository: Some("mESmaC/velocity".into()),
+                host: PinReleaseHost::Collapse,
+                version: "0.1.0-beta.21".into(),
+                tag: "v0.1.0-beta.21".into(),
+                sha256: Some(SAMPLE_SHA_NEW.into()),
             })
         );
     }
@@ -846,6 +935,7 @@ RUN set -euo pipefail \
             pin,
             Some(CollapseGraphPin {
                 repository: Some("mESmaC/velocity".into()),
+                host: PinReleaseHost::GitHub,
                 version: "0.1.0-beta.17".into(),
                 tag: "v0.1.0-beta.17".into(),
                 sha256: Some(SAMPLE_SHA_OLD.into()),
@@ -965,6 +1055,7 @@ RUN set -euo pipefail \
             velocity_repository: "mESmaC/velocity".into(),
             pin: CollapseGraphPin {
                 repository: Some("mESmaC/velocity".into()),
+                host: PinReleaseHost::GitHub,
                 version: "0.1.0-beta.17".into(),
                 tag: "v0.1.0-beta.17".into(),
                 sha256: Some(SAMPLE_SHA_OLD.into()),

@@ -70,10 +70,67 @@ pub fn parse_repository(input: &str) -> Option<(String, String)> {
     (valid_segment(owner) && valid_segment(name)).then(|| (owner.to_owned(), name.to_owned()))
 }
 
+/// The Collapse API origin (`https://api.collapse.sh`), which serves git remotes, API routes
+/// and release asset downloads (#593).
+pub const COLLAPSE_API_HOST: &str = "https://api.collapse.sh";
+
+/// The rolling release tag holding Velocity's `latest.json` update manifest (#593).
+pub const UPDATER_RELEASE_TAG: &str = "updater";
+
 /// The repository's page, for a value `repository_from_remote` returned.
 pub fn repository_page(repository: &str) -> Option<String> {
     let (owner, name) = repository.split_once('/')?;
     (valid_segment(owner) && valid_segment(name)).then(|| format!("{PAGE_HOST}{owner}/{name}"))
+}
+
+/// A release's web page on Collapse (`https://collapse.sh/<owner>/<name>/releases/<tag>`) (#593).
+pub fn release_page(repository: &str, tag: &str) -> Option<String> {
+    let trimmed = tag.trim();
+    if trimmed.is_empty() || !valid_release_segment(trimmed) {
+        return None;
+    }
+    Some(format!(
+        "{}/releases/{trimmed}",
+        repository_page(repository)?
+    ))
+}
+
+/// Public download URL for a release asset hosted on Collapse
+/// (`https://api.collapse.sh/<owner>/<name>/releases/download/<tag>/<asset>`) (#593).
+pub fn release_download_url(repository: &str, tag: &str, asset: &str) -> Option<String> {
+    let (owner, name) = repository.split_once('/')?;
+    let tag = tag.trim();
+    let asset = asset.trim();
+    if !valid_segment(owner)
+        || !valid_segment(name)
+        || !valid_release_segment(tag)
+        || !valid_release_segment(asset)
+    {
+        return None;
+    }
+    Some(format!(
+        "{COLLAPSE_API_HOST}/{owner}/{name}/releases/download/{tag}/{asset}"
+    ))
+}
+
+/// Public Collapse URL for the rolling `updater/latest.json` manifest (#593).
+pub fn updater_manifest_url(repository: &str) -> Option<String> {
+    release_download_url(repository, UPDATER_RELEASE_TAG, "latest.json")
+}
+
+/// Whether `url` points to a Collapse host (`api.collapse.sh` or `collapse.sh`) (#593).
+pub fn is_collapse_download_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    strip_prefix_ignoring_case(trimmed, "https://api.collapse.sh/").is_some()
+        || strip_prefix_ignoring_case(trimmed, "https://collapse.sh/").is_some()
+}
+
+fn valid_release_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment != "."
+        && segment != ".."
+        && !segment.contains(['/', '\\', '?', '#', '\r', '\n', '\0'])
+        && !segment.chars().any(char::is_whitespace)
 }
 
 /// A parsed `velocity://collapse/...` link (#479). Only `<owner>/<name>` and optional

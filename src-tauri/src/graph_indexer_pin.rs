@@ -7,6 +7,10 @@
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
+use velocity_collapse::releases as collapse_releases;
+use velocity_core::graph_indexer_pin::{
+    ReleaseAssetCandidate, ReleaseCandidate, checksum_name, parse_sha256,
+};
 use velocity_github::graph_indexer_pin::{
     COLLAPSE_REPOSITORIES, GraphIndexerPinWatch, GraphPinCache, IssueLook, PinIssue,
 };
@@ -137,8 +141,73 @@ fn observe(
         }
     };
     let repository = client.collapse_repository().to_owned();
-    let result = client.look(&mut watch.cache)?;
+    let result = client.look_with_collapse_releases(
+        &mut watch.cache,
+        read_collapse_releases,
+        read_collapse_sha256,
+    )?;
     Ok(Some((repository, result)))
+}
+
+/// Reads Velocity's published releases from Collapse so `ops/Dockerfile` pin-bump issues
+/// point to Collapse's `velocity-graph` archive URL (#593).
+fn read_collapse_releases(velocity_repository: &str) -> Option<Vec<ReleaseCandidate>> {
+    let (owner, name) = velocity_core::collapse::parse_repository(velocity_repository)?;
+    let token = velocity_collapse::load_credentials()
+        .ok()
+        .flatten()
+        .map(|credentials| credentials.mcp_token);
+    let page = tauri::async_runtime::block_on(collapse_releases::list_releases(
+        token.as_deref(),
+        &owner,
+        &name,
+        None,
+    ))
+    .ok()?;
+    Some(
+        page.releases
+            .into_iter()
+            .map(|release| {
+                let tag = release.tag.clone();
+                ReleaseCandidate {
+                    tag: release.tag,
+                    draft: release.draft,
+                    assets: release
+                        .assets
+                        .into_iter()
+                        .map(|asset| {
+                            let download_url = asset.absolute_download_url(&owner, &name, &tag);
+                            ReleaseAssetCandidate {
+                                id: asset.id,
+                                name: asset.name,
+                                download_url,
+                            }
+                        })
+                        .collect(),
+                }
+            })
+            .collect(),
+    )
+}
+
+fn read_collapse_sha256(release: &ReleaseCandidate, archive_name: &str) -> Option<String> {
+    let version = velocity_core::release::version_from_release_tag(&release.tag)?;
+    let expected_checksum = checksum_name(&version);
+    let checksum_asset = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == expected_checksum)?;
+    let token = velocity_collapse::load_credentials()
+        .ok()
+        .flatten()
+        .map(|credentials| credentials.mcp_token);
+    let text = tauri::async_runtime::block_on(collapse_releases::download_asset_text(
+        token.as_deref(),
+        &checksum_asset.download_url,
+    ))
+    .ok()
+    .flatten()?;
+    parse_sha256(&text, archive_name)
 }
 
 fn resolve_maintainer_client(

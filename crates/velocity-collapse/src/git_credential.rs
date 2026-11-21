@@ -356,6 +356,209 @@ pub fn checkout_repository(folder: &Path) -> Option<String> {
     None
 }
 
+/// Ensures `refs/tags/<tag>` on Collapse mirror `mirror_url` points to `commit` (#593).
+/// Collapse creates releases against existing tags; Rosen's mirror forwards only the
+/// default branch, so this pushes the tag before creating the release.
+/// When `!allow_move`, an existing tag on a different commit is refused.
+pub fn ensure_remote_tag(
+    mirror_url: &str,
+    commit: &str,
+    tag: &str,
+    allow_move: bool,
+    local_repo: Option<&Path>,
+) -> Result<(), CollapseError> {
+    let commit = commit.trim().to_ascii_lowercase();
+    let tag = tag.trim();
+    if mirror_url.contains(['\n', '\r', '\0'])
+        || tag.is_empty()
+        || tag.contains(['\n', '\r', '\0', ' '])
+        || commit.len() != 40
+        || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(CollapseError::Git(
+            "Invalid Collapse mirror URL, tag or commit ID".into(),
+        ));
+    }
+    ensure_proactive_auth()?;
+    ensure_path_specific_credentials()?;
+    if let Some(existing) = remote_tag_commit(mirror_url, tag)? {
+        if existing.eq_ignore_ascii_case(&commit) {
+            return Ok(());
+        }
+        if !allow_move {
+            return Err(CollapseError::Git(format!(
+                "Tag {tag} already exists on {existing} on Collapse, not {commit}"
+            )));
+        }
+    }
+    push_tag_with_temp_repo(mirror_url, &commit, tag, allow_move, local_repo)
+}
+
+fn remote_tag_commit(mirror_url: &str, tag: &str) -> Result<Option<String>, CollapseError> {
+    let ref_name = format!("refs/tags/{tag}");
+    let peeled_ref = format!("{ref_name}^{{}}");
+    let output = collapse_git()
+        .args([
+            "ls-remote",
+            "--tags",
+            "--",
+            mirror_url,
+            &ref_name,
+            &peeled_ref,
+        ])
+        .output()
+        .map_err(|error| CollapseError::Git(format!("Could not run git: {error}")))?;
+    if !output.status.success() {
+        return Err(CollapseError::Git(format!(
+            "Could not check tags on {mirror_url}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut direct = None;
+    for line in stdout.lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(sha), Some(reference)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        if reference == peeled_ref {
+            return Ok(Some(sha.to_ascii_lowercase()));
+        }
+        if reference == ref_name {
+            direct = Some(sha.to_ascii_lowercase());
+        }
+    }
+    Ok(direct)
+}
+
+fn push_tag_with_temp_repo(
+    mirror_url: &str,
+    commit: &str,
+    tag: &str,
+    allow_move: bool,
+    local_repo: Option<&Path>,
+) -> Result<(), CollapseError> {
+    let scratch = std::env::temp_dir().join(format!(
+        "velocity-collapse-tag-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&scratch).map_err(|error| {
+        CollapseError::Git(format!("Could not create temp git folder: {error}"))
+    })?;
+    let result = push_tag_inside(&scratch, mirror_url, commit, tag, allow_move, local_repo);
+    let _ = std::fs::remove_dir_all(&scratch);
+    result
+}
+
+fn push_tag_inside(
+    scratch: &Path,
+    mirror_url: &str,
+    commit: &str,
+    tag: &str,
+    allow_move: bool,
+    local_repo: Option<&Path>,
+) -> Result<(), CollapseError> {
+    let init = collapse_git()
+        .arg("-C")
+        .arg(scratch)
+        .args(["init", "--bare", "--quiet"])
+        .output()
+        .map_err(|error| CollapseError::Git(format!("Could not run git init: {error}")))?;
+    if !init.status.success() {
+        return Err(CollapseError::Git(format!(
+            "Could not initialize temp repository for tagging: {}",
+            String::from_utf8_lossy(&init.stderr).trim()
+        )));
+    }
+    let mut fetched = false;
+    if let Some(local) =
+        local_repo.filter(|path| path.join(".git").exists() || path.join("HEAD").is_file())
+    {
+        let local_fetch = collapse_git()
+            .arg("-C")
+            .arg(scratch)
+            .args(["fetch", "--quiet", "--no-tags"])
+            .arg(local)
+            .arg(commit)
+            .output();
+        if let Ok(output) = local_fetch
+            && output.status.success()
+        {
+            fetched = true;
+        }
+    }
+    if !fetched {
+        let direct = collapse_git()
+            .arg("-C")
+            .arg(scratch)
+            .args([
+                "fetch",
+                "--quiet",
+                "--depth=1",
+                "--filter=blob:none",
+                "--",
+                mirror_url,
+                commit,
+            ])
+            .output()
+            .map_err(|error| CollapseError::Git(format!("Could not run git fetch: {error}")))?;
+        if direct.status.success() {
+            fetched = true;
+        }
+    }
+    if !fetched {
+        let head = collapse_git()
+            .arg("-C")
+            .arg(scratch)
+            .args([
+                "fetch",
+                "--quiet",
+                "--filter=blob:none",
+                "--",
+                mirror_url,
+                "HEAD",
+            ])
+            .output()
+            .map_err(|error| CollapseError::Git(format!("Could not run git fetch: {error}")))?;
+        if !head.status.success() {
+            return Err(CollapseError::Git(format!(
+                "Could not fetch {commit} from {mirror_url}: {}",
+                String::from_utf8_lossy(&head.stderr).trim()
+            )));
+        }
+    }
+    let refspec = if allow_move {
+        format!("+{commit}:refs/tags/{tag}")
+    } else {
+        format!("{commit}:refs/tags/{tag}")
+    };
+    let push = collapse_git()
+        .arg("-C")
+        .arg(scratch)
+        .args(["push", "--quiet", "--", mirror_url, &refspec])
+        .output()
+        .map_err(|error| CollapseError::Git(format!("Could not run git push: {error}")))?;
+    if push.status.success() {
+        Ok(())
+    } else {
+        Err(CollapseError::Git(format!(
+            "Could not push tag {tag} to {mirror_url}: {}",
+            String::from_utf8_lossy(&push.stderr).trim()
+        )))
+    }
+}
+
+fn collapse_git() -> Command {
+    let mut command = hidden_git();
+    command.args([
+        "-c",
+        &format!("credential.{HOST_SCOPE}.useHttpPath=true"),
+        "-c",
+        &format!("{PROACTIVE_AUTH_KEY}={PROACTIVE_AUTH_VALUE}"),
+    ]);
+    command
+}
+
 /// Standard output of a git query; an unset key (exit status 1) reads as empty.
 fn git_output(arguments: &[&str]) -> Result<String, CollapseError> {
     let output = hidden_git()

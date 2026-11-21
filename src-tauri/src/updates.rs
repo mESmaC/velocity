@@ -25,9 +25,12 @@ use crate::state::ManagedStateStore;
 /// The first check waits until startup work (projects, providers, the warm pool) settles.
 const FIRST_CHECK: Duration = Duration::from_secs(30);
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
-const MANIFEST_URL: &str =
+const COLLAPSE_MANIFEST_URL: &str =
+    "https://api.collapse.sh/mESmaC/velocity/releases/download/updater/latest.json";
+const GITHUB_MANIFEST_URL: &str =
     "https://github.com/mESmaC/velocity/releases/download/updater/latest.json";
-const RELEASES_API_URL: &str = "https://api.github.com/repos/mESmaC/velocity/releases?per_page=20";
+const GITHUB_RELEASES_API_URL: &str =
+    "https://api.github.com/repos/mESmaC/velocity/releases?per_page=20";
 const MANIFEST_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct ManagedUpdates {
@@ -148,22 +151,26 @@ async fn check(application: &AppHandle) {
     });
 }
 
-/// Compares Velocity's `updater/latest.json` against the newest published GitHub release
-/// so installed copies report when the updater manifest is behind (#521).
+/// Compares Velocity's `updater/latest.json` against the newest published release so
+/// installed copies report when the updater manifest is behind (#521, #593). Checks
+/// Collapse first and falls back to GitHub while Collapse has no `updater` release yet.
 async fn check_manifest_lag(
     current_version: &str,
     known_manifest_version: Option<&str>,
 ) -> Option<ManifestLag> {
-    let lag = match fetch_manifest_lag_http(known_manifest_version).await {
-        Some(lag) => Some(lag),
-        None => tauri::async_runtime::spawn_blocking(|| {
-            velocity_github::check_repository_manifest_lag(VELOCITY_REPOSITORY)
-                .ok()
-                .flatten()
-        })
-        .await
-        .ok()
-        .flatten(),
+    let lag = match collapse_manifest_lag(None, "mESmaC", "velocity").await {
+        Some(lag) => lag,
+        None => match fetch_github_manifest_lag_http(known_manifest_version).await {
+            Some(lag) => Some(lag),
+            None => tauri::async_runtime::spawn_blocking(|| {
+                velocity_github::check_repository_manifest_lag(VELOCITY_REPOSITORY)
+                    .ok()
+                    .flatten()
+            })
+            .await
+            .ok()
+            .flatten(),
+        },
     }?;
     let current_is_behind =
         compare_versions(current_version, &lag.latest_release) == Some(Ordering::Less);
@@ -173,6 +180,68 @@ async fn check_manifest_lag(
         current_is_behind,
         latest_signed: lag.latest_signed,
     })
+}
+
+/// Checks `owner/name`'s Collapse `updater/latest.json` against Collapse's published `v*`
+/// releases (#593). Returns `None` when Collapse has no `updater/latest.json` yet, or
+/// `Some(lag)` when Collapse's manifest is present (`Some(None)` means up to date).
+pub(crate) async fn collapse_manifest_lag(
+    token: Option<&str>,
+    owner: &str,
+    name: &str,
+) -> Option<Option<CoreManifestLag>> {
+    #[derive(Deserialize)]
+    struct Manifest {
+        version: String,
+    }
+    let manifest_url = if owner.eq_ignore_ascii_case("mESmaC")
+        && name.eq_ignore_ascii_case("velocity")
+        && token.is_none()
+    {
+        COLLAPSE_MANIFEST_URL.to_owned()
+    } else {
+        velocity_collapse::releases::download_url(
+            owner,
+            name,
+            velocity_collapse::releases::UPDATER_TAG,
+            "latest.json",
+        )
+    };
+    let manifest_text = velocity_collapse::releases::download_asset_text(token, &manifest_url)
+        .await
+        .ok()
+        .flatten()?;
+    let manifest = serde_json::from_str::<Manifest>(&manifest_text).ok()?;
+    let page = velocity_collapse::releases::list_releases(token, owner, name, None)
+        .await
+        .ok()?;
+    let published = collapse_to_published_releases(page.releases);
+    Some(detect_manifest_lag(&manifest.version, &published))
+}
+
+fn collapse_to_published_releases(
+    releases: Vec<velocity_collapse::releases::CollapseRelease>,
+) -> Vec<PublishedRelease> {
+    releases
+        .into_iter()
+        .filter_map(|release| {
+            let version = version_from_release_tag(&release.tag)?;
+            let has_manifest = release
+                .assets
+                .iter()
+                .any(|asset| asset.name == "latest.json");
+            let has_signature = release
+                .assets
+                .iter()
+                .any(|asset| asset.name.ends_with(".sig"));
+            Some(PublishedRelease {
+                tag: release.tag,
+                version,
+                draft: release.draft,
+                signed: has_manifest && has_signature,
+            })
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -189,7 +258,9 @@ struct GitHubReleaseEntry {
     assets: Vec<GitHubReleaseAsset>,
 }
 
-async fn fetch_manifest_lag_http(known_manifest_version: Option<&str>) -> Option<CoreManifestLag> {
+async fn fetch_github_manifest_lag_http(
+    known_manifest_version: Option<&str>,
+) -> Option<CoreManifestLag> {
     #[derive(Deserialize)]
     struct Manifest {
         version: String,
@@ -203,7 +274,7 @@ async fn fetch_manifest_lag_http(known_manifest_version: Option<&str>) -> Option
         Some(version) => version.to_owned(),
         None => {
             client
-                .get(MANIFEST_URL)
+                .get(GITHUB_MANIFEST_URL)
                 .send()
                 .await
                 .ok()?
@@ -216,7 +287,7 @@ async fn fetch_manifest_lag_http(known_manifest_version: Option<&str>) -> Option
         }
     };
     let releases: Vec<GitHubReleaseEntry> = client
-        .get(RELEASES_API_URL)
+        .get(GITHUB_RELEASES_API_URL)
         .send()
         .await
         .ok()?

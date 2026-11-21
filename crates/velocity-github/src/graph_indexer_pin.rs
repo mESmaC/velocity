@@ -11,7 +11,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use velocity_core::graph_indexer_pin::{
     self, CollapseGraphPin, DOCKERFILE_PATH, GraphPinBump, IndexerVersion, OpenIssue,
-    PARSER_VERSION_PATH, PinBumpStep, ReleaseAssetCandidate, ReleaseCandidate, SCHEMA_VERSION_PATH,
+    PARSER_VERSION_PATH, PinBumpStep, PinReleaseHost, ReleaseAssetCandidate, ReleaseCandidate,
+    SCHEMA_VERSION_PATH,
 };
 
 use crate::gh_command::{GitHubCommand, GitHubCommandError};
@@ -102,17 +103,37 @@ impl GraphIndexerPinWatch {
     /// Compares Collapse's pinned `velocity-graph` release against the newest published
     /// Velocity release with an indexer archive and keeps at most one current pin-bump issue.
     pub fn look(&self, cache: &mut GraphPinCache) -> Result<IssueLook, GitHubCommandError> {
+        self.look_with_collapse_releases(cache, |_| None, |_, _| None)
+    }
+
+    /// Compares Collapse's pinned `velocity-graph` release against published Velocity releases,
+    /// preferring Collapse releases supplied by `read_collapse_releases` and falling back to
+    /// GitHub releases when Collapse has no indexer archive yet (#593).
+    pub fn look_with_collapse_releases(
+        &self,
+        cache: &mut GraphPinCache,
+        read_collapse_releases: impl FnOnce(&str) -> Option<Vec<ReleaseCandidate>>,
+        read_collapse_sha256: impl FnOnce(&ReleaseCandidate, &str) -> Option<String>,
+    ) -> Result<IssueLook, GitHubCommandError> {
         let pin = self.pin()?;
         let velocity = pin.repository.as_deref().unwrap_or(&self.velocity);
         let open = self.open_issues()?;
-        let releases = self.releases(velocity)?;
+        let collapse_releases = read_collapse_releases(velocity).unwrap_or_default();
+        let (release_host, releases) =
+            if graph_indexer_pin::latest_indexer_release(&collapse_releases).is_some() {
+                (PinReleaseHost::Collapse, collapse_releases)
+            } else {
+                (PinReleaseHost::GitHub, self.releases(velocity)?)
+            };
         let Some(latest) = graph_indexer_pin::latest_indexer_release(&releases) else {
             return Ok(IssueLook {
                 issue: PinIssue::Current,
                 closed: self.close_surplus(&open)?,
             });
         };
-        if !graph_indexer_pin::is_newer_version(&latest.version, &pin.version) {
+        let needs_check = graph_indexer_pin::is_newer_version(&latest.version, &pin.version)
+            || (pin.host == PinReleaseHost::GitHub && release_host == PinReleaseHost::Collapse);
+        if !needs_check {
             return Ok(IssueLook {
                 issue: PinIssue::Current,
                 closed: self.close_surplus(&open)?,
@@ -121,23 +142,39 @@ impl GraphIndexerPinWatch {
         let pin_indexer = self.indexer_version(cache, velocity, &pin.tag, None)?;
         let target_indexer =
             self.indexer_version(cache, velocity, &latest.tag, Some(latest.archive_asset_id))?;
-        if !graph_indexer_pin::should_bump(
-            &pin.version,
+        if !graph_indexer_pin::should_bump_or_migrate(
+            &pin,
             pin_indexer,
             &latest.version,
             target_indexer,
+            release_host,
         ) {
             return Ok(IssueLook {
                 issue: PinIssue::Current,
                 closed: self.close_surplus(&open)?,
             });
         }
-        let sha256 = self.archive_sha256(
-            cache,
-            velocity,
-            latest.sha256_asset_id,
-            &latest.archive_name,
-        )?;
+        let sha256 = if release_host == PinReleaseHost::Collapse {
+            let candidate = releases
+                .iter()
+                .find(|entry| entry.tag == latest.tag)
+                .ok_or_else(|| {
+                    GitHubCommandError::Missing(format!("Collapse release {}", latest.tag))
+                })?;
+            read_collapse_sha256(candidate, &latest.archive_name).ok_or_else(|| {
+                GitHubCommandError::Missing(format!(
+                    "a valid Collapse SHA-256 checksum for {}",
+                    latest.archive_name
+                ))
+            })?
+        } else {
+            self.archive_sha256(
+                cache,
+                velocity,
+                latest.sha256_asset_id,
+                &latest.archive_name,
+            )?
+        };
         let bump = GraphPinBump {
             velocity_repository: velocity.to_owned(),
             pin,

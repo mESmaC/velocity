@@ -154,8 +154,20 @@ pub fn run_commands(
     commands: &[String],
     priority: Priority,
 ) -> Result<Option<FailedCommand>, RosenError> {
+    run_commands_with_env(folder, commands, priority, &[])
+}
+
+/// Runs `commands` under a run-queue turn with extra environment variables supplied only to
+/// the spawned child commands (used for local release signing keys held in the OS credential
+/// store, never logged or shared with agents, #593).
+pub fn run_commands_with_env(
+    folder: &Path,
+    commands: &[String],
+    priority: Priority,
+    extra_env: &[(&str, &str)],
+) -> Result<Option<FailedCommand>, RosenError> {
     let turn = turn(folder, priority).ok();
-    run_held_commands(folder, commands, priority, turn.as_ref(), None)
+    run_held_commands(folder, commands, priority, turn.as_ref(), None, extra_env)
 }
 
 /// Integration always takes a verify turn before starting any child process.
@@ -172,6 +184,7 @@ pub fn run_integration_commands(
         priority,
         Some(&turn),
         Some(INTEGRATION_SILENCE_LIMIT),
+        &[],
     )
 }
 
@@ -181,6 +194,7 @@ fn run_held_commands(
     priority: Priority,
     turn: Option<&Turn>,
     silence_limit: Option<Duration>,
+    extra_env: &[(&str, &str)],
 ) -> Result<Option<FailedCommand>, RosenError> {
     let log = checkout::sibling(folder, ".rosen-check.log");
     let held = turn.map(|_| class_of(priority));
@@ -189,7 +203,14 @@ fn run_held_commands(
         while crate::memory::is_low() {
             std::thread::sleep(POLL);
         }
-        let outcome = run_one(folder, command, &log, (priority, held), silence_limit)?;
+        let outcome = run_one(
+            folder,
+            command,
+            &log,
+            (priority, held),
+            silence_limit,
+            extra_env,
+        )?;
         let (exit_code, stop_info) = match outcome {
             CommandOutcome::Exited(0) => continue,
             CommandOutcome::Exited(code) => (Some(code), None),
@@ -258,6 +279,7 @@ fn run_one(
     log: &Path,
     (priority, held): (Priority, Option<RunClass>),
     silence_limit: Option<Duration>,
+    extra_env: &[(&str, &str)],
 ) -> Result<CommandOutcome, RosenError> {
     let failed = |source| io_error("run a check in", folder, source);
     let output = File::create(log).map_err(|source| io_error("write", log, source))?;
@@ -274,6 +296,9 @@ fn run_one(
                 .env("CARGO_BUILD_JOBS", "2")
                 .env("RUST_TEST_THREADS", "2");
         }
+    }
+    for &(key, value) in extra_env {
+        shell.env(key, value);
     }
     let mut child = shell
         .current_dir(folder)

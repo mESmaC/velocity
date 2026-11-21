@@ -6,6 +6,9 @@
 //! refused tag never starts a workflow run.
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
+
+use serde::Serialize;
 
 /// A parsed SemVer 2.0.0 release version, ordered by SemVer precedence (#521).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -315,4 +318,71 @@ pub fn plan_refused_gate_recovery(
         return RefusedGateRecovery::ReleaseGreenBeta { tag: next_tag };
     }
     RefusedGateRecovery::ReportReady
+}
+
+/// One signed download entry in Tauri's `latest.json` updater manifest (#593).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UpdaterPlatform {
+    pub url: String,
+    pub signature: String,
+}
+
+/// Tauri updater manifest (`updater/latest.json`) published alongside signed releases (#593).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UpdaterManifest {
+    pub version: String,
+    pub notes: String,
+    pub pub_date: String,
+    pub platforms: BTreeMap<String, UpdaterPlatform>,
+}
+
+/// Builds the Tauri updater manifest (`latest.json`) for a Windows release published to
+/// `download_base` (e.g. `https://api.collapse.sh/mESmaC/velocity/releases/download/v0.1.0-beta.21`)
+/// matching the exact platform keys Tauri's updater expects (#593).
+pub fn build_updater_manifest(
+    version: &str,
+    notes: &str,
+    pub_date: &str,
+    download_base: &str,
+    setup_signature: &str,
+    portable_signature: &str,
+    msi_signature: Option<&str>,
+) -> UpdaterManifest {
+    let base = download_base.trim_end_matches('/');
+    let setup = UpdaterPlatform {
+        url: format!("{base}/Velocity_{version}_x64-setup.exe"),
+        signature: setup_signature.trim().to_owned(),
+    };
+    let mut platforms = BTreeMap::new();
+    platforms.insert("windows-x86_64".to_owned(), setup.clone());
+    platforms.insert("windows-x86_64-nsis".to_owned(), setup);
+    platforms.insert(
+        "windows-x86_64-portable".to_owned(),
+        UpdaterPlatform {
+            url: format!("{base}/Velocity_{version}_x64-portable.exe"),
+            signature: portable_signature.trim().to_owned(),
+        },
+    );
+    if let Some(signature) = msi_signature.map(str::trim).filter(|text| !text.is_empty()) {
+        platforms.insert(
+            "windows-x86_64-msi".to_owned(),
+            UpdaterPlatform {
+                url: format!("{base}/Velocity_{version}_x64_en-US.msi"),
+                signature: signature.to_owned(),
+            },
+        );
+    }
+    UpdaterManifest {
+        version: version.trim().trim_start_matches('v').to_owned(),
+        notes: notes.trim().to_owned(),
+        pub_date: pub_date.trim().to_owned(),
+        platforms,
+    }
+}
+
+/// Whether `tag` names a prerelease (`v0.1.0-beta.1`), as opposed to a numbered release (#593).
+pub fn is_prerelease_tag(tag: &str) -> bool {
+    version_from_release_tag(tag)
+        .and_then(|version| parse_release_version(&version))
+        .is_some_and(|parsed| !parsed.prerelease.is_empty())
 }

@@ -118,6 +118,18 @@ impl RosenPinWatch {
         self.look_with_post_land(known_release, |_, _| BTreeMap::new())
     }
 
+    /// Brings the pin-bump issue up to date and returns the parsed [`RosenPin`] so the caller
+    /// can build and publish the pinned Rosen release to Collapse directly without touching
+    /// GitHub's release workflow (#593).
+    pub fn look_issue_with_post_land(
+        &self,
+        read_post_land: impl FnOnce(&RosenPin, &[RosenCommit]) -> BTreeMap<String, PostLandState>,
+    ) -> Result<(RosenPin, Result<IssueLook, GitHubCommandError>), GitHubCommandError> {
+        let pin = self.pin()?;
+        let issue = self.keep_issue_current(&pin, read_post_land);
+        Ok((pin, issue))
+    }
+
     /// Brings the pin-bump issue and the pinned Rosen release up to date, combining GitHub CI
     /// with Rosen's own post-land verdicts supplied by `read_post_land` (#580).
     pub fn look_with_post_land(

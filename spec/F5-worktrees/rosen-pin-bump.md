@@ -45,8 +45,7 @@ The open issue is a work item like any other: continuous dispatch (F9) starts it
 **The Rosen release.**
 The target's release tag is `v<Rosen version>-pin.g<7-character commit>`, with the version from `[workspace.package]` in Rosen's `Cargo.toml` at the target, for example `v0.1.0-pin.g7b54fbe`.
 The bump writes that tag as `release`; an agent in a Rosen workspace never publishes anything.
-On each look, when the default branch's `release` ends in `-pin.g<the pinned commit>` and Rosen has no release by that tag, Velocity publishes it on Rosen as a pre-release on the pinned commit.
-Rosen's release workflow then attaches the prebuilt binaries and `rosen-client-commit.txt`, which Velocity's release downloads and checks against the pin (F1 Updates, #433).
+On each look, when the default branch's `release` ends in `-pin.g<the pinned commit>` and Collapse's Rosen repository has no complete release by that tag, Velocity builds `rosen` and `rosen-server` from source in a per-revision build folder (#561) and publishes the release, binaries, `rosen-client-commit.txt` and `SHA256SUMS.txt` directly to Collapse without touching any GitHub workflow (#593).
 Until they are attached, a Velocity release builds Rosen from source once, as it does for a pin with no release.
 A `release` the owner named by hand, or one whose tag names another commit, is never published from here.
 

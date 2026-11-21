@@ -1775,7 +1775,7 @@ fn stopped_check_item(
 }
 
 /// Signals 9 & 10: Updater manifest lag behind published releases, and refused release
-/// gates lacking a green `velocity/integration` status (#521).
+/// gates lacking a green `velocity/integration` status (#521, #593).
 async fn check_release_health(
     application: &AppHandle,
     project: &ProjectItem,
@@ -1783,9 +1783,10 @@ async fn check_release_health(
     now: u64,
     now_ms: u64,
 ) -> Vec<ProjectHealthItem> {
-    let Some(repository) = project.github_remote.as_deref() else {
+    let repository = project.github_remote.as_deref();
+    if repository.is_none() && project.collapse_repository.is_none() {
         return Vec::new();
-    };
+    }
     let mut items = Vec::new();
     if let Some(item) =
         check_pending_release(application, project, repository, server, now, now_ms).await
@@ -1798,7 +1799,7 @@ async fn check_release_health(
     if let Some(lag) = &cache.manifest_lag {
         items.push(manifest_lag_item(lag, now_ms));
     }
-    if let Some(gate) = &cache.refused_gate
+    if let (Some(repository), Some(gate)) = (repository, &cache.refused_gate)
         && let Some(item) =
             handle_refused_gate(application, project, repository, server, gate, now, now_ms).await
     {
@@ -1810,7 +1811,7 @@ async fn check_release_health(
 async fn read_release_health(
     application: &AppHandle,
     project: &ProjectItem,
-    repository: &str,
+    repository: Option<&str>,
     now: u64,
 ) -> Option<ReleaseHealthCache> {
     let cached = with_tracker(application, project.id, |tracker| {
@@ -1826,6 +1827,30 @@ async fn read_release_health(
             return Some(cache);
         }
     }
+    if let Some(collapse_repo) = project.collapse_repository.as_deref()
+        && let Some((owner, name)) = velocity_core::collapse::parse_repository(collapse_repo)
+    {
+        let token = tauri::async_runtime::spawn_blocking(velocity_collapse::load_credentials)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+            .map(|credentials| credentials.mcp_token);
+        if let Some(manifest_lag) =
+            crate::updates::collapse_manifest_lag(token.as_deref(), &owner, &name).await
+        {
+            let fetched = ReleaseHealthCache {
+                checked_at_secs: now,
+                manifest_lag,
+                refused_gate: None,
+            };
+            with_tracker(application, project.id, |tracker| {
+                tracker.release_health = Some(fetched.clone());
+            });
+            return Some(fetched);
+        }
+    }
+    let repository = repository?;
     let directory = Path::new(&project.repository_path).to_path_buf();
     let repo = repository.to_owned();
     let fetched = tauri::async_runtime::spawn_blocking(move || {
@@ -1874,7 +1899,7 @@ fn manifest_lag_item(lag: &ManifestLag, now_ms: u64) -> ProjectHealthItem {
 async fn check_pending_release(
     application: &AppHandle,
     project: &ProjectItem,
-    repository: &str,
+    repository: Option<&str>,
     server: &ProjectServer,
     now: u64,
     now_ms: u64,
@@ -1882,8 +1907,17 @@ async fn check_pending_release(
     let pending = with_tracker(application, project.id, |tracker| {
         tracker.pending_release.clone()
     })?;
-    if let Some(green) = publish_and_find_green(project, repository, server, &pending.commit).await
-    {
+    let green = if project.collapse_repository.is_some() {
+        velocity_rosen::release::release_commit(server, Some(&pending.commit))
+            .await
+            .ok()
+            .map(|release| release.green)
+    } else if let Some(repository) = repository {
+        publish_and_find_green(project, repository, server, &pending.commit).await
+    } else {
+        None
+    };
+    if let Some(green) = green {
         return dispatch_pending_release(
             application,
             project,
@@ -1914,25 +1948,41 @@ async fn check_pending_release(
 async fn dispatch_pending_release(
     application: &AppHandle,
     project: &ProjectItem,
-    repository: &str,
+    repository: Option<&str>,
     pending: &PendingRelease,
     green: &str,
     now: u64,
     now_ms: u64,
 ) -> Option<ProjectHealthItem> {
-    match dispatch_release_blocking(project, repository, &pending.tag, &pending.commit, green).await
-    {
-        Ok(()) => {
+    let outcome = if project.collapse_repository.is_some() {
+        crate::release::trigger_pending_collapse_release(
+            application,
+            project.id,
+            pending.tag.clone(),
+            pending.commit.clone(),
+            green.to_owned(),
+        )
+        .await
+    } else if let Some(repository) = repository {
+        dispatch_release_blocking(project, repository, &pending.tag, &pending.commit, green)
+            .await
+            .map(|()| {
+                format!(
+                    "Dispatched release {} at {} after green integration {}",
+                    pending.tag,
+                    short_commit(&pending.commit),
+                    short_commit(green)
+                )
+            })
+    } else {
+        Err("This project has no Collapse or GitHub repository for releases".into())
+    };
+    match outcome {
+        Ok(action) => {
             with_tracker(application, project.id, |tracker| {
                 tracker.pending_release = None;
                 tracker.release_health = None;
             });
-            let action = format!(
-                "Dispatched release {} at {} after green integration {}",
-                pending.tag,
-                short_commit(&pending.commit),
-                short_commit(green)
-            );
             crate::diagnostics::record(SOURCE, &format!("{}: {action}", project.name));
             record_recent_action(
                 application,
