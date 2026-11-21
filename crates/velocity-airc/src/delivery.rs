@@ -59,10 +59,11 @@ pub fn prompt_lines(deliveries: &[Delivery]) -> Vec<String> {
                 }
             }
             lines[*index] = format!(
-                "via AIRC · {} overlaps {} on {}; record a share or wait before editing",
+                "via AIRC · {} overlaps {} on {}; {}",
                 overlap.agents[0],
                 overlap.agents[1],
-                paths.join(", ")
+                paths.join(", "),
+                crate::claims::OVERLAP_ADVICE
             );
         }
     }
@@ -297,9 +298,11 @@ fn overlaps_for(entry: &Entry, nick: &str) -> Vec<Overlap> {
         return vec![Overlap {
             agents: [requester.into(), holder.into()],
             paths: if entry.files.is_empty() {
+                let current_suffix = format!("; {}", crate::claims::OVERLAP_ADVICE);
                 vec![
                     paths
-                        .strip_suffix("; record a share or wait before editing")
+                        .strip_suffix(&current_suffix)
+                        .or_else(|| paths.strip_suffix("; record a share or wait before editing"))
                         .unwrap_or(paths)
                         .into(),
                 ]

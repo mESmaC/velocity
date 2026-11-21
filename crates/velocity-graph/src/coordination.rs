@@ -80,11 +80,15 @@ pub async fn rosen_overlap_symbols(
         .filter_map(|path| {
             let ours = ours.get(path).map(Vec::as_slice).unwrap_or_default();
             let theirs = theirs.get(path).map(Vec::as_slice).unwrap_or_default();
+            let shared = shared_symbols(ours, theirs);
             (!ours.is_empty() || !theirs.is_empty()).then(|| {
                 (
                     path,
-                    serde_json::json!({"requester": ours, "holder": theirs,
-                "shared": ours.iter().filter(|name| theirs.contains(name)).collect::<Vec<_>>() }),
+                    serde_json::json!({
+                        "requester": ours,
+                        "holder": theirs,
+                        "shared": shared,
+                    }),
                 )
             })
         })
@@ -106,10 +110,29 @@ async fn snapshot(client: &Client, revision: &str, path: &str) -> Option<String>
     String::from_utf8(data).ok()
 }
 
+/// Returns symbols edited on both sides, matching exact names and overlapping
+/// Markdown line ranges (`Section:L10-12` vs `Section:L11-13`) (#564).
+pub fn shared_symbols(ours: &[String], theirs: &[String]) -> Vec<String> {
+    let mut shared = BTreeSet::new();
+    for left in ours {
+        for right in theirs {
+            if left == right {
+                shared.insert(left.clone());
+            } else if let Some(overlap) = crate::markdown::overlapping_line_range(left, right) {
+                shared.insert(overlap);
+            }
+        }
+    }
+    shared.into_iter().collect()
+}
+
 fn symbol_changes(path: &str, before: Option<&str>, after: Option<&str>) -> Vec<String> {
     let Some(language) = Language::of(path) else {
         return Vec::new();
     };
+    if language == Language::Markdown {
+        return crate::markdown::changed_symbols(before, after);
+    }
     let definitions = |text: Option<&str>| {
         let Some(text) = text.filter(|text| text.len() <= 1024 * 1024) else {
             return BTreeMap::new();

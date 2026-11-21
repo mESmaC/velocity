@@ -722,20 +722,18 @@ async fn check_overlaps(snapshot: &PreflightSnapshot, output: &mut File) -> Step
     }
     let detail = lines.join("\n");
     let _ = writeln!(output, "\n=== overlaps ===\n{detail}");
-    let total = snapshot.overlaps.len();
-    if shared_count > 0 {
-        StepOutcome::failed(
-            "overlaps",
-            format!("{total} overlapping change(s), {shared_count} shared symbol(s)"),
-            Some(detail),
-        )
+    overlap_outcome(snapshot.overlaps.len(), shared_count, detail)
+}
+
+fn overlap_outcome(total: usize, shared_count: usize, detail: String) -> StepOutcome {
+    // Open-change overlaps are advisory (#564): failing here deadlocks concurrent
+    // changes symmetrically, while Rosen's base merge check already gates real conflicts.
+    let summary = if shared_count > 0 {
+        format!("{total} overlapping change(s), {shared_count} shared symbol(s)")
     } else {
-        StepOutcome::warned(
-            "overlaps",
-            format!("{total} overlapping change(s), no shared symbols"),
-            Some(detail),
-        )
-    }
+        format!("{total} overlapping change(s), no shared symbols")
+    };
+    StepOutcome::warned("overlaps", summary, Some(detail))
 }
 
 fn format_overlap_line(
@@ -955,4 +953,27 @@ fn is_diagnostic(line: &str) -> bool {
         || line.contains(" ... FAILED")
         || line.contains(": error:")
         || line.contains("panicked at")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::overlap_outcome;
+    use velocity_core::preflight::{StepStatus, format_report};
+
+    // Risk (#564): failing preflight on open-change shared symbols deadlocks concurrent
+    // changes symmetrically before either can land; overlaps must warn instead.
+    #[test]
+    fn open_change_overlaps_warn_even_with_shared_symbols() {
+        let step = overlap_outcome(
+            2,
+            3,
+            "- issue-102 (xzxzsktz) on design/screens/README.md [shared symbols: design/screens/README.md::Screens::row:Home]"
+                .to_owned(),
+        );
+        assert_eq!(step.status, StepStatus::Warned);
+        assert_eq!(step.summary, "2 overlapping change(s), 3 shared symbol(s)");
+        let (passed, report) = format_report("qpxzxwup1234", 1, &[step], "preflight.log");
+        assert!(passed);
+        assert!(report.contains("[WARN] overlaps"));
+    }
 }

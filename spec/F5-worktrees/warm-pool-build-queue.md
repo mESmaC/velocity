@@ -29,6 +29,7 @@
   A queued command counts as waiting in the build queue, so it is never stalled.
   `velocity-run` also offers `preflight` (#537, #560), which agents call before naming a change.
   After the turn ends, Velocity snapshots the workspace, reads the change's diff and the base's `rosen.toml`, and runs only the checks that apply: `rustfmt --check` on changed Rust files only, UI type-check and lint when `ui/` changed, queued `cargo clippy -p <crate> --all-targets -- -D warnings` for every touched Rust crate, active overlaps with symbol analysis, and generated-file freshness checks (`Cargo.lock`, `ui/pnpm-lock.yaml`, `ui/src/lib/bindings.ts` and Rosen merge regeneration).
+  Active overlaps with other open changes (including shared symbols) are reported as warnings and never fail preflight; Rosen's base merge conflicts and regeneration requirements remain the land gate (#564).
   Preflight records its outcome for the checked snapshot head (and submits a signed Rosen receipt on `after-land` projects when it passes), and Velocity refuses to name (`rosen commit` CLI shim, `rosen` MCP `commit` tool and thread Name action) or land a change whose latest snapshot has no passing preflight, telling the agent what failed.
   Velocity keeps the full output outside the workspace and delivers one pass/fail report with excerpts from any failing step in the agent's next prompt.
 

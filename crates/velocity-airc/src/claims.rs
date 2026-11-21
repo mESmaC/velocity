@@ -343,6 +343,10 @@ fn active_nick(entries: &[Entry], member: &str) -> Result<String, Error> {
         .ok_or_else(|| Error::Invalid("Join the channel before claiming".into()))
 }
 
+/// Advisory guidance appended to overlap notices (#564).
+pub(crate) const OVERLAP_ADVICE: &str =
+    "record a share (enough when edits are in different regions) or wait before editing";
+
 fn post_overlaps(
     storage: &Storage,
     entries: &mut Vec<Entry>,
@@ -371,7 +375,7 @@ fn post_overlaps(
             })
             .collect();
         let text = format!(
-            "{} overlaps {nick} on {}; record a share or wait before editing",
+            "{} overlaps {nick} on {}; {OVERLAP_ADVICE}",
             claim.nick,
             paths.join(", ")
         );
@@ -405,11 +409,7 @@ fn edited_symbols(entries: &[Entry], member: &str, file: &str) -> Vec<String> {
 }
 
 pub(crate) fn symbol_overlap(ours: &[String], theirs: &[String]) -> String {
-    let shared: Vec<_> = ours
-        .iter()
-        .filter(|symbol| theirs.contains(symbol))
-        .cloned()
-        .collect();
+    let shared = velocity_graph::coordination::shared_symbols(ours, theirs);
     if !shared.is_empty() {
         format!(" (both edited {})", shared.join(", "))
     } else if !ours.is_empty() && !theirs.is_empty() {

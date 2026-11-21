@@ -180,8 +180,9 @@ pub(crate) fn overlap_text(nick: &str, overlaps: &[OverlapDetail]) -> String {
         })
         .collect();
     format!(
-        "{nick} overlaps {}; record a share or wait before editing",
-        parts.join("; ")
+        "{nick} overlaps {}; {}",
+        parts.join("; "),
+        crate::claims::OVERLAP_ADVICE
     )
 }
 

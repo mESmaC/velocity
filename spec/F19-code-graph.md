@@ -198,6 +198,7 @@ These estimates use the #438 transcript method, weighting each tool result by th
 
 **Velocity's own uses:**
 - **AIRC and Rosen claims** (F14): overlap notices name the file and, when edits are available, show whether both agents changed the same symbols.
+  For Markdown files, overlap symbol diffs use finer units (table rows keyed by heading and first cell, edited heading lines, and base line ranges) rather than whole sections, so concurrent edits to different rows or lines in the same section do not collide (#564).
   Symbol details are advisory and existing path claims still govern coordination.
 - **Signature and IPC impact warnings** (#542): when a Rosen change alters a public symbol's signature, a Tauri IPC command, or an IPC event or payload type, `graph_overlaps`, `preflight`, the landing pass, and dispatch use `graph_impact` to warn about other open or recently landed changes that reference that symbol.
 - **Swarm split** (F10, F16): the regular swarm interleaves launches from different likely subsystems, and native goal-swarm selection skips pieces in held subsystems.

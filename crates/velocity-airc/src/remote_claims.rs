@@ -371,8 +371,11 @@ async fn claim_files(
         "velocity",
         &held.nick,
         &format!(
-            "{} overlaps {} on {}{detail}; record a share or wait before editing",
-            held.nick, holder.held.owner, holder.requested
+            "{} overlaps {} on {}{detail}; {}",
+            held.nick,
+            holder.held.owner,
+            holder.requested,
+            crate::claims::OVERLAP_ADVICE
         ),
     );
     record.change = Some(change.to_owned());
