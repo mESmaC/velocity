@@ -17,6 +17,7 @@ Velocity monitors each Rosen project in the background, performs safe automatic 
 | A post-land check stopped for running too long | Capture the active child process before stopping the tree, parse the running test from the log, and report both in the notifications and in the failure report (#486). |
 | Updater manifest (`updater/latest.json`) is behind the newest published `v*` release | Compare the manifest version with the newest non-draft published release and report both versions in the notifications (#521). |
 | Release gate refused because the release commit has no green `velocity/integration` status | Publish a local green pass or start an immediate integration build covering that commit; once green, re-dispatch `release.yml` for that tag when its exact commit is green, dispatch the next free beta tag on the newer green commit for beta tags, or report that a release can be cut, recording handled runs across restarts (#521, #549). |
+| AIRC issue tool failed locally for a reason that isn't GitHub's | Record the failing tool, error and failure count per project and show an error row in project health until a subsequent AIRC issue tool call succeeds or the failure expires (#581). |
 
 A bell at the right of the title bar shows the number of active signals, coloured by the most severe one.
 Clicking the bell opens a dropdown listing every active signal.

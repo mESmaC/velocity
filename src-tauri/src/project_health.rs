@@ -19,9 +19,10 @@ use velocity_core::collapse::{
     COLLAPSE_FORWARDING_SIGNAL, ForwarderState, collapse_forwarding_needs_attention,
 };
 use velocity_core::project_health::{
-    DISPATCH_IDLE_LIMIT_SECONDS, HealthSeverity, HealthSignalKind, INTEGRATION_UNCOVERED_LANDS,
-    INTEGRATION_UNCOVERED_SECONDS, MIRROR_BEHIND_LIMIT_SECONDS, POST_LAND_STALL_LIMIT_SECONDS,
-    ProjectHealthItem, ProjectHealthView, REVIEW_STUCK_LIMIT_SECONDS, format_duration,
+    AIRC_ISSUE_FAILURE_TTL_SECONDS, DISPATCH_IDLE_LIMIT_SECONDS, HealthSeverity, HealthSignalKind,
+    INTEGRATION_UNCOVERED_LANDS, INTEGRATION_UNCOVERED_SECONDS, MIRROR_BEHIND_LIMIT_SECONDS,
+    POST_LAND_STALL_LIMIT_SECONDS, ProjectHealthItem, ProjectHealthView,
+    REVIEW_STUCK_LIMIT_SECONDS, airc_issue_tool_failure_item, format_duration,
     format_stopped_check_detail, short_commit,
 };
 use velocity_core::release::{
@@ -595,9 +596,27 @@ async fn check_project(application: &AppHandle, app_data: &Path, project: &Proje
     if let Some(item) = check_post_land_stopped(application, project.id, &server).await {
         items.push(item);
     }
+    if let Some(item) = check_airc_issue_tool_health(app_data, project.id, now_ms) {
+        items.push(item);
+    }
     items.extend(check_release_health(application, project, &server, now, now_ms).await);
     items.extend(collect_recent_actions(application, project.id, now, &items));
     stabilize_and_publish(application, project.id, items, now_ms);
+}
+
+/// Signal: an AIRC issue tool failed locally for a reason that isn't GitHub's (#581).
+fn check_airc_issue_tool_health(
+    app_data: &Path,
+    project: u32,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    let failure = velocity_threads::issue_activity::read_issue_tool_failure(app_data, project)?;
+    let ttl_ms = AIRC_ISSUE_FAILURE_TTL_SECONDS.saturating_mul(1000);
+    if now_ms.saturating_sub(failure.failed_at_ms) > ttl_ms {
+        velocity_threads::issue_activity::clear_issue_tool_failure(app_data, project);
+        return None;
+    }
+    Some(airc_issue_tool_failure_item(&failure))
 }
 
 /// Signal: Collapse mirror reads need proactive auth (#571).

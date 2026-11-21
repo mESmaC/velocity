@@ -25,6 +25,10 @@ pub const REVIEW_STUCK_LIMIT_SECONDS: u64 = 20 * 60;
 /// and surfacing why each issue was skipped (#509).
 pub const DISPATCH_IDLE_LIMIT_SECONDS: u64 = 10 * 60;
 
+/// How long a recorded non-GitHub AIRC issue tool failure stays on the project health strip
+/// if no subsequent issue tool call succeeds to clear it (#581).
+pub const AIRC_ISSUE_FAILURE_TTL_SECONDS: u64 = 2 * 60 * 60;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 pub enum HealthSeverity {
@@ -49,6 +53,38 @@ pub enum HealthSignalKind {
     PostLandStalled,
     UpdaterManifestBehind,
     ReleaseGateRefused,
+    AircIssueToolFailed,
+}
+
+/// Persisted record of the latest non-GitHub AIRC issue tool failure for one project (#581).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AircIssueToolFailure {
+    pub tool: String,
+    pub message: String,
+    pub count: u32,
+    pub failed_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_identifier: Option<u32>,
+}
+
+/// Formats a non-GitHub AIRC issue tool failure as a project health row (#581).
+pub fn airc_issue_tool_failure_item(failure: &AircIssueToolFailure) -> ProjectHealthItem {
+    let signal = if failure.count <= 1 {
+        "AIRC issue tool failed locally".to_owned()
+    } else {
+        format!("AIRC issue tools failed locally ({}x)", failure.count)
+    };
+    let action = format!("`{}` failed before reaching GitHub", failure.tool);
+    ProjectHealthItem::new(
+        "airc-issue-tool-failed",
+        HealthSignalKind::AircIssueToolFailed,
+        HealthSeverity::Error,
+        signal,
+        action,
+        failure.failed_at_ms,
+    )
+    .with_detail(Some(failure.message.clone()))
+    .with_thread(failure.thread_identifier)
 }
 
 /// One active health signal on a project, with the automatic action taken and when (#509).

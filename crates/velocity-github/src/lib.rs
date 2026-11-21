@@ -42,6 +42,7 @@ mod workflow_watch;
 pub use agent_issues::{
     AgentIssueDraft, AgentIssueOutcome, IssueCommentEntry, IssueDependency, IssueDetail,
 };
+pub use command::{GH_PROGRAM_ENV, app_gh_program, resolve_gh_program};
 pub use dependency_graph::DependencyGraph;
 pub use gh_command::GitHubCommandError;
 pub use issue_cache::OPEN_ISSUES_REFRESH;

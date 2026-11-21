@@ -26,6 +26,50 @@ pub enum GitHubCommandError {
     Invalid(String),
 }
 
+impl GitHubCommandError {
+    /// Whether this failure came from Velocity's local environment or `gh` invocation
+    /// rather than GitHub's API, network reachability, or caller input validation (#581).
+    pub fn is_local_tool_failure(&self) -> bool {
+        match self {
+            Self::Process(_) | Self::Response(_) => true,
+            Self::TimedOut(_) => false,
+            Self::Missing(what) => !what.starts_with('/') && !what.contains("pagination"),
+            Self::Command { code, message } => !is_github_command_failure(*code, message),
+            Self::Invalid(message) => is_local_invalid_message(message),
+        }
+    }
+}
+
+fn is_github_command_failure(code: Option<i32>, message: &str) -> bool {
+    if code.is_some_and(|status| (400..=599).contains(&status)) && message.starts_with("HTTP ") {
+        return true;
+    }
+    let lower = message.to_ascii_lowercase();
+    lower.contains("http 4")
+        || lower.contains("http 5")
+        || lower.contains("graphql:")
+        || lower.contains("(graphql)")
+        || lower.contains("error connecting to")
+        || lower.contains("dial tcp")
+        || lower.contains("no such host")
+        || lower.contains("tls handshake")
+        || lower.contains("connection refused")
+        || lower.contains("connection reset")
+        || lower.contains("i/o timeout")
+        || lower.contains("network is unreachable")
+        || lower.contains("unexpected eof")
+        || lower.contains("rate limit")
+}
+
+fn is_local_invalid_message(message: &str) -> bool {
+    message.starts_with("GitHub HTTP worker ")
+        || message.starts_with("Could not open Git checkout")
+        || message.starts_with("Could not read origin")
+        || message == "Origin has no fetch URL"
+        || message == "Checkout has no filesystem root"
+        || message == "Invalid GitHub repository name"
+}
+
 /// How long one `gh` call may run. GitHub answers in seconds; a call still running after
 /// this is hung (a stalled connection, a prompt nobody can answer), and whatever waits on
 /// it, such as an issue panel refresh or a post-land report, would otherwise wait for good.
@@ -299,7 +343,7 @@ impl GitHubCommand {
             self.caller,
             crate::request_counter::operation(arguments, graphql_path),
         );
-        let mut command = crate::command::hidden_command("gh");
+        let mut command = crate::command::gh_command();
         command
             .current_dir(&self.directory)
             .args(arguments)
@@ -406,4 +450,68 @@ fn origin_url(directory: &Path) -> Result<(String, bool), GitHubCommandError> {
             .to_string(),
         github_com,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GitHubCommandError;
+
+    #[test]
+    fn classifies_local_tool_failures_apart_from_github_and_validation_errors() {
+        // Risk (#581): project health must surface local AIRC issue tool failures such as
+        // gh shim refusals or missing binaries without alerting on GitHub API errors or
+        // agent input validation rejections.
+        assert!(
+            GitHubCommandError::Command {
+                code: Some(1),
+                message: "gh: Agents do not call gh directly. Use AIRC issue tools instead.".into(),
+            }
+            .is_local_tool_failure()
+        );
+        assert!(
+            GitHubCommandError::Process(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "gh not found"
+            ))
+            .is_local_tool_failure()
+        );
+        assert!(GitHubCommandError::Missing("gh stdin".into()).is_local_tool_failure());
+        assert!(
+            GitHubCommandError::Invalid("GitHub HTTP worker stopped".into())
+                .is_local_tool_failure()
+        );
+
+        assert!(
+            !GitHubCommandError::Command {
+                code: Some(404),
+                message: "HTTP 404: Not Found".into(),
+            }
+            .is_local_tool_failure()
+        );
+        assert!(
+            !GitHubCommandError::Command {
+                code: Some(1),
+                message: "gh: Not Found (HTTP 404)".into(),
+            }
+            .is_local_tool_failure()
+        );
+        assert!(
+            !GitHubCommandError::Command {
+                code: Some(1),
+                message: "GraphQL: Could not resolve to an Issue with the number of 99999.".into(),
+            }
+            .is_local_tool_failure()
+        );
+        assert!(!GitHubCommandError::TimedOut(120).is_local_tool_failure());
+        assert!(
+            !GitHubCommandError::Missing("/data/repository/issue".into()).is_local_tool_failure()
+        );
+        assert!(
+            !GitHubCommandError::Invalid("GitHub GraphQL errors: []".into())
+                .is_local_tool_failure()
+        );
+        assert!(
+            !GitHubCommandError::Invalid("Unknown label \"nope\".".into()).is_local_tool_failure()
+        );
+    }
 }

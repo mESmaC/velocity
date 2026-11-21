@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use agent_client_protocol::v1::schema::{McpServer, McpServerStdio};
+use agent_client_protocol::v1::schema::{EnvVariable, McpServer, McpServerStdio};
 use velocity_airc::{
     CONTINUOUS_DISPATCH_ARGUMENT, LAZY_ARGUMENT, ROLE_ARGUMENT, SERVER_NAME, SERVER_SWITCH,
     server_arguments,
@@ -144,6 +144,7 @@ pub fn duty_member(nick: &str) -> String {
 pub struct AircLaunch {
     executable: PathBuf,
     app_data: PathBuf,
+    gh_program: Option<PathBuf>,
 }
 
 impl AircLaunch {
@@ -151,7 +152,14 @@ impl AircLaunch {
         Self {
             executable,
             app_data,
+            gh_program: velocity_github::app_gh_program().map(Path::to_path_buf),
         }
+    }
+
+    /// Overrides the `gh` executable passed to the AIRC MCP server via `VELOCITY_GH` (#581).
+    pub fn with_gh_program(mut self, gh_program: Option<PathBuf>) -> Self {
+        self.gh_program = gh_program;
+        self
     }
 
     /// A build thread's connection using its unified unique agent name (#532).
@@ -214,6 +222,35 @@ impl AircLaunch {
             member,
             nick,
         ));
-        McpServerStdio::new(SERVER_NAME, &self.executable).args(arguments)
+        let mut server = McpServerStdio::new(SERVER_NAME, &self.executable).args(arguments);
+        if let Some(gh_program) = &self.gh_program {
+            server = server.env(vec![EnvVariable::new(
+                velocity_github::GH_PROGRAM_ENV,
+                gh_program.to_string_lossy().into_owned(),
+            )]);
+        }
+        server
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn airc_launch_passes_resolved_gh_program_through_policy() {
+        // Risk (#581): the AIRC MCP server must receive VELOCITY_GH from AircLaunch so it
+        // runs the real gh binary even when the agent's PATH puts Velocity's shim first.
+        let gh_path = PathBuf::from("/opt/github-cli/gh");
+        let launch = AircLaunch::new(PathBuf::from("/app/velocity"), PathBuf::from("/app/data"))
+            .with_gh_program(Some(gh_path.clone()));
+        let server = launch.duty(1, "scout-1");
+        let updated = with_airc_policy(&server, ThreadRole::Builder, true);
+        let McpServer::Stdio(stdio) = updated else {
+            panic!("AIRC server should stay stdio");
+        };
+        assert!(stdio.env.iter().any(|var| {
+            var.name == velocity_github::GH_PROGRAM_ENV && var.value == gh_path.to_string_lossy()
+        }));
     }
 }

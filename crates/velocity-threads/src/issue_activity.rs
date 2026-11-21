@@ -1,11 +1,15 @@
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use velocity_airc::{Error, IssueCreate, IssueRead, IssueRequest, IssueUpdate, IssueUpdateKind};
 use velocity_core::issue_holds::UpstreamTarget;
+use velocity_core::project_health::AircIssueToolFailure;
 use velocity_core::text_budget::{json_text_page, preview};
-use velocity_github::{AgentIssueDraft, AgentIssueOutcome, IssueClient, IssueDetail};
+use velocity_github::{
+    AgentIssueDraft, AgentIssueOutcome, GitHubCommandError, IssueClient, IssueDetail,
+};
 use velocity_rosen::ProjectServer;
 use velocity_store::{ProjectItem, VersionControl};
 
@@ -14,6 +18,33 @@ const READ_RESPONSE_BUDGET: usize = 7_500;
 const FULL_BODY_BUDGET: usize = 6_000;
 const BODY_WITH_COMMENTS_BUDGET: usize = 4_200;
 const COMMENT_PREVIEW_BYTES: usize = 1_200;
+const ISSUE_HEALTH_FOLDER: &str = "airc-issue-health";
+const MAX_HEALTH_MESSAGE_CHARS: usize = 240;
+
+enum IssueActivityFailure {
+    /// Failed locally (Velocity state, missing `gh`, shim refusal, etc.) rather than GitHub.
+    Local(Error),
+    /// Failed at GitHub, over the network, or because of caller argument validation.
+    External(Error),
+}
+
+impl IssueActivityFailure {
+    fn from_github(error: GitHubCommandError) -> Self {
+        let local = error.is_local_tool_failure();
+        let message = Error::Invalid(error.to_string());
+        if local {
+            Self::Local(message)
+        } else {
+            Self::External(message)
+        }
+    }
+
+    fn into_error(self) -> Error {
+        match self {
+            Self::Local(error) | Self::External(error) => error,
+        }
+    }
+}
 
 /// The tool process reads the project's GitHub identity from the app, since a Rosen
 /// workspace has no Git remote and the issue number alone is only repository-local.
@@ -22,6 +53,32 @@ pub fn handle_issue_request(
     project: &str,
     request: IssueRequest<'_>,
 ) -> Result<Value, Error> {
+    let tool = request_tool_name(&request);
+    let thread = request_thread_id(&request);
+    let project_id = project.parse::<u32>().ok();
+    match run_issue_request(app_data, project, request) {
+        Ok(value) => {
+            if let Some(id) = project_id {
+                clear_issue_tool_failure(app_data, id);
+            }
+            Ok(value)
+        }
+        Err(failure) => {
+            if let IssueActivityFailure::Local(error) = &failure
+                && let Some(id) = project_id
+            {
+                record_issue_tool_failure(app_data, id, tool, &error.to_string(), thread);
+            }
+            Err(failure.into_error())
+        }
+    }
+}
+
+fn run_issue_request(
+    app_data: &Path,
+    project: &str,
+    request: IssueRequest<'_>,
+) -> Result<Value, IssueActivityFailure> {
     let (project, client) = open_issue_project(app_data, project)?;
     match request {
         IssueRequest::Read(read) => read_issue(&client, read),
@@ -33,30 +90,33 @@ pub fn handle_issue_request(
     }
 }
 
-fn open_issue_project(app_data: &Path, project: &str) -> Result<(ProjectItem, IssueClient), Error> {
-    let invalid = |message: &str| Error::Invalid(message.into());
+fn open_issue_project(
+    app_data: &Path,
+    project: &str,
+) -> Result<(ProjectItem, IssueClient), IssueActivityFailure> {
+    let local = |message: String| IssueActivityFailure::Local(Error::Invalid(message));
     let identifier = project
         .parse::<u32>()
-        .map_err(|_| invalid("Invalid project identity"))?;
+        .map_err(|_| local("Invalid project identity".into()))?;
     // Startup recovery belongs to the app that owns the state writer. Read only
     // the atomically replaced snapshot from this MCP child process (#562).
     let project = velocity_store::read_project_snapshot(app_data, identifier, false)
-        .map_err(|error| Error::Invalid(error.to_string()))?
-        .ok_or_else(|| invalid("The project was removed"))?;
+        .map_err(|error| local(error.to_string()))?
+        .ok_or_else(|| local("The project was removed".into()))?;
     let directory = Path::new(&project.repository_path);
     let client = match &project.github_remote {
         Some(remote) => IssueClient::for_repository(directory, remote),
         None => IssueClient::discover(directory),
     }
-    .map_err(|error| Error::Invalid(error.to_string()))?;
+    .map_err(IssueActivityFailure::from_github)?;
     Ok((project, client))
 }
 
-fn read_issue(client: &IssueClient, read: IssueRead) -> Result<Value, Error> {
+fn read_issue(client: &IssueClient, read: IssueRead) -> Result<Value, IssueActivityFailure> {
     let detail = client
         .read_issue_detail(read.issue, if read.offset > 0 { 0 } else { read.comments })
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    format_issue_read(&detail, read.offset, read.comments)
+        .map_err(IssueActivityFailure::from_github)?;
+    format_issue_read(&detail, read.offset, read.comments).map_err(IssueActivityFailure::External)
 }
 
 fn format_issue_read(
@@ -121,9 +181,9 @@ fn create_issue(
     project: &ProjectItem,
     client: &IssueClient,
     create: IssueCreate<'_>,
-) -> Result<Value, Error> {
+) -> Result<Value, IssueActivityFailure> {
     let blockers = velocity_core::issue_dependencies::parse_blockers(create.blocked_by)
-        .map_err(Error::Invalid)?;
+        .map_err(|error| IssueActivityFailure::External(Error::Invalid(error)))?;
     let thread = velocity_core::thread_titles::thread_id_from_member(create.member);
     let byline = issue_byline(project.id, thread, Some(create.nick));
     let draft = AgentIssueDraft {
@@ -137,7 +197,7 @@ fn create_issue(
         .create_agent_issue(&draft, |texts| {
             mentioned_issue_paths(app_data, project, texts)
         })
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+        .map_err(IssueActivityFailure::from_github)?;
     Ok(match outcome {
         AgentIssueOutcome::Filed {
             issue,
@@ -177,12 +237,12 @@ fn post_update(
     identifier: u32,
     client: &IssueClient,
     update: IssueUpdate<'_>,
-) -> Result<String, Error> {
+) -> Result<String, IssueActivityFailure> {
     let thread = velocity_core::thread_titles::thread_id_from_member(&update.claim.member);
     let byline = issue_byline(identifier, thread, Some(&update.claim.nick));
     // The issues this one waits on become GitHub dependencies, never a hold label (#511).
     let blockers = velocity_core::issue_dependencies::parse_blockers(update.blocked_by)
-        .map_err(Error::Invalid)?;
+        .map_err(|error| IssueActivityFailure::External(Error::Invalid(error)))?;
     match update.kind {
         IssueUpdateKind::Comment => {
             client.post_issue_progress(update.issue, &byline, update.body, false, &blockers)
@@ -192,9 +252,9 @@ fn post_update(
         }
         IssueUpdateKind::BlockedUpstream { upstream } => {
             let target = UpstreamTarget::parse(upstream).ok_or_else(|| {
-                Error::Invalid(format!(
+                IssueActivityFailure::External(Error::Invalid(format!(
                     "upstream must be an upstream PR or release such as owner/repo#123, owner/repo@v1.0.0, or owner/repo#123 -> release:owner/repo (got {upstream:?})"
-                ))
+                )))
             })?;
             client.post_blocked_upstream(update.issue, &byline, &target, update.body, &blockers)
         }
@@ -216,7 +276,102 @@ fn post_update(
             update.body,
         ),
     }
-    .map_err(|error| Error::Invalid(error.to_string()))
+    .map_err(IssueActivityFailure::from_github)
+}
+
+/// Reads the latest non-GitHub AIRC issue tool failure recorded for `project`, if any (#581).
+pub fn read_issue_tool_failure(app_data: &Path, project: u32) -> Option<AircIssueToolFailure> {
+    let bytes = std::fs::read(issue_health_path(app_data, project)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Clears any recorded non-GitHub AIRC issue tool failure for `project` (#581).
+pub fn clear_issue_tool_failure(app_data: &Path, project: u32) {
+    let _ = std::fs::remove_file(issue_health_path(app_data, project));
+}
+
+fn issue_health_path(app_data: &Path, project: u32) -> PathBuf {
+    app_data
+        .join(ISSUE_HEALTH_FOLDER)
+        .join(format!("{project}.json"))
+}
+
+fn record_issue_tool_failure(
+    app_data: &Path,
+    project: u32,
+    tool: &str,
+    message: &str,
+    thread_identifier: Option<u32>,
+) {
+    let path = issue_health_path(app_data, project);
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let previous_count = read_issue_tool_failure(app_data, project)
+        .map(|existing| existing.count)
+        .unwrap_or(0);
+    let record = AircIssueToolFailure {
+        tool: tool.to_owned(),
+        message: compact_health_message(message),
+        count: previous_count.saturating_add(1),
+        failed_at_ms: unix_millis(),
+        thread_identifier,
+    };
+    let Ok(bytes) = serde_json::to_vec(&record) else {
+        return;
+    };
+    let temporary = parent.join(format!("{project}.{}.tmp", uuid::Uuid::new_v4()));
+    if std::fs::write(&temporary, &bytes).is_ok() && std::fs::rename(&temporary, &path).is_err() {
+        let _ = std::fs::write(&path, &bytes);
+        let _ = std::fs::remove_file(&temporary);
+    }
+}
+
+fn compact_health_message(message: &str) -> String {
+    let line = message
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    let mut compact: String = line.chars().take(MAX_HEALTH_MESSAGE_CHARS).collect();
+    if line.chars().count() > MAX_HEALTH_MESSAGE_CHARS {
+        compact.push_str("...");
+    }
+    compact
+}
+
+fn request_tool_name(request: &IssueRequest<'_>) -> &'static str {
+    match request {
+        IssueRequest::Read(_) => "issue_read",
+        IssueRequest::Create(_) => "issue_create",
+        IssueRequest::Update(update) => match update.kind {
+            IssueUpdateKind::Comment => "issue_comment",
+            IssueUpdateKind::ReadyToClose => "issue_ready_to_close",
+            IssueUpdateKind::BlockedUpstream { .. } => "issue_blocked_upstream",
+            IssueUpdateKind::Hold { .. } => "issue_hold",
+            IssueUpdateKind::CloseNotPlanned { .. } => "issue_close_not_planned",
+        },
+    }
+}
+
+fn request_thread_id(request: &IssueRequest<'_>) -> Option<u32> {
+    let member = match request {
+        IssueRequest::Read(_) => return None,
+        IssueRequest::Create(create) => create.member,
+        IssueRequest::Update(update) => update.claim.member.as_str(),
+    };
+    velocity_core::thread_titles::thread_id_from_member(member)
+}
+
+fn unix_millis() -> u64 {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    u64::try_from(millis).unwrap_or(u64::MAX)
 }
 
 fn mentioned_issue_paths(
@@ -282,7 +437,8 @@ mod tests {
         )?;
         let _store = StateStore::load_or_default(&app_data)?;
 
-        let (loaded, client) = open_issue_project(&app_data, "3")?;
+        let (loaded, client) =
+            open_issue_project(&app_data, "3").map_err(IssueActivityFailure::into_error)?;
         assert_eq!(loaded.id, 3);
         assert_eq!(client.repository(), "mESmaC/collapse.sh");
 

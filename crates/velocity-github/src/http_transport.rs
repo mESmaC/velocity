@@ -427,7 +427,7 @@ fn refresh_token(caller: &'static Location<'static>, stale: &str) -> Option<Stri
 
 fn read_gh_token(caller: &'static Location<'static>) -> Option<String> {
     crate::request_counter::record(caller, "auth token".into());
-    let mut command = crate::command::hidden_command("gh");
+    let mut command = crate::command::gh_command();
     command
         .args(["auth", "token", "--hostname", "github.com"])
         .env("GH_PROMPT_DISABLED", "1")

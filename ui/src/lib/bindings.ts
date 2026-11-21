@@ -2133,7 +2133,7 @@ export type GraphStatus_Serialize = {
 
 export type HealthSeverity = "Info" | "Warning" | "Error";
 
-export type HealthSignalKind = "MirrorBehind" | "CollapseProactiveAuth" | "CollapseForwarding" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "PostLandStalled" | "UpdaterManifestBehind" | "ReleaseGateRefused";
+export type HealthSignalKind = "MirrorBehind" | "CollapseProactiveAuth" | "CollapseForwarding" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "PostLandStalled" | "UpdaterManifestBehind" | "ReleaseGateRefused" | "AircIssueToolFailed";
 
 /**  A model you hid from the pickers by clicking its chip (F15 Models). */
 export type HiddenModel = {

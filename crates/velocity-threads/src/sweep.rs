@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use agent_client_protocol::v1::schema::{McpServer, McpServerStdio, SessionUpdate};
+use agent_client_protocol::v1::schema::{EnvVariable, McpServer, McpServerStdio, SessionUpdate};
 use velocity_acp::RunSettings;
 use velocity_acp::client::{AgentEvent, AgentLaunch, SessionSetup};
 use velocity_core::scout_sweep::step_doing;
@@ -98,12 +98,18 @@ pub fn sweep_session(
         .with_run_settings(plan.run_settings.clone());
     setup.role = velocity_core::tool_policy::ThreadRole::Scout;
     setup.usage_role = Some(Role::DutySweep);
-    let server = McpServerStdio::new("velocity-scout", scout_server).args(vec![
+    let mut server = McpServerStdio::new("velocity-scout", scout_server).args(vec![
         SCOUT_SERVER_SWITCH.to_owned(),
         worktree.display().to_string(),
         plan.nickname.clone(),
         report.display().to_string(),
     ]);
+    if let Some(gh_program) = velocity_github::app_gh_program() {
+        server = server.env(vec![EnvVariable::new(
+            velocity_github::GH_PROGRAM_ENV,
+            gh_program.to_string_lossy().into_owned(),
+        )]);
+    }
     setup.shared_servers.push(McpServer::Stdio(server));
     setup
 }
