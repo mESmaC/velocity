@@ -253,6 +253,79 @@ pub fn github_repository_from_remote(remote: &str) -> Option<String> {
         .then(|| format!("{owner}/{repository}"))
 }
 
+/// Action kinds Rosen's Collapse relay can run for a project (Rosen R14, #576).
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[serde(rename_all = "snake_case")]
+pub enum CollapseRelayKind {
+    Approve,
+    Land,
+    Mark,
+    Config,
+    Revoke,
+}
+
+impl CollapseRelayKind {
+    pub const ALL: [Self; 5] = [
+        Self::Approve,
+        Self::Land,
+        Self::Mark,
+        Self::Config,
+        Self::Revoke,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approve => "approve",
+            Self::Land => "land",
+            Self::Mark => "mark",
+            Self::Config => "config",
+            Self::Revoke => "revoke",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == text)
+    }
+
+    /// Sorts and deduplicates relay kinds into canonical order.
+    pub fn normalize(kinds: impl IntoIterator<Item = Self>) -> Vec<Self> {
+        let mut normalized: Vec<Self> = kinds.into_iter().collect();
+        normalized.sort();
+        normalized.dedup();
+        normalized
+    }
+}
+
+/// Last delivery time and failure for a Rosen push stream to Collapse (#576).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct CollapseFeedHealth {
+    /// Unix milliseconds when the newest acknowledged event or ledger entry was recorded.
+    pub last_sent_at: Option<String>,
+    /// Why the latest pass failed or stopped while nothing newer arrived.
+    pub last_error: Option<String>,
+}
+
+/// Whether git's credential helper holds a push token for Collapse's feed endpoints (#576).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PushTokenStatus {
+    /// No Collapse root or mirror is configured yet.
+    NotConfigured,
+    /// Both `<root>/rosen/state` and `<root>/ledgers` hold a push token.
+    Present,
+    /// Only one of the two feed endpoints holds a push token.
+    Partial { state_feed: bool, ledger_push: bool },
+    /// Neither feed endpoint holds a push token.
+    Missing,
+    /// Could not query git's credential helper.
+    Unavailable { error: String },
+}
+
 /// The project's Collapse mirror as Collapse reports it: its last land and the forwarder
 /// to the downstream remote (#427). Read with the personal token; holds no credential.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

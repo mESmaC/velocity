@@ -39,6 +39,8 @@ pub(crate) struct ManagedRosen {
     catch_up_locks: std::sync::Mutex<BTreeMap<u32, Arc<tokio::sync::Mutex<()>>>>,
     /// Last mirror rejection sequence for which automatic catch-up recovery ran (#520).
     recovered_rejections: std::sync::Mutex<BTreeMap<u32, u64>>,
+    /// Projects whose Collapse relay allow-list has been applied for the running server (#576).
+    relay_synced: std::sync::Mutex<BTreeSet<u32>>,
 }
 
 impl ManagedRosen {
@@ -123,6 +125,7 @@ pub(crate) fn initialize(application: &AppHandle) -> anyhow::Result<()> {
         catch_up_retries: std::sync::Mutex::new(BTreeSet::new()),
         catch_up_locks: std::sync::Mutex::new(BTreeMap::new()),
         recovered_rejections: std::sync::Mutex::new(BTreeMap::new()),
+        relay_synced: std::sync::Mutex::new(BTreeSet::new()),
     });
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
@@ -437,7 +440,32 @@ pub(crate) async fn server(application: &AppHandle, project: u32) -> Result<Proj
     }
     // Before any caller can land: a base behind its mirror would push non-fast-forward.
     crate::rosen_mirror::catch_up_once(application, project, &server).await;
+    sync_collapse_relay_if_needed(application, project, &server).await;
     Ok(server)
+}
+
+/// Re-applies the project's Collapse relay allow-list when this run first readies its
+/// server or whenever Velocity starts/re-imports the server process (#576).
+async fn sync_collapse_relay_if_needed(
+    application: &AppHandle,
+    project: u32,
+    server: &ProjectServer,
+) {
+    let managed = application.state::<ManagedRosen>();
+    let started = managed.servers.take_started(project);
+    let already_synced = !started
+        && managed
+            .relay_synced
+            .lock()
+            .is_ok_and(|synced| synced.contains(&project));
+    if already_synced {
+        return;
+    }
+    if crate::collapse_mirror::sync_relay_on_start(application, project, server).await
+        && let Ok(mut synced) = managed.relay_synced.lock()
+    {
+        synced.insert(project);
+    }
 }
 
 /// Tells the owner what became of a project server found running another Rosen build than
@@ -1029,7 +1057,13 @@ pub(crate) async fn shutdown_servers(application: &AppHandle) {
 /// install.
 pub(crate) async fn restart_servers(application: &AppHandle) {
     if let Some(managed) = application.try_state::<ManagedRosen>() {
+        if let Ok(mut synced) = managed.relay_synced.lock() {
+            synced.clear();
+        }
         managed.servers.restart_all().await;
+        for (project, server) in managed.servers.registered_projects() {
+            sync_collapse_relay_if_needed(application, project, &server).await;
+        }
     }
 }
 

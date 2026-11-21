@@ -59,8 +59,11 @@
   Per-path credentials key those apart from the mirror URL, so Velocity stores the same push token under all three URLs, and it stays in the credential helper, never in `rosen.toml` or `state.json`.
   Private Collapse repositories answer unauthenticated Git reads with 404 rather than a login challenge, so Velocity also sets `http.https://api.collapse.sh/.proactiveAuth` to `basic` in the user's global git configuration whenever it provisions Collapse credentials (Create with Collapse, Mirror to Collapse and Collapse sign-in), requiring Git 2.46 or later (#571).
   Rosen's relay runs only the kinds the server's operator allowed.
-  Velocity owns the project's server, so linking allows every kind Collapse offers (`approve`, `land`, `mark`, `config` and `revoke`), and the toast names them.
+  Velocity owns the project's server, so linking defaults to every kind Collapse offers (`approve`, `land`, `mark`, `config` and `revoke`), and the toast names them.
+  Each project's relay allow-list is saved in Velocity's state and re-applied whenever Velocity starts a project server whose base `rosen.toml` names `collapse`, so a rebuilt or re-imported server still runs relayed actions (#576).
   Each relayed action still passes Rosen's gates and is recorded as `<account>@collapse`.
+  Settings → Workspaces includes a Collapse section for each Rosen project showing the `collapse` root, push token status in git's credential helper, state feed and ledger push health (last sent and last error), a channel lines toggle (`collapse_channel`) that lands a `rosen.toml` change, relay action kind checkboxes, and Unlink (#576).
+  Unlink removes the `collapse` root (and `collapse_channel`) through a landed `rosen.toml` change without altering `[mirror] remote`, clears the server's relay allow-list, and stops the feed.
   A project that already mirrors to Collapse without the `collapse` root offers Send Collapse its live state in the project switcher menu and in the Rosen status pane's Mirror section.
   It copies the push token the credential helper holds for the mirror to the two feed URLs, or mints one when the helper holds none and Collapse is connected, then lands a `rosen.toml` change setting only `collapse` and allows the relay.
   The pane offers the same action while the state feed is failing, where it stores the token again and leaves a `rosen.toml` that already names the root as it is.

@@ -1367,6 +1367,11 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub collapse_live_state: bool,
+    /// Collapse relay action kinds saved for this project's server (#576). `None` uses
+    /// every kind Collapse offers once the project names a `collapse` root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub collapse_relay_allow: Option<Vec<velocity_core::collapse::CollapseRelayKind>>,
     /// Collapse's last land and downstream forwarder for that repository, as last read from
     /// Collapse (#427). Kept so the project shows it at startup before the next read.
     #[serde(default)]
@@ -1446,6 +1451,7 @@ impl ProjectItem {
             rosen_mirror_notices: Vec::new(),
             collapse_repository: None,
             collapse_live_state: false,
+            collapse_relay_allow: None,
             collapse_mirror_health: None,
             rosen_mirror_divergence: None,
             retried_release_runs: Vec::new(),

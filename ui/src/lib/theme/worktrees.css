@@ -213,6 +213,64 @@
   font-family: var(--mono);
   color: var(--text-2);
 }
+.collapse-row-value {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.collapse-root {
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.collapse-health {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-1);
+  max-width: 440px;
+  text-align: right;
+}
+.collapse-error {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.collapse-status-ok {
+  font-size: var(--fs-sm);
+  color: var(--ok);
+}
+.collapse-status-warn {
+  font-size: var(--fs-sm);
+  color: var(--warn);
+}
+.collapse-status-err {
+  font-size: var(--fs-sm);
+  color: var(--err);
+}
+.collapse-relay-block {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-4);
+}
+.collapse-relay-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.collapse-relay-list {
+  padding-left: var(--sp-2);
+}
+.collapse-unlink-hint {
+  margin: var(--sp-1) 0 0;
+}
+.collapse-danger {
+  border-color: var(--err);
+  color: var(--err);
+}
 .worktree-input {
   flex: 1;
   display: flex;

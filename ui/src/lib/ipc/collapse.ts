@@ -2,13 +2,21 @@ import { listen, type EventCallback } from '@tauri-apps/api/event';
 import {
   COLLAPSE_LINK_EVENT,
   commands,
+  type CollapseActionResult,
   type CollapseConnection,
   type CollapseLinkOpened_Serialize,
+  type CollapseRelayKind,
   type LayoutSnapshot_Serialize,
+  type ProjectCollapseSettings,
 } from '../bindings';
 export type {
+  CollapseActionResult,
   CollapseConnection,
+  CollapseFeedHealth,
   CollapseLinkOpened_Serialize as CollapseLinkOpened,
+  CollapseRelayKind,
+  ProjectCollapseSettings,
+  PushTokenStatus,
 } from '../bindings';
 
 // What Collapse last reported for the project's mirror: its last land and the
@@ -23,6 +31,8 @@ export type CollapseMirrorHealth = NonNullable<
 // git's credential helper and lands the rosen.toml change; a toast says how it went.
 // Send Collapse its live state (#517): for a project already mirrored there, Rust gives
 // Rosen's state feed the push token and lands the rosen.toml `collapse` root.
+// Project Collapse settings (#576): inspect feed health and push token status, toggle
+// `collapse_channel`, set allowed relay actions, and unlink the `collapse` root.
 export const collapseCommands = {
   open: (project: number, commit: string | null = null) =>
     commands.openOnCollapse(project, commit),
@@ -30,6 +40,20 @@ export const collapseCommands = {
     commands.mirrorToCollapse(project),
   sendLiveState: (project: number): Promise<null> =>
     commands.sendCollapseLiveState(project),
+  projectSettings: (project: number): Promise<ProjectCollapseSettings | null> =>
+    commands.getProjectCollapseSettings(project),
+  setChannel: (
+    project: number,
+    enabled: boolean,
+  ): Promise<CollapseActionResult> =>
+    commands.setCollapseChannel(project, enabled),
+  setRelay: (
+    project: number,
+    allow: CollapseRelayKind[],
+  ): Promise<ProjectCollapseSettings> =>
+    commands.setCollapseRelay(project, allow),
+  unlink: (project: number): Promise<CollapseActionResult> =>
+    commands.unlinkCollapse(project),
 };
 
 // Collapse's read-only MCP server (#430). The tokens stay in the OS credential

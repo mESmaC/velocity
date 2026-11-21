@@ -151,12 +151,18 @@ impl ProjectServer {
 
     /// Connects to the server, starting it first when none listens.
     pub async fn connect(&self) -> Result<Arc<Connection>, RosenError> {
+        self.connect_noting_start()
+            .await
+            .map(|(connection, _)| connection)
+    }
+
+    async fn connect_noting_start(&self) -> Result<(Arc<Connection>, bool), RosenError> {
         match requests(&self.endpoint).await {
             Err(ClientError::NotRunning(_)) => {}
-            connected => return Ok(connected?),
+            connected => return Ok((connected?, false)),
         }
         let mut child = self.start()?;
-        self.wait_until_listening(&mut child).await
+        Ok((self.wait_until_listening(&mut child).await?, true))
     }
 
     fn start(&self) -> Result<Child, RosenError> {
@@ -291,9 +297,17 @@ impl ProjectServer {
     /// Imports the project's history (Rosen R1), once per project. Its default branch
     /// becomes the base, and every land is pushed to its mirror.
     pub async fn import(&self, client: &Client, source: &ImportSource) -> Result<(), RosenError> {
+        self.import_noting_fresh(client, source).await.map(|_| ())
+    }
+
+    async fn import_noting_fresh(
+        &self,
+        client: &Client,
+        source: &ImportSource,
+    ) -> Result<bool, RosenError> {
         let marker = self.data_dir.join(IMPORTED_MARKER);
         if marker.is_file() {
-            return Ok(());
+            return Ok(false);
         }
         let mut imported = Err(ClientError::Disconnected);
         // Reading git history runs git many times; one retry rides out a git process that
@@ -325,7 +339,8 @@ impl ProjectServer {
             action: "write",
             path: marker,
             source,
-        })
+        })?;
+        Ok(true)
     }
 }
 
@@ -393,6 +408,8 @@ pub struct Servers {
     stopped: AtomicBool,
     /// Projects whose running server this run has compared with its own Rosen build (#515).
     compared: std::sync::Mutex<BTreeSet<u32>>,
+    /// Projects whose server process was freshly started or imported since last checked (#576).
+    started: std::sync::Mutex<BTreeSet<u32>>,
     /// What became of each server found running another build, until the app shows it.
     updates: std::sync::Mutex<BTreeMap<u32, ServerUpdate>>,
 }
@@ -405,6 +422,7 @@ impl Servers {
             starting: std::sync::Mutex::new(BTreeMap::new()),
             stopped: AtomicBool::new(false),
             compared: std::sync::Mutex::new(BTreeSet::new()),
+            started: std::sync::Mutex::new(BTreeSet::new()),
             updates: std::sync::Mutex::new(BTreeMap::new()),
         }
     }
@@ -457,7 +475,7 @@ impl Servers {
             return Err(RosenError::Stopped);
         }
         self.update_once(project, &server).await;
-        let client = server.connect().await?;
+        let (client, started_new) = server.connect_noting_start().await?;
         // Stopped while this start was connecting: the server it started goes too.
         if self.stopped() {
             server.stop().await;
@@ -468,10 +486,16 @@ impl Servers {
         if let Ok(mut registry) = self.registry.lock() {
             registry.insert(project, server.clone());
         }
-        if let Some(source) = source {
-            server.import(&client, source).await?;
+        let imported_fresh = if let Some(source) = source {
+            server.import_noting_fresh(&client, source).await?
         } else {
             client.project_config(None).await?;
+            false
+        };
+        if (started_new || imported_fresh)
+            && let Ok(mut started) = self.started.lock()
+        {
+            started.insert(project);
         }
         Ok(server)
     }
@@ -501,6 +525,26 @@ impl Servers {
         self.updates.lock().ok()?.remove(&project)
     }
 
+    /// Reports once when `project`'s server was freshly started or imported (#576).
+    pub fn take_started(&self, project: u32) -> bool {
+        self.started
+            .lock()
+            .is_ok_and(|mut started| started.remove(&project))
+    }
+
+    /// Every `(project, server)` pair this run has started (#576).
+    pub fn registered_projects(&self) -> Vec<(u32, ProjectServer)> {
+        self.registry
+            .lock()
+            .map(|registry| {
+                registry
+                    .iter()
+                    .map(|(&project, server)| (project, server.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn registered(&self) -> Vec<ProjectServer> {
         self.registry
             .lock()
@@ -512,8 +556,12 @@ impl Servers {
     /// update it made way for didn't install. Watchers journal meanwhile and catch up.
     pub async fn restart_all(&self) {
         self.stopped.store(false, Ordering::SeqCst);
-        for server in self.registered() {
-            let _ = server.connect().await;
+        for (project, server) in self.registered_projects() {
+            if let Ok((_, true)) = server.connect_noting_start().await
+                && let Ok(mut started) = self.started.lock()
+            {
+                started.insert(project);
+            }
         }
     }
 

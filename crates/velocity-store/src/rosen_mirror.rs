@@ -147,6 +147,41 @@ impl StateStore {
         Ok(true)
     }
 
+    /// Returns the Collapse relay action kinds configured for `project`, defaulting to
+    /// every kind Collapse offers when none have been customized (#576).
+    pub fn collapse_relay_allow(
+        &self,
+        project: u32,
+    ) -> Vec<velocity_core::collapse::CollapseRelayKind> {
+        self.project(project)
+            .and_then(|item| item.collapse_relay_allow.as_ref())
+            .map(|kinds| {
+                velocity_core::collapse::CollapseRelayKind::normalize(kinds.iter().copied())
+            })
+            .unwrap_or_else(|| velocity_core::collapse::CollapseRelayKind::ALL.to_vec())
+    }
+
+    /// Saves the Collapse relay action kinds for `project` (`None` restores the default
+    /// all-kinds policy) and reports whether the saved value changed (#576).
+    pub fn save_collapse_relay_allow(
+        &mut self,
+        project: u32,
+        allow: Option<Vec<velocity_core::collapse::CollapseRelayKind>>,
+    ) -> Result<bool, StoreError> {
+        let normalized = allow.map(velocity_core::collapse::CollapseRelayKind::normalize);
+        let unchanged = self
+            .project(project)
+            .is_none_or(|item| item.collapse_relay_allow == normalized);
+        if unchanged {
+            return Ok(false);
+        }
+        self.edit_project_in_place(project, |item| {
+            item.collapse_relay_allow = normalized;
+            (true, ())
+        })?;
+        Ok(true)
+    }
+
     /// Saves what Collapse last reported for the project's mirror and reports whether it
     /// changed (#427). `None` clears it, as when Collapse no longer lists the repository.
     pub fn save_collapse_mirror_health(
@@ -332,6 +367,55 @@ mod tests {
             ProjectLocationKind::Local
         );
         assert_eq!(store.state.projects[0].base_ci, None);
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#576): a customized or cleared Collapse relay allow-list lost on reload would
+    // re-enable disallowed actions when Velocity restarts or rebuilds the Rosen server.
+    #[test]
+    fn collapse_relay_allow_survives_reload() -> Result<(), Box<dyn std::error::Error>> {
+        use velocity_core::collapse::CollapseRelayKind;
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-collapse-relay-{unique}"));
+        let mut store = StateStore::load_or_default(&directory)?;
+        store.state.projects = vec![ProjectItem::new(1, "One".into(), r"C:\project one".into())];
+        store.store_snapshot(store.state.clone())?;
+
+        assert_eq!(
+            store.collapse_relay_allow(1),
+            CollapseRelayKind::ALL.to_vec()
+        );
+        let subset = vec![
+            CollapseRelayKind::Mark,
+            CollapseRelayKind::Approve,
+            CollapseRelayKind::Approve,
+        ];
+        assert!(store.save_collapse_relay_allow(1, Some(subset))?);
+        assert!(!store.save_collapse_relay_allow(
+            1,
+            Some(vec![CollapseRelayKind::Approve, CollapseRelayKind::Mark]),
+        )?);
+
+        let mut store = StateStore::load_or_default(&directory)?;
+        assert_eq!(
+            store.collapse_relay_allow(1),
+            vec![CollapseRelayKind::Approve, CollapseRelayKind::Mark]
+        );
+        assert!(store.save_collapse_relay_allow(1, Some(Vec::new()))?);
+
+        let mut store = StateStore::load_or_default(&directory)?;
+        assert!(store.collapse_relay_allow(1).is_empty());
+        assert!(store.save_collapse_relay_allow(1, None)?);
+
+        let store = StateStore::load_or_default(&directory)?;
+        assert_eq!(
+            store.collapse_relay_allow(1),
+            CollapseRelayKind::ALL.to_vec()
+        );
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

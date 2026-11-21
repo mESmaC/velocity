@@ -19,12 +19,16 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
 use velocity_collapse::{CollapseCredentials, MirrorRequest, RepositoryActivity};
 use velocity_core::collapse::{
-    CollapseMirrorHealth, ForwarderState, dashboard_poll_active, dashboard_poll_delay,
+    CollapseFeedHealth, CollapseMirrorHealth, CollapseRelayKind, ForwarderState, PushTokenStatus,
+    dashboard_poll_active, dashboard_poll_delay,
 };
 use velocity_new_project::{
     NewProjectRequest, OpenProjectRequest, ProjectLocationRequest, ProjectMirror,
 };
-use velocity_rosen::collapse_link::{CollapseLink, allow_collapse_relay, propose_collapse_link};
+use velocity_rosen::collapse_link::{
+    CollapseLink, collapse_root, collapse_state, propose_collapse_channel, propose_collapse_link,
+    propose_collapse_unlink, set_collapse_relay as apply_collapse_relay,
+};
 use velocity_rosen::landing::{LandOutcome, LandRefusal};
 use velocity_rosen::workspace_settings::SETTINGS_AGENT;
 
@@ -287,6 +291,241 @@ async fn preserve_github_remote(
     Ok(true)
 }
 
+/// Project settings view for the Collapse section (#576).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
+pub struct ProjectCollapseSettings {
+    pub project_identifier: u32,
+    pub collapse_repository: Option<String>,
+    pub collapse_root: Option<String>,
+    pub collapse_channel: bool,
+    pub config_error: Option<String>,
+    pub push_token: PushTokenStatus,
+    pub state_feed: CollapseFeedHealth,
+    pub ledger_push: CollapseFeedHealth,
+    pub relay_allow: Vec<CollapseRelayKind>,
+    pub server_relay_allow: Vec<CollapseRelayKind>,
+    pub relay_revoked: bool,
+}
+
+/// Result of a Collapse settings action that lands a `rosen.toml` change (#576).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
+pub struct CollapseActionResult {
+    pub settings: ProjectCollapseSettings,
+    pub message: String,
+}
+
+/// `get_project_collapse_settings` (§3.1): reads the project's Collapse root, push token
+/// status, state feed and ledger push health, channel lines flag and relay allow-list (#576).
+/// Returns `None` for non-Rosen projects.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_project_collapse_settings(
+    application: AppHandle,
+    project_identifier: u32,
+) -> Result<Option<ProjectCollapseSettings>, String> {
+    if !uses_rosen(&application, project_identifier).await? {
+        return Ok(None);
+    }
+    read_project_collapse_settings(&application, project_identifier)
+        .await
+        .map(Some)
+}
+
+/// `set_collapse_channel` (§3.1): toggles `collapse_channel` in `rosen.toml` through a
+/// landed change so Rosen sends or stops sending channel lines to Collapse (#576).
+#[tauri::command]
+#[specta::specta]
+pub async fn set_collapse_channel(
+    application: AppHandle,
+    project_identifier: u32,
+    enabled: bool,
+) -> Result<CollapseActionResult, String> {
+    let subject = mirror_subject(&application, project_identifier)?;
+    let server = crate::rosen::server(&application, project_identifier).await?;
+    crate::rosen_mirror::check_and_catch_up(&application, project_identifier).await;
+    let change = propose_collapse_channel(&server, enabled)
+        .await
+        .map_err(|error| error.to_string())?;
+    let message = match change {
+        None if enabled => format!("{}: channel lines already go to Collapse", subject.name),
+        None => format!("{}: channel lines are already off", subject.name),
+        Some(change) => {
+            let outcome = velocity_rosen::landing::land(&server, SETTINGS_AGENT, &change)
+                .await
+                .map_err(|error| error.to_string())?;
+            match outcome {
+                LandOutcome::Landed { .. } if enabled => {
+                    format!("{}: channel lines now go to Collapse", subject.name)
+                }
+                LandOutcome::Landed { .. } => {
+                    format!("{}: channel lines stopped going to Collapse", subject.name)
+                }
+                LandOutcome::Refused(refusal) => format!(
+                    "{}: change {change} waits to land: {}",
+                    subject.name,
+                    refusal_reason(refusal)
+                ),
+            }
+        }
+    };
+    toast(&application, message.clone())?;
+    let settings = read_project_collapse_settings(&application, project_identifier).await?;
+    Ok(CollapseActionResult { settings, message })
+}
+
+/// `set_collapse_relay` (§3.1): saves the allowed Collapse relay action kinds for the
+/// project and applies them to the project's Rosen server immediately (#576).
+#[tauri::command]
+#[specta::specta]
+pub async fn set_collapse_relay(
+    application: AppHandle,
+    project_identifier: u32,
+    allow: Vec<CollapseRelayKind>,
+) -> Result<ProjectCollapseSettings, String> {
+    let _subject = mirror_subject(&application, project_identifier)?;
+    let normalized = CollapseRelayKind::normalize(allow);
+    let server = crate::rosen::server(&application, project_identifier).await?;
+    apply_collapse_relay(&server, &normalized)
+        .await
+        .map_err(|error| error.to_string())?;
+    let saved = normalized.clone();
+    crate::state::try_with_store(&application, move |store| {
+        store
+            .save_collapse_relay_allow(project_identifier, Some(saved))
+            .map_err(|error| error.to_string())
+    })
+    .await?;
+    read_project_collapse_settings(&application, project_identifier).await
+}
+
+/// `unlink_collapse` (§3.1): removes the top-level `collapse` root (and `collapse_channel`)
+/// through a landed `rosen.toml` change and clears the server's relay allow-list (#576).
+#[tauri::command]
+#[specta::specta]
+pub async fn unlink_collapse(
+    application: AppHandle,
+    project_identifier: u32,
+) -> Result<CollapseActionResult, String> {
+    let subject = mirror_subject(&application, project_identifier)?;
+    let server = crate::rosen::server(&application, project_identifier).await?;
+    crate::rosen_mirror::check_and_catch_up(&application, project_identifier).await;
+    let change = propose_collapse_unlink(&server)
+        .await
+        .map_err(|error| error.to_string())?;
+    let (landed, mut message) = match change {
+        None => (
+            true,
+            format!("{}: rosen.toml already has no Collapse root", subject.name),
+        ),
+        Some(change) => {
+            let outcome = velocity_rosen::landing::land(&server, SETTINGS_AGENT, &change)
+                .await
+                .map_err(|error| error.to_string())?;
+            match outcome {
+                LandOutcome::Landed { .. } => (
+                    true,
+                    format!("{}: unlinked Collapse live state", subject.name),
+                ),
+                LandOutcome::Refused(refusal) => (
+                    false,
+                    format!(
+                        "{}: unlink change {change} waits to land: {}",
+                        subject.name,
+                        refusal_reason(refusal)
+                    ),
+                ),
+            }
+        }
+    };
+    let cleared = apply_collapse_relay(&server, &[]).await;
+    match cleared {
+        Ok(_) => message.push_str(" · Collapse relay cleared"),
+        Err(error) => {
+            crate::diagnostics::record(
+                "collapse relay",
+                &format!("{}: could not clear Collapse relay: {error}", subject.name),
+            );
+            message.push_str(&format!(" · could not clear Collapse relay: {error}"));
+        }
+    }
+    let next_allow = (!landed).then(Vec::new);
+    crate::state::try_with_store(&application, move |store| {
+        store
+            .save_collapse_relay_allow(project_identifier, next_allow)
+            .map_err(|error| error.to_string())
+    })
+    .await?;
+    toast(&application, message.clone())?;
+    crate::rosen_mirror::refresh(&application, project_identifier).await?;
+    let settings = read_project_collapse_settings(&application, project_identifier).await?;
+    Ok(CollapseActionResult { settings, message })
+}
+
+async fn uses_rosen(application: &AppHandle, project: u32) -> Result<bool, String> {
+    crate::state::try_with_store(application, move |store| {
+        let item = store.project(project).ok_or("Unknown project")?;
+        Ok(item.version_control == velocity_store::VersionControl::Rosen)
+    })
+    .await
+}
+
+async fn read_project_collapse_settings(
+    application: &AppHandle,
+    project: u32,
+) -> Result<ProjectCollapseSettings, String> {
+    let (collapse_repository, saved_override, effective_allow) =
+        crate::state::try_with_store(application, move |store| {
+            let item = store.project(project).ok_or("Unknown project")?;
+            Ok((
+                item.collapse_repository.clone(),
+                item.collapse_relay_allow.clone(),
+                store.collapse_relay_allow(project),
+            ))
+        })
+        .await?;
+    let server = crate::rosen::server(application, project).await?;
+    let state = collapse_state(&server)
+        .await
+        .map_err(|error| error.to_string())?;
+    let token_root = state.collapse_root.clone().or_else(|| {
+        collapse_repository
+            .as_deref()
+            .and_then(velocity_core::collapse::collapse_root)
+    });
+    let push_token = match token_root {
+        None => PushTokenStatus::NotConfigured,
+        Some(root) => match velocity_collapse::check_push_token(&root).await {
+            Ok((true, true)) => PushTokenStatus::Present,
+            Ok((false, false)) => PushTokenStatus::Missing,
+            Ok((state_feed, ledger_push)) => PushTokenStatus::Partial {
+                state_feed,
+                ledger_push,
+            },
+            Err(error) => PushTokenStatus::Unavailable {
+                error: error.to_string(),
+            },
+        },
+    };
+    let relay_allow = if state.collapse_root.is_some() {
+        effective_allow
+    } else {
+        saved_override.unwrap_or_else(|| state.relay_allow.clone())
+    };
+    Ok(ProjectCollapseSettings {
+        project_identifier: project,
+        collapse_repository,
+        collapse_root: state.collapse_root,
+        collapse_channel: state.collapse_channel,
+        config_error: state.config_error,
+        push_token,
+        state_feed: state.state_feed,
+        ledger_push: state.ledger_push,
+        relay_allow,
+        server_relay_allow: state.relay_allow,
+        relay_revoked: state.relay_revoked,
+    })
+}
+
 /// `mirror_to_collapse` (§3.1): makes Collapse the project's mirror. Creates the Collapse
 /// repository named after the project, stores its push token in git's credential helper,
 /// and lands a `rosen.toml` change pointing `[mirror] remote` at it and naming its
@@ -330,7 +569,15 @@ pub async fn mirror_to_collapse(
         remote: Some(&provisioned.mirror_url),
         root: &root,
     };
-    let message = land_link(&server, &subject.name, &provisioned.repository(), &link).await?;
+    let message = land_link(
+        &application,
+        project_identifier,
+        &server,
+        &subject.name,
+        &provisioned.repository(),
+        &link,
+    )
+    .await?;
     toast(&application, message)?;
     crate::rosen_mirror::refresh(&application, project_identifier).await?;
     if on_github
@@ -372,7 +619,15 @@ pub async fn send_collapse_live_state(
         remote: None,
         root: &root,
     };
-    let message = land_link(&server, &subject.name, &repository, &link).await?;
+    let message = land_link(
+        &application,
+        project_identifier,
+        &server,
+        &subject.name,
+        &repository,
+        &link,
+    )
+    .await?;
     toast(&application, message)?;
     crate::rosen_mirror::refresh(&application, project_identifier).await?;
     refresh_health(&application).await
@@ -415,9 +670,11 @@ async fn share_push_token(
     Ok(())
 }
 
-/// Proposes and lands the `rosen.toml` link, then lets the relay run; the toast says
-/// where it stands.
+/// Proposes and lands the `rosen.toml` link, then applies the project's relay allow-list;
+/// the toast says where it stands.
 async fn land_link(
+    application: &AppHandle,
+    project_identifier: u32,
     server: &velocity_rosen::ProjectServer,
     project: &str,
     repository: &str,
@@ -448,7 +705,11 @@ async fn land_link(
             }
         }
     };
-    Ok(format!("{message}{}", relay_note(server, project).await))
+    let allow = saved_relay_allow(application, project_identifier).await;
+    Ok(format!(
+        "{message}{}",
+        relay_note(server, project, &allow).await
+    ))
 }
 
 fn refusal_reason(refusal: LandRefusal) -> String {
@@ -458,40 +719,84 @@ fn refusal_reason(refusal: LandRefusal) -> String {
     }
 }
 
-/// Lets the project's server run the actions Collapse's owner pages offer, and says so in
-/// the toast: this is the one place the owner hands Collapse authority over the server.
+async fn saved_relay_allow(application: &AppHandle, project: u32) -> Vec<CollapseRelayKind> {
+    crate::state::with_store(application, move |store| {
+        store.collapse_relay_allow(project)
+    })
+    .await
+    .unwrap_or_else(|_| CollapseRelayKind::ALL.to_vec())
+}
+
+/// Applies the project's relay allow-list to its server and says so in the toast.
 /// A failure leaves the mirror and the feed working, so it is reported, not returned.
-async fn relay_note(server: &velocity_rosen::ProjectServer, project: &str) -> String {
-    match allow_collapse_relay(server).await {
-        Ok(kinds) => format!(
-            " · Collapse's owner actions run here ({})",
-            kinds.join(", ")
-        ),
+async fn relay_note(
+    server: &velocity_rosen::ProjectServer,
+    project: &str,
+    allow: &[CollapseRelayKind],
+) -> String {
+    match apply_collapse_relay(server, allow).await {
+        Ok(kinds) if kinds.is_empty() => " · Collapse's owner actions stay off".into(),
+        Ok(kinds) => {
+            let labels: Vec<&str> = kinds.into_iter().map(CollapseRelayKind::as_str).collect();
+            format!(
+                " · Collapse's owner actions run here ({})",
+                labels.join(", ")
+            )
+        }
         Err(error) => {
             crate::diagnostics::record(
                 "collapse relay",
-                &format!("{project}: could not allow Collapse's actions: {error}"),
+                &format!("{project}: could not set Collapse's actions: {error}"),
             );
             format!(" · Collapse's actions stay off: {error}")
         }
     }
 }
 
-/// Create with a Collapse mirror wrote the `collapse` root with the first `rosen.toml`
-/// (F2), so the new project's server only needs its relay allowed.
-pub(crate) async fn allow_relay_after_create(application: &AppHandle, project: u32) {
-    let allowed = match crate::rosen::server(application, project).await {
-        Ok(server) => allow_collapse_relay(&server)
-            .await
-            .map(|_| ())
-            .map_err(|error| error.to_string()),
-        Err(error) => Err(error),
+/// Re-applies the project's Collapse relay allow-list whenever Velocity starts a server
+/// whose base `rosen.toml` names `collapse` (#576). Returns `true` when synced or unlinked.
+pub(crate) async fn sync_relay_on_start(
+    application: &AppHandle,
+    project: u32,
+    server: &velocity_rosen::ProjectServer,
+) -> bool {
+    let root = match collapse_root(server).await {
+        Ok(root) => root,
+        Err(error) => {
+            crate::diagnostics::record(
+                "collapse relay",
+                &format!("Project {project}: could not read rosen.toml collapse root: {error}"),
+            );
+            return false;
+        }
     };
-    if let Err(error) = allowed {
+    if root.is_none() {
+        return true;
+    }
+    let allow = saved_relay_allow(application, project).await;
+    if let Err(error) = apply_collapse_relay(server, &allow).await {
         crate::diagnostics::record(
             "collapse relay",
-            &format!("Project {project}: could not allow Collapse's actions: {error}"),
+            &format!("Project {project}: could not re-apply Collapse relay allow-list: {error}"),
         );
+        return false;
+    }
+    true
+}
+
+/// Create or Open from Collapse wrote the `collapse` root in `rosen.toml`, so the
+/// project's server applies its relay allow-list (#517, #575, #576).
+pub(crate) async fn allow_relay_after_create(application: &AppHandle, project: u32) {
+    match crate::rosen::server(application, project).await {
+        Ok(server) => {
+            let _ = sync_relay_on_start(application, project, &server).await;
+        }
+        Err(error) => {
+            crate::diagnostics::record(
+                "collapse relay",
+                &format!("Project {project}: could not allow Collapse's actions: {error}"),
+            );
+        }
     }
 }
 

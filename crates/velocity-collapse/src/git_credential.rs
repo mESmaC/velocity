@@ -108,6 +108,12 @@ fn approve(url: &str, secret: &str, path_specific: bool) -> Result<(), CollapseE
     }
 }
 
+/// Reports whether git's credential helper holds a password for `url`, without returning
+/// or logging the secret (#576).
+pub fn has_push_secret(url: &str) -> Result<bool, CollapseError> {
+    held_secret(url).map(|secret| secret.is_some())
+}
+
 /// The password the helper holds for `url`, or `None` when no helper answers. Never
 /// prompts: with the terminal and askpass programs off, an unanswered `git credential
 /// fill` fails instead of opening a window.

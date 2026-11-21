@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::{ProjectServer, RosenError};
 
 mod local;
-mod metadata;
+pub(crate) mod metadata;
 
 pub(crate) use local::queue_root;
 

@@ -21,7 +21,8 @@ pub use git_credential::{
 };
 pub use health::{RepositoryActivity, repository_activity, repository_downstream};
 pub use provision::{
-    MirrorRequest, ProvisionedMirror, prepare_existing_mirror, provision_mirror, share_push_token,
+    MirrorRequest, ProvisionedMirror, check_push_token, prepare_existing_mirror, provision_mirror,
+    share_push_token,
 };
 
 /// Collapse's read-only MCP endpoint (Collapse C9), streamable HTTP with a bearer token.

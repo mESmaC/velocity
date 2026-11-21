@@ -51,6 +51,19 @@ fn feed_urls(root: &str) -> Vec<String> {
     vec![format!("{root}/rosen/state"), format!("{root}/ledgers")]
 }
 
+/// Reports whether git's credential helper holds push tokens for Rosen's state feed
+/// (`<root>/rosen/state`) and ledger push (`<root>/ledgers`) endpoints (#576).
+pub async fn check_push_token(root: &str) -> Result<(bool, bool), CollapseError> {
+    let urls = feed_urls(root);
+    tokio::task::spawn_blocking(move || {
+        let state_feed = crate::git_credential::has_push_secret(&urls[0])?;
+        let ledger_push = crate::git_credential::has_push_secret(&urls[1])?;
+        Ok((state_feed, ledger_push))
+    })
+    .await
+    .map_err(|error| CollapseError::Git(error.to_string()))?
+}
+
 /// Gives Rosen's state feed, ledger push and relay under `root` the push token git's
 /// credential helper already holds for `remote`, the project's mirror (#517). `false` when
 /// the helper holds none, so the caller mints one with [`provision_mirror`].

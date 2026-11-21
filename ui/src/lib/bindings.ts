@@ -52,6 +52,12 @@ export const commands = {
 	/**  `set_collapse_mcp { enabled }` (§3.1): the Settings switch. Running agents keep theirs. */
 	setCollapseMcp: (enabled: boolean) => __TAURI_INVOKE<CollapseConnection_Serialize>("set_collapse_mcp", { enabled }),
 	/**
+	 *  `get_project_collapse_settings` (§3.1): reads the project's Collapse root, push token
+	 *  status, state feed and ledger push health, channel lines flag and relay allow-list (#576).
+	 *  Returns `None` for non-Rosen projects.
+	 */
+	getProjectCollapseSettings: (projectIdentifier: number) => __TAURI_INVOKE<ProjectCollapseSettings_Serialize | null>("get_project_collapse_settings", { projectIdentifier }),
+	/**
 	 *  `mirror_to_collapse` (§3.1): makes Collapse the project's mirror. Creates the Collapse
 	 *  repository named after the project, stores its push token in git's credential helper,
 	 *  and lands a `rosen.toml` change pointing `[mirror] remote` at it and naming its
@@ -69,6 +75,21 @@ export const commands = {
 	 *  file and gets the token and the relay, which mends a feed Collapse answers with 401.
 	 */
 	sendCollapseLiveState: (projectIdentifier: number) => __TAURI_INVOKE<null>("send_collapse_live_state", { projectIdentifier }),
+	/**
+	 *  `set_collapse_channel` (§3.1): toggles `collapse_channel` in `rosen.toml` through a
+	 *  landed change so Rosen sends or stops sending channel lines to Collapse (#576).
+	 */
+	setCollapseChannel: (projectIdentifier: number, enabled: boolean) => __TAURI_INVOKE<CollapseActionResult_Serialize>("set_collapse_channel", { projectIdentifier, enabled }),
+	/**
+	 *  `set_collapse_relay` (§3.1): saves the allowed Collapse relay action kinds for the
+	 *  project and applies them to the project's Rosen server immediately (#576).
+	 */
+	setCollapseRelay: (projectIdentifier: number, allow: CollapseRelayKind[]) => __TAURI_INVOKE<ProjectCollapseSettings_Serialize>("set_collapse_relay", { projectIdentifier, allow }),
+	/**
+	 *  `unlink_collapse` (§3.1): removes the top-level `collapse` root (and `collapse_channel`)
+	 *  through a landed `rosen.toml` change and clears the server's relay allow-list (#576).
+	 */
+	unlinkCollapse: (projectIdentifier: number) => __TAURI_INVOKE<CollapseActionResult_Serialize>("unlink_collapse", { projectIdentifier }),
 	getContinuousDispatch: (projectIdentifier: number) => __TAURI_INVOKE<DispatchView_Serialize>("get_continuous_dispatch", { projectIdentifier }),
 	setContinuousDispatch: (projectIdentifier: number, slots: number, paused: boolean) => __TAURI_INVOKE<DispatchView_Serialize>("set_continuous_dispatch", { projectIdentifier, slots, paused }),
 	getTokenUsage: (period: Period, projectIdentifier: number | null, threadIdentifier: number | null) => __TAURI_INVOKE<Report_Serialize>("get_token_usage", { period, projectIdentifier, threadIdentifier }),
@@ -864,6 +885,21 @@ export type Cohort = {
 	reverts: number,
 };
 
+/**  Result of a Collapse settings action that lands a `rosen.toml` change (#576). */
+export type CollapseActionResult = CollapseActionResult_Serialize | CollapseActionResult_Deserialize;
+
+/**  Result of a Collapse settings action that lands a `rosen.toml` change (#576). */
+export type CollapseActionResult_Deserialize = {
+	settings: ProjectCollapseSettings_Deserialize,
+	message: string,
+};
+
+/**  Result of a Collapse settings action that lands a `rosen.toml` change (#576). */
+export type CollapseActionResult_Serialize = {
+	settings: ProjectCollapseSettings_Serialize,
+	message: string,
+};
+
 /**  What Settings shows for Collapse's MCP server. */
 export type CollapseConnection = CollapseConnection_Serialize | CollapseConnection_Deserialize;
 
@@ -887,6 +923,25 @@ export type CollapseConnection_Serialize = {
 	/**  The MCP server's name and URL as agents see them. */
 	name: string,
 	url: string,
+};
+
+/**  Last delivery time and failure for a Rosen push stream to Collapse (#576). */
+export type CollapseFeedHealth = CollapseFeedHealth_Serialize | CollapseFeedHealth_Deserialize;
+
+/**  Last delivery time and failure for a Rosen push stream to Collapse (#576). */
+export type CollapseFeedHealth_Deserialize = {
+	/**  Unix milliseconds when the newest acknowledged event or ledger entry was recorded. */
+	last_sent_at?: string | null,
+	/**  Why the latest pass failed or stopped while nothing newer arrived. */
+	last_error?: string | null,
+};
+
+/**  Last delivery time and failure for a Rosen push stream to Collapse (#576). */
+export type CollapseFeedHealth_Serialize = {
+	/**  Unix milliseconds when the newest acknowledged event or ledger entry was recorded. */
+	last_sent_at: string | null,
+	/**  Why the latest pass failed or stopped while nothing newer arrived. */
+	last_error: string | null,
 };
 
 /**  `collapse://link` (§3.1): emitted when a `velocity://collapse/...` deep link arrives (#479, #575). */
@@ -977,6 +1032,9 @@ export type CollapseMirrorHealth_Serialize = {
 	 */
 	downstream_github: string | null,
 };
+
+/**  Action kinds Rosen's Collapse relay can run for a project (Rosen R14, #576). */
+export type CollapseRelayKind = "approve" | "land" | "mark" | "config" | "revoke";
 
 /**  One repository from the signed-in Collapse account's dashboard (#575). */
 export type CollapseRepository = CollapseRepository_Serialize | CollapseRepository_Deserialize;
@@ -3728,6 +3786,39 @@ export type ProcessMemory = {
 	budget_mib: number,
 };
 
+/**  Project settings view for the Collapse section (#576). */
+export type ProjectCollapseSettings = ProjectCollapseSettings_Serialize | ProjectCollapseSettings_Deserialize;
+
+/**  Project settings view for the Collapse section (#576). */
+export type ProjectCollapseSettings_Deserialize = {
+	project_identifier: number,
+	collapse_repository?: string | null,
+	collapse_root?: string | null,
+	collapse_channel: boolean,
+	config_error?: string | null,
+	push_token: PushTokenStatus,
+	state_feed: CollapseFeedHealth_Deserialize,
+	ledger_push: CollapseFeedHealth_Deserialize,
+	relay_allow: CollapseRelayKind[],
+	server_relay_allow: CollapseRelayKind[],
+	relay_revoked: boolean,
+};
+
+/**  Project settings view for the Collapse section (#576). */
+export type ProjectCollapseSettings_Serialize = {
+	project_identifier: number,
+	collapse_repository: string | null,
+	collapse_root: string | null,
+	collapse_channel: boolean,
+	config_error: string | null,
+	push_token: PushTokenStatus,
+	state_feed: CollapseFeedHealth_Serialize,
+	ledger_push: CollapseFeedHealth_Serialize,
+	relay_allow: CollapseRelayKind[],
+	server_relay_allow: CollapseRelayKind[],
+	relay_revoked: boolean,
+};
+
 /**
  *  The project's GitHub repository for issues, base CI and releases, plus Collapse's
  *  downstream GitHub repository when Collapse reports one (#574).
@@ -4512,6 +4603,19 @@ export type PulseCount_Serialize = {
 };
 
 export type PulseKind = "Duty" | "Spec" | "Running" | "Watching" | "Failed" | "MergedToday";
+
+/**  Whether git's credential helper holds a push token for Collapse's feed endpoints (#576). */
+export type PushTokenStatus = 
+/**  No Collapse root or mirror is configured yet. */
+{ kind: "not_configured" } | 
+/**  Both `<root>/rosen/state` and `<root>/ledgers` hold a push token. */
+{ kind: "present" } | 
+/**  Only one of the two feed endpoints holds a push token. */
+{ kind: "partial"; state_feed: boolean; ledger_push: boolean } | 
+/**  Neither feed endpoint holds a push token. */
+{ kind: "missing" } | 
+/**  Could not query git's credential helper. */
+{ kind: "unavailable"; error: string };
 
 export type RailItem = RailItem_Serialize | RailItem_Deserialize;
 

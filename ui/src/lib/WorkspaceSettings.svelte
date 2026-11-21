@@ -5,6 +5,7 @@
   import WorkspaceLocation from './WorkspaceLocation.svelte';
   import RosenWorkspaces from './RosenWorkspaces.svelte';
   import RosenMirror from './RosenMirror.svelte';
+  import CollapseProjectSettings from './CollapseProjectSettings.svelte';
   import {
     projectCommands,
     workspaceCommands,
@@ -129,6 +130,9 @@
       />
       {#if view}
         <RosenMirror state={mirror} />
+        {#if projectIdentifier !== null}
+          <CollapseProjectSettings project={projectIdentifier} />
+        {/if}
         {#if projectIdentifier !== null && githubView}
           <section>
             <h2>Issues and CI on GitHub</h2>
