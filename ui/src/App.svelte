@@ -396,7 +396,12 @@
     if (event.key === 'Escape') {
       if (event.defaultPrevented || document.querySelector('dialog:modal'))
         return;
-      if (document.querySelector('#compact-project-pulse:popover-open')) return;
+      if (
+        document.querySelector(
+          '#compact-project-pulse:popover-open, #health-menu:popover-open',
+        )
+      )
+        return;
       if (collapseNotice) {
         collapseNotice = '';
         return;

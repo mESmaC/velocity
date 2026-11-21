@@ -182,13 +182,22 @@
   color: var(--ok);
   background: var(--ok-soft);
 }
-.palette-trigger {
+/* The palette trigger and the project health bell share the right of the title bar. */
+.titlebar-tools {
   grid-column: 3;
   justify-self: end;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--sp-3);
+  width: min(300px, 100%);
+  min-width: 0;
+}
+.palette-trigger {
   display: inline-flex;
+  flex: 1 1 260px;
   align-items: center;
   gap: var(--sp-4);
-  width: min(260px, 100%);
   min-width: 0;
   height: 26px;
   padding: 0 var(--sp-2) 0 var(--sp-5);
@@ -1332,8 +1341,11 @@ button.duty-empty:hover {
   .palette-trigger > span {
     display: none;
   }
-  .palette-trigger {
+  .titlebar-tools {
     width: auto;
+  }
+  .palette-trigger {
+    flex: none;
   }
 }
 

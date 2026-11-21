@@ -2,7 +2,7 @@
   import WindowControls from './WindowControls.svelte';
   import type { LayoutAction, LayoutSnapshot } from './ipc';
   import ProjectSwitcher from './ProjectSwitcher.svelte';
-  import ProjectHealthStrip from './ProjectHealthStrip.svelte';
+  import ProjectHealth from './ProjectHealth.svelte';
   import RosenMirror from './RosenMirror.svelte';
   import RosenServerNotice from './RosenServerNotice.svelte';
   import Icon from './Icon.svelte';
@@ -80,15 +80,20 @@
             {@render pulseCounts()}
           </div>{/if}
       </div>
-      <button
-        class="palette-trigger"
-        title="Command palette (Ctrl+K)"
-        aria-label="Open command palette"
-        onclick={() => send({ Request: { Navigation: 'Palette' } })}
-        ><Icon name="search" /><span>Search and run commands</span><kbd
-          >Ctrl</kbd
-        ><kbd>K</kbd></button
-      >
+      <div class="titlebar-tools">
+        <button
+          class="palette-trigger"
+          title="Command palette (Ctrl+K)"
+          aria-label="Open command palette"
+          onclick={() => send({ Request: { Navigation: 'Palette' } })}
+          ><Icon name="search" /><span>Search and run commands</span><kbd
+            >Ctrl</kbd
+          ><kbd>K</kbd></button
+        >
+        {#if layout?.project_identifier != null}
+          <ProjectHealth project={layout.project_identifier} {send} />
+        {/if}
+      </div>
       <button
         class="btn pulse-trigger"
         popovertarget="compact-project-pulse"
@@ -121,5 +126,4 @@
     project={layout?.project_identifier ?? null}
     collapse={layout?.collapse_mirror_health ?? null}
   />
-  <ProjectHealthStrip project={layout?.project_identifier ?? null} {send} />
 </div>
