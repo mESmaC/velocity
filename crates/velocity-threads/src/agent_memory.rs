@@ -224,6 +224,8 @@ mod tests {
             velocity_issue: None,
             rosen_issue: None,
             task_change: None,
+            change: None,
+            payload: None,
         }
     }
 
