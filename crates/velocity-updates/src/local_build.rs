@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 const FOLDER: &str = "local-builds";
 const RECORD: &str = "build.json";
 const FAILURE: &str = "failed.json";
+const SETTINGS: &str = "settings.json";
 /// What `scripts/release-local.ps1` names the executable it copies to its output folder.
 const EXECUTABLE_SUFFIX: &str = "-portable.exe";
 /// The newest build and the one before it, which is the rollback.
@@ -159,6 +160,27 @@ pub struct FailedBuild {
     pub reason: String,
 }
 
+fn default_auto_restart() -> bool {
+    true
+}
+
+/// Saved local-build preferences (`local-builds/settings.json`) (#601).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalBuildSettings {
+    /// Restart into the newest local build automatically when waiting issues need its
+    /// agent tooling, or when no agent turn has been running for 2 minutes.
+    #[serde(default = "default_auto_restart")]
+    pub auto_restart: bool,
+}
+
+impl Default for LocalBuildSettings {
+    fn default() -> Self {
+        Self {
+            auto_restart: default_auto_restart(),
+        }
+    }
+}
+
 /// The builds on disk, one folder per commit under the app data folder.
 #[derive(Clone, Debug)]
 pub struct LocalBuilds {
@@ -256,6 +278,20 @@ impl LocalBuilds {
         let text = serde_json::to_string_pretty(failure)
             .map_err(|error| io_error("write", &path)(error.into()))?;
         std::fs::write(&path, text).map_err(io_error("write", &path))
+    }
+
+    pub fn settings(&self) -> LocalBuildSettings {
+        read_json(&self.folder.join(SETTINGS)).unwrap_or_default()
+    }
+
+    pub fn save_settings(&self, settings: &LocalBuildSettings) -> Result<(), LocalBuildError> {
+        std::fs::create_dir_all(&self.folder).map_err(io_error("create", &self.folder))?;
+        let path = self.folder.join(SETTINGS);
+        let next = self.folder.join("settings.json.next");
+        let text = serde_json::to_string_pretty(settings)
+            .map_err(|error| io_error("write", &path)(error.into()))?;
+        std::fs::write(&next, text).map_err(io_error("write", &next))?;
+        std::fs::rename(&next, &path).map_err(io_error("write", &path))
     }
 
     /// Unfinished folders go too. A folder that can't be removed is tried again after the
@@ -366,6 +402,12 @@ pub struct LocalBuildState {
     /// Verified ancestry of each kept build against `running_commit`.
     relations: BTreeMap<String, CommitRelation>,
     failed: Option<FailedBuild>,
+    /// Whether Velocity automatically restarts into the newest local build (#601).
+    auto_restart: bool,
+    /// Open issues waiting for Velocity to restart into a build with new agent tools (#601).
+    waiting_issues: u32,
+    /// Tooltip naming the issues waiting for restart (#601).
+    waiting_detail: String,
 }
 
 impl LocalBuildState {
@@ -385,11 +427,60 @@ impl LocalBuildState {
             builds,
             relations: BTreeMap::new(),
             failed,
+            auto_restart: default_auto_restart(),
+            waiting_issues: 0,
+            waiting_detail: String::new(),
         }
     }
 
     pub fn running_commit(&self) -> Option<&str> {
         self.running_commit.as_deref()
+    }
+
+    pub fn auto_restart(&self) -> bool {
+        self.auto_restart
+    }
+
+    pub fn set_auto_restart(&mut self, enabled: bool) {
+        self.auto_restart = enabled;
+    }
+
+    pub fn set_waiting_issues(&mut self, count: u32, detail: String) {
+        self.waiting_issues = count;
+        self.waiting_detail = detail;
+    }
+
+    /// The newest kept build on the running release base that strictly descends from the
+    /// running copy's commit.
+    pub fn newest_descendant_commit(&self) -> Option<&str> {
+        self.same_base_builds()
+            .next()
+            .filter(|build| self.relation_of(&build.commit) == CommitRelation::Descendant)
+            .map(|build| build.commit.as_str())
+    }
+
+    /// Returns the commit to auto-restart into when auto-restart is enabled, the newest
+    /// local build strictly descends from the running copy, nothing is busy or awaiting
+    /// confirmation, this commit has not already failed auto-restart, and either a waiting
+    /// issue needs a land contained in it or no agent turn has been running for 2 minutes (#601).
+    pub fn should_auto_restart(
+        &self,
+        waiting_need_satisfied: bool,
+        idle_ready: bool,
+        failed_auto_commit: Option<&str>,
+    ) -> Option<String> {
+        if !self.auto_restart
+            || self.busy()
+            || matches!(self.phase, LocalBuildPhase::ConfirmRestart(_))
+            || !(waiting_need_satisfied || idle_ready)
+        {
+            return None;
+        }
+        let commit = self.newest_descendant_commit()?;
+        if failed_auto_commit.is_some_and(|failed| failed.eq_ignore_ascii_case(commit)) {
+            return None;
+        }
+        Some(commit.to_owned())
     }
 
     pub fn builds(&self) -> &[LocalBuild] {
@@ -566,7 +657,7 @@ pub struct LocalBuildOffer {
 
 /// The title bar's local-build controls, ready to render. Empty on every copy that has no
 /// local build and isn't making one.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 pub struct LocalBuildView {
     /// "Restart into <commit>": the newest build, only when it strictly descends from the
@@ -583,6 +674,40 @@ pub struct LocalBuildView {
     pub failed: bool,
     /// A build or a restart is under way: the buttons wait for it.
     pub busy: bool,
+    /// Open issues waiting for Velocity to restart into a build with new agent tooling (#601).
+    pub waiting_issues: u32,
+    /// "N issues waiting for restart" shown next to "Restart into <commit>" (#601).
+    pub waiting_label: String,
+    /// Tooltip describing the issues waiting for restart (#601).
+    pub waiting_detail: String,
+    /// Whether automatic restart into local builds is enabled (default on) (#601).
+    pub auto_restart: bool,
+}
+
+impl Default for LocalBuildView {
+    fn default() -> Self {
+        Self {
+            restart: None,
+            previous: None,
+            confirm: None,
+            status: String::new(),
+            detail: String::new(),
+            failed: false,
+            busy: false,
+            waiting_issues: 0,
+            waiting_label: String::new(),
+            waiting_detail: String::new(),
+            auto_restart: default_auto_restart(),
+        }
+    }
+}
+
+fn waiting_label(count: u32) -> String {
+    match count {
+        0 => String::new(),
+        1 => "1 issue waiting for restart".to_owned(),
+        count => format!("{count} issues waiting for restart"),
+    }
 }
 
 const RESTART_NOTE: &str = "Running turns stop and continue by themselves when Velocity is back.";
@@ -634,6 +759,10 @@ impl LocalBuildState {
             detail,
             failed,
             busy: self.busy(),
+            waiting_issues: self.waiting_issues,
+            waiting_label: waiting_label(self.waiting_issues),
+            waiting_detail: self.waiting_detail.clone(),
+            auto_restart: self.auto_restart,
         }
     }
 
@@ -774,5 +903,60 @@ mod tests {
             unknown.install_decision(&older, CommitRelation::Unknown, true, false),
             InstallDecision::Allow
         );
+    }
+
+    // Risk (#601): auto-restart preference must default on and survive save/reload, and
+    // auto-restart must fire only for verified descendant builds when enabled and either a
+    // waiting issue needs it or agents have been idle, never repeating a failed commit.
+    #[test]
+    fn auto_restart_settings_survive_reload_and_gate_descendant_restarts()
+    -> Result<(), Box<dyn Error>> {
+        let scratch = std::env::temp_dir().join(format!(
+            "velocity-local-build-settings-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let builds = LocalBuilds::new(&scratch);
+        assert!(builds.settings().auto_restart);
+        builds.save_settings(&LocalBuildSettings {
+            auto_restart: false,
+        })?;
+        assert!(!LocalBuilds::new(&scratch).settings().auto_restart);
+        builds.save_settings(&LocalBuildSettings { auto_restart: true })?;
+        assert!(LocalBuilds::new(&scratch).settings().auto_restart);
+        let _ = std::fs::remove_dir_all(&scratch);
+
+        let running = "1111111".to_owned() + &"0".repeat(33);
+        let newer = "a795720".to_owned() + &"0".repeat(33);
+        let newest_build = LocalBuild {
+            commit: newer.clone(),
+            version: local_version("0.1.0-beta.20", &newer),
+            built_at: 200,
+            executable_bytes: 16,
+        };
+        let mut state =
+            LocalBuildState::new("0.1.0-beta.20", Some(&running), vec![newest_build], None);
+        state.set_relations(BTreeMap::from([(
+            newer.clone(),
+            CommitRelation::Descendant,
+        )]));
+        state.set_waiting_issues(2, "#589, #590 waiting for restart".into());
+        let view = state.view();
+        assert_eq!(view.waiting_issues, 2);
+        assert_eq!(view.waiting_label, "2 issues waiting for restart");
+        assert!(view.auto_restart);
+        assert_eq!(state.should_auto_restart(false, false, None), None);
+        assert_eq!(
+            state.should_auto_restart(true, false, None),
+            Some(newer.clone())
+        );
+        assert_eq!(
+            state.should_auto_restart(false, true, None),
+            Some(newer.clone())
+        );
+        assert_eq!(state.should_auto_restart(true, true, Some(&newer)), None);
+        state.set_auto_restart(false);
+        assert_eq!(state.should_auto_restart(true, true, None), None);
+        Ok(())
     }
 }

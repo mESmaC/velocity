@@ -9,5 +9,6 @@ Proofs holds the project's proof list, the code-level translator for each langua
 Agents holds the shared MCP servers passed to every agent (§3.2 Tool access), the per-agent caps (max turns, max duration; off by default), the stall timeout (5 min, and 30 min for a running tool call) and the claim-release grace period (10 min) from §2.2.
 **Trim unused agent context** defaults on and applies to new Claude Code and Codex agent processes started by Velocity (§3.2 Tool access, #458).
 Agents also holds the experimental context hand-off switch (#467), which defaults off and applies to new Rosen work items.
+**Auto-restart into local builds** defaults on and restarts into the newest local build by itself when waiting issues need its agent tooling or when no agent turn has been running for 2 minutes (#601).
 The rest of the Agents page is unspecified.
 There is no Keys page: every provider signs in with OAuth.

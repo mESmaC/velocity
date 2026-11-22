@@ -707,6 +707,7 @@ mod tests {
             closed_at: None,
             open_blocker_count: 0,
             open_blockers: Vec::new(),
+            closed_blockers: Vec::new(),
         }
     }
 

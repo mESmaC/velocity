@@ -112,7 +112,7 @@ pub(crate) struct BlockerRepository {
 
 fn dependency_fields() -> String {
     format!(
-        "issueDependenciesSummary {{ blockedBy }} blockedBy(first:10) {{
+        "issueDependenciesSummary {{ blockedBy }} blockedBy(first:25) {{
         nodes {{ {BLOCKER_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }}"
     )
 }
@@ -423,19 +423,22 @@ impl IssueClient {
                 node.blocked_by,
             )?
         };
-        issue.open_blockers = blockers
-            .into_iter()
-            .flatten()
-            .filter(|blocker| blocker.state == IssueState::Open)
-            .map(|blocker| {
-                // `DependencyGraph` reads this form back.
-                relative_blocker_name(
-                    self.repository(),
-                    &blocker.repository.name_with_owner,
-                    blocker.number,
-                )
-            })
-            .collect();
+        let mut open_blockers = Vec::new();
+        let mut closed_blockers = Vec::new();
+        for blocker in blockers.into_iter().flatten() {
+            // `DependencyGraph` reads this form back.
+            let name = relative_blocker_name(
+                self.repository(),
+                &blocker.repository.name_with_owner,
+                blocker.number,
+            );
+            match blocker.state {
+                IssueState::Open => open_blockers.push(name),
+                IssueState::Closed => closed_blockers.push(name),
+            }
+        }
+        issue.open_blockers = open_blockers;
+        issue.closed_blockers = closed_blockers;
         Ok(issue)
     }
 }

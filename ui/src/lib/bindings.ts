@@ -130,6 +130,8 @@ export const commands = {
 	restartIntoLocalBuild: (commit: string, confirmed: boolean, rollback: boolean) => __TAURI_INVOKE<LocalBuildView_Serialize>("restart_into_local_build", { commit, confirmed, rollback }),
 	/**  Dismisses a pending unknown-commit confirmation prompt without restarting (#551). */
 	cancelLocalBuildRestart: () => __TAURI_INVOKE<LocalBuildView_Serialize>("cancel_local_build_restart"),
+	/**  Enables or disables automatic restarts into the newest local build (default on) (#601). */
+	setLocalBuildAutoRestart: (enabled: boolean) => __TAURI_INVOKE<LocalBuildView_Serialize>("set_local_build_auto_restart", { enabled }),
 	getMachines: (projectIdentifier: number) => __TAURI_INVOKE<MachinesView_Serialize>("get_machines", { projectIdentifier }),
 	enableMachineListener: (projectIdentifier: number, address: string) => __TAURI_INVOKE<null>("enable_machine_listener", { projectIdentifier, address }),
 	createMachineJoinKey: (projectIdentifier: number, address: string, expiresInSeconds: number, uses: number, role: Role) => __TAURI_INVOKE<string>("create_machine_join_key", { projectIdentifier, address, expiresInSeconds, uses, role }),
@@ -3152,6 +3154,14 @@ export type LocalBuildView_Deserialize = {
 	failed: boolean,
 	/**  A build or a restart is under way: the buttons wait for it. */
 	busy: boolean,
+	/**  Open issues waiting for Velocity to restart into a build with new agent tooling (#601). */
+	waiting_issues: number,
+	/**  "N issues waiting for restart" shown next to "Restart into <commit>" (#601). */
+	waiting_label: string,
+	/**  Tooltip describing the issues waiting for restart (#601). */
+	waiting_detail: string,
+	/**  Whether automatic restart into local builds is enabled (default on) (#601). */
+	auto_restart: boolean,
 };
 
 /**
@@ -3175,6 +3185,14 @@ export type LocalBuildView_Serialize = {
 	failed: boolean,
 	/**  A build or a restart is under way: the buttons wait for it. */
 	busy: boolean,
+	/**  Open issues waiting for Velocity to restart into a build with new agent tooling (#601). */
+	waiting_issues: number,
+	/**  "N issues waiting for restart" shown next to "Restart into <commit>" (#601). */
+	waiting_label: string,
+	/**  Tooltip describing the issues waiting for restart (#601). */
+	waiting_detail: string,
+	/**  Whether automatic restart into local builds is enabled (default on) (#601). */
+	auto_restart: boolean,
 };
 
 export type LocalStatus = {

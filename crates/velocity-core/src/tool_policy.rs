@@ -329,9 +329,103 @@ fn browser_access(role: ThreadRole, _tool: &str) -> ToolAccess {
     }
 }
 
+/// Directory prefixes whose changes alter agent tooling (MCP servers, AIRC tools, graph
+/// tools or browser tools) and therefore take effect only after Velocity restarts (#601).
+const AGENT_TOOLING_PREFIXES: &[&str] = &[
+    "crates/velocity-airc/",
+    "crates/velocity-graph/",
+    "crates/velocity-browser/",
+];
+
+/// Exact repository-relative files that implement tool policy, MCP registration or
+/// agent-facing MCP servers and shims (#601).
+const AGENT_TOOLING_FILES: &[&str] = &[
+    "crates/velocity-core/src/tool_policy.rs",
+    "crates/velocity-github/src/agent_issues.rs",
+    "crates/velocity-github/src/mcp_stdio.rs",
+    "crates/velocity-rosen/src/agent_run.rs",
+    "crates/velocity-rosen/src/mcp_filter.rs",
+    "crates/velocity-rosen/src/mcp_proxy.rs",
+    "crates/velocity-acp/src/client/airc.rs",
+    "crates/velocity-acp/src/client/preflight_tool.rs",
+    "crates/velocity-acp/src/client/queued_run_tool.rs",
+    "crates/velocity-acp/src/client/workflow_run_tool.rs",
+    "crates/velocity-threads/src/parked_review.rs",
+    "crates/velocity-threads/src/review_swarm_server.rs",
+    "crates/velocity-threads/src/shared_mcp.rs",
+    "crates/velocity-threads/src/sweep.rs",
+    "src-tauri/src/airc_access.rs",
+    "src-tauri/src/browser.rs",
+    "src-tauri/src/graph_access.rs",
+    "src-tauri/src/main.rs",
+    "src-tauri/src/queued_run_access.rs",
+    "src-tauri/src/rosen.rs",
+    "src-tauri/src/rosen_mcp.rs",
+    "src-tauri/src/shared_mcp.rs",
+    "src-tauri/src/sweeps.rs",
+];
+
+/// Whether `path` belongs to Velocity's agent tooling (MCP servers, tool policy, AIRC
+/// tools, graph tools or MCP registration) (#601).
+pub fn is_agent_tooling_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let trimmed = normalized.trim_start_matches("./").trim_start_matches('/');
+    AGENT_TOOLING_PREFIXES
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+        || AGENT_TOOLING_FILES
+            .iter()
+            .any(|file| trimmed.eq_ignore_ascii_case(file))
+}
+
+/// Returns the subset of `paths` that belong to Velocity's agent tooling (#601).
+pub fn agent_tooling_paths<S: AsRef<str>>(paths: &[S]) -> Vec<String> {
+    paths
+        .iter()
+        .map(AsRef::as_ref)
+        .filter(|path| is_agent_tooling_path(path))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether any path in `paths` belongs to Velocity's agent tooling (#601).
+pub fn touches_agent_tooling<S: AsRef<str>>(paths: &[S]) -> bool {
+    paths
+        .iter()
+        .any(|path| is_agent_tooling_path(path.as_ref()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_tooling_path_matches_mcp_servers_policy_airc_and_graph_tools() {
+        for tooling in [
+            "crates/velocity-airc/src/server.rs",
+            "crates/velocity-graph/src/mcp.rs",
+            "crates/velocity-core/src/tool_policy.rs",
+            "crates\\velocity-core\\src\\tool_policy.rs",
+            "src-tauri/src/airc_access.rs",
+            "src-tauri/src/graph_access.rs",
+            "src-tauri/src/rosen_mcp.rs",
+            "src-tauri/src/queued_run_access.rs",
+            "crates/velocity-github/src/agent_issues.rs",
+        ] {
+            assert!(
+                is_agent_tooling_path(tooling),
+                "expected tooling: {tooling}"
+            );
+        }
+        for other in [
+            "crates/velocity-core/src/landing.rs",
+            "ui/src/lib/LocalBuild.svelte",
+            "spec/F1-main-window.md",
+            "src-tauri/src/local_build.rs",
+        ] {
+            assert!(!is_agent_tooling_path(other), "unexpected tooling: {other}");
+        }
+    }
 
     #[test]
     fn builder_excludes_forbidden_destructive_and_irrelevant_tools() {

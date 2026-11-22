@@ -36,6 +36,10 @@ pub struct GitHubIssue {
     pub open_blocker_count: u32,
     #[serde(default)]
     pub open_blockers: Vec<String>,
+    /// Closed `blockedBy` dependencies, preserved so Velocity's own project can hold
+    /// dispatch until the running copy contains a closed blocker's tooling land (#601).
+    #[serde(default)]
+    pub closed_blockers: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]

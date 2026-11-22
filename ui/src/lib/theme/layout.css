@@ -119,6 +119,15 @@
 .local-build-status.failed {
   color: var(--err);
 }
+.local-build-waiting {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--warn);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .local-build-confirm-commits {
   display: grid;
   grid-template-columns: auto 1fr;

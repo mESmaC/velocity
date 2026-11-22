@@ -37,7 +37,7 @@
   const cancelConfirm = () => void localBuildCommands.cancelRestart();
 </script>
 
-{#if build && (build.restart || build.previous || build.status)}
+{#if build && (build.restart || build.previous || build.status || build.waiting_label)}
   <div
     class="local-build"
     role="group"
@@ -49,6 +49,12 @@
         class:failed={build.failed}
         role="status"
         title={build.detail || build.status}>{build.status}</span
+      >{/if}
+    {#if build.waiting_label}<span
+        class="local-build-waiting"
+        role="status"
+        title={build.waiting_detail || build.waiting_label}
+        >{build.waiting_label}</span
       >{/if}
     {#if build.restart}{@const offer = build.restart}<button
         class="mini primary"

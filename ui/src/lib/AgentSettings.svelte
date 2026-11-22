@@ -5,6 +5,8 @@
   import './theme/providers.css';
   import './theme/worktrees.css';
   import {
+    localBuildCommands,
+    onLocalBuildStatus,
     readAgentSettings,
     saveAgentSettings,
     type AgentPreferences,
@@ -16,6 +18,8 @@
   let settings = $derived(preferences?.agents);
   let error = $state('');
   let saving = $state(false);
+  let autoRestartLocalBuild = $state(true);
+  let savingAutoRestart = $state(false);
   const efforts: [EffortLevel, string][] = [
     ['low', 'Low'],
     ['medium', 'Medium'],
@@ -30,7 +34,34 @@
       .catch((failure) => {
         error = String(failure);
       });
+    let stopped = false;
+    void localBuildCommands
+      .status()
+      .then((view) => {
+        if (!stopped) autoRestartLocalBuild = view.auto_restart;
+      })
+      .catch(() => {});
+    const listening = onLocalBuildStatus((event) => {
+      autoRestartLocalBuild = event.payload.view.auto_restart;
+    });
+    return () => {
+      stopped = true;
+      void listening.then((unlisten) => unlisten());
+    };
   });
+  async function toggleAutoRestart(enabled: boolean) {
+    if (savingAutoRestart) return;
+    savingAutoRestart = true;
+    try {
+      const view = await localBuildCommands.setAutoRestart(enabled);
+      autoRestartLocalBuild = view.auto_restart;
+      error = '';
+    } catch (failure) {
+      error = String(failure);
+    } finally {
+      savingAutoRestart = false;
+    }
+  }
   async function save() {
     if (!preferences || saving) return;
     saving = true;
@@ -245,6 +276,25 @@
         {#if error}<p class="worktree-message error" role="alert">
             {error}
           </p>{/if}
+      </section>
+      <section>
+        <h2>Local builds</h2>
+        <label class="worktree-check">
+          <input
+            type="checkbox"
+            role="switch"
+            checked={autoRestartLocalBuild}
+            disabled={savingAutoRestart}
+            onchange={(event) =>
+              void toggleAutoRestart(event.currentTarget.checked)}
+          />
+          Auto-restart into local builds
+        </label>
+        <p class="worktree-description">
+          Restart into the newest local build by itself when waiting issues need
+          its agent tooling, or when no agent turn has been running for 2
+          minutes.
+        </p>
       </section>
       <SharedMcpServers />
     </div>

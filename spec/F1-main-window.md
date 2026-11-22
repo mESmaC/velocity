@@ -38,6 +38,9 @@ There are two views of the same work, switched from the title bar or with `B`:
     **Restart into previous** shows while the running copy is the newest build and the build before it is kept, as an explicit rollback.
     Either one saves state, stops the Rosen servers, replaces the running executable with the build's and starts it, as a portable update does, so stopped turns continue by themselves (§3.2 Resume after a restart).
     Both wait while a build is running.
+  - In Velocity's own project, a `blocked_by` issue whose land touched agent tooling (MCP servers, tool policy, AIRC tools, graph tools or MCP registration) counts as satisfied only once the running copy contains that land (#601).
+    Until then the issue shows "waiting for restart into `<commit>`" and is not dispatched, and the title bar shows "N issues waiting for restart" next to **Restart into `<commit>`**.
+    With **Auto-restart into local builds** enabled (default on, Settings → Agents), Velocity restarts into the newest local build by itself when it contains every tooling land a waiting issue needs, or when no agent turn has been running for 2 minutes.
   - A failed build shows "Build of `<commit>` failed" with the reason in its tooltip.
     That commit is not built again; the next green commit is.
   - After a published update, builds made on the older release are no longer offered.

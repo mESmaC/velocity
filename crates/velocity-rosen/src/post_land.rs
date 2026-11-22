@@ -543,6 +543,79 @@ fn read_unique_history_prefix(metadata: &Path, prefix: &str) -> Result<Option<St
         .flatten())
 }
 
+/// One commit landed on the base strictly after the running build (#601).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LandedCommitSummary {
+    pub commit: String,
+    pub summary: String,
+}
+
+/// Whether `container` contains `target` in this project's Rosen history (#601).
+/// Both arguments accept a 40-character commit ID or an unambiguous 7..=40 hex prefix.
+pub async fn commit_contains(
+    server: &ProjectServer,
+    container: &str,
+    target: &str,
+) -> Result<bool, RosenError> {
+    let container_lower = container.trim().to_ascii_lowercase();
+    let target_lower = target.trim().to_ascii_lowercase();
+    let Some(container_full) = resolve_commit_prefix(server, &container_lower).await? else {
+        return Ok(false);
+    };
+    let Some(target_full) = resolve_commit_prefix(server, &target_lower).await? else {
+        return Ok(false);
+    };
+    if container_full == target_full {
+        return Ok(true);
+    }
+    let client = server.connect().await?;
+    is_ancestor(&client, &target_full, &container_full).await
+}
+
+/// Base commits landed strictly after `running`, newest first, capped at `limit` (#601).
+/// Returns an empty list when `running` is unknown or already at/ahead of the base tip.
+pub async fn commits_since(
+    server: &ProjectServer,
+    running: &str,
+    limit: u32,
+) -> Result<Vec<LandedCommitSummary>, RosenError> {
+    let running_lower = running.trim().to_ascii_lowercase();
+    let Some(running_full) = resolve_commit_prefix(server, &running_lower).await? else {
+        return Ok(Vec::new());
+    };
+    let Ok(running_id) = crate::policy::object(&running_full) else {
+        return Ok(Vec::new());
+    };
+    let client = server.connect().await?;
+    let log = client
+        .log(LogRequest {
+            at: None,
+            paths: Vec::new(),
+            limit: Some(limit),
+        })
+        .await?;
+    let Some(tip) = log.entries.first() else {
+        return Ok(Vec::new());
+    };
+    if tip.commit == running_id {
+        return Ok(Vec::new());
+    }
+    if !is_ancestor(&client, &running_full, &tip.commit.to_string()).await? {
+        return Ok(Vec::new());
+    }
+    let mut newer = Vec::new();
+    for entry in log.entries {
+        if entry.commit == running_id {
+            break;
+        }
+        newer.push(LandedCommitSummary {
+            commit: entry.commit.to_string(),
+            summary: entry.summary,
+        });
+    }
+    Ok(newer)
+}
+
 /// Whether `commit` is already in this server's local base history (#519).
 pub async fn base_contains_commit(
     server: &ProjectServer,

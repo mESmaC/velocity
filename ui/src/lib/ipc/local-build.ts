@@ -17,6 +17,7 @@ export const localBuildCommands = {
   status: commands.getLocalBuildStatus,
   restart: commands.restartIntoLocalBuild,
   cancelRestart: commands.cancelLocalBuildRestart,
+  setAutoRestart: commands.setLocalBuildAutoRestart,
 };
 
 export const onLocalBuildStatus = (

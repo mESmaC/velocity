@@ -561,6 +561,10 @@ fn fetch_issues(
     Ok(panel)
 }
 
+pub(crate) fn refresh_links(application: &AppHandle) {
+    report(update_links(application, false));
+}
+
 fn update_links(application: &AppHandle, force_publish: bool) -> Result<(), String> {
     let (project_id, repository, numbers) = {
         let panel = application.state::<IssuePanel>();
@@ -588,6 +592,8 @@ fn update_links(application: &AppHandle, force_publish: bool) -> Result<(), Stri
         Some(repository) => crate::continuous_dispatch::unblock_counts(application, repository)?,
         None => std::collections::BTreeMap::new(),
     };
+    let restart_waits =
+        crate::continuous_dispatch::restart_wait::waits_for_project(application, project_id);
     let publish_bundle = {
         let panel = application.state::<IssuePanel>();
         let mut panel = lock(panel.inner(), "issues")?;
@@ -595,8 +601,16 @@ fn update_links(application: &AppHandle, force_publish: bool) -> Result<(), Stri
             return Ok(());
         }
         let mut changed = false;
-        if let Some(links) = &links {
-            changed |= velocity_threads::dispatch::apply_issue_row_links(&mut panel.rows, links);
+        if let Some(mut links) = links {
+            for link in &mut links {
+                if link.thread_identifier.is_none()
+                    && let Some(wait) = restart_waits.get(&link.number)
+                {
+                    link.thread_label = Some(wait.label());
+                    link.hold = Some(wait.hold());
+                }
+            }
+            changed |= velocity_threads::dispatch::apply_issue_row_links(&mut panel.rows, &links);
             for row in &mut panel.rows {
                 let next_unblocks = unblocks.get(&row.number).copied().unwrap_or(0);
                 if row.unblocks != next_unblocks {

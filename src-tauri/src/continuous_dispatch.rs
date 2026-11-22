@@ -3,6 +3,7 @@
 mod holds;
 pub(crate) mod overlap;
 mod parked;
+pub(crate) mod restart_wait;
 
 use crate::state::ManagedStateStore;
 use crate::threads::{ManagedThreads, lock, report};
@@ -125,6 +126,7 @@ fn view(application: &AppHandle, identifier: u32) -> Result<DispatchView, String
     let project = store.project(identifier).ok_or("The project was removed")?;
     include_overlap_waits(project, &backlog.repository, &mut claimed);
     include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
+    restart_wait::include_restart_waits(application, identifier, &mut claimed);
     let work = ordered_work(
         project,
         &backlog.repository,
@@ -214,6 +216,7 @@ pub(crate) fn integration_idle(application: &AppHandle, identifier: u32) -> Resu
         return Ok(false);
     };
     include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
+    restart_wait::include_restart_waits(application, identifier, &mut claimed);
     Ok(busy_count(project) == 0
         && ordered_work(
             project,
@@ -280,11 +283,15 @@ pub(crate) fn health_snapshot(
     let project = store.project(identifier)?;
     let issues_known = backlog.error.is_none();
     let stalled_landed = stalled_landed_issues(project, &backlog.repository, &backlog.issues, now);
+    let restart_waits = restart_wait::waits_for_project(application, identifier);
     let skipped = if issues_known {
         backlog
             .issues
             .iter()
             .filter_map(|issue| {
+                if let Some(wait) = restart_waits.get(&issue.number) {
+                    return Some(wait.skipped());
+                }
                 issue_skip_reason(project, &backlog.repository, issue, &claimed, now)
             })
             .collect()
@@ -294,6 +301,7 @@ pub(crate) fn health_snapshot(
     include_overlap_waits(project, &backlog.repository, &mut claimed);
     include_launch_holds(project, &backlog.repository, &mut claimed);
     include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
+    restart_wait::include_restart_waits(application, identifier, &mut claimed);
     let ready_count = ordered_work(
         project,
         &backlog.repository,
@@ -327,6 +335,7 @@ pub fn initialize(application: &AppHandle) {
     application.manage(Dependencies::default());
     application.manage(IntegrationRecords::default());
     application.manage(LastDispatched::default());
+    restart_wait::initialize(application);
     // Without its executable or data folder Velocity cannot start a bounded review; a
     // parked issue then returns to dispatch when its report passes the limit (#506).
     if let (Ok(executable), Ok(data)) = (std::env::current_exe(), application.path().app_data_dir())
@@ -540,6 +549,8 @@ fn pass(
     }
     refresh_backlog(application, project.id, reader)?;
     holds::refresh(reader);
+    let claimed = claimed_pieces(application, project.id).unwrap_or_default();
+    restart_wait::refresh(application, project, &reader.backlog, &claimed);
     overlap::refresh(application, project.id, reader)?;
     parked::refresh(application, project, reader)?;
     start_ready(application, project.id, Some(reader))
@@ -566,6 +577,7 @@ fn start_ready(
         include_overlap_waits(project, &backlog.repository, &mut claimed);
         include_launch_holds(project, &backlog.repository, &mut claimed);
         include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
+        restart_wait::include_restart_waits(application, identifier, &mut claimed);
         ordered_work(
             project,
             &backlog.repository,
@@ -627,6 +639,16 @@ fn try_start_issue(
     }
     if fresh.state != IssueState::Open {
         return Ok(());
+    }
+    let fresh_project = lock(state.inner(), "persisted state")?
+        .project(identifier)
+        .cloned();
+    if let Some(project) = fresh_project {
+        let claimed = claimed_pieces(application, identifier).unwrap_or_default();
+        if restart_wait::check_issue(application, &project, &repository, &fresh, &claimed).is_some()
+        {
+            return Ok(());
+        }
     }
     if hold_external_issue(application, identifier, reader, &fresh)? {
         overlap::refresh(application, identifier, reader)?;
@@ -1053,7 +1075,9 @@ fn start_issue(
         if !project_has_capacity(project) || has_user_task(project, &claimed) {
             return Ok(());
         }
-        if !dispatchable_issue(project, repository, issue, &claimed) {
+        if !dispatchable_issue(project, repository, issue, &claimed)
+            || restart_wait::is_waiting(application, identifier, issue.number)
+        {
             return Ok(());
         }
         if project
@@ -1338,7 +1362,7 @@ fn report_no_change_issues(
                                 project,
                                 &pending.issue.repository,
                                 issue,
-                            )
+                            ) || restart_wait::is_waiting(application, project.id, issue.number)
                         },
                     )
                 });

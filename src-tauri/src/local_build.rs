@@ -9,18 +9,18 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use velocity_github::velocity_reports::VELOCITY_REPOSITORY;
 use velocity_rosen::ProjectServer;
-use velocity_rosen::post_land::{CommitAncestry, compare_commits};
+use velocity_rosen::post_land::{CommitAncestry, commit_contains, compare_commits};
 use velocity_store::duty::LandingProject;
 use velocity_threads::local_release::{self, LocalRelease};
 use velocity_updates::local_build::{
-    CommitRelation, FailedBuild, InstallDecision, LocalBuild, LocalBuildPhase, LocalBuildState,
-    LocalBuildView, LocalBuilds,
+    CommitRelation, FailedBuild, InstallDecision, LocalBuild, LocalBuildPhase, LocalBuildSettings,
+    LocalBuildState, LocalBuildView, LocalBuilds, short_commit,
 };
 
 use crate::rosen_mirror::CatchUpCheck;
@@ -32,12 +32,36 @@ const BUILD_COMMIT: &str = env!("VELOCITY_BUILD_COMMIT");
 /// The first look waits until startup work and resumed threads settle.
 const FIRST_LOOK: Duration = Duration::from_secs(90);
 const LOOK_INTERVAL: Duration = Duration::from_secs(60);
+/// Refresh existing local-build ancestry shortly after startup so ready builds and
+/// waiting issues show up quickly without waiting 90 seconds (#601).
+const INITIAL_RELATION_REFRESH: Duration = Duration::from_secs(15);
+/// How often idle duration and waiting-issue auto-restart readiness are sampled (#601).
+const AUTO_RESTART_POLL: Duration = Duration::from_secs(10);
+/// Auto-restart into the newest local build after 2 minutes with no running agent turn (#601).
+const IDLE_AUTO_RESTART: Duration = Duration::from_secs(2 * 60);
 /// What a build needs free before it starts: two compiler jobs at about 1.5 GB each
 /// (`scripts/release-local.ps1`) and the link.
 const BUILD_MEMORY: u64 = 4 * 1024 * 1024 * 1024;
 
+/// One open issue waiting for Velocity to restart into a build containing its blocker's
+/// agent-tooling land (#601).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WaitingIssueNeed {
+    pub issue: u32,
+    pub commit: String,
+    pub required_commits: Vec<String>,
+}
+
+#[derive(Default)]
+struct AutoRestartTracker {
+    idle_since: Option<Instant>,
+    waiting: Vec<WaitingIssueNeed>,
+    failed_commit: Option<String>,
+}
+
 pub struct ManagedLocalBuilds {
     state: Mutex<LocalBuildState>,
+    auto: Mutex<AutoRestartTracker>,
     builds: LocalBuilds,
     app_data: PathBuf,
 }
@@ -55,6 +79,13 @@ fn state(local: &ManagedLocalBuilds) -> MutexGuard<'_, LocalBuildState> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn auto_tracker(local: &ManagedLocalBuilds) -> MutexGuard<'_, AutoRestartTracker> {
+    local
+        .auto
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub fn initialize(application: &AppHandle) {
     let Ok(app_data) = application.path().app_data_dir() else {
         return;
@@ -62,9 +93,12 @@ pub fn initialize(application: &AppHandle) {
     let builds = LocalBuilds::new(&app_data);
     let version = application.package_info().version.to_string();
     let build_commit = (!BUILD_COMMIT.is_empty()).then_some(BUILD_COMMIT);
-    let known = LocalBuildState::new(&version, build_commit, builds.list(), builds.failure());
+    let settings = builds.settings();
+    let mut known = LocalBuildState::new(&version, build_commit, builds.list(), builds.failure());
+    known.set_auto_restart(settings.auto_restart);
     application.manage(ManagedLocalBuilds {
         state: Mutex::new(known),
+        auto: Mutex::new(AutoRestartTracker::default()),
         builds,
         app_data,
     });
@@ -74,18 +108,100 @@ pub fn initialize(application: &AppHandle) {
     }
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(FIRST_LOOK).await;
+        tokio::time::sleep(INITIAL_RELATION_REFRESH).await;
+        refresh_existing_relations(&handle).await;
+        check_auto_restart(&handle).await;
+        let mut next_look = Instant::now() + FIRST_LOOK.saturating_sub(INITIAL_RELATION_REFRESH);
         loop {
-            look(&handle).await;
-            tokio::time::sleep(LOOK_INTERVAL).await;
+            tokio::time::sleep(AUTO_RESTART_POLL).await;
+            if Instant::now() >= next_look {
+                look(&handle).await;
+                next_look = Instant::now() + LOOK_INTERVAL;
+            }
+            check_auto_restart(&handle).await;
         }
     });
+}
+
+/// The running release build's commit, or `None` on development/non-Windows copies that
+/// never build or restart into local builds (#601).
+pub(crate) fn running_commit(application: &AppHandle) -> Option<String> {
+    if cfg!(debug_assertions) || !cfg!(windows) {
+        return None;
+    }
+    application
+        .try_state::<ManagedLocalBuilds>()
+        .and_then(|local| state(&local).running_commit().map(str::to_owned))
+}
+
+/// Updates the count and detail of issues waiting for a restart into a build with new
+/// agent tooling, and triggers an auto-restart check when waiting issues arrive (#601).
+pub(crate) fn update_waiting_issues(application: &AppHandle, waiting: Vec<WaitingIssueNeed>) {
+    let Some(local) = application.try_state::<ManagedLocalBuilds>() else {
+        return;
+    };
+    let changed = {
+        let mut tracker = auto_tracker(&local);
+        if tracker.waiting == waiting {
+            false
+        } else {
+            tracker.waiting = waiting.clone();
+            true
+        }
+    };
+    let count = u32::try_from(waiting.len()).unwrap_or(u32::MAX);
+    let detail = waiting_tooltip(&waiting);
+    change(application, |state| state.set_waiting_issues(count, detail));
+    if changed && !waiting.is_empty() && !cfg!(debug_assertions) && cfg!(windows) {
+        let handle = application.clone();
+        tauri::async_runtime::spawn(async move {
+            check_auto_restart(&handle).await;
+        });
+    }
+}
+
+fn waiting_tooltip(waiting: &[WaitingIssueNeed]) -> String {
+    waiting
+        .iter()
+        .take(5)
+        .map(|need| format!("#{} (needs {})", need.issue, short_commit(&need.commit)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn get_local_build_status(application: AppHandle) -> LocalBuildView {
     view(&application)
+}
+
+/// Enables or disables automatic restarts into the newest local build (default on) (#601).
+#[tauri::command]
+#[specta::specta]
+pub fn set_local_build_auto_restart(
+    application: AppHandle,
+    enabled: bool,
+) -> Result<LocalBuildView, String> {
+    let local = application
+        .try_state::<ManagedLocalBuilds>()
+        .ok_or("Local builds haven't started yet")?;
+    local
+        .builds
+        .save_settings(&LocalBuildSettings {
+            auto_restart: enabled,
+        })
+        .map_err(|error| error.to_string())?;
+    change(&application, |state| state.set_auto_restart(enabled));
+    if enabled {
+        auto_tracker(&local).failed_commit = None;
+        if !cfg!(debug_assertions) && cfg!(windows) {
+            let handle = application.clone();
+            tauri::async_runtime::spawn(async move {
+                check_auto_restart(&handle).await;
+            });
+        }
+    }
+    Ok(view(&application))
 }
 
 /// Restarts Velocity into the kept local build of `commit` (#512, #551). Never installs an
@@ -100,21 +216,35 @@ pub async fn restart_into_local_build(
     confirmed: bool,
     rollback: bool,
 ) -> LocalBuildView {
-    let Some(local) = application.try_state::<ManagedLocalBuilds>() else {
-        return view(&application);
-    };
-    let Some(build) = target_build(&local, &commit) else {
-        return view(&application);
-    };
-    let relation = live_relation(&application, &local, &build.commit).await;
-    if begin_restart(&application, &build, relation, confirmed, rollback)
-        && let Err(message) = restart(&application, &build).await
-    {
-        change(&application, |state| {
-            state.phase = LocalBuildPhase::RestartFailed(message);
-        });
-    }
+    let _ = perform_restart(&application, &commit, confirmed, rollback).await;
     view(&application)
+}
+
+async fn perform_restart(
+    application: &AppHandle,
+    commit: &str,
+    confirmed: bool,
+    rollback: bool,
+) -> Result<(), String> {
+    let Some(local) = application.try_state::<ManagedLocalBuilds>() else {
+        return Err("Local builds haven't started yet".into());
+    };
+    let Some(build) = target_build(&local, commit) else {
+        return Err(format!(
+            "Local build {} is no longer available",
+            short_commit(commit)
+        ));
+    };
+    let relation = live_relation(application, &local, &build.commit).await;
+    if begin_restart(application, &build, relation, confirmed, rollback)
+        && let Err(message) = restart(application, &build).await
+    {
+        change(application, |state| {
+            state.phase = LocalBuildPhase::RestartFailed(message.clone());
+        });
+        return Err(message);
+    }
+    Ok(())
 }
 
 /// Dismisses a pending unknown-commit confirmation prompt without restarting (#551).
@@ -366,7 +496,9 @@ async fn build(
         Ok(_) => {
             let builds = local.builds.list();
             let relations = compute_relations(local, server, &builds).await;
+            auto_tracker(local).failed_commit = None;
             change(application, |state| state.built(builds, relations));
+            check_auto_restart(application).await;
         }
         Err(reason) => {
             let failure = FailedBuild {
@@ -381,6 +513,123 @@ async fn build(
             change(application, |state| state.build_failed(failure));
         }
     }
+}
+
+async fn refresh_existing_relations(application: &AppHandle) {
+    if crate::rosen::paused(application) {
+        return;
+    }
+    let Some(local) = application.try_state::<ManagedLocalBuilds>() else {
+        return;
+    };
+    let Some(project) = velocity_project(application) else {
+        return;
+    };
+    let Ok(server) = crate::rosen::observation_server(application, project.project.id) else {
+        return;
+    };
+    refresh_relations(application, &local, &server).await;
+}
+
+/// Restarts into the newest local build by itself when auto-restart is enabled and either
+/// it contains every tooling land a waiting issue needs, or no agent turn has been running
+/// for 2 minutes (#601). Uses the existing Restart path, which saves state and resumes turns.
+async fn check_auto_restart(application: &AppHandle) {
+    if cfg!(debug_assertions) || !cfg!(windows) || crate::rosen::paused(application) {
+        return;
+    }
+    let Some(local) = application.try_state::<ManagedLocalBuilds>() else {
+        return;
+    };
+    let idle_ready = update_idle_ready(application, &local);
+    let (candidate, enabled, busy) = {
+        let current = state(&local);
+        (
+            current.newest_descendant_commit().map(str::to_owned),
+            current.auto_restart(),
+            current.busy(),
+        )
+    };
+    let Some(candidate) = candidate.filter(|_| enabled && !busy) else {
+        return;
+    };
+    let (waiting, failed_auto) = {
+        let tracker = auto_tracker(&local);
+        (tracker.waiting.clone(), tracker.failed_commit.clone())
+    };
+    let waiting_need_satisfied = waiting_needs_satisfied(application, &candidate, &waiting).await;
+    let target = state(&local).should_auto_restart(
+        waiting_need_satisfied,
+        idle_ready,
+        failed_auto.as_deref(),
+    );
+    let Some(commit) = target else {
+        return;
+    };
+    let reason = if waiting_need_satisfied {
+        format!(
+            "Auto-restarting into {} for {} waiting issue(s)",
+            short_commit(&commit),
+            waiting.len()
+        )
+    } else {
+        format!(
+            "Auto-restarting into {} after 2 minutes with no running agent turn",
+            short_commit(&commit)
+        )
+    };
+    crate::diagnostics::record("local build", &reason);
+    if perform_restart(application, &commit, false, false)
+        .await
+        .is_err()
+    {
+        auto_tracker(&local).failed_commit = Some(commit);
+    }
+}
+
+fn update_idle_ready(application: &AppHandle, local: &ManagedLocalBuilds) -> bool {
+    let mut tracker = auto_tracker(local);
+    if crate::updates::working_agents(application) > 0 {
+        tracker.idle_since = None;
+        return false;
+    }
+    let since = *tracker.idle_since.get_or_insert_with(Instant::now);
+    since.elapsed() >= IDLE_AUTO_RESTART
+}
+
+async fn waiting_needs_satisfied(
+    application: &AppHandle,
+    candidate: &str,
+    waiting: &[WaitingIssueNeed],
+) -> bool {
+    if waiting.is_empty() {
+        return false;
+    }
+    let Some(project) = velocity_project(application) else {
+        return false;
+    };
+    let Ok(server) = crate::rosen::observation_server(application, project.project.id) else {
+        return false;
+    };
+    for need in waiting {
+        if need.required_commits.is_empty() {
+            continue;
+        }
+        let mut all_contained = true;
+        for required in &need.required_commits {
+            if !matches!(
+                commit_contains(&server, candidate, required).await,
+                Ok(true)
+            ) {
+                all_contained = false;
+                break;
+            }
+        }
+        if all_contained {
+            return true;
+        }
+    }
+    false
 }
 
 fn target_build(local: &ManagedLocalBuilds, commit: &str) -> Option<LocalBuild> {

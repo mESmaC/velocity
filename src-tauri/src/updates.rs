@@ -459,9 +459,9 @@ fn view(application: &AppHandle) -> UpdateView {
     }
 }
 
-/// Agents mid-turn, which a restart interrupts: build threads that are thinking or running
-/// a tool, and busy duty agents.
-fn working_agents(application: &AppHandle) -> usize {
+/// Agents mid-turn, which a restart interrupts: build, review or spec threads that are
+/// thinking or running a tool, and busy duty agents.
+pub(crate) fn working_agents(application: &AppHandle) -> usize {
     let Some(store) = application.try_state::<ManagedStateStore>() else {
         return 0;
     };
@@ -474,11 +474,13 @@ fn working_agents(application: &AppHandle) -> usize {
         .iter()
         .map(|project| {
             let threads = project.threads.iter().filter(|thread| {
-                matches!(thread.state, ThreadState::Working | ThreadState::Review)
-                    && matches!(
-                        thread.activity,
-                        AgentActivity::Thinking | AgentActivity::Executing | AgentActivity::Stalled
-                    )
+                matches!(
+                    thread.state,
+                    ThreadState::Working | ThreadState::Review | ThreadState::Spec
+                ) && matches!(
+                    thread.activity,
+                    AgentActivity::Thinking | AgentActivity::Executing | AgentActivity::Stalled
+                )
             });
             let duty = project
                 .duty_roles
