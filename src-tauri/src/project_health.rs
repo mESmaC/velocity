@@ -2910,12 +2910,22 @@ fn check_dispatch_idle(
     } else {
         String::new()
     };
+    let persisted_idle_since_secs = project.continuous_dispatch.idle_since_secs;
+    let persisted_alert_active = persisted_idle_since_secs.is_some_and(|since| {
+        let entry_id = format!("dispatch-idle:{since}");
+        project
+            .health_history
+            .iter()
+            .any(|entry| entry.id == entry_id && entry.ended_at_ms.is_none())
+    });
     let observation = with_tracker(application, project.id, |tracker| {
         tracker.dispatch_idle.observe(DispatchIdleSample {
             now_secs: now,
             has_free_slot,
             has_candidates,
             last_dispatched_secs: dispatch.last_dispatched_secs,
+            persisted_idle_since_secs,
+            persisted_alert_active,
             busy,
             slots,
             detail: &detail,
@@ -2999,8 +3009,13 @@ fn log_dispatch_idle(
 }
 
 /// Immediately clears an active dispatch-idle alert and finalizes its persisted history entry
-/// as soon as continuous or manual dispatch starts work on `project` (#616).
+/// as soon as continuous or manual dispatch starts work on `project` (#616, #618).
 pub(crate) fn notify_dispatched(application: &AppHandle, project: u32, now_secs: u64) {
+    if let Some(store_state) = application.try_state::<crate::state::ManagedStateStore>()
+        && let Ok(mut store) = crate::threads::lock(store_state.inner(), "persisted state")
+    {
+        let _ = store.set_dispatch_idle_since(project, None);
+    }
     let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
         return;
     };

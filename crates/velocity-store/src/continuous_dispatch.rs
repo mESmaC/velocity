@@ -64,6 +64,12 @@ pub struct ContinuousDispatch {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[specta(skip)]
     pub unstarted_failures: BTreeMap<u32, UnstartedFailures>,
+    /// Wall-clock Unix seconds when continuous-dispatch slots entered an idle spell
+    /// (`slots > 0 && !paused && busy == 0` with open work), persisted across auto-restarts
+    /// so neither the attempt retry nor project health's idle clock resets (#618).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub idle_since_secs: Option<u64>,
 }
 
 /// How many times in a row an issue's thread may fail before its first turn and be
@@ -273,9 +279,10 @@ pub struct DispatchAttempt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(skip)]
     pub attempted_at: Option<u64>,
-    /// Referenced blockers (`open_blockers` and `waits for #N` / `after #N` / `blocked by #N`)
-    /// that were still open when this attempt was recorded (#617). When any of them closes,
-    /// the attempt clears so dispatch retries the issue.
+    /// Referenced blockers (`open_blockers`, explicit `waits for #N` / `after #N` /
+    /// `blocked by #N`, and open same-repository `#N` references in the body or owner/plan
+    /// comments) that were still open when this attempt was recorded (#617, #618). Once all
+    /// of them have closed, the attempt clears so dispatch retries the issue.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[specta(skip)]
     pub open_referenced_blockers: Vec<String>,
@@ -1120,7 +1127,31 @@ impl StateStore {
                 }
                 item.continuous_dispatch.slots = slots;
                 item.continuous_dispatch.paused = paused;
+                if slots == 0 || paused {
+                    item.continuous_dispatch.idle_since_secs = None;
+                }
                 Ok((true, ()))
+            },
+        )
+    }
+
+    /// Persists the wall-clock Unix seconds when this project's continuous-dispatch slots
+    /// entered an idle spell, or clears it when work starts or dispatch stops (#618).
+    /// Returns `true` when the saved timestamp changed.
+    pub fn set_dispatch_idle_since(
+        &mut self,
+        project: u32,
+        idle_since_secs: Option<u64>,
+    ) -> Result<bool, ThreadError> {
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                if item.continuous_dispatch.idle_since_secs == idle_since_secs {
+                    return Ok((false, false));
+                }
+                item.continuous_dispatch.idle_since_secs = idle_since_secs;
+                Ok((true, true))
             },
         )
     }
@@ -1223,6 +1254,7 @@ impl StateStore {
         };
         if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
             mark_dispatch(item, selected, identifier);
+            item.continuous_dispatch.idle_since_secs = None;
             item.continuous_dispatch.attempts.retain(|prior| {
                 prior.number != attempt.number
                     || !prior.repository.eq_ignore_ascii_case(&attempt.repository)
@@ -1318,6 +1350,7 @@ impl StateStore {
             .ok_or(ThreadError::UnknownProject(project))?;
         crate::swarms::claim_task(item, task, identifier)?;
         mark_dispatch(item, selected, identifier);
+        item.continuous_dispatch.idle_since_secs = None;
         self.commit(next)?;
         Ok(identifier)
     }
@@ -2290,6 +2323,79 @@ mod tests {
                 .continuous_dispatch
                 .attempts
                 .is_empty()
+        );
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#618): persisting the per-project idle-spell start across save/load ensures
+    // auto-restarting Velocity during an idle spell does not reset the 30-minute idle clock,
+    // while dispatching or pausing clears it cleanly.
+    #[test]
+    fn dispatch_idle_since_survives_save_and_load_and_clears_on_dispatch_or_pause()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, mut store) = legacy_store()?;
+        assert_eq!(
+            store
+                .project(1)
+                .ok_or("missing project")?
+                .continuous_dispatch
+                .idle_since_secs,
+            None
+        );
+        store.set_continuous_dispatch(1, 3, false)?;
+        assert!(store.set_dispatch_idle_since(1, Some(1_700_000_000))?);
+        assert!(!store.set_dispatch_idle_since(1, Some(1_700_000_000))?);
+        drop(store);
+
+        let mut loaded = StateStore::load_or_default(&directory)?;
+        assert_eq!(
+            loaded
+                .project(1)
+                .ok_or("missing project")?
+                .continuous_dispatch
+                .idle_since_secs,
+            Some(1_700_000_000)
+        );
+
+        // Starting a dispatched issue clears the saved idle spell atomically.
+        let thread = NewThread::new(
+            "Issue #417".into(),
+            "vel/issue-417".into(),
+            directory.join("agent-417").display().to_string(),
+            &loaded.settings(),
+        );
+        loaded.record_continuous_dispatch_with_blockers(
+            1,
+            thread,
+            ThreadIssue::new("mESmaC/velocity".into(), 417),
+            "2026-11-22T00:00:00Z".into(),
+            None,
+            Vec::new(),
+            1_700_001_800,
+        )?;
+        assert_eq!(
+            loaded
+                .project(1)
+                .ok_or("missing project")?
+                .continuous_dispatch
+                .idle_since_secs,
+            None
+        );
+
+        // Pausing continuous dispatch also clears an active idle spell.
+        assert!(loaded.set_dispatch_idle_since(1, Some(1_700_002_000))?);
+        loaded.set_continuous_dispatch(1, 3, true)?;
+        drop(loaded);
+
+        let reloaded = StateStore::load_or_default(&directory)?;
+        assert_eq!(
+            reloaded
+                .project(1)
+                .ok_or("missing project")?
+                .continuous_dispatch
+                .idle_since_secs,
+            None
         );
         std::fs::remove_dir_all(directory)?;
         Ok(())

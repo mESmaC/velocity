@@ -417,8 +417,6 @@ struct Reader {
     hold_retry: BTreeMap<u32, Instant>,
     /// Cached comment bodies per attempted issue `(updated_at, comments)` for blocker-close retry (#617).
     attempt_comments: BTreeMap<u32, (String, Vec<String>)>,
-    /// When dispatch slots became idle (`slots > 0 && !paused && busy == 0`) (#617).
-    slots_idle_since: Option<Instant>,
     backlog: Backlog,
     parked: parked::Parked,
     holds: holds::Holds,
@@ -625,16 +623,13 @@ fn pass(
     start_ready(application, project.id, Some(reader))
 }
 
-/// Clears "already attempted at this version" records when a referenced blocker closes
-/// or after dispatch slots have been idle for 30 minutes without a landed change (#617).
+/// Clears "already attempted at this version" records when all referenced blockers close
+/// or after dispatch slots have been idle for 30 minutes without a landed change (#617, #618).
 fn reconcile_attempts(
     application: &AppHandle,
     identifier: u32,
     reader: &mut Reader,
 ) -> Result<(), String> {
-    if reader.backlog.error.is_some() || reader.backlog.repository.is_empty() {
-        return Ok(());
-    }
     let (all_projects, project) = {
         let store = lock(
             application.state::<ManagedStateStore>().inner(),
@@ -645,25 +640,19 @@ fn reconcile_attempts(
         };
         (store.state().projects.clone(), project)
     };
-    let idle_now = project.continuous_dispatch.slots > 0
-        && !project.continuous_dispatch.paused
-        && busy_count(&project) == 0;
-    if idle_now {
-        reader.slots_idle_since.get_or_insert_with(Instant::now);
-    } else {
-        reader.slots_idle_since = None;
-    }
-    let slots_idle_secs = reader
-        .slots_idle_since
-        .map(|since| since.elapsed().as_secs());
+    let now = unix_seconds();
     let repository = reader.backlog.repository.clone();
-    let attempted_numbers: HashSet<u32> = project
-        .continuous_dispatch
-        .attempts
-        .iter()
-        .filter(|attempt| attempt.repository.eq_ignore_ascii_case(&repository))
-        .map(|attempt| attempt.number)
-        .collect();
+    let attempted_numbers = attempted_numbers_for_repo(&project, &repository);
+    let slots_idle_secs = reconcile_idle_seconds(
+        application,
+        &project,
+        &reader.backlog,
+        &attempted_numbers,
+        now,
+    )?;
+    if reader.backlog.error.is_some() || repository.is_empty() {
+        return Ok(());
+    }
     reader
         .attempt_comments
         .retain(|number, _| attempted_numbers.contains(number));
@@ -678,7 +667,7 @@ fn reconcile_attempts(
         &reader.backlog.issues,
         &comments_by_issue,
         slots_idle_secs,
-        unix_seconds(),
+        now,
     );
     if plan.clear.is_empty() && plan.add_open_blockers.is_empty() {
         return Ok(());
@@ -696,27 +685,134 @@ fn reconcile_attempts(
     )
     .map_err(|error| error.to_string())?;
     if changed {
-        for (number, reason) in &plan.clear {
-            match reason {
-                AttemptClearReason::BlockerClosed(blocker) => crate::diagnostics::record(
-                    "continuous dispatch",
-                    &format!(
-                        "{}: cleared attempt for #{number} (blocker {blocker} closed)",
-                        project.name
-                    ),
-                ),
-                AttemptClearReason::IdleWithoutLand => crate::diagnostics::record(
-                    "continuous dispatch",
-                    &format!(
-                        "{}: cleared attempt for #{number} (slots idle 30 min without landed change)",
-                        project.name
-                    ),
-                ),
-                AttemptClearReason::ClosedOrVersionChanged => {}
-            }
-        }
+        record_cleared_attempts(&project.name, &plan.clear);
     }
     Ok(())
+}
+
+fn attempted_numbers_for_repo(project: &ProjectItem, repository: &str) -> HashSet<u32> {
+    if repository.is_empty() {
+        return HashSet::new();
+    }
+    project
+        .continuous_dispatch
+        .attempts
+        .iter()
+        .filter(|attempt| attempt.repository.eq_ignore_ascii_case(repository))
+        .map(|attempt| attempt.number)
+        .collect()
+}
+
+fn reconcile_idle_seconds(
+    application: &AppHandle,
+    project: &ProjectItem,
+    backlog: &Backlog,
+    attempted_numbers: &HashSet<u32>,
+    now: u64,
+) -> Result<Option<u64>, String> {
+    let slots_free_and_empty = project.continuous_dispatch.slots > 0
+        && !project.continuous_dispatch.paused
+        && busy_count(project) == 0;
+    if !slots_free_and_empty {
+        sync_idle_since(application, project, false, now)?;
+        return Ok(None);
+    }
+    if backlog.repository.is_empty() {
+        return Ok(project
+            .continuous_dispatch
+            .idle_since_secs
+            .map(|since| now.saturating_sub(since)));
+    }
+    let has_idle_work = backlog.error.is_some()
+        || !attempted_numbers.is_empty()
+        || backlog_has_idle_work(project, &backlog.issues);
+    Ok(sync_idle_since(application, project, has_idle_work, now)?
+        .map(|since| now.saturating_sub(since)))
+}
+
+fn backlog_has_idle_work(project: &ProjectItem, issues: &[GitHubIssue]) -> bool {
+    issues.iter().any(|issue| {
+        issue.state == IssueState::Open
+            && !velocity_core::issue_holds::has_label(
+                &issue.labels,
+                velocity_core::issue_holds::TRACKING_LABEL,
+            )
+    }) || project
+        .tasks
+        .iter()
+        .any(|task| velocity_store::continuous_dispatch::available_task(project, task))
+}
+
+/// Persists or clears the project's wall-clock idle-spell start so restarting Velocity
+/// during an idle spell preserves elapsed idle time for retries and project health (#618).
+fn sync_idle_since(
+    application: &AppHandle,
+    project: &ProjectItem,
+    idle_now: bool,
+    now: u64,
+) -> Result<Option<u64>, String> {
+    let desired = if idle_now {
+        Some(project.continuous_dispatch.idle_since_secs.unwrap_or(now))
+    } else {
+        None
+    };
+    if desired != project.continuous_dispatch.idle_since_secs {
+        lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?
+        .set_dispatch_idle_since(project.id, desired)
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(desired)
+}
+
+fn record_cleared_attempts(project_name: &str, cleared: &[(u32, AttemptClearReason)]) {
+    for (number, reason) in cleared {
+        match reason {
+            AttemptClearReason::BlockerClosed(blocker) => {
+                let noun = if blocker.contains(", ") {
+                    "blockers"
+                } else {
+                    "blocker"
+                };
+                crate::diagnostics::record(
+                    "continuous dispatch",
+                    &format!(
+                        "{project_name}: cleared attempt for #{number} ({noun} {blocker} closed)"
+                    ),
+                );
+            }
+            AttemptClearReason::IdleWithoutLand => crate::diagnostics::record(
+                "continuous dispatch",
+                &format!(
+                    "{project_name}: cleared attempt for #{number} (slots idle 30 min without landed change)"
+                ),
+            ),
+            AttemptClearReason::ClosedOrVersionChanged => {}
+        }
+    }
+}
+
+fn comments_for_issue_start(reader: &mut Reader, issue: &GitHubIssue) -> Vec<String> {
+    if let Some(cached) = reader
+        .attempt_comments
+        .get(&issue.number)
+        .filter(|(updated_at, _)| updated_at == &issue.updated_at)
+        .map(|(_, bodies)| bodies.clone())
+    {
+        return cached;
+    }
+    let Some(client) = reader.client.as_ref() else {
+        return Vec::new();
+    };
+    let Ok(bodies) = client.read_comment_bodies(issue.number) else {
+        return Vec::new();
+    };
+    reader
+        .attempt_comments
+        .insert(issue.number, (issue.updated_at.clone(), bodies.clone()));
+    bodies
 }
 
 fn load_attempt_comments(
@@ -868,21 +964,15 @@ fn try_start_issue(
         .filter(|issue| issue.state == IssueState::Open)
         .map(|issue| issue.number)
         .collect();
-    let cached_comments = reader
-        .attempt_comments
-        .get(&number)
-        .filter(|(updated_at, _)| updated_at == &fresh.updated_at)
-        .map(|(_, bodies)| bodies.as_slice())
-        .unwrap_or(&[]);
+    let comments = comments_for_issue_start(reader, &fresh);
     start_issue(
         application,
         identifier,
         &repository,
         &fresh,
         &open_numbers,
-        cached_comments,
+        &comments,
     )?;
-    reader.slots_idle_since = None;
     overlap::refresh(application, identifier, reader)
 }
 
@@ -1280,7 +1370,6 @@ fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> 
         report_retry: BTreeMap::new(),
         hold_retry: BTreeMap::new(),
         attempt_comments: BTreeMap::new(),
-        slots_idle_since: None,
         backlog: Backlog::default(),
         parked: parked::Parked::new(),
         holds: holds::Holds::new(),

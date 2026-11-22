@@ -689,6 +689,12 @@ pub struct DispatchIdleSample<'a> {
     pub has_free_slot: bool,
     pub has_candidates: bool,
     pub last_dispatched_secs: Option<u64>,
+    /// Persisted wall-clock Unix seconds when the current idle spell started, so restarting
+    /// Velocity during an idle spell does not reset the idle clock (#618).
+    pub persisted_idle_since_secs: Option<u64>,
+    /// Whether persisted project health history already has an active un-ended alert for
+    /// `persisted_idle_since_secs`, preventing a duplicate desktop notification after restart (#618).
+    pub persisted_alert_active: bool,
     pub busy: u32,
     pub slots: u32,
     pub detail: &'a str,
@@ -719,7 +725,7 @@ impl DispatchIdleTracker {
                 ..DispatchIdleObservation::default()
             };
         }
-        let since = *self.idle_since_secs.get_or_insert(sample.now_secs);
+        let since = self.resolve_idle_since(sample);
         let waited = sample.now_secs.saturating_sub(since);
         self.last_slot_counts = Some((sample.busy, sample.slots));
         if !sample.detail.trim().is_empty() {
@@ -802,6 +808,27 @@ impl DispatchIdleTracker {
         self.last_history_duration_secs = None;
         self.last_summary_detail = None;
         self.last_slot_counts = None;
+    }
+
+    fn resolve_idle_since(&mut self, sample: DispatchIdleSample<'_>) -> u64 {
+        let valid_persisted = sample.persisted_idle_since_secs.filter(|&since| {
+            since <= sample.now_secs
+                && sample
+                    .last_dispatched_secs
+                    .is_none_or(|dispatched| since >= dispatched)
+        });
+        let restored_from_persisted = self.idle_since_secs.is_none() && valid_persisted.is_some();
+        let since = match (self.idle_since_secs, valid_persisted) {
+            (Some(current), Some(persisted)) => current.min(persisted),
+            (Some(current), None) => current,
+            (None, Some(persisted)) => persisted,
+            (None, None) => sample.now_secs,
+        };
+        self.idle_since_secs = Some(since);
+        if restored_from_persisted && sample.persisted_alert_active {
+            self.alerted = true;
+        }
+        since
     }
 }
 
@@ -1269,6 +1296,8 @@ test gamma::stalled_case has been running for over 60 seconds
             has_free_slot: true,
             has_candidates: true,
             last_dispatched_secs: None,
+            persisted_idle_since_secs: None,
+            persisted_alert_active: false,
             busy: 0,
             slots: 3,
             detail,
@@ -1284,6 +1313,8 @@ test gamma::stalled_case has been running for over 60 seconds
             has_free_slot: true,
             has_candidates: true,
             last_dispatched_secs: None,
+            persisted_idle_since_secs: None,
+            persisted_alert_active: false,
             busy: 0,
             slots: 3,
             detail,
@@ -1298,6 +1329,8 @@ test gamma::stalled_case has been running for over 60 seconds
             has_free_slot: true,
             has_candidates: true,
             last_dispatched_secs: None,
+            persisted_idle_since_secs: None,
+            persisted_alert_active: false,
             busy: 0,
             slots: 3,
             detail,
@@ -1324,6 +1357,8 @@ test gamma::stalled_case has been running for over 60 seconds
             has_free_slot: true,
             has_candidates: true,
             last_dispatched_secs: None,
+            persisted_idle_since_secs: None,
+            persisted_alert_active: false,
             busy: 0,
             slots: 3,
             detail,
@@ -1338,6 +1373,8 @@ test gamma::stalled_case has been running for over 60 seconds
             has_free_slot: true,
             has_candidates: true,
             last_dispatched_secs: Some(dispatched_at),
+            persisted_idle_since_secs: None,
+            persisted_alert_active: false,
             busy: 1,
             slots: 3,
             detail,
@@ -1361,6 +1398,8 @@ test gamma::stalled_case has been running for over 60 seconds
             has_free_slot: true,
             has_candidates: true,
             last_dispatched_secs: Some(dispatched_at),
+            persisted_idle_since_secs: None,
+            persisted_alert_active: false,
             busy: 1,
             slots: 3,
             detail,
@@ -1372,6 +1411,76 @@ test gamma::stalled_case has been running for over 60 seconds
                 .as_ref()
                 .map(|entry| entry.id.as_str()),
             Some("dispatch-idle:5200")
+        );
+    }
+
+    #[test]
+    fn dispatch_idle_tracker_preserves_elapsed_time_across_restart() {
+        // Risk (#618): auto-restarting Velocity 24 minutes into an idle spell must not reset
+        // project health's elapsed idle time or delay the 30-minute alert by another 30 minutes.
+        let spell_start = 10_000;
+        let detail = "#417 (already attempted at this version)";
+
+        // Fresh tracker after a restart at T=24 min keeps the persisted spell start.
+        let mut after_restart = DispatchIdleTracker::default();
+        let at_24m = after_restart.observe(DispatchIdleSample {
+            now_secs: spell_start + 24 * 60,
+            has_free_slot: true,
+            has_candidates: true,
+            last_dispatched_secs: None,
+            persisted_idle_since_secs: Some(spell_start),
+            persisted_alert_active: false,
+            busy: 0,
+            slots: 3,
+            detail,
+        });
+        assert_eq!(after_restart.idle_since_secs, Some(spell_start));
+        assert!(at_24m.should_log);
+        assert!(!at_24m.raise_notification);
+        assert!(at_24m.active_alert.is_none());
+
+        // 6 minutes after restart (T=30 min total): fires alert on schedule, not 30 min late.
+        let at_30m = after_restart.observe(DispatchIdleSample {
+            now_secs: spell_start + DISPATCH_IDLE_ALERT_SECONDS,
+            has_free_slot: true,
+            has_candidates: true,
+            last_dispatched_secs: None,
+            persisted_idle_since_secs: Some(spell_start),
+            persisted_alert_active: false,
+            busy: 0,
+            slots: 3,
+            detail,
+        });
+        assert!(at_30m.raise_notification);
+        assert_eq!(
+            at_30m.active_alert,
+            Some(DispatchIdleActive {
+                idle_since_secs: spell_start,
+                idle_seconds: DISPATCH_IDLE_ALERT_SECONDS,
+            })
+        );
+
+        // Restarting again at T=35 min when the alert is already active in history keeps the
+        // UI alert with the full 35-minute duration without re-firing the desktop notification.
+        let mut after_second_restart = DispatchIdleTracker::default();
+        let at_35m = after_second_restart.observe(DispatchIdleSample {
+            now_secs: spell_start + 35 * 60,
+            has_free_slot: true,
+            has_candidates: true,
+            last_dispatched_secs: None,
+            persisted_idle_since_secs: Some(spell_start),
+            persisted_alert_active: true,
+            busy: 0,
+            slots: 3,
+            detail,
+        });
+        assert!(!at_35m.raise_notification);
+        assert_eq!(
+            at_35m.active_alert,
+            Some(DispatchIdleActive {
+                idle_since_secs: spell_start,
+                idle_seconds: 35 * 60,
+            })
         );
     }
 

@@ -678,8 +678,10 @@ pub struct AttemptReconcile {
     pub add_open_blockers: BTreeMap<u32, Vec<String>>,
 }
 
-/// Collects currently open blockers referenced by `issue` (`open_blockers` plus text
-/// references `waits for #N`, `after #N`, `blocked by #N` in `body` and `comments`) (#617).
+/// Collects currently open blockers referenced by `issue` (`open_blockers`, explicit
+/// `waits for #N` / `after #N` / `blocked by #N` references, and every same-repository `#N`
+/// in `issue.body` and owner or plan `comments`, ignoring code spans and links to other
+/// repositories) (#617, #618).
 pub fn open_referenced_blockers_for_issue(
     projects: &[ProjectItem],
     project: &ProjectItem,
@@ -709,7 +711,7 @@ pub fn open_referenced_blockers_for_issue(
 }
 
 /// Evaluates stored `DispatchAttempt` records against the open backlog, closing blockers,
-/// and slot idle time (#617).
+/// and slot idle time (#617, #618).
 pub fn attempts_to_clear(
     projects: &[ProjectItem],
     project: &ProjectItem,
@@ -749,19 +751,6 @@ pub fn attempts_to_clear(
             .get(&issue.number)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        if let Some(closed) = closed_blocker_for_attempt(
-            projects,
-            project,
-            repository,
-            issue,
-            attempt,
-            &open_numbers,
-            comments,
-        ) {
-            plan.clear
-                .push((attempt.number, AttemptClearReason::BlockerClosed(closed)));
-            continue;
-        }
         let currently_open = open_referenced_blockers_for_issue(
             projects,
             project,
@@ -770,6 +759,21 @@ pub fn attempts_to_clear(
             &open_numbers,
             comments,
         );
+        if currently_open.is_empty()
+            && let Some(closed) = closed_blockers_for_attempt(
+                projects,
+                project,
+                repository,
+                issue,
+                attempt,
+                &open_numbers,
+                comments,
+            )
+        {
+            plan.clear
+                .push((attempt.number, AttemptClearReason::BlockerClosed(closed)));
+            continue;
+        }
         let missing_open: Vec<String> = currently_open
             .into_iter()
             .filter(|blocker| {
@@ -815,15 +819,30 @@ fn referenced_blockers_of_issue(
     for reference in referenced_blockers_in_text(&issue.body) {
         push_unique(reference);
     }
+    for reference in velocity_core::issue_dependencies::same_repo_issue_references_in_text(
+        &issue.body,
+        repository,
+    ) {
+        push_unique(reference);
+    }
     for comment in comments {
         for reference in referenced_blockers_in_text(comment) {
             push_unique(reference);
+        }
+        if velocity_core::issue_dependencies::is_owner_or_plan_comment(comment) {
+            for reference in velocity_core::issue_dependencies::same_repo_issue_references_in_text(
+                comment, repository,
+            ) {
+                push_unique(reference);
+            }
         }
     }
     references
 }
 
-fn closed_blocker_for_attempt(
+/// Returns the formatted closed blockers once every blocker candidate recorded for `attempt`
+/// has closed or passed integration (#617, #618).
+fn closed_blockers_for_attempt(
     projects: &[ProjectItem],
     project: &ProjectItem,
     repository: &str,
@@ -832,25 +851,11 @@ fn closed_blocker_for_attempt(
     open_numbers: &HashSet<u32>,
     comments: &[String],
 ) -> Option<String> {
-    for saved in &attempt.open_referenced_blockers {
-        if let Some(reference) = IssueReference::parse(saved)
-            && blocker_closed_or_satisfied(
-                projects,
-                project,
-                repository,
-                issue,
-                open_numbers,
-                &reference,
-            )
-        {
-            return Some(reference.relative_to(repository));
-        }
-    }
-    // Legacy attempts saved before #617 had no `attempted_at` or open-blocker snapshot:
-    // if any referenced or linked blocker is already closed, clear so dispatch retries.
-    if attempt.attempted_at.is_none() {
-        for reference in referenced_blockers_of_issue(repository, issue, comments) {
-            if blocker_closed_or_satisfied(
+    if !attempt.open_referenced_blockers.is_empty() {
+        let mut closed = Vec::new();
+        for saved in &attempt.open_referenced_blockers {
+            let reference = IssueReference::parse(saved)?;
+            if !blocker_closed_or_satisfied(
                 projects,
                 project,
                 repository,
@@ -858,8 +863,33 @@ fn closed_blocker_for_attempt(
                 open_numbers,
                 &reference,
             ) {
-                return Some(reference.relative_to(repository));
+                return None;
             }
+            closed.push(reference.relative_to(repository));
+        }
+        return (!closed.is_empty()).then(|| closed.join(", "));
+    }
+    // Legacy attempts saved before #617 had no `attempted_at` or open-blocker snapshot:
+    // if every referenced or linked blocker is already closed, clear so dispatch retries.
+    if attempt.attempted_at.is_none() {
+        let references = referenced_blockers_of_issue(repository, issue, comments);
+        if !references.is_empty()
+            && references.iter().all(|reference| {
+                blocker_closed_or_satisfied(
+                    projects,
+                    project,
+                    repository,
+                    issue,
+                    open_numbers,
+                    reference,
+                )
+            })
+        {
+            let closed: Vec<String> = references
+                .iter()
+                .map(|reference| reference.relative_to(repository))
+                .collect();
+            return Some(closed.join(", "));
         }
     }
     None
@@ -1962,5 +1992,165 @@ mod tests {
                 .and_then(|skip| blocked_dispatch_issue(&project, repo, &tracking, skip))
                 .is_none()
         );
+    }
+
+    // Risk (#618): an attempted issue whose owner/plan comment lists open same-repo issues
+    // by number (like #417 listing #421-#424) must wait until all of them close, ignore
+    // code spans and links to other repositories, and dispatch again once every one closes.
+    #[test]
+    fn plan_comment_open_numbers_clear_attempt_only_once_all_close() {
+        let mut project = ProjectItem::new(1, "velocity".into(), "Z:/velocity".into());
+        project.version_control = VersionControl::Rosen;
+        project.spec_locked = true;
+        let repo = "mESmaC/velocity";
+
+        let mut issue_417 = sample_issue(417);
+        issue_417.body = "Rosen vocabulary sweep. Ignore `#900` and [#901](https://github.com/other/repo/issues/901).".into();
+        let plan_comment = "\
+**Decided (owner delegated, 2026-11-17): phased.**\n\
+2. Rust and IPC names change inside: #421 (status pane), #422 (thread view), #423 (workspaces), #424 (PR duty).\n\
+3. One final sweep for leftovers, after those land.\n\
+Also mentions `#902` in code and mESmaC/rosen#903 in another repo.\n"
+            .to_owned();
+        let agent_progress =
+            "Velocity agent `issue-417-10` · [Thread 10](velocity://thread/1/10)\n\nStarting work; unrelated #904 is open."
+                .to_owned();
+        let comments = vec![plan_comment, agent_progress];
+
+        let open_at_attempt: HashSet<u32> = [417, 421, 422, 423, 424, 900, 901, 902, 903, 904]
+            .into_iter()
+            .collect();
+        let captured = open_referenced_blockers_for_issue(
+            &[],
+            &project,
+            repo,
+            &issue_417,
+            &open_at_attempt,
+            &comments,
+        );
+        assert_eq!(captured, vec!["#421", "#422", "#423", "#424"]);
+
+        project.continuous_dispatch.attempts.push(
+            velocity_store::continuous_dispatch::DispatchAttempt {
+                repository: repo.into(),
+                number: 417,
+                updated_at: issue_417.updated_at.clone(),
+                attempted_at: Some(1_000),
+                open_referenced_blockers: captured,
+                thread_id: None,
+                last_result: None,
+            },
+        );
+        let comments_by_issue = BTreeMap::from([(417, comments)]);
+
+        // Closing #421-#423 while #424 is still open must NOT clear the attempt yet.
+        let partial = attempts_to_clear(
+            &[],
+            &project,
+            repo,
+            &[issue_417.clone(), sample_issue(424), sample_issue(900)],
+            &comments_by_issue,
+            None,
+            1_200,
+        );
+        assert!(partial.clear.is_empty());
+
+        // Once #424 also closes, all four blockers are closed and the attempt clears.
+        let all_closed = attempts_to_clear(
+            &[],
+            &project,
+            repo,
+            &[issue_417.clone(), sample_issue(900), sample_issue(904)],
+            &comments_by_issue,
+            None,
+            1_300,
+        );
+        assert_eq!(
+            all_closed.clear,
+            vec![(
+                417,
+                AttemptClearReason::BlockerClosed("#421, #422, #423, #424".into())
+            )]
+        );
+
+        // After clearing, #417 is dispatchable again.
+        project.continuous_dispatch.attempts.clear();
+        assert!(dispatchable_issue(
+            &project,
+            repo,
+            &issue_417,
+            &HashSet::new()
+        ));
+    }
+
+    // Risk (#618): restarting Velocity 24 minutes into an idle spell must preserve the
+    // persisted idle_since_secs so the 30-minute attempt retry fires 6 minutes after restart.
+    #[test]
+    fn persisted_idle_spell_triggers_attempt_retry_across_restart()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory =
+            std::env::temp_dir().join(format!("velocity-dispatch-618-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory)?;
+        let mut project = ProjectItem::new(1, "velocity".into(), directory.display().to_string());
+        project.version_control = VersionControl::Rosen;
+        project.spec_locked = true;
+        project.continuous_dispatch.slots = 3;
+        let repo = "mESmaC/velocity";
+        let issue_417 = sample_issue(417);
+        project.continuous_dispatch.attempts.push(
+            velocity_store::continuous_dispatch::DispatchAttempt {
+                repository: repo.into(),
+                number: 417,
+                updated_at: issue_417.updated_at.clone(),
+                attempted_at: Some(1_000),
+                open_referenced_blockers: Vec::new(),
+                thread_id: None,
+                last_result: None,
+            },
+        );
+        // Idle spell started at T=1_000.
+        project.continuous_dispatch.idle_since_secs = Some(1_000);
+
+        let mut persisted = velocity_store::PersistedState::default();
+        persisted.projects.push(project);
+        std::fs::write(
+            directory.join(velocity_store::STATE_FILE_NAME),
+            serde_json::to_vec(&persisted)?,
+        )?;
+
+        // Simulate auto-restart at T=24 min (2_440) and check at T=30 min (2_800).
+        let reloaded = StateStore::load_or_default(&directory)?;
+        let project = reloaded.project(1).ok_or("reloaded project missing")?;
+        let idle_since = project.continuous_dispatch.idle_since_secs;
+        assert_eq!(idle_since, Some(1_000));
+
+        let at_24m: u64 = 1_000 + 24 * 60;
+        let before_threshold = attempts_to_clear(
+            &[],
+            project,
+            repo,
+            std::slice::from_ref(&issue_417),
+            &BTreeMap::new(),
+            idle_since.map(|since| at_24m.saturating_sub(since)),
+            at_24m,
+        );
+        assert!(before_threshold.clear.is_empty());
+
+        let at_30m = 1_000 + ATTEMPT_IDLE_RETRY_SECONDS;
+        let after_restart_threshold = attempts_to_clear(
+            &[],
+            project,
+            repo,
+            &[issue_417],
+            &BTreeMap::new(),
+            idle_since.map(|since| at_30m.saturating_sub(since)),
+            at_30m,
+        );
+        assert_eq!(
+            after_restart_threshold.clear,
+            vec![(417, AttemptClearReason::IdleWithoutLand)]
+        );
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
     }
 }
