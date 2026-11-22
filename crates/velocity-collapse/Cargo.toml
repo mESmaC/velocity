@@ -21,3 +21,9 @@ uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+
+# Secret Service (GNOME Keyring, KWallet) over D-Bus in pure Rust, so building needs no
+# libdbus headers. `async-io` (not `tokio`) avoids panicking when blocking keyring calls
+# run inside a tokio worker thread.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["async-secret-service", "async-io", "crypto-rust"] }

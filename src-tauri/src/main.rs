@@ -8,11 +8,24 @@ mod rosen_mcp;
 #[cfg(feature = "bundled-rosen")]
 static ROSEN_BINARIES: [(&str, &[u8]); 2] = [
     (
-        "rosen-server.exe",
+        ROSEN_SERVER_FILE,
         include_bytes!(env!("VELOCITY_ROSEN_SERVER_EXE")),
     ),
-    ("rosen.exe", include_bytes!(env!("VELOCITY_ROSEN_CLI_EXE"))),
+    (
+        ROSEN_CLI_FILE,
+        include_bytes!(env!("VELOCITY_ROSEN_CLI_EXE")),
+    ),
 ];
+
+/// The unpacked file names, which Velocity finds by `rosen{EXE_SUFFIX}`.
+#[cfg(all(feature = "bundled-rosen", windows))]
+const ROSEN_SERVER_FILE: &str = "rosen-server.exe";
+#[cfg(all(feature = "bundled-rosen", windows))]
+const ROSEN_CLI_FILE: &str = "rosen.exe";
+#[cfg(all(feature = "bundled-rosen", not(windows)))]
+const ROSEN_SERVER_FILE: &str = "rosen-server";
+#[cfg(all(feature = "bundled-rosen", not(windows)))]
+const ROSEN_CLI_FILE: &str = "rosen";
 
 fn main() -> anyhow::Result<()> {
     velocity_rosen::mcp_latency::mark_process_start();

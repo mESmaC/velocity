@@ -32,6 +32,8 @@ pub enum WorktreeError {
     InvalidProjectName(String),
     #[error("worktree drive `{0}` is not a valid Windows drive prefix")]
     InvalidDrivePrefix(String),
+    #[error("worktree folder `{0}` must be an absolute path")]
+    RelativeLocation(String),
     #[error(
         "worktree path `{path}` was rejected as too long on Windows (pre-check limit: {limit} characters)"
     )]
@@ -202,7 +204,7 @@ fn is_single_normal_segment(segment: &str) -> bool {
 }
 
 /// Resolves the effective workspace root directory for a project: `<override>` if set,
-/// otherwise `<drive><folder>\<project>`.
+/// otherwise `<drive><folder>\<project>` (`<folder>/<project>` on Unix).
 pub fn resolve_project_worktree_root(
     drive: &str,
     folder: &str,
@@ -212,24 +214,48 @@ pub fn resolve_project_worktree_root(
     if !is_single_normal_segment(project_name) {
         return Err(WorktreeError::InvalidProjectName(project_name.to_owned()));
     }
-    let trimmed_drive = drive.trim();
-    let drive_bytes = trimmed_drive.as_bytes();
-    if drive_bytes.len() != 2 || !drive_bytes[0].is_ascii_alphabetic() || drive_bytes[1] != b':' {
-        return Err(WorktreeError::InvalidDrivePrefix(drive.to_owned()));
-    }
-    let mut global_root = PathBuf::from(format!("{trimmed_drive}\\"));
-    for segment in folder
-        .split(['\\', '/'])
-        .filter(|segment| !segment.is_empty())
-    {
-        global_root.push(segment);
-    }
+    let mut global_root = location_root(drive, folder)?;
     global_root.push(project_name);
     let config = LocationConfig {
         global_project_root: global_root,
         project_override: project_override.map(Path::to_path_buf),
     };
     Ok(effective_root(config))
+}
+
+/// `<drive>\\<folder>`: Windows splits the location into a drive letter and a folder.
+#[cfg(windows)]
+fn location_root(drive: &str, folder: &str) -> Result<PathBuf, WorktreeError> {
+    let trimmed_drive = drive.trim();
+    let drive_bytes = trimmed_drive.as_bytes();
+    if drive_bytes.len() != 2 || !drive_bytes[0].is_ascii_alphabetic() || drive_bytes[1] != b':' {
+        return Err(WorktreeError::InvalidDrivePrefix(drive.to_owned()));
+    }
+    let mut root = PathBuf::from(format!("{trimmed_drive}\\"));
+    for segment in folder
+        .split(['\\', '/'])
+        .filter(|segment| !segment.is_empty())
+    {
+        root.push(segment);
+    }
+    Ok(root)
+}
+
+/// Unix has no drives, so the folder is the whole location and must be absolute. A
+/// backslash is an ordinary file name character here, never a separator.
+#[cfg(not(windows))]
+fn location_root(drive: &str, folder: &str) -> Result<PathBuf, WorktreeError> {
+    if !drive.trim().is_empty() {
+        return Err(WorktreeError::InvalidDrivePrefix(drive.to_owned()));
+    }
+    if !folder.starts_with('/') {
+        return Err(WorktreeError::RelativeLocation(folder.to_owned()));
+    }
+    let mut root = PathBuf::from("/");
+    for segment in folder.split('/').filter(|segment| !segment.is_empty()) {
+        root.push(segment);
+    }
+    Ok(root)
 }
 
 /// Resolves the full workspace directory path for a job (`None` for a spec interview),

@@ -2,38 +2,39 @@
 //!
 //! One generic credential holds the account name and both tokens as JSON, so the connection
 //! is read and removed as a unit. On Windows it appears in Credential Manager as
-//! `velocity:collapse.sh`.
+//! `velocity:collapse.sh`; on Linux it is a Secret Service item (GNOME Keyring, KWallet)
+//! with service `velocity:collapse.sh` (see `os_store`).
 
 use serde::{Deserialize, Serialize};
 
 use crate::CollapseError;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const TARGET: &str = "velocity:collapse.sh";
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const SERVICE: &str = "collapse.sh";
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const USER: &str = "velocity";
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const RELEASE_TOKEN_TARGET: &str = "velocity:collapse.sh:releases";
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const RELEASE_TOKEN_USER: &str = "velocity-releases";
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const ISSUES_TOKEN_TARGET: &str = "velocity:collapse.sh:issues";
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const ISSUES_TOKEN_USER: &str = "velocity-issues";
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const UPDATER_KEY_TARGET: &str = "velocity:updater-signing-key";
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const UPDATER_PASSWORD_TARGET: &str = "velocity:updater-signing-key-password";
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const UPDATER_SERVICE: &str = "velocity-updater";
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const UPDATER_KEY_USER: &str = "signing-key";
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const UPDATER_PASSWORD_USER: &str = "signing-key-password";
 
 /// What Collapse's token exchange returned for this machine's connection.
@@ -121,14 +122,13 @@ impl std::fmt::Debug for UpdaterSigningKey {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn entry() -> Result<keyring::Entry, CollapseError> {
-    keyring::Entry::new_with_target(TARGET, SERVICE, USER)
-        .map_err(|error| CollapseError::Credential(error.to_string()))
+    crate::os_store::entry(TARGET, SERVICE, USER)
 }
 
 /// Replaces any saved connection with `credentials`.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn save_credentials(credentials: &CollapseCredentials) -> Result<(), CollapseError> {
     let secret = serde_json::to_vec(credentials)
         .map_err(|error| CollapseError::Credential(error.to_string()))?;
@@ -138,7 +138,7 @@ pub fn save_credentials(credentials: &CollapseCredentials) -> Result<(), Collaps
 }
 
 /// The saved connection, or `None` when Collapse is not connected.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn load_credentials() -> Result<Option<CollapseCredentials>, CollapseError> {
     match entry()?.get_secret() {
         Ok(secret) => serde_json::from_slice(&secret).map(Some).map_err(|_| {
@@ -152,7 +152,7 @@ pub fn load_credentials() -> Result<Option<CollapseCredentials>, CollapseError> 
 }
 
 /// Removes the saved connection. The tokens stay valid on Collapse until revoked there.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn forget_credentials() -> Result<(), CollapseError> {
     match entry()?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
@@ -160,24 +160,24 @@ pub fn forget_credentials() -> Result<(), CollapseError> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn save_credentials(_credentials: &CollapseCredentials) -> Result<(), CollapseError> {
     Err(CollapseError::Unsupported)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn load_credentials() -> Result<Option<CollapseCredentials>, CollapseError> {
     Ok(None)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn forget_credentials() -> Result<(), CollapseError> {
     Ok(())
 }
 
 /// Saves a manually pasted Collapse personal access token with the `releases` scope in
 /// Windows Credential Manager under `velocity:collapse.sh:releases` (#593, #607).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn save_release_token(token: &str) -> Result<(), CollapseError> {
     let record = StoredReleaseToken {
         token: token.to_owned(),
@@ -189,7 +189,7 @@ pub fn save_release_token(token: &str) -> Result<(), CollapseError> {
 
 /// Saves a Collapse `releases`-scoped token minted from the signed-in desktop session in
 /// Windows Credential Manager under `velocity:collapse.sh:releases` (#607).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn save_sign_in_release_token(
     token: &str,
     created_at: Option<&str>,
@@ -202,7 +202,7 @@ pub fn save_sign_in_release_token(
     save_release_token_record(&record)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn save_release_token_record(
     record: &StoredReleaseToken,
 ) -> Result<StoredReleaseToken, CollapseError> {
@@ -216,7 +216,7 @@ fn save_release_token_record(
 /// Loads the saved Collapse releases token and its provenance from Windows Credential
 /// Manager (#593, #607). Accepts both JSON metadata written by Velocity and legacy plain
 /// token text (treated as a pasted token).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn load_release_token_record() -> Result<Option<StoredReleaseToken>, CollapseError> {
     match release_token_entry()?.get_secret() {
         Ok(secret) => parse_release_token_secret(&secret),
@@ -226,23 +226,23 @@ pub fn load_release_token_record() -> Result<Option<StoredReleaseToken>, Collaps
 }
 
 /// Loads the optional Collapse releases token value from Windows Credential Manager (#593).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn load_release_token() -> Result<Option<String>, CollapseError> {
     Ok(load_release_token_record()?.map(|record| record.token))
 }
 
 /// Removes the saved Collapse releases token from Windows Credential Manager (#593).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn forget_release_token() -> Result<(), CollapseError> {
     delete_entry(&release_token_entry()?)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn save_release_token(_token: &str) -> Result<(), CollapseError> {
     Err(CollapseError::Unsupported)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn save_sign_in_release_token(
     _token: &str,
     _created_at: Option<&str>,
@@ -250,17 +250,17 @@ pub fn save_sign_in_release_token(
     Err(CollapseError::Unsupported)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn load_release_token_record() -> Result<Option<StoredReleaseToken>, CollapseError> {
     Ok(None)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn load_release_token() -> Result<Option<String>, CollapseError> {
     Ok(None)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn forget_release_token() -> Result<(), CollapseError> {
     Ok(())
 }
@@ -316,7 +316,7 @@ fn trim_non_empty(text: &str) -> Option<String> {
 
 /// Saves a Collapse personal access token with the `issues` scope in Windows Credential
 /// Manager under `velocity:collapse.sh:issues` (#589).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn save_issues_token(token: &str) -> Result<(), CollapseError> {
     let trimmed = token.trim();
     if trimmed.is_empty() {
@@ -330,28 +330,28 @@ pub fn save_issues_token(token: &str) -> Result<(), CollapseError> {
 }
 
 /// Loads the optional Collapse issues token from Windows Credential Manager (#589).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn load_issues_token() -> Result<Option<String>, CollapseError> {
     read_text_secret(&issues_token_entry()?)
 }
 
 /// Removes the saved Collapse issues token from Windows Credential Manager (#589).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn forget_issues_token() -> Result<(), CollapseError> {
     delete_entry(&issues_token_entry()?)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn save_issues_token(_token: &str) -> Result<(), CollapseError> {
     Err(CollapseError::Unsupported)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn load_issues_token() -> Result<Option<String>, CollapseError> {
     Ok(None)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn forget_issues_token() -> Result<(), CollapseError> {
     Ok(())
 }
@@ -369,7 +369,7 @@ pub fn resolve_issues_token() -> Result<Option<String>, CollapseError> {
 
 /// Saves the Tauri updater signing key (and optional password) in Windows Credential Manager
 /// under `velocity:updater-signing-key` (#593).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn save_updater_signing_key(key: &UpdaterSigningKey) -> Result<(), CollapseError> {
     let private_key = key.private_key.trim();
     if private_key.is_empty() {
@@ -399,7 +399,7 @@ pub fn save_updater_signing_key(key: &UpdaterSigningKey) -> Result<(), CollapseE
 /// Accepts either JSON (`{"private_key": "...", "password": "..."}`) stored by Velocity or
 /// plain key text stored directly under `velocity:updater-signing-key` (with an optional
 /// separate password under `velocity:updater-signing-key-password`).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn load_updater_signing_key() -> Result<Option<UpdaterSigningKey>, CollapseError> {
     let secret = match updater_key_entry()?.get_secret() {
         Ok(secret) => secret,
@@ -433,56 +433,52 @@ pub fn load_updater_signing_key() -> Result<Option<UpdaterSigningKey>, CollapseE
 }
 
 /// Removes the Tauri updater signing key from Windows Credential Manager (#593).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn forget_updater_signing_key() -> Result<(), CollapseError> {
     delete_entry(&updater_key_entry()?)?;
     delete_entry(&updater_password_entry()?)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn save_updater_signing_key(_key: &UpdaterSigningKey) -> Result<(), CollapseError> {
     Err(CollapseError::Unsupported)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn load_updater_signing_key() -> Result<Option<UpdaterSigningKey>, CollapseError> {
     Ok(None)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn forget_updater_signing_key() -> Result<(), CollapseError> {
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn release_token_entry() -> Result<keyring::Entry, CollapseError> {
-    keyring::Entry::new_with_target(RELEASE_TOKEN_TARGET, SERVICE, RELEASE_TOKEN_USER)
-        .map_err(|error| CollapseError::Credential(error.to_string()))
+    crate::os_store::entry(RELEASE_TOKEN_TARGET, SERVICE, RELEASE_TOKEN_USER)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn issues_token_entry() -> Result<keyring::Entry, CollapseError> {
-    keyring::Entry::new_with_target(ISSUES_TOKEN_TARGET, SERVICE, ISSUES_TOKEN_USER)
-        .map_err(|error| CollapseError::Credential(error.to_string()))
+    crate::os_store::entry(ISSUES_TOKEN_TARGET, SERVICE, ISSUES_TOKEN_USER)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn updater_key_entry() -> Result<keyring::Entry, CollapseError> {
-    keyring::Entry::new_with_target(UPDATER_KEY_TARGET, UPDATER_SERVICE, UPDATER_KEY_USER)
-        .map_err(|error| CollapseError::Credential(error.to_string()))
+    crate::os_store::entry(UPDATER_KEY_TARGET, UPDATER_SERVICE, UPDATER_KEY_USER)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn updater_password_entry() -> Result<keyring::Entry, CollapseError> {
-    keyring::Entry::new_with_target(
+    crate::os_store::entry(
         UPDATER_PASSWORD_TARGET,
         UPDATER_SERVICE,
         UPDATER_PASSWORD_USER,
     )
-    .map_err(|error| CollapseError::Credential(error.to_string()))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn read_text_secret(entry: &keyring::Entry) -> Result<Option<String>, CollapseError> {
     match entry.get_secret() {
         Ok(secret) => {
@@ -497,7 +493,7 @@ fn read_text_secret(entry: &keyring::Entry) -> Result<Option<String>, CollapseEr
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn delete_entry(entry: &keyring::Entry) -> Result<(), CollapseError> {
     match entry.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),

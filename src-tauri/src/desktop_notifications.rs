@@ -44,7 +44,20 @@ fn send_blocking(title: &str, body: &str) -> Result<(), String> {
     Err(last_error.unwrap_or_else(|| "Could not show Windows toast notification".into()))
 }
 
-#[cfg(not(windows))]
+/// Shows the alert through the freedesktop notification service (GNOME Shell, KDE Plasma,
+/// dunst and others).
+#[cfg(target_os = "linux")]
+fn send_blocking(title: &str, body: &str) -> Result<(), String> {
+    notify_rust::Notification::new()
+        .appname("Velocity")
+        .summary(title)
+        .body(body)
+        .show()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn send_blocking(_title: &str, _body: &str) -> Result<(), String> {
     Ok(())
 }

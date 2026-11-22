@@ -307,6 +307,8 @@ fn extend_search_path(command: &mut Command) {
 /// built here; clippy's `disallowed_methods` (`clippy.toml`) rejects a bare `Command::new`.
 #[allow(clippy::disallowed_methods)]
 pub fn hidden_command(program: impl AsRef<OsStr>) -> Command {
+    // Only Windows sets creation flags on it.
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut command = Command::new(program);
     #[cfg(windows)]
     {

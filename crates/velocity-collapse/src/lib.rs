@@ -15,6 +15,8 @@ mod git_credential;
 pub mod health;
 pub mod issue_import;
 pub mod issues;
+#[cfg(any(windows, target_os = "linux"))]
+mod os_store;
 pub mod post_land;
 pub mod provision;
 pub mod release_token;
@@ -76,7 +78,7 @@ pub enum CollapseError {
     Exchange(String),
     #[error("Could not use the OS credential store: {0}")]
     Credential(String),
-    #[error("Collapse sign-in needs the Windows credential store on this platform")]
+    #[error("Collapse sign-in needs the OS credential store, which this platform lacks")]
     Unsupported,
     #[error("{0}")]
     DeletedPending(Box<DeletedPendingRepository>),

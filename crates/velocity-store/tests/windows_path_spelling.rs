@@ -1,3 +1,7 @@
+// Windows path spelling (#215): Windows resolves `..` by text, while Unix needs every
+// folder before it to exist, so the stray folder check holds only on Windows.
+#![cfg(windows)]
+
 use velocity_store::{PersistedState, ProjectItem, StateStore, ThreadItem};
 
 // A state directory spelled with `/`, `.` or `..` must load and save the same

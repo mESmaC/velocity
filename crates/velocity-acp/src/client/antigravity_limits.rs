@@ -248,10 +248,23 @@ fn now() -> i64 {
 }
 
 #[cfg(windows)]
+fn agy_credential_entry() -> keyring::Result<keyring::Entry> {
+    // go-keyring's Windows target is service:user.
+    keyring::Entry::new_with_target("gemini:antigravity", "gemini", "antigravity")
+}
+
+#[cfg(target_os = "linux")]
+fn agy_credential_entry() -> keyring::Result<keyring::Entry> {
+    // go-keyring's Secret Service item carries only service and username attributes, which
+    // keyring finds through its fallback search of the default collection.
+    keyring::Entry::new("gemini", "antigravity")
+}
+
+#[cfg(any(windows, target_os = "linux"))]
 async fn native_credentials() -> Result<Value, ClientError> {
     tokio::task::spawn_blocking(|| {
-        // go-keyring's Windows target is service:user. Nothing is written back.
-        let entry = keyring::Entry::new_with_target("gemini:antigravity", "gemini", "antigravity")
+        // Nothing is written back.
+        let entry = agy_credential_entry()
             .map_err(|_| usage_error("could not open agy's credential store"))?;
         let bytes = entry
             .get_secret()
@@ -262,7 +275,7 @@ async fn native_credentials() -> Result<Value, ClientError> {
     .map_err(|_| usage_error("could not read agy's credential store"))?
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 async fn native_credentials() -> Result<Value, ClientError> {
     Err(usage_error("no agy ACP credential record"))
 }

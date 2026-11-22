@@ -198,6 +198,8 @@ pub(crate) fn clear_replaced_env(command: &mut std::process::Command) {
 /// bare `Command::new`. Velocity itself is a windowed app, so its own window is unaffected.
 #[allow(clippy::disallowed_methods)]
 pub(crate) fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    // Only Windows sets creation flags on it.
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut command = std::process::Command::new(program);
     #[cfg(windows)]
     {

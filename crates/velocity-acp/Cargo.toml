@@ -34,3 +34,9 @@ winreg = "0.56"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Secret Service (GNOME Keyring, KWallet) over D-Bus in pure Rust, so building needs no
+# libdbus headers. `async-io` (not `tokio`) avoids panicking when blocking keyring calls
+# run inside a tokio worker thread.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["async-secret-service", "async-io", "crypto-rust"] }

@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::Path;
+#[cfg(windows)]
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 

@@ -49,6 +49,8 @@ impl Drop for TempTree {
 
 #[allow(clippy::disallowed_methods)]
 fn hidden_command(program: impl AsRef<OsStr>) -> Command {
+    // Only Windows sets creation flags on it.
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut command = Command::new(program);
     #[cfg(windows)]
     {
@@ -883,7 +885,9 @@ fn write_refusal_stub(
     if let Some(log) = log_file {
         body.push_str(&format!("echo called >> \"{}\"\n", log.display()));
     }
-    body.push_str(&format!("echo '{message}' >&2\nexit 1\n"));
+    // The message holds apostrophes (`velocity-run's`), which end a single-quoted word.
+    let quoted = message.replace('\'', r"'\''");
+    body.push_str(&format!("echo '{quoted}' >&2\nexit 1\n"));
     fs::write(&script, body)?;
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700))?;
     Ok(script)

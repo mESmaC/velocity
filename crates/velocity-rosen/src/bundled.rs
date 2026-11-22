@@ -49,10 +49,7 @@ pub(crate) fn folder() -> Option<PathBuf> {
 }
 
 fn unpack(binaries: Binaries) -> Option<PathBuf> {
-    let root = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    let folder = root
+    let folder = unpack_root()?
         .join("velocity-rosen")
         .join(format!("{:016x}", content_hash(binaries)));
     std::fs::create_dir_all(&folder).ok()?;
@@ -66,6 +63,30 @@ fn unpack(binaries: Binaries) -> Option<PathBuf> {
     Some(folder)
 }
 
+#[cfg(windows)]
+fn unpack_root() -> Option<PathBuf> {
+    Some(
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir),
+    )
+}
+
+/// The user's own cache folder. Never the shared temporary folder: `write_once` keeps a
+/// file of the right size it finds there, so another user could plant a binary to run.
+#[cfg(not(windows))]
+fn unpack_root() -> Option<PathBuf> {
+    let absolute =
+        |value: std::ffi::OsString| Some(PathBuf::from(value)).filter(|path| path.is_absolute());
+    std::env::var_os("XDG_CACHE_HOME")
+        .and_then(absolute)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .and_then(absolute)
+                .map(|home| home.join(".cache"))
+        })
+}
+
 /// Writes `bytes` to `path` unless a file of that size is already there. The bytes go to
 /// a temporary file first and are renamed into place, so a crash or a second Velocity
 /// unpacking at the same time never leaves half a binary under the final name.
@@ -75,6 +96,12 @@ fn write_once(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     }
     let partial = path.with_extension(format!("partial-{}", std::process::id()));
     std::fs::write(&partial, bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Unix runs a file only with its execute bit, which `write` leaves off.
+        std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o755))?;
+    }
     match std::fs::rename(&partial, path) {
         Ok(()) => Ok(()),
         // Another Velocity renamed its copy into place first, and it may be running.

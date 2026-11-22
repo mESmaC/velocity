@@ -38,7 +38,17 @@ fn executable() -> Option<PathBuf> {
     .into_iter()
     .map(PathBuf::from)
     .find(|path| path.is_file())
-    .or_else(|| on_path(&["google-chrome", "chromium", "chromium-browser", "chrome"]))
+    .or_else(|| {
+        on_path(&[
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+            "chrome",
+            "microsoft-edge",
+            "microsoft-edge-stable",
+        ])
+    })
 }
 
 pub struct Engine {

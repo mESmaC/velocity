@@ -47,7 +47,7 @@ fn thread_agent_name_survives_save_load_and_keeps_legacy_defaults()
     let mut state = PersistedState::default();
     let mut project = ProjectItem::new(1, "agent names".into(), directory.to_string_lossy().into());
     let mut legacy = ThreadItem::new(49, "I'd like your honest".into());
-    legacy.worktree_path = Some("Z:\\work\\i-d-like-your-honest".into());
+    legacy.worktree_path = Some(worktree("i-d-like-your-honest"));
     legacy.rosen_change = Some("zrqrpzzruukpynwnvyporzrwpxplrvqq".into());
     project.threads.push(legacy);
     state.projects.push(project);
@@ -61,7 +61,7 @@ fn thread_agent_name_survives_save_load_and_keeps_legacy_defaults()
         velocity_store::threads::NewThread::new(
             "I'd like your honest feedback".into(),
             "vel/i-d-like-your-honest-2".into(),
-            "Z:\\work\\i-d-like-your-honest-2".into(),
+            worktree("i-d-like-your-honest-2"),
             &settings,
         ),
     )?;
@@ -93,4 +93,14 @@ fn thread_agent_name_survives_save_load_and_keeps_legacy_defaults()
     drop(loaded);
     std::fs::remove_dir_all(directory)?;
     Ok(())
+}
+
+/// A worktree path in this platform's spelling: names come from its last component, and only
+/// Windows reads a backslash as a separator.
+fn worktree(name: &str) -> String {
+    if cfg!(windows) {
+        format!("Z:\\work\\{name}")
+    } else {
+        format!("/work/{name}")
+    }
 }

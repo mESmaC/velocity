@@ -11,6 +11,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// so a child started without `CREATE_NO_WINDOW` flashes a console on screen (#232).
 #[allow(clippy::disallowed_methods)]
 pub(crate) fn hidden_command(program: impl AsRef<OsStr>) -> Command {
+    // Only Windows sets creation flags on it.
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut command = Command::new(program);
     #[cfg(windows)]
     {
@@ -24,6 +26,8 @@ pub(crate) fn hidden_command(program: impl AsRef<OsStr>) -> Command {
 /// long check that must not slow the builds agents and the pre-land checks wait on.
 #[allow(clippy::disallowed_methods)]
 pub(crate) fn background_command(program: impl AsRef<OsStr>) -> Command {
+    // Only Windows sets creation flags on it.
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut command = Command::new(program);
     #[cfg(windows)]
     {

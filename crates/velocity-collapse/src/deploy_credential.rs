@@ -1,5 +1,6 @@
 //! Per-project deploy secrets stored in Windows Credential Manager under
-//! `velocity/deploy/<project>/<NAME>` (#594).
+//! `velocity/deploy/<project>/<NAME>` (#594), or on Linux in the Secret Service under
+//! that same name as the service (see `os_store`).
 //!
 //! Values are stored with native Windows UTF-16LE password encoding so credentials
 //! created either in Velocity's Project Settings or directly in Windows Credential
@@ -8,7 +9,7 @@
 
 use crate::CollapseError;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const DEPLOY_SECRET_SERVICE: &str = "velocity-deploy";
 
 /// An opaque deploy secret loaded from Windows Credential Manager (#594).
@@ -32,11 +33,11 @@ impl std::fmt::Debug for DeploySecretValue {
 
 /// Whether this platform supports storing deploy secrets in the OS credential store.
 pub const fn deploy_credentials_supported() -> bool {
-    cfg!(windows)
+    cfg!(any(windows, target_os = "linux"))
 }
 
 /// Saves or replaces a deploy secret under `target` (`velocity/deploy/<project>/<NAME>`).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn save_deploy_secret(target: &str, name: &str, value: &str) -> Result<(), CollapseError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -50,7 +51,7 @@ pub fn save_deploy_secret(target: &str, name: &str, value: &str) -> Result<(), C
 }
 
 /// Loads a deploy secret from Windows Credential Manager under `target`, or `None` if absent.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn load_deploy_secret(
     target: &str,
     name: &str,
@@ -66,13 +67,13 @@ pub fn load_deploy_secret(
 }
 
 /// Reports whether a non-empty deploy secret is saved under `target` without returning it.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn has_deploy_secret(target: &str, name: &str) -> Result<bool, CollapseError> {
     Ok(load_deploy_secret(target, name)?.is_some())
 }
 
 /// Removes a deploy secret from Windows Credential Manager if present.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn forget_deploy_secret(target: &str, name: &str) -> Result<(), CollapseError> {
     match deploy_entry(target, name)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
@@ -80,12 +81,12 @@ pub fn forget_deploy_secret(target: &str, name: &str) -> Result<(), CollapseErro
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn save_deploy_secret(_target: &str, _name: &str, _value: &str) -> Result<(), CollapseError> {
     Err(CollapseError::Unsupported)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn load_deploy_secret(
     _target: &str,
     _name: &str,
@@ -93,25 +94,24 @@ pub fn load_deploy_secret(
     Ok(None)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn has_deploy_secret(_target: &str, _name: &str) -> Result<bool, CollapseError> {
     Ok(false)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn forget_deploy_secret(_target: &str, _name: &str) -> Result<(), CollapseError> {
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn deploy_entry(target: &str, name: &str) -> Result<keyring::Entry, CollapseError> {
-    keyring::Entry::new_with_target(target, DEPLOY_SECRET_SERVICE, name)
-        .map_err(|error| CollapseError::Credential(error.to_string()))
+    crate::os_store::entry(target, DEPLOY_SECRET_SERVICE, name)
 }
 
 /// Decodes either native Windows Credential Manager UTF-16LE bytes (written by
 /// `set_password`, `cmdkey`, or the Credential Manager UI) or raw UTF-8 bytes.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn decode_credential_bytes(bytes: &[u8], name: &str) -> Result<String, CollapseError> {
     if bytes.is_empty() {
         return Ok(String::new());
@@ -130,7 +130,7 @@ fn decode_credential_bytes(bytes: &[u8], name: &str) -> Result<String, CollapseE
     })
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn decode_utf16le(bytes: &[u8]) -> Option<String> {
     if !bytes.len().is_multiple_of(2) {
         return None;

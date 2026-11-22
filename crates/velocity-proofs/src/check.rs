@@ -524,6 +524,8 @@ fn git(repository: &Path, arguments: &[&str]) -> Result<String, ProofCheckError>
 /// `disallowed_methods` (`clippy.toml`) rejects a bare `Command::new`.
 #[allow(clippy::disallowed_methods)]
 pub(crate) fn hidden_command(program: impl AsRef<OsStr>) -> Command {
+    // Only Windows sets creation flags on it.
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut command = Command::new(program);
     #[cfg(windows)]
     {
