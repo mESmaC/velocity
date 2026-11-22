@@ -649,11 +649,11 @@ mod tests {
                     .and_then(|line| line.split_whitespace().nth(1))
                     .unwrap_or("");
                 let (status, body) = match path {
-                    "/api/v1/repos/mESmaC/velocity/issues/619" => (
+                    "/api/repositories/mESmaC/velocity/issues/619" => (
                         "200 OK",
                         r#"{"number":619,"title":"Token usage","body":"","state":"open","reason":"","author":{"name":"alice"},"labels":[],"blocked_by":[],"blocks":[],"comment_count":0,"comments":[],"created_at":"2026-11-22T00:00:00Z","updated_at":"2026-11-22T00:00:00Z","closed_at":null}"#,
                     ),
-                    "/api/v1/repos/mESmaC/rosen/issues/449" => (
+                    "/api/repositories/mESmaC/rosen/issues/449" => (
                         "200 OK",
                         r#"{"number":449,"title":"Rosen change","body":"","state":"open","reason":"","author":{"name":"alice"},"labels":[],"blocked_by":[],"blocks":[],"comment_count":0,"comments":[],"created_at":"2026-11-22T00:00:00Z","updated_at":"2026-11-22T00:00:00Z","closed_at":null}"#,
                     ),
