@@ -15,6 +15,7 @@ use velocity_core::work_pool::{WorkKey, WorkPiece, WorkSources};
 use crate::build_gate::{LaunchRequest, require_launch};
 use crate::goal_swarm_dialog::{GoalMixRow, mix_rows_summary, used_nick_numbers};
 use crate::issues::{ThreadIssue, issue_thread};
+use crate::rosen_work::IssueVersion;
 use crate::swarm_dialog::provider_model_name;
 use crate::threads::{NewThread, ThreadError};
 use crate::{
@@ -353,9 +354,28 @@ impl StateStore {
         piece: &WorkPiece,
         branch_name: String,
     ) -> Result<(), ThreadError> {
+        self.claim_goal_piece_for_version(
+            project_id,
+            thread_id,
+            piece,
+            branch_name,
+            IssueVersion::default(),
+        )
+    }
+
+    /// Version-aware variant of [`Self::claim_goal_piece`] that rechecks an issue's
+    /// selection-time source version against persisted Rosen completion history (#638).
+    pub fn claim_goal_piece_for_version(
+        &mut self,
+        project_id: u32,
+        thread_id: u32,
+        piece: &WorkPiece,
+        branch_name: String,
+        issue_version: IssueVersion<'_>,
+    ) -> Result<(), ThreadError> {
         let mut next = self.state.clone();
         let project = project_mut(&mut next, project_id)?;
-        bind_piece_owner(project, thread_id, piece)?;
+        bind_piece_owner(project, thread_id, piece, issue_version)?;
         let record = project
             .threads
             .iter_mut()
@@ -590,6 +610,7 @@ fn bind_piece_owner(
     project: &mut ProjectItem,
     thread_id: u32,
     piece: &WorkPiece,
+    issue_version: IssueVersion<'_>,
 ) -> Result<(), ThreadError> {
     match &piece.key {
         WorkKey::Task { identifier } => {
@@ -612,7 +633,7 @@ fn bind_piece_owner(
         }
         WorkKey::Issue { repository, number } => {
             let issue = ThreadIssue::new(repository.clone(), *number);
-            if project.rosen_issue_completed(&issue) {
+            if project.rosen_issue_completed_for_version(&issue, issue_version) {
                 return Err(ThreadError::IssueCompleted(*number));
             }
             if let Some(existing) = issue_thread(project, &issue)

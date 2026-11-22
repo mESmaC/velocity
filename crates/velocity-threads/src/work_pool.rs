@@ -9,7 +9,7 @@ use velocity_core::work_pool::{
 use velocity_github::{GitHubIssue, IssueClient, OPEN_ISSUES_REFRESH};
 use velocity_spec::ProjectSpec;
 use velocity_store::issues::{ThreadIssue, issue_thread};
-use velocity_store::rosen_work::IssueVersion;
+use velocity_store::rosen_work::{IssueVersion, OwnedIssueVersion};
 use velocity_store::{ProjectItem, TaskState, ThreadState};
 
 #[derive(Debug, Error)]
@@ -55,23 +55,31 @@ pub fn read_selected_work_pool(
 pub(crate) struct GoalInventory {
     pub pool: WorkPool,
     pub issue_files: HashMap<u32, Vec<String>>,
+    pub issue_versions: HashMap<u32, OwnedIssueVersion>,
 }
 
 /// Selection uses the same inventory as the board, with issue evidence available locally
-/// for path matching. The evidence never becomes part of the board or the choosing prompt.
+/// for path matching and claim-time version rechecks. The evidence never becomes part of
+/// the board or the choosing prompt.
 pub(crate) fn read_goal_work_pool(
     project: &ProjectItem,
     sources: WorkSources,
     workspace: &Path,
 ) -> Result<GoalInventory, WorkPoolError> {
     let mut issue_files = HashMap::new();
+    let mut issue_versions = HashMap::new();
     let pool = read_pool(project, Duration::ZERO, sources, |issue| {
         issue_files.insert(
             issue.number,
             crate::goal_selection::referenced_files(workspace, &issue.body),
         );
+        issue_versions.insert(issue.number, OwnedIssueVersion::from_github(issue));
     })?;
-    Ok(GoalInventory { pool, issue_files })
+    Ok(GoalInventory {
+        pool,
+        issue_files,
+        issue_versions,
+    })
 }
 
 fn read_pool(

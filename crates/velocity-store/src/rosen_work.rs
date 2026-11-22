@@ -46,6 +46,35 @@ impl<'a> IssueVersion<'a> {
     }
 }
 
+/// Owned source-version evidence carried from work-pool selection to reservation (#638).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OwnedIssueVersion {
+    pub updated_at: Option<String>,
+    pub reopened_at: Option<String>,
+    pub title: Option<String>,
+    pub body: Option<String>,
+}
+
+impl OwnedIssueVersion {
+    pub fn from_github(issue: &velocity_github::GitHubIssue) -> Self {
+        Self {
+            updated_at: Some(issue.updated_at.clone()),
+            reopened_at: issue.reopened_at.clone(),
+            title: Some(issue.title.clone()),
+            body: Some(issue.body.clone()),
+        }
+    }
+
+    pub fn as_version(&self) -> IssueVersion<'_> {
+        IssueVersion {
+            updated_at: self.updated_at.as_deref(),
+            reopened_at: self.reopened_at.as_deref(),
+            title: self.title.as_deref(),
+            body: self.body.as_deref(),
+        }
+    }
+}
+
 /// Checks whether a host issue described by `version` matches a landed work item's expected
 /// title or GitHub source (#614). Returns `true` when `version` carries no title/body or
 /// when the title or GitHub source matches.
@@ -1019,6 +1048,126 @@ mod tests {
         ));
         std::fs::remove_dir_all(directory)?;
         Ok(())
+    }
+
+    // Risk (#638): Goal Swarm's bind_piece_owner must accept an explicitly reopened issue
+    // while keeping prior completion history, and still refuse mirror-lagged unchanged
+    // completions and competing claims or newer lands across save and reload.
+    #[test]
+    fn goal_swarm_claim_rechecks_reopened_issue_version_across_reload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, mut store, issue, piece) = seed_completed_goal_issue()?;
+        let stale = IssueVersion::updated_at("2026-11-18T11:30:00Z");
+        let reopened = IssueVersion {
+            updated_at: Some("2026-11-21T10:00:00Z"),
+            reopened_at: Some("2026-11-21T10:00:00Z"),
+            title: Some("Fix issue"),
+            body: Some("Reopened body"),
+        };
+        let claimant = add_work_thread(&mut store, "Goal member 1")?;
+        assert!(matches!(
+            store.claim_goal_piece(1, claimant, &piece, "vel/issue-7".into()),
+            Err(ThreadError::IssueCompleted(7))
+        ));
+        assert!(matches!(
+            store.claim_goal_piece_for_version(1, claimant, &piece, "vel/issue-7".into(), stale),
+            Err(ThreadError::IssueCompleted(7))
+        ));
+        store.claim_goal_piece_for_version(1, claimant, &piece, "vel/issue-7".into(), reopened)?;
+
+        let mut reloaded = StateStore::load_or_default(&directory)?;
+        let key = WorkKey::issue(&issue.repository, issue.number);
+        let history: Vec<WorkStatus> = reloaded.state.projects[0]
+            .rosen_work_items
+            .iter()
+            .filter(|item| item.key == key)
+            .map(|item| item.status)
+            .collect();
+        assert_eq!(history, vec![WorkStatus::Green, WorkStatus::Claimed]);
+
+        let competitor = add_work_thread(&mut reloaded, "Goal member 2")?;
+        assert!(matches!(
+            reloaded.claim_goal_piece_for_version(
+                1,
+                competitor,
+                &piece,
+                "vel/issue-7-b".into(),
+                reopened,
+            ),
+            Err(ThreadError::IssueAssigned { number: 7, thread }) if thread == claimant
+        ));
+
+        reloaded.update_rosen_work_thread(1, claimant, |thread| {
+            thread.rosen_change = Some("second-pass".into());
+        })?;
+        event(
+            &mut reloaded,
+            3,
+            "second-pass",
+            RosenProgress::Landed,
+            Some("second-sha"),
+        )?;
+        reloaded.remove_thread(1, claimant)?;
+        let mut after_land = StateStore::load_or_default(&directory)?;
+        assert!(matches!(
+            after_land.claim_goal_piece_for_version(
+                1,
+                competitor,
+                &piece,
+                "vel/issue-7-b".into(),
+                reopened,
+            ),
+            Err(ThreadError::IssueCompleted(7))
+        ));
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    fn seed_completed_goal_issue() -> Result<
+        (
+            PathBuf,
+            StateStore,
+            ThreadIssue,
+            velocity_core::work_pool::WorkPiece,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let (directory, mut store) = fixture()?;
+        let issue = ThreadIssue::new("Owner/Repo".into(), 7);
+        let key = WorkKey::issue("owner/repo", 7);
+        event(
+            &mut store,
+            1,
+            "original",
+            RosenProgress::Landed,
+            Some("4a63d3f"),
+        )?;
+        assert!(store.confirm_rosen_work_build(1, 2, &["4a63d3f".into()])?);
+        store.remove_thread(1, 4)?;
+        let nov_18 = parse_timestamp_seconds("2026-11-18T12:00:00Z")
+            .ok_or("valid timestamp")?
+            .to_string();
+        let mut snapshot = store.state.clone();
+        snapshot.projects[0]
+            .completed_goal_issues
+            .push(issue.clone());
+        if let Some(work) = snapshot.projects[0]
+            .rosen_work_items
+            .iter_mut()
+            .find(|item| item.key == key)
+        {
+            work.landed_at = Some(nov_18.clone());
+            work.green_at = Some(nov_18);
+        }
+        store.store_snapshot(snapshot)?;
+        let loaded = StateStore::load_or_default(&directory)?;
+        let piece = velocity_core::work_pool::WorkPiece::new(
+            WorkKey::issue("Owner/Repo", 7),
+            "Fix issue".into(),
+            "https://example.invalid/7".into(),
+            None,
+        );
+        Ok((directory, loaded, issue, piece))
     }
 
     fn task_piece(identifier: u32, title: &str) -> velocity_core::work_pool::WorkPiece {

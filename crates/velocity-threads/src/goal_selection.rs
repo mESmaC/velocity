@@ -14,6 +14,7 @@ use velocity_core::text_budget::{PROMPT_BYTES, json_text_page, prompt_excerpt};
 use velocity_core::work_pool::{WorkKey, WorkPiece, WorkPool};
 use velocity_graph::coordination::SubsystemMap;
 use velocity_rosen::PathPattern;
+use velocity_store::rosen_work::OwnedIssueVersion;
 
 use crate::goal_swarm::GoalSwarmError;
 
@@ -22,6 +23,7 @@ const SHORTLIST_LENGTH: usize = 5;
 pub(crate) struct Candidate {
     pub piece: WorkPiece,
     pub files: Vec<String>,
+    pub issue_version: Option<OwnedIssueVersion>,
     subsystems: BTreeSet<String>,
 }
 
@@ -29,6 +31,7 @@ pub(crate) fn candidates(
     pool: WorkPool,
     checkout: &Path,
     mut issue_files: HashMap<u32, Vec<String>>,
+    mut issue_versions: HashMap<u32, OwnedIssueVersion>,
     map: Option<&SubsystemMap>,
 ) -> Vec<Candidate> {
     let mut candidates: Vec<_> = pool
@@ -36,8 +39,10 @@ pub(crate) fn candidates(
         .into_iter()
         .map(|piece| {
             let mut files = referenced_files(checkout, &piece.title);
+            let mut issue_version = None;
             if let WorkKey::Issue { number, .. } = piece.key {
                 files.extend(issue_files.remove(&number).into_iter().flatten());
+                issue_version = issue_versions.remove(&number);
             }
             files.sort();
             files.dedup();
@@ -45,6 +50,7 @@ pub(crate) fn candidates(
             Candidate {
                 piece,
                 files,
+                issue_version,
                 subsystems,
             }
         })
