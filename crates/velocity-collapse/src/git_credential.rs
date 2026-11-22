@@ -157,12 +157,24 @@ fn held_secret(url: &str) -> Result<Option<String>, CollapseError> {
 fn ensure_helper(mirror_url: &str) -> Result<(), CollapseError> {
     let helper = git_output(&["config", "--get-urlmatch", "credential.helper", mirror_url])?;
     if helper.trim().is_empty() {
-        return Err(CollapseError::Git(
-            "Git has no credential helper to keep the Collapse push token. Install Git for Windows with Git Credential Manager, then try again.".into(),
-        ));
+        return Err(CollapseError::Git(MISSING_HELPER.into()));
     }
     Ok(())
 }
+
+#[cfg(windows)]
+const MISSING_HELPER: &str = "Git has no credential helper to keep the Collapse push token. Install Git for Windows with Git Credential Manager, then try again.";
+
+/// Git on Linux ships no configured helper. libsecret keeps the token in the desktop
+/// keyring (GNOME Keyring, KWallet), beside Velocity's own credentials.
+#[cfg(target_os = "linux")]
+const MISSING_HELPER: &str = "Git has no credential helper to keep the Collapse push token. Install git-credential-libsecret (or Git Credential Manager) and set it with `git config --global credential.helper libsecret`, then try again.";
+
+#[cfg(target_os = "macos")]
+const MISSING_HELPER: &str = "Git has no credential helper to keep the Collapse push token. Run `git config --global credential.helper osxkeychain`, then try again.";
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+const MISSING_HELPER: &str = "Git has no credential helper to keep the Collapse push token. Configure one with `git config --global credential.helper`, then try again.";
 
 /// Rosen's pushes read the user's git configuration, so the per-path setting is saved
 /// there for Collapse's host only. Other hosts keep their own behaviour.
