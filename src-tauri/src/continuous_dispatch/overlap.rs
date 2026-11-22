@@ -139,6 +139,13 @@ static ISSUE_PATHS_CACHE: Mutex<BTreeMap<u32, CachedIssuePaths>> = Mutex::new(BT
 /// live overlap holds (#555, #649).
 static ISSUE_FILES_CACHE: Mutex<BTreeMap<u32, CachedIssuePaths>> = Mutex::new(BTreeMap::new());
 
+/// Issues whose comments were already checked for a prior returned overlap review at
+/// `(repository, updated_at)`, per project (#650). Only negative results are cached:
+/// a positive result immediately ends the hold and records the issue in `overlap_released`.
+type ReviewChecked = BTreeMap<u32, BTreeMap<u32, (String, String)>>;
+
+static REVIEW_CHECKED: Mutex<ReviewChecked> = Mutex::new(BTreeMap::new());
+
 /// Drops the cached base commit for `project` when Rosen's base moves on land or revert (#555).
 pub(crate) fn invalidate_base_commit(project: u32) {
     if let Ok(mut commits) = BASE_COMMITS.lock() {
@@ -416,6 +423,7 @@ impl<'a> OverlapContext<'a> {
             let paths = named.remove(&issue.number).unwrap_or_default();
             self.update(issue, paths, &blockers, waits, released)?;
         }
+        self.prune_review_checked(waits);
         Ok(())
     }
 
@@ -610,25 +618,17 @@ impl<'a> OverlapContext<'a> {
         waits: &mut BTreeMap<u32, IssueOverlap>,
         released: &mut BTreeMap<u32, ThreadIssue>,
     ) -> Result<(), String> {
-        if let Some(wait) = waits.get_mut(&issue.number) {
-            if wait.review_commit.is_some() {
-                return Ok(());
-            }
-            match self.overlapping_land(wait, issue.number)? {
-                LandCheck::Review(commit) => {
-                    wait.review_commit = Some(commit);
-                    return Ok(());
-                }
-                // The evidence is mechanical, so no review parks the issue. The comment
-                // is posted before the wait goes; a failure keeps the wait for a retry.
-                LandCheck::Clear { commit, files } => self
-                    .client
-                    .post_overlap_clear(issue.number, wait.blocker, &commit, &files)
-                    .map_err(|error| error.to_string())?,
-                LandCheck::Waiting => {}
-            }
-        }
         let number = issue.number;
+        // Reconcile restored waits against GitHub's durable review record before
+        // retaining them, checking a blocker land, or publishing another review (#650).
+        if release_returned_wait(number, waits, released, || {
+            self.overlap_review_returned(issue)
+        })? {
+            return Ok(());
+        }
+        if self.check_landed_wait(number, waits)? {
+            return Ok(());
+        }
         let ready = actionable_in_projects_with_blockers(
             self.projects,
             self.project,
@@ -655,8 +655,81 @@ impl<'a> OverlapContext<'a> {
         }
         if ready && !released.contains_key(&number) {
             self.hold(number, &paths, blockers, waits, released)?;
+            if waits.contains_key(&number) {
+                self.record_review_checked(issue);
+            }
         }
         Ok(())
+    }
+
+    /// Checks whether an existing wait's blocker has landed. Returns `true` while a
+    /// review is pending (already recorded or just scheduled) so `publish_reviews` posts it.
+    fn check_landed_wait(
+        &mut self,
+        number: u32,
+        waits: &mut BTreeMap<u32, IssueOverlap>,
+    ) -> Result<bool, String> {
+        let Some(wait) = waits.get_mut(&number) else {
+            return Ok(false);
+        };
+        if wait.review_commit.is_some() {
+            return Ok(true);
+        }
+        match self.overlapping_land(wait, number)? {
+            LandCheck::Review(commit) => {
+                wait.review_commit = Some(commit);
+                Ok(true)
+            }
+            // The evidence is mechanical, so no review parks the issue. The comment
+            // is posted before the wait goes; a failure keeps the wait for a retry.
+            LandCheck::Clear { commit, files } => {
+                self.client
+                    .post_overlap_clear(number, wait.blocker, &commit, &files)
+                    .map_err(|error| error.to_string())?;
+                Ok(false)
+            }
+            LandCheck::Waiting => Ok(false),
+        }
+    }
+
+    /// Whether `issue`'s comments show a prior overlap review that returned it to
+    /// dispatch (#525, #650). Negative results are cached per `(repository, updated_at)`
+    /// so active waits do not re-fetch comments on every dispatch pass.
+    fn overlap_review_returned(&self, issue: &GitHubIssue) -> Result<bool, String> {
+        let repository = self.client.repository();
+        if review_checked_hit(
+            &REVIEW_CHECKED,
+            self.project.id,
+            issue.number,
+            repository,
+            &issue.updated_at,
+        ) {
+            return Ok(false);
+        }
+        if self
+            .client
+            .overlap_review_returned(issue.number)
+            .map_err(|error| error.to_string())?
+        {
+            clear_review_checked(&REVIEW_CHECKED, self.project.id, issue.number);
+            return Ok(true);
+        }
+        self.record_review_checked(issue);
+        Ok(false)
+    }
+
+    fn record_review_checked(&self, issue: &GitHubIssue) {
+        record_review_checked_in(
+            &REVIEW_CHECKED,
+            self.project.id,
+            issue.number,
+            self.client.repository(),
+            &issue.updated_at,
+        );
+    }
+
+    fn prune_review_checked(&self, waits: &BTreeMap<u32, IssueOverlap>) {
+        prune_review_checked_in(&REVIEW_CHECKED, self.project.id, waits);
     }
 
     /// Holds `number` behind the first working issue whose open change has edited a file
@@ -769,6 +842,79 @@ fn end_hold(
 ) {
     if let Some(wait) = waits.remove(&number) {
         released.insert(number, wait.issue);
+    }
+}
+
+/// Drops an existing wait before retaining it, checking a blocker land, or publishing a
+/// review when the issue was already released or its GitHub comments show a prior
+/// returned-to-dispatch overlap review (#650).
+fn release_returned_wait(
+    number: u32,
+    waits: &mut BTreeMap<u32, IssueOverlap>,
+    released: &mut BTreeMap<u32, ThreadIssue>,
+    returned_review: impl FnOnce() -> Result<bool, String>,
+) -> Result<bool, String> {
+    if !waits.contains_key(&number) {
+        return Ok(false);
+    }
+    if released.contains_key(&number) || returned_review()? {
+        end_hold(number, waits, released);
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn review_checked_hit(
+    cache: &Mutex<ReviewChecked>,
+    project: u32,
+    number: u32,
+    repository: &str,
+    updated_at: &str,
+) -> bool {
+    lock(cache, "overlap review cache").is_ok_and(|checked| {
+        checked
+            .get(&project)
+            .and_then(|issues| issues.get(&number))
+            .is_some_and(|(saved_repo, saved_updated)| {
+                saved_repo.eq_ignore_ascii_case(repository) && saved_updated == updated_at
+            })
+    })
+}
+
+fn record_review_checked_in(
+    cache: &Mutex<ReviewChecked>,
+    project: u32,
+    number: u32,
+    repository: &str,
+    updated_at: &str,
+) {
+    if let Ok(mut checked) = lock(cache, "overlap review cache") {
+        checked
+            .entry(project)
+            .or_default()
+            .insert(number, (repository.to_owned(), updated_at.to_owned()));
+    }
+}
+
+fn clear_review_checked(cache: &Mutex<ReviewChecked>, project: u32, number: u32) {
+    if let Ok(mut checked) = lock(cache, "overlap review cache")
+        && let Some(issues) = checked.get_mut(&project)
+    {
+        issues.remove(&number);
+    }
+}
+
+fn prune_review_checked_in(
+    cache: &Mutex<ReviewChecked>,
+    project: u32,
+    waits: &BTreeMap<u32, IssueOverlap>,
+) {
+    if let Ok(mut checked) = lock(cache, "overlap review cache") {
+        if waits.is_empty() {
+            checked.remove(&project);
+        } else if let Some(issues) = checked.get_mut(&project) {
+            issues.retain(|number, _| waits.contains_key(number));
+        }
     }
 }
 
@@ -896,6 +1042,9 @@ fn publish_reviews(
                 .map_err(|error| error.to_string())?
                 .state
                 == IssueState::Open
+            && !client
+                .overlap_review_returned(wait.issue.number)
+                .map_err(|error| error.to_string())?
         {
             client
                 .post_overlap_review(wait.issue.number, wait.blocker, commit)
@@ -908,4 +1057,113 @@ fn publish_reviews(
     }
     // The parked issue gets its bounded review once the label shows in the backlog (#506).
     Ok(completed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn restored_wait(number: u32, blocker: u32, review_commit: Option<&str>) -> IssueOverlap {
+        let mut wait = IssueOverlap::new(
+            ThreadIssue::new("owner/repo".into(), number),
+            blocker,
+            Some(7),
+            Vec::new(),
+        );
+        wait.review_commit = review_commit.map(str::to_owned);
+        wait
+    }
+
+    // Risk (#650): a pre-upgrade repeat IssueOverlap persisted after an earlier returned
+    // overlap review must be dropped and moved to `overlap_released` before it can be
+    // retained behind a live blocker or published as another review.
+    #[test]
+    fn restored_wait_with_prior_returned_review_is_released() -> Result<(), String> {
+        let mut waits = BTreeMap::from([(105, restored_wait(105, 106, None))]);
+        let mut released = BTreeMap::new();
+        let dropped = release_returned_wait(105, &mut waits, &mut released, || Ok(true))?;
+        assert!(dropped);
+        assert!(waits.is_empty());
+        assert_eq!(
+            released.get(&105),
+            Some(&ThreadIssue::new("owner/repo".into(), 105))
+        );
+        Ok(())
+    }
+
+    // Risk (#650): a restored wait that already recorded a landed blocker commit must also
+    // be dropped before `publish_reviews` can post a second overlap review.
+    #[test]
+    fn restored_pending_review_with_prior_returned_review_is_released() -> Result<(), String> {
+        let mut waits = BTreeMap::from([(105, restored_wait(105, 106, Some("deadbeef")))]);
+        let mut released = BTreeMap::new();
+        let dropped = release_returned_wait(105, &mut waits, &mut released, || Ok(true))?;
+        assert!(dropped);
+        assert!(waits.is_empty());
+        assert!(released.contains_key(&105));
+        Ok(())
+    }
+
+    // Risk (#650): a valid wait with no prior returned review stays held and propagates
+    // lookup errors without silently dropping the wait.
+    #[test]
+    fn valid_wait_is_retained_and_lookup_errors_preserve_wait() -> Result<(), String> {
+        let mut waits = BTreeMap::from([(105, restored_wait(105, 106, None))]);
+        let mut released = BTreeMap::new();
+        assert!(!release_returned_wait(
+            105,
+            &mut waits,
+            &mut released,
+            || Ok(false),
+        )?);
+        assert!(waits.contains_key(&105));
+        assert!(released.is_empty());
+
+        let result = release_returned_wait(105, &mut waits, &mut released, || {
+            Err("temporary API error".into())
+        });
+        assert!(result.is_err());
+        assert!(waits.contains_key(&105));
+        assert!(released.is_empty());
+        Ok(())
+    }
+
+    // Risk (#650): negative overlap-review lookups are cached per `(repository, updated_at)`
+    // so 1-second dispatch passes do not re-fetch comments, while updates or pruning
+    // invalidate stale entries.
+    #[test]
+    fn review_checked_cache_tracks_updated_at_and_prunes() {
+        let cache = Mutex::new(BTreeMap::new());
+        assert!(!review_checked_hit(
+            &cache,
+            1,
+            105,
+            "owner/repo",
+            "2026-01-01T00:00:00Z"
+        ));
+        record_review_checked_in(&cache, 1, 105, "owner/repo", "2026-01-01T00:00:00Z");
+        assert!(review_checked_hit(
+            &cache,
+            1,
+            105,
+            "Owner/Repo",
+            "2026-01-01T00:00:00Z"
+        ));
+        assert!(!review_checked_hit(
+            &cache,
+            1,
+            105,
+            "owner/repo",
+            "2026-01-01T00:05:00Z"
+        ));
+        let empty = BTreeMap::new();
+        prune_review_checked_in(&cache, 1, &empty);
+        assert!(!review_checked_hit(
+            &cache,
+            1,
+            105,
+            "owner/repo",
+            "2026-01-01T00:00:00Z"
+        ));
+    }
 }
