@@ -116,6 +116,7 @@ The event log stays readable on demand with `read_feed` (using `kind: "events"` 
 `airc_claims { path?, task?, offset? }` filters held claims by repository-relative path, exact task text or piece key.
 With no filter it shows counts by agent, the caller's own claims and claims touching the caller's claimed files.
 Each page stays below 2 kB, summarizes oversized rows and returns `next_offset` when more rows are available.
+When a `task` or piece filter matches a single claim whose text exceeds the page budget, `offset` and `next_offset` page the full UTF-8 task text across replies without truncation (#677).
 `read_messages` shows up to ten addressed messages or user comments that the session has neither read nor received through step-boundary delivery.
 Each preview shows up to 512 UTF-8 bytes.
 Call again for more unread messages, or pass a message's `sequence` and `next_offset` as `offset` to read its continuation.

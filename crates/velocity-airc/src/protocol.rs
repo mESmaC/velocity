@@ -842,9 +842,9 @@ fn failure(id: Value, code: i32, message: &str) -> Value {
 fn claim_tools(rosen: bool) -> Vec<Value> {
     let string = json!({"type":"string","minLength":1});
     let claims_description = if rosen {
-        "Read work-item ownership claims (and any active Rosen path claims) filtered by exact task text, piece key or repository-relative path. Without filters, get counts by agent, your own work-item claims and overlapping path claims. Claim code paths with `rosen claim --exclusive <paths>` (or `claim` with `exclusive: true` on the `rosen` MCP server). Pass next_offset as offset for more summary rows."
+        "Read work-item ownership claims (and any active Rosen path claims) filtered by exact task text, piece key or repository-relative path. Without filters, get counts by agent, your own work-item claims and overlapping path claims. Claim code paths with `rosen claim --exclusive <paths>` (or `claim` with `exclusive: true` on the `rosen` MCP server). Pass next_offset as offset for more summary rows, or to continue an oversized claim's task text when filtering by task or piece."
     } else {
-        "Read matching claims by repository-relative path or exact task text or piece key (both filters must match when supplied). Without filters, get counts by agent, your own claims and claims overlapping your files. Pass next_offset as offset for more summary rows."
+        "Read matching claims by repository-relative path or exact task text or piece key (both filters must match when supplied). Without filters, get counts by agent, your own claims and claims overlapping your files. Pass next_offset as offset for more summary rows, or to continue an oversized claim's task text when filtering by task or piece."
     };
     let mut tools = vec![tool(
         "airc_claims",
