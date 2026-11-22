@@ -765,14 +765,15 @@ fn current_unix_seconds() -> u64 {
         .as_secs()
 }
 
-/// A dispatch thread whose launch failed before its agent's session began: it did no
-/// work, so the failure says nothing about its issue (#514). A session that began may
-/// have left edits in the workspace, so such a thread keeps its issue.
+/// A dispatch thread whose launch failed before its agent ran the opening prompt: it did
+/// no work, so the failure says nothing about its issue (#514, #658). Once there is
+/// evidence the first prompt reached the agent (or a turn completed), the thread may have
+/// left edits in the workspace and keeps its issue.
 pub fn failed_before_first_turn(thread: &crate::ThreadItem) -> bool {
     thread.started_by_dispatch
         && thread.state == ThreadState::Error
         && thread.supervision.turns == 0
-        && thread.agent_session.is_none()
+        && !thread.supervision.first_prompt_started
         && !thread.supervision.released
         && thread.interview.is_none()
 }
@@ -1680,6 +1681,7 @@ impl StateStore {
                 dispatch.attempts.retain(|attempt| {
                     attempt.number != issue.number
                         || !attempt.repository.eq_ignore_ascii_case(&issue.repository)
+                        || attempt.thread_id.is_some_and(|owner| owner != identifier)
                 });
                 crate::rosen_work::remove_thread(item, identifier);
                 Ok((true, true))
@@ -1688,7 +1690,7 @@ impl StateStore {
     }
 
     /// Forgets failed starts of issues that left the open backlog, and of issues whose
-    /// thread has since run a turn: that launch worked (#514).
+    /// thread has since started or run a turn: that launch worked (#514, #658).
     pub fn prune_unstarted_failures(
         &mut self,
         project: u32,
@@ -1706,7 +1708,8 @@ impl StateStore {
                         .iter()
                         .filter(|(number, failures)| {
                             let started = item.threads.iter().any(|thread| {
-                                thread.supervision.turns > 0
+                                (thread.supervision.turns > 0
+                                    || thread.supervision.first_prompt_started)
                                     && thread.supervision.started >= failures.last
                                     && thread.issue.as_ref().is_some_and(|assigned| {
                                         same_issue(assigned, &failures.issue)
@@ -2147,6 +2150,74 @@ mod tests {
             .continuous_dispatch;
         assert_eq!(dispatch.launch_failure_reports.len(), 2);
         assert!(dispatch.unstarted_failures.is_empty());
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#658): an ACP agent that answers `session/new` and exits before accepting the
+    // first prompt must return its issue and roll back only that attempt, while a persisted
+    // `first_prompt_started` marker must survive save/load and retain ownership on error.
+    #[test]
+    fn post_session_pre_prompt_failure_returns_issue_and_prompt_started_retains_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, mut store) = legacy_store()?;
+        store.set_continuous_dispatch(1, 2, false)?;
+        let other = ThreadIssue::new("Owner/Repo".into(), 659);
+        let other_thread = NewThread::new(
+            "Other".into(),
+            "vel/issue-659".into(),
+            directory.join("agent-659").display().to_string(),
+            &store.settings(),
+        );
+        let _ = store.record_continuous_dispatch(1, other_thread, other.clone(), "v1".into())?;
+
+        let issue = ThreadIssue::new("Owner/Repo".into(), 658);
+        let first_thread = NewThread::new(
+            "Issue #658".into(),
+            "vel/issue-658-1".into(),
+            directory.join("agent-658-1").display().to_string(),
+            &store.settings(),
+        );
+        let first_id =
+            store.record_continuous_dispatch(1, first_thread, issue.clone(), "v1".into())?;
+        store.update_thread(1, first_id, |thread| {
+            thread.agent_session = Some("opened-then-disconnected".into());
+            thread.state = ThreadState::Error;
+        })?;
+        assert!(store.return_unstarted_dispatch(1, first_id, "transport closed", 200)?);
+        let project = store.project(1).ok_or("missing project")?;
+        assert!(crate::issues::issue_thread(project, &issue).is_none());
+        assert_eq!(project.continuous_dispatch.launch_failure_reports.len(), 1);
+        assert_eq!(project.continuous_dispatch.attempts.len(), 1);
+        assert_eq!(project.continuous_dispatch.attempts[0].number, 659);
+
+        let second_thread = NewThread::new(
+            "Issue #658".into(),
+            "vel/issue-658-2".into(),
+            directory.join("agent-658-2").display().to_string(),
+            &store.settings(),
+        );
+        let second_id =
+            store.record_continuous_dispatch(1, second_thread, issue.clone(), "v1".into())?;
+        store.update_thread(1, second_id, |thread| {
+            thread.agent_session = Some("active-session".into());
+            thread.supervision.first_prompt_started = true;
+            thread.state = ThreadState::Error;
+        })?;
+        drop(store);
+
+        let mut reloaded = StateStore::load_or_default(&directory)?;
+        assert!(!reloaded.return_unstarted_dispatch(1, second_id, "mid-turn crash", 210)?);
+        let project = reloaded.project(1).ok_or("missing project")?;
+        assert_eq!(
+            crate::issues::issue_thread(project, &issue).map(|thread| thread.id),
+            Some(second_id)
+        );
+        assert!(
+            project
+                .continuous_dispatch
+                .attempted("Owner/Repo", 658, "v1")
+        );
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

@@ -40,10 +40,12 @@ fn with_session_handlers(
     builder: Builder<Client, impl HandleDispatchFrom<Agent>>,
     shared: &Arc<Shared>,
 ) -> Builder<Client, impl HandleDispatchFrom<Agent>> {
+    let permissions = Arc::clone(shared);
     let notified = Arc::clone(shared);
     builder
         .on_receive_request(
             async move |request: RequestPermissionRequest, responder, _connection| {
+                permissions.note_prompt_accepted();
                 responder.respond(answer_permission(&request))
             },
             on_receive_request!(),
@@ -71,6 +73,7 @@ fn with_file_handlers(
                         connection: ConnectionTo<Agent>| {
                 let shared = Arc::clone(&reader);
                 connection.spawn(async move {
+                    shared.note_prompt_accepted();
                     respond(
                         responder,
                         files::read_text_file(&shared.worktree, request).await,
@@ -85,6 +88,7 @@ fn with_file_handlers(
                         connection: ConnectionTo<Agent>| {
                 let shared = Arc::clone(&writer);
                 connection.spawn(async move {
+                    shared.note_prompt_accepted();
                     if shared.read_only {
                         return respond(
                             responder,
@@ -116,6 +120,7 @@ fn with_terminal_handlers(
     builder
         .on_receive_request(
             async move |request: CreateTerminalRequest, responder, _connection| {
+                creator.note_prompt_accepted();
                 respond(responder, creator.terminals.create(request))
             },
             on_receive_request!(),

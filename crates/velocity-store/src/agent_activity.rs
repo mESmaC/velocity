@@ -37,6 +37,11 @@ pub struct Supervision {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(skip)]
     pub last_overlap_wait_at: Option<u64>,
+    /// True once there is evidence the first prompt reached the agent and it may have done
+    /// work, even if the first turn failed before completing (#658).
+    #[serde(default)]
+    #[specta(skip)]
+    pub first_prompt_started: bool,
 }
 
 impl crate::StateStore {

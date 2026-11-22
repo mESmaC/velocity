@@ -124,6 +124,8 @@ pub enum AgentEvent {
         /// True when `session/load` resumed the thread's earlier session (§2.2).
         loaded: bool,
     },
+    /// The agent showed activity after a prompt was sent, proving the prompt reached it (#658).
+    PromptAccepted,
     /// An update recorded in the transcript, and where it went.
     Transcript {
         placement: Placement,
@@ -203,6 +205,10 @@ struct Shared {
     events: UnboundedSender<AgentEvent>,
     /// Set while `session/load` replays history the thread's transcript already shows.
     replaying: AtomicBool,
+    /// Set once a `session/prompt` request has been sent on this connection (#658).
+    prompt_sent: AtomicBool,
+    /// Set once the agent shows activity after a prompt was sent (#658).
+    prompt_accepted: AtomicBool,
     mode_selection: Mutex<Option<session::ModeSelection>>,
     provider: Option<crate::Provider>,
     account: u32,
@@ -222,6 +228,8 @@ impl Shared {
             subagents: Mutex::default(),
             events,
             replaying: AtomicBool::new(false),
+            prompt_sent: AtomicBool::new(false),
+            prompt_accepted: AtomicBool::new(false),
             mode_selection: Mutex::default(),
             provider: None,
             account: 0,
@@ -235,6 +243,15 @@ impl Shared {
     fn emit(&self, event: AgentEvent) {
         // The thread stopped listening: the session is ending, nothing to report to.
         let _ = self.events.send(event);
+    }
+
+    pub(super) fn note_prompt_accepted(&self) {
+        if !self.replaying.load(Ordering::Acquire)
+            && self.prompt_sent.load(Ordering::Acquire)
+            && !self.prompt_accepted.swap(true, Ordering::AcqRel)
+        {
+            self.emit(AgentEvent::PromptAccepted);
+        }
     }
 
     fn record(&self, update: SessionUpdate) {
@@ -259,6 +276,22 @@ impl Shared {
                 class.as_ref(),
                 self.replaying.load(Ordering::Acquire),
             );
+        if matches!(
+            route,
+            Some(crate::SessionRoute::Fact { .. } | crate::SessionRoute::Entry { .. })
+        ) || (route.is_none()
+            && matches!(
+                class,
+                Some(
+                    crate::EntryClass::AgentMessage(_)
+                        | crate::EntryClass::AgentThought(_)
+                        | crate::EntryClass::ToolCall(_)
+                        | crate::EntryClass::Plan
+                )
+            ))
+        {
+            self.note_prompt_accepted();
+        }
         match route {
             None => self.record(notification.update),
             Some(route) => self.record_subagent_session(route, notification.update),
@@ -491,6 +524,8 @@ async fn run_admitted_session(
         subagents: Mutex::default(),
         events,
         replaying: AtomicBool::new(false),
+        prompt_sent: AtomicBool::new(false),
+        prompt_accepted: AtomicBool::new(false),
         mode_selection: Mutex::default(),
         provider: launch.concurrency_provider.or(launch.own_config),
         account: launch.account,
@@ -875,7 +910,7 @@ async fn reconfigure(
 /// What applying a steering effect needs.
 struct Turn<'session> {
     connection: &'session ConnectionTo<Agent>,
-    shared: &'session Shared,
+    shared: &'session Arc<Shared>,
     session_id: &'session SessionId,
     turn_sender: &'session UnboundedSender<PromptResult>,
     preface: &'session mut Vec<ContentBlock>,
@@ -1085,9 +1120,14 @@ impl Turn<'_> {
             .prompt(&blocks);
         let turn_sender = self.turn_sender.clone();
         let started = std::time::Instant::now();
+        self.shared.prompt_sent.store(true, Ordering::Release);
+        let shared = Arc::clone(self.shared);
         self.connection
             .send_request(PromptRequest::new(self.session_id.clone(), blocks))
             .on_receiving_result(move |result| async move {
+                if result.is_ok() {
+                    shared.note_prompt_accepted();
+                }
                 let usage = result
                     .as_ref()
                     .ok()

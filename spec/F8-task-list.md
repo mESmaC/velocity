@@ -52,7 +52,7 @@ Legacy issues still carrying retired hold labels (`needs-owner`, `on-hold`, `nee
 Working and awaiting-land build threads count toward N; a land or an ended turn with no named work and an empty Rosen diff frees its slot.
 A dispatch worker takes its next item in a fresh ACP session after cleanup, with a bounded handoff from Velocity and a session boundary in the existing conversation (#456).
 Failed and closed threads free capacity but retain issue ownership.
-A dispatch thread that fails before its agent's session begins did no work, so its issue returns to dispatch on the next pass, the failure does not count as an attempt, and Velocity comments the reason on the issue (#514).
+A dispatch thread that fails before its agent runs the opening prompt did no work, so its issue returns to dispatch on the next pass, the failure does not count as an attempt, and Velocity comments the reason on the issue (#514, #658).
 The failed thread is kept with its error and no longer owns the issue.
 After three such failures in a row for one issue, dispatch waits an hour before each further try, doubling up to a day, and posts no more comments until a thread for the issue starts.
 Cleanup of a finished item waits while its thread is still creating its workspace or starting its agent, and runs once the thread is idle (#514).

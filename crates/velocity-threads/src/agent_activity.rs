@@ -45,7 +45,8 @@ impl Heartbeat {
             || batch.iter().any(|event| {
                 matches!(
                     event,
-                    AgentEvent::TurnEnded(_)
+                    AgentEvent::PromptAccepted
+                        | AgentEvent::TurnEnded(_)
                         | AgentEvent::QueuedRunAdded(_)
                         | AgentEvent::QueuedRunUpdated(_)
                         | AgentEvent::QueuedRunFinished(_)
@@ -89,6 +90,28 @@ fn is_substantive_work(event: &AgentEvent) -> bool {
     )
 }
 
+fn proves_first_prompt_started(event: &AgentEvent) -> bool {
+    matches!(
+        event,
+        AgentEvent::PromptAccepted
+            | AgentEvent::FileWritten { .. }
+            | AgentEvent::QueuedRunAdded(_)
+            | AgentEvent::QueuedRunUpdated(_)
+            | AgentEvent::QueuedRunFinished(_)
+            | AgentEvent::Subagent { .. }
+            | AgentEvent::SubagentSession { .. }
+            | AgentEvent::TurnEnded(Ok(_))
+            | AgentEvent::Transcript {
+                update: SessionUpdate::AgentMessageChunk(_)
+                    | SessionUpdate::AgentThoughtChunk(_)
+                    | SessionUpdate::ToolCall(_)
+                    | SessionUpdate::ToolCallUpdate(_)
+                    | SessionUpdate::Plan(_),
+                ..
+            }
+    )
+}
+
 pub fn observe(thread: &mut ThreadItem, event: &AgentEvent, now: u64) {
     if let AgentEvent::ProviderQueued(queued, _) = event {
         // Provider queue time is not time spent running this agent.
@@ -100,6 +123,9 @@ pub fn observe(thread: &mut ThreadItem, event: &AgentEvent, now: u64) {
     let checkpoint = &mut thread.supervision;
     if checkpoint.started == 0 {
         checkpoint.started = now;
+    }
+    if proves_first_prompt_started(event) {
+        checkpoint.first_prompt_started = true;
     }
     if !matches!(event, AgentEvent::Log(_) | AgentEvent::Queued) {
         checkpoint.last_update = now;
@@ -816,5 +842,48 @@ mod trace_fixtures {
 
         transcript.finish_running_tools();
         assert!(!in_build_queue(&transcript.blocks()));
+    }
+
+    // Risk (#658): `SessionStarted` and local user-message echoes must not mark a prompt as
+    // started, while `PromptAccepted` must checkpoint immediately and retain issue ownership.
+    #[test]
+    fn prompt_accepted_checkpoints_and_retains_issue_ownership() {
+        use super::{Heartbeat, observe};
+        use agent_client_protocol::v1::schema::{
+            ContentBlock, ContentChunk, SessionId, SessionUpdate,
+        };
+        use velocity_acp::Placement;
+        use velocity_acp::client::AgentEvent;
+
+        let mut heartbeat = Heartbeat::default();
+        let mut thread = ThreadItem::new(658, "Issue #658".into());
+        thread.started_by_dispatch = true;
+        thread.agent_session = Some("opened-then-disconnected".into());
+        thread.state = ThreadState::Error;
+
+        let pre_prompt = [
+            AgentEvent::SessionStarted {
+                session_id: SessionId::new("opened-then-disconnected"),
+                loaded: false,
+            },
+            AgentEvent::Transcript {
+                placement: Placement::Added(0),
+                update: SessionUpdate::UserMessageChunk(ContentChunk::new(ContentBlock::from(
+                    "Implement #658".to_owned(),
+                ))),
+            },
+            AgentEvent::Log("stderr before prompt".into()),
+        ];
+        assert!(!heartbeat.observe(&pre_prompt, 100));
+        for event in &pre_prompt {
+            observe(&mut thread, event, 100);
+        }
+        assert!(!thread.supervision.first_prompt_started);
+        assert!(velocity_store::continuous_dispatch::failed_before_first_turn(&thread));
+
+        assert!(heartbeat.observe(&[AgentEvent::PromptAccepted], 101));
+        observe(&mut thread, &AgentEvent::PromptAccepted, 101);
+        assert!(thread.supervision.first_prompt_started);
+        assert!(!velocity_store::continuous_dispatch::failed_before_first_turn(&thread));
     }
 }

@@ -1048,6 +1048,7 @@ impl ThreadRuntimes {
                 return None;
             }
             AgentEvent::SessionStarted { .. }
+            | AgentEvent::PromptAccepted
             | AgentEvent::HandoffThreshold { .. }
             | AgentEvent::HandoffReady { .. }
             | AgentEvent::ProviderQueued(..)
