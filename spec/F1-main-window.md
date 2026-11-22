@@ -107,7 +107,7 @@ There are two views of the same work, switched from the title bar or with `B`:
     The release build runs beside the release gate, and publishing waits for both (#498).
     A `-beta` release whose exact commit Rosen reports green, with no open release-blocker issue, skips the gate's stress suite and proofs; numbered releases always run the full gate (#434).
     The default branch's build keeps the pinned Rosen built in a cache every release restores, so the release build does not wait for a Rosen source build (#434).
-    Each release writes every job's time and the time from trigger to published to its run summary, and a `-beta` release that took over 20 minutes gets a warning (#434).
+    Each release writes every job's time and the time from trigger to published (measured to completion of both release and updater manifest publication, in live and offline reports alike) to its run summary, and a `-beta` release that took over 20 minutes gets a warning (#434, #641).
     A failed check or download shows in the modal, not as a window error.
 
 **Rail:** Rosen projects show Work (F8, F9) and Rosen status (F6).
