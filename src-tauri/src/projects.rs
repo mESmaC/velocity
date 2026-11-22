@@ -141,13 +141,12 @@ pub async fn set_project_github_repository(
                 .save_github_remote(project_identifier, parsed)
                 .map_err(|error| error.to_string())?;
             let context = store.project(project_identifier).map(|project| {
+                let health = project.collapse_mirror_health.as_ref();
                 (
                     project.collapse_repository.clone(),
                     project.github_remote.clone(),
-                    project
-                        .collapse_mirror_health
-                        .as_ref()
-                        .map(|health| health.forwarder),
+                    health.map(|item| item.forwarder),
+                    health.and_then(|item| item.message.clone()),
                 )
             });
             Ok((changed, changed.then(|| store.layout_refresh()), context))
@@ -162,13 +161,16 @@ pub async fn set_project_github_repository(
         .map_err(|error| error.to_string())??;
     }
     if changed {
-        if let Some((collapse_repository, github_remote, forwarder)) = forwarding_context {
+        if let Some((collapse_repository, github_remote, forwarder, forwarder_message)) =
+            forwarding_context
+        {
             crate::project_health::sync_collapse_forwarding(
                 &application,
                 project_identifier,
                 collapse_repository.as_deref(),
                 github_remote.as_deref(),
                 forwarder,
+                forwarder_message.as_deref(),
             );
         }
         crate::base_ci::wake(&application);

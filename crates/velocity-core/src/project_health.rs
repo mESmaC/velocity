@@ -107,6 +107,12 @@ pub struct ProjectHealthItem {
     /// Optional thread to open from the strip (e.g. a fix-forward or stalled review thread).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_identifier: Option<String>,
+    /// Optional validated external URL to open from the health row (e.g. Collapse settings, #611).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_url: Option<String>,
+    /// Optional label for `action_url` (#611).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_label: Option<String>,
     /// Decimal Unix milliseconds when Velocity last acted or updated this signal.
     pub acted_at_ms: String,
 }
@@ -128,6 +134,8 @@ impl ProjectHealthItem {
             action: action.into(),
             detail: None,
             thread_identifier: None,
+            action_url: None,
+            action_label: None,
             acted_at_ms: acted_at_ms.to_string(),
         }
     }
@@ -139,6 +147,12 @@ impl ProjectHealthItem {
 
     pub fn with_thread(mut self, thread: Option<u32>) -> Self {
         self.thread_identifier = thread.map(|id| id.to_string());
+        self
+    }
+
+    pub fn with_action_link(mut self, url: Option<String>, label: impl Into<String>) -> Self {
+        self.action_url = url.filter(|text| !text.trim().is_empty());
+        self.action_label = self.action_url.as_ref().map(|_| label.into());
         self
     }
 }

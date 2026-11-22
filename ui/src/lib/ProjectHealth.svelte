@@ -2,6 +2,7 @@
   import { SvelteMap } from 'svelte/reactivity';
   import Icon from './Icon.svelte';
   import {
+    collapseCommands,
     onProjectHealth,
     projectHealthCommands,
     type HealthSeverity,
@@ -17,9 +18,11 @@
   let {
     project = null,
     send,
+    onForwardingWarning,
   }: {
     project: number | null;
     send: (action: LayoutAction) => void;
+    onForwardingWarning?: (item: ProjectHealthItem | null) => void;
   } = $props();
 
   const POPOUT_MS = 8000;
@@ -47,7 +50,23 @@
   );
 
   const fingerprint = (item: ProjectHealthItem) =>
-    `${item.severity}|${item.signal}|${item.action}`;
+    `${item.severity}|${item.signal}|${item.action}|${item.action_url ?? ''}`;
+
+  function safeExternalUrl(url: string | null | undefined): string | null {
+    if (!url) return null;
+    try {
+      const parsed = new globalThis.URL(url);
+      return parsed.protocol === 'https:' ? parsed.toString() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function publishForwardingWarning(next: ProjectHealthItem[]) {
+    onForwardingWarning?.(
+      next.find((item) => item.kind === 'CollapseForwarding') ?? null,
+    );
+  }
 
   function receive(next: ProjectHealthItem[], announce: boolean) {
     const menuOpen = menu?.matches(':popover-open') ?? false;
@@ -57,6 +76,7 @@
         : [];
     seen = new Map(next.map((item) => [item.key, fingerprint(item)]));
     items = next;
+    publishForwardingWarning(next);
     const live = new Set(next.map((item) => item.key));
     const freshKeys = new Set(fresh.map((item) => item.key));
     const kept = popouts.filter(
@@ -96,11 +116,19 @@
     send({ OpenThread: threadId });
   }
 
+  function openActionUrl(event: globalThis.MouseEvent, url: string) {
+    event.preventDefault();
+    menu?.hidePopover();
+    clearPopouts();
+    void collapseCommands.openPage(url);
+  }
+
   $effect(() => {
     const id = currentProject;
     items = [];
     seen = new Map();
     clearPopouts();
+    publishForwardingWarning([]);
     if (id === null) return;
     let stopped = false;
     // The first view, from the read or an early event, only fills the badge.
@@ -144,6 +172,7 @@
 </script>
 
 {#snippet healthItem(item: ProjectHealthItem, popout: boolean)}
+  {@const actionUrl = safeExternalUrl(item.action_url)}
   <span class="health-dot" aria-hidden="true"></span>
   <div class="health-body">
     <div class="health-headline">
@@ -167,6 +196,16 @@
         class="mini health-open"
         type="button"
         onclick={() => openThread(threadId)}>Open thread</button
+      >
+    {/if}
+    {#if actionUrl}
+      <a
+        class="mini health-open"
+        href={actionUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        onclick={(event) => openActionUrl(event, actionUrl)}
+        >{item.action_label ?? 'Open'} ↗</a
       >
     {/if}
   </div>

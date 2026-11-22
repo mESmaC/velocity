@@ -17,7 +17,8 @@ use velocity_core::base_ci::{
     format_ci_repair_action_for_source,
 };
 use velocity_core::collapse::{
-    COLLAPSE_FORWARDING_SIGNAL, ForwarderState, collapse_forwarding_needs_attention,
+    ForwarderState, collapse_forwarding_needs_attention, collapse_forwarding_signal,
+    downstream_settings_page,
 };
 use velocity_core::project_health::{
     AIRC_ISSUE_FAILURE_TTL_SECONDS, DISPATCH_IDLE_LIMIT_SECONDS, HealthSeverity, HealthSignalKind,
@@ -181,7 +182,7 @@ pub fn initialize(application: &AppHandle) {
 #[tauri::command]
 #[specta::specta]
 pub fn get_project_health(application: AppHandle, project_identifier: u32) -> ProjectHealthView {
-    let items = application
+    let mut items = application
         .try_state::<ManagedProjectHealth>()
         .map(|managed| {
             registry(&managed)
@@ -191,10 +192,22 @@ pub fn get_project_health(application: AppHandle, project_identifier: u32) -> Pr
                 .unwrap_or_default()
         })
         .unwrap_or_default();
+    if !items.iter().any(|item| item.key == COLLAPSE_FORWARDING_KEY)
+        && let Some(project) = persisted_project(&application, project_identifier)
+        && let Some(item) = check_collapse_forwarding(&application, &project, unix_millis())
+    {
+        upsert_item(&mut items, item);
+    }
     ProjectHealthView {
         project_identifier,
         items,
     }
+}
+
+fn persisted_project(application: &AppHandle, project_identifier: u32) -> Option<ProjectItem> {
+    let store = application.try_state::<crate::state::ManagedStateStore>()?;
+    let store = crate::threads::lock(store.inner(), "persisted state").ok()?;
+    store.project(project_identifier).cloned()
 }
 
 /// Records that a post-land check was stopped for running too long (#486, #509).
@@ -409,7 +422,7 @@ pub(crate) fn invalidate_release_health(application: &AppHandle, project: u32) {
 }
 
 /// Records that Collapse could not automatically configure GitHub forwarding and publishes
-/// the "GitHub is not receiving lands: finish Collapse forwarding" project health row (#579).
+/// the "GitHub copy is not being updated: <reason>" project health row (#579, #611).
 pub(crate) fn record_collapse_forwarding_needed(
     application: &AppHandle,
     project: u32,
@@ -429,6 +442,8 @@ pub(crate) fn record_collapse_forwarding_needed(
     let item = collapse_forwarding_item(
         Some(collapse_repository),
         Some(github_repository),
+        None,
+        None,
         Some(&record),
         now_ms,
     );
@@ -466,13 +481,14 @@ pub(crate) fn clear_collapse_forwarding(application: &AppHandle, project: u32) {
 }
 
 /// Synchronizes the Collapse forwarding health row immediately after Collapse's forwarder
-/// state or the project's GitHub repository changes, clearing it once in sync (#579).
+/// state or the project's GitHub repository changes, clearing it once in sync (#579, #611).
 pub(crate) fn sync_collapse_forwarding(
     application: &AppHandle,
     project: u32,
     collapse_repository: Option<&str>,
     github_remote: Option<&str>,
     forwarder: Option<ForwarderState>,
+    forwarder_message: Option<&str>,
 ) {
     let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
         return;
@@ -502,6 +518,8 @@ pub(crate) fn sync_collapse_forwarding(
             let item = collapse_forwarding_item(
                 collapse_repository,
                 github_remote,
+                forwarder,
+                forwarder_message,
                 record.as_ref(),
                 now_ms,
             );
@@ -1146,16 +1164,15 @@ async fn collapse_mirror_target(
     Some((repository, remote))
 }
 
-/// Signal: GitHub is not receiving lands until Collapse downstream forwarding finishes (#579).
+/// Signal: GitHub copy is not being updated until Collapse downstream forwarding works (#579, #611).
 fn check_collapse_forwarding(
     application: &AppHandle,
     project: &ProjectItem,
     now_ms: u64,
 ) -> Option<ProjectHealthItem> {
-    let forwarder = project
-        .collapse_mirror_health
-        .as_ref()
-        .map(|health| health.forwarder);
+    let health = project.collapse_mirror_health.as_ref();
+    let forwarder = health.map(|item| item.forwarder);
+    let forwarder_message = health.and_then(|item| item.message.as_deref());
     let record = with_tracker(application, project.id, |tracker| {
         tracker.collapse_forwarding.clone()
     });
@@ -1175,6 +1192,8 @@ fn check_collapse_forwarding(
     Some(collapse_forwarding_item(
         project.collapse_repository.as_deref(),
         project.github_remote.as_deref(),
+        forwarder,
+        forwarder_message,
         record.as_ref(),
         now_ms,
     ))
@@ -1183,30 +1202,38 @@ fn check_collapse_forwarding(
 fn collapse_forwarding_item(
     collapse_repository: Option<&str>,
     github_repository: Option<&str>,
+    forwarder: Option<ForwarderState>,
+    forwarder_message: Option<&str>,
     record: Option<&CollapseForwardingRecord>,
     now_ms: u64,
 ) -> ProjectHealthItem {
-    let (action, detail, acted_at_ms) = match record {
+    let settings_repo = record
+        .map(|entry| entry.collapse_repository.as_str())
+        .or(collapse_repository);
+    let (reason, action, detail, acted_at_ms) = match record {
         Some(entry) => {
-            let trimmed = entry.reason.trim();
+            let reason = entry.reason.trim().to_owned();
             let action = if entry.opened_setup_page {
-                if trimmed.is_empty() {
-                    "Opened the Collapse GitHub App setup page; grant Contents and Workflows write and finish forwarding on Collapse".to_owned()
-                } else {
-                    format!("Opened setup page · {trimmed}")
-                }
-            } else if trimmed.is_empty() {
-                "Install the Collapse GitHub App with Contents and Workflows write and finish forwarding on Collapse".to_owned()
+                "Opened setup page; set or finish the GitHub downstream in Collapse settings"
+                    .to_owned()
             } else {
-                trimmed.to_owned()
+                "Set the GitHub downstream by hand in Collapse repository settings".to_owned()
             };
             let detail = Some(format!(
                 "{} → {}",
                 entry.collapse_repository, entry.github_repository
             ));
-            (action, detail, entry.acted_at_ms)
+            (reason, action, detail, entry.acted_at_ms)
         }
         None => {
+            let reason = match forwarder {
+                Some(ForwarderState::Stopped) => forwarder_message
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or("Collapse forwarder stopped")
+                    .to_owned(),
+                _ => "Collapse has no downstream remote configured".to_owned(),
+            };
             let detail = match (collapse_repository, github_repository) {
                 (Some(collapse), Some(github)) => Some(format!("{collapse} → {github}")),
                 (_, Some(github)) => Some(github.to_owned()),
@@ -1214,8 +1241,8 @@ fn collapse_forwarding_item(
                 (None, None) => None,
             };
             (
-                "Collapse has no downstream remote configured for this GitHub repository"
-                    .to_owned(),
+                reason,
+                "Set the GitHub downstream by hand in Collapse repository settings".to_owned(),
                 detail,
                 now_ms,
             )
@@ -1224,12 +1251,16 @@ fn collapse_forwarding_item(
     ProjectHealthItem::new(
         COLLAPSE_FORWARDING_KEY,
         HealthSignalKind::CollapseForwarding,
-        HealthSeverity::Warning,
-        COLLAPSE_FORWARDING_SIGNAL,
+        HealthSeverity::Error,
+        collapse_forwarding_signal(&reason),
         action,
         acted_at_ms,
     )
     .with_detail(detail)
+    .with_action_link(
+        settings_repo.and_then(downstream_settings_page),
+        "Open Collapse settings",
+    )
 }
 
 /// Signal 1: Mirror behind the base for more than 10 min (#509).

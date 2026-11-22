@@ -70,6 +70,19 @@ pub fn open_on_collapse(
     open_page(&application, &repository, commit.as_deref())
 }
 
+/// `open_collapse_page` (§3.1): opens a validated `https://collapse.sh/...` or
+/// `https://github.com/...` settings or setup page in the default browser (#611).
+#[tauri::command]
+#[specta::specta]
+pub fn open_collapse_page(application: AppHandle, url: String) -> Result<(), String> {
+    let page = velocity_core::collapse::allowed_downstream_setup_page(&url)
+        .ok_or("Only https://collapse.sh/ and https://github.com/ URLs can be opened here")?;
+    application
+        .opener()
+        .open_url(page, None::<&str>)
+        .map_err(|error| error.to_string())
+}
+
 /// The palette's Open on Collapse entries act on the active project.
 pub(crate) fn handle_intent(application: &AppHandle, intent: &LayoutIntent) -> bool {
     let LayoutIntent::OpenOnCollapse(commit) = intent else {

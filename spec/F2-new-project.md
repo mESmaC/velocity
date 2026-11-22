@@ -25,8 +25,8 @@ New projects still start with a single `SPEC.md`.
   Without a Collapse connection the dialog still accepts an existing `owner/repository` whose push token git already has, and copies that token to those URLs.
   The Collapse option also offers an optional **Issues and CI on GitHub** (`owner/repo`) field so a Collapse-mirrored project can name the GitHub repository used for issues, continuous dispatch, base CI, releases and Rosen pin bumps (Q28, #574).
   The same field is editable in Settings → Workspaces, where Velocity suggests a GitHub repository configured later as Collapse's downstream remote.
-  When a Collapse project names a GitHub repository during Create or Mirror to Collapse, Velocity calls Collapse's downstream API (`POST /api/downstream` with `github_repository`, C4) right after provisioning so lands reach GitHub without a manual browser step (#579).
-  If the Collapse GitHub App is not installed on that repository or lacks Contents or Workflows write, Velocity opens the App's install or permission page and shows a project health row (`GitHub is not receiving lands: finish Collapse forwarding`) that clears once Collapse's forward state reports in sync.
+  When a Collapse project names a GitHub repository during Create, Mirror to Collapse or Move to Collapse, Velocity calls Collapse's downstream API (`POST /api/downstream/{owner}/{name}` with `{"github_repository": "<owner/repo>"}` only and reads state back with `GET` on the same path, C4) so lands reach GitHub without a manual browser step (#579, #611).
+  If the downstream cannot be set, Velocity shows `GitHub copy is not being updated: <reason>` in the title bar and project health with a link to `https://collapse.sh/<owner>/<name>/settings`, opens the App setup page when Collapse reports a missing GitHub App or permissions, and clears the warning once Collapse's forward state reports in sync (#579, #611).
   Projects without a GitHub repository leave forwarding untouched.
   Running Mirror to Collapse on an existing GitHub project preserves its `github_remote` pointing at GitHub so dispatch and CI keep working.
 - **Model for the interview:** choose a model, effort and speed.

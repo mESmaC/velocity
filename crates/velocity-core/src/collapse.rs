@@ -273,13 +273,10 @@ fn allowed_collapse_page(url: &str) -> Option<String> {
     None
 }
 
-/// The repository's Settings → Downstream remote section on Collapse, used as a fallback
-/// when the GitHub App needs setup and Collapse did not return a direct App page (C4, #579).
+/// The repository's Settings page on Collapse (`https://collapse.sh/<owner>/<name>/settings`),
+/// where the owner can configure the GitHub downstream by hand (C4, #579, #611).
 pub fn downstream_settings_page(repository: &str) -> Option<String> {
-    Some(format!(
-        "{}/settings#downstream",
-        repository_page(repository)?
-    ))
+    settings_page(repository)
 }
 
 /// Owner choice when a target Collapse repository name is held by a deleted copy pending purge (#610).
@@ -344,10 +341,20 @@ impl DeletedCollapseRepository {
     }
 }
 
-/// Project health signal shown while a Collapse-mirrored GitHub project still needs its
-/// downstream forwarding finished (#579).
-pub const COLLAPSE_FORWARDING_SIGNAL: &str =
-    "GitHub is not receiving lands: finish Collapse forwarding";
+/// Prefix for the project health and title bar warning shown while a Collapse-mirrored GitHub
+/// project's downstream copy is not being updated (#579, #611).
+pub const COLLAPSE_FORWARDING_SIGNAL: &str = "GitHub copy is not being updated";
+
+/// Formats the title bar and project health warning for a missing or failing GitHub downstream
+/// copy: `"GitHub copy is not being updated: <reason>"` (#611).
+pub fn collapse_forwarding_signal(reason: &str) -> String {
+    let trimmed = reason.trim();
+    if trimmed.is_empty() {
+        format!("{COLLAPSE_FORWARDING_SIGNAL}: Collapse downstream forwarding is not configured")
+    } else {
+        format!("{COLLAPSE_FORWARDING_SIGNAL}: {trimmed}")
+    }
+}
 
 /// Hosts accepted for a Collapse-supplied GitHub App install or permission page (#579).
 const DOWNSTREAM_SETUP_HOSTS: [&str; 2] = ["https://github.com/", "https://collapse.sh/"];
@@ -385,9 +392,10 @@ pub fn downstream_setup_page(
         .or_else(|| downstream_settings_page(collapse_repository))
 }
 
-/// Whether a Collapse-mirrored project should show the "GitHub is not receiving lands"
-/// project health row (#579). Clears once Collapse's forwarder reports `Synced` or when
-/// the project no longer mirrors to Collapse or has no GitHub repository.
+/// Whether a Collapse-mirrored project should show the "GitHub copy is not being updated"
+/// title bar and project health warning (#579, #611). Clears once Collapse's forwarder
+/// reports `Synced` or when the project no longer mirrors to Collapse or has no GitHub
+/// repository.
 pub fn collapse_forwarding_needs_attention(
     has_collapse_repository: bool,
     has_github_remote: bool,
@@ -399,7 +407,7 @@ pub fn collapse_forwarding_needs_attention(
     }
     match forwarder {
         Some(ForwarderState::Synced) => false,
-        Some(ForwarderState::Unconfigured) => true,
+        Some(ForwarderState::Unconfigured | ForwarderState::Stopped) => true,
         _ => setup_incomplete,
     }
 }
@@ -458,11 +466,12 @@ pub enum ForwarderState {
 }
 
 impl ForwarderState {
-    /// Reads the dashboard's `forward.state` (Collapse C2); anything else is unavailable.
+    /// Reads Collapse's forwarder state (`forward.state` or `GET /api/downstream` `state.status`);
+    /// anything else is unavailable.
     pub fn from_collapse(state: &str) -> Self {
         match state {
             "unconfigured" => Self::Unconfigured,
-            "synced" => Self::Synced,
+            "synced" | "in_sync" => Self::Synced,
             "catching_up" => Self::CatchingUp,
             "retrying" => Self::Retrying,
             "stopped" => Self::Stopped,

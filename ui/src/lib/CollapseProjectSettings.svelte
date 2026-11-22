@@ -666,6 +666,10 @@
                     target="_blank"
                     rel="noopener noreferrer"
                     class="worktree-button mini collapse-cutover-link"
+                    onclick={(event) => {
+                      event.preventDefault();
+                      void collapseCommands.openPage(externalUrl);
+                    }}
                   >
                     {step.action_label ?? 'Open on Collapse'} ↗
                   </a>

@@ -100,6 +100,7 @@ fn bindings() -> Builder<tauri::Wry> {
         code_graph::reset_code_graph_usage,
         code_graph::graph_status,
         code_graph::retry_graph_index,
+        collapse::open_collapse_page,
         collapse::open_on_collapse,
         collapse_connection::connect_collapse,
         collapse_connection::disconnect_collapse,

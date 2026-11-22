@@ -156,6 +156,7 @@ pub(crate) enum DownstreamResult {
         github_repository: String,
         page_url: Option<String>,
         reason: String,
+        open_setup_page: bool,
     },
 }
 
@@ -884,6 +885,7 @@ pub(crate) async fn configure_downstream(
                 github_repository: github_repository.to_owned(),
                 page_url: resolved,
                 reason,
+                open_setup_page: true,
             }
         }
         Err(error) => {
@@ -898,6 +900,7 @@ pub(crate) async fn configure_downstream(
                 github_repository: github_repository.to_owned(),
                 page_url: velocity_core::collapse::downstream_settings_page(&collapse_repository),
                 reason,
+                open_setup_page: false,
             }
         }
     }
@@ -931,8 +934,9 @@ pub(crate) fn finish_downstream_setup(
             github_repository,
             page_url,
             reason,
+            open_setup_page,
         }) => {
-            let open_result = match page_url {
+            let open_result = match page_url.filter(|_| open_setup_page) {
                 Some(page) => application
                     .opener()
                     .open_url(page, None::<&str>)
@@ -1338,17 +1342,25 @@ pub(crate) async fn refresh_health(application: &AppHandle) -> Result<(), String
             item.downstream_github = fetch_downstream_github(&credentials, &repository).await;
         }
         let forwarder = next.as_ref().map(|item| item.forwarder);
-        forwarding_states.push((project, repository, github_remote, forwarder));
+        let forwarder_message = next.as_ref().and_then(|item| item.message.clone());
+        forwarding_states.push((
+            project,
+            repository,
+            github_remote,
+            forwarder,
+            forwarder_message,
+        ));
         updates.push((project, next));
     }
     let moved_projects = save_and_publish_health_updates(application, updates).await?;
-    for (project, repository, github_remote, forwarder) in forwarding_states {
+    for (project, repository, github_remote, forwarder, forwarder_message) in forwarding_states {
         crate::project_health::sync_collapse_forwarding(
             application,
             project,
             Some(&repository),
             github_remote.as_deref(),
             forwarder,
+            forwarder_message.as_deref(),
         );
     }
     for project in moved_projects {

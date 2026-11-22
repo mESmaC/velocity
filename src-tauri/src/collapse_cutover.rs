@@ -16,8 +16,8 @@ use velocity_collapse::{
 use velocity_core::collapse::{
     CollapseCheckItemStatus, CollapseCheckSummary, DeletedCollapseRepository,
     DeletedRepositoryAction, ForwarderState, IssueHost, MoveToCollapseStepId,
-    MoveToCollapseStepResult, MoveToCollapseStepStatus, downstream_settings_page,
-    github_repository_from_remote, repository_name_for,
+    MoveToCollapseStepResult, MoveToCollapseStepStatus, collapse_forwarding_signal,
+    downstream_settings_page, github_repository_from_remote, repository_name_for,
 };
 use velocity_core::project_health::short_commit;
 use velocity_rosen::ProjectServer;
@@ -850,21 +850,16 @@ async fn keep_downstream(
     };
     save_project_github_remote(application, project, Some(github.to_owned())).await?;
     let collapse_repo = provisioned.repository();
-    if let Some(row) = dashboard.iter().find(|row| row.is(&collapse_repo))
-        && ForwarderState::from_collapse(&row.forward.state) != ForwarderState::Unconfigured
-        && row
-            .downstream_remote()
-            .as_deref()
-            .and_then(github_repository_from_remote)
-            .is_some_and(|existing| existing.eq_ignore_ascii_case(github))
+    if let Some(existing) =
+        existing_matching_downstream(credentials, provisioned, github, dashboard).await
     {
+        crate::project_health::clear_collapse_forwarding(application, project);
         return Ok(MoveToCollapseStepResult {
             step: MoveToCollapseStepId::ConfigureDownstream,
             title,
             status: MoveToCollapseStepStatus::Passed,
             summary: format!(
-                "Keeping one-way GitHub downstream copy: Collapse already forwards to {github} ({}).",
-                row.forward.state
+                "Keeping one-way GitHub downstream copy: Collapse already forwards to {github} ({existing})."
             ),
             detail: None,
             action_url: None,
@@ -887,20 +882,62 @@ async fn keep_downstream(
             github_repository,
             page_url,
             reason,
-        } => MoveToCollapseStepResult {
-            step: MoveToCollapseStepId::ConfigureDownstream,
-            title,
-            status: MoveToCollapseStepStatus::Warning,
-            summary: format!(
-                "Finish enabling GitHub downstream forwarding to {github_repository} on Collapse."
-            ),
-            detail: Some(reason.clone()),
-            action_url: page_url.clone(),
-            action_label: Some("Finish on Collapse".into()),
-        },
+            ..
+        } => failed_step(
+            MoveToCollapseStepId::ConfigureDownstream,
+            &title,
+            collapse_forwarding_signal(reason),
+            Some(format!(
+                "Set the GitHub downstream ({github_repository}) by hand in Collapse repository settings, then re-run Move to Collapse."
+            )),
+            downstream_settings_page(&collapse_repo).or_else(|| page_url.clone()),
+            Some("Open Collapse settings".into()),
+        ),
     };
     let _ = finish_downstream_setup(application, project, &collapse_repo, Some(result));
     Ok(step)
+}
+
+async fn existing_matching_downstream(
+    credentials: &CollapseCredentials,
+    provisioned: &ProvisionedMirror,
+    github: &str,
+    dashboard: &[RepositoryActivity],
+) -> Option<String> {
+    let collapse_repo = provisioned.repository();
+    if let Some(row) = dashboard.iter().find(|row| row.is(&collapse_repo))
+        && !matches!(
+            ForwarderState::from_collapse(&row.forward.state),
+            ForwarderState::Unconfigured | ForwarderState::Stopped
+        )
+        && row
+            .downstream_remote()
+            .as_deref()
+            .and_then(github_repository_from_remote)
+            .is_some_and(|existing| existing.eq_ignore_ascii_case(github))
+    {
+        return Some(row.forward.state.clone());
+    }
+    let settings = velocity_collapse::downstream::get_downstream(
+        credentials,
+        &provisioned.owner,
+        &provisioned.name,
+    )
+    .await
+    .ok()?;
+    if settings
+        .github_repository()
+        .is_some_and(|existing| existing.eq_ignore_ascii_case(github))
+        && !settings.state.status.eq_ignore_ascii_case("stopped")
+    {
+        let label = if settings.state.status.trim().is_empty() {
+            "configured".to_owned()
+        } else {
+            settings.state.status
+        };
+        return Some(label);
+    }
+    None
 }
 
 async fn remove_downstream(

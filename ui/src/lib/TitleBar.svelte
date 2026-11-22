@@ -1,6 +1,6 @@
 <script lang="ts">
   import WindowControls from './WindowControls.svelte';
-  import type { LayoutAction, LayoutSnapshot } from './ipc';
+  import type { LayoutAction, LayoutSnapshot, ProjectHealthItem } from './ipc';
   import ProjectSwitcher from './ProjectSwitcher.svelte';
   import ProjectHealth from './ProjectHealth.svelte';
   import RosenMirror from './RosenMirror.svelte';
@@ -17,6 +17,11 @@
     send: (action: LayoutAction) => void;
     switchProject: (identifier: number) => void;
   } = $props();
+
+  let collapseForwarding = $state<ProjectHealthItem | null>(null);
+  const activeCollapseForwarding = $derived(
+    layout?.project_identifier != null ? collapseForwarding : null,
+  );
 </script>
 
 {#snippet pulseCounts()}
@@ -91,7 +96,11 @@
           ><kbd>K</kbd></button
         >
         {#if layout?.project_identifier != null}
-          <ProjectHealth project={layout.project_identifier} {send} />
+          <ProjectHealth
+            project={layout.project_identifier}
+            {send}
+            onForwardingWarning={(item) => (collapseForwarding = item)}
+          />
         {/if}
       </div>
       <button
@@ -125,5 +134,6 @@
     divergence={layout?.rosen_mirror_divergence ?? null}
     project={layout?.project_identifier ?? null}
     collapse={layout?.collapse_mirror_health ?? null}
+    collapseForwarding={activeCollapseForwarding}
   />
 </div>

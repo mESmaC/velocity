@@ -35,6 +35,11 @@ export const commands = {
 	resetCodeGraphUsage: (projectIdentifier: number) => __TAURI_INVOKE<GraphComparison>("reset_code_graph_usage", { projectIdentifier }),
 	graphStatus: (projectIdentifier: number) => __TAURI_INVOKE<GraphStatus_Serialize>("graph_status", { projectIdentifier }),
 	retryGraphIndex: (projectIdentifier: number) => __TAURI_INVOKE<GraphStatus_Serialize>("retry_graph_index", { projectIdentifier }),
+	/**
+	 *  `open_collapse_page` (§3.1): opens a validated `https://collapse.sh/...` or
+	 *  `https://github.com/...` settings or setup page in the default browser (#611).
+	 */
+	openCollapsePage: (url: string) => __TAURI_INVOKE<null>("open_collapse_page", { url }),
 	/**  `open_on_collapse` (§3.1): `commit` names a land; without it the repository page opens. */
 	openOnCollapse: (projectIdentifier: number, commit: string | null) => __TAURI_INVOKE<null>("open_on_collapse", { projectIdentifier, commit }),
 	/**
@@ -4290,6 +4295,10 @@ export type ProjectHealthItem_Deserialize = {
 	detail?: string | null,
 	/**  Optional thread to open from the strip (e.g. a fix-forward or stalled review thread). */
 	thread_identifier?: string | null,
+	/**  Optional validated external URL to open from the health row (e.g. Collapse settings, #611). */
+	action_url?: string | null,
+	/**  Optional label for `action_url` (#611). */
+	action_label?: string | null,
 	/**  Decimal Unix milliseconds when Velocity last acted or updated this signal. */
 	acted_at_ms: string,
 };
@@ -4308,6 +4317,10 @@ export type ProjectHealthItem_Serialize = {
 	detail?: string,
 	/**  Optional thread to open from the strip (e.g. a fix-forward or stalled review thread). */
 	thread_identifier?: string,
+	/**  Optional validated external URL to open from the health row (e.g. Collapse settings, #611). */
+	action_url?: string,
+	/**  Optional label for `action_url` (#611). */
+	action_label?: string,
 	/**  Decimal Unix milliseconds when Velocity last acted or updated this signal. */
 	acted_at_ms: string,
 };

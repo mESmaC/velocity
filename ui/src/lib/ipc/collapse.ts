@@ -53,6 +53,7 @@ export type CollapseMirrorHealth = NonNullable<
 export const collapseCommands = {
   open: (project: number, commit: string | null = null) =>
     commands.openOnCollapse(project, commit),
+  openPage: (url: string): Promise<null> => commands.openCollapsePage(url),
   mirror: (
     project: number,
     deletedAction: DeletedRepositoryAction | null = null,

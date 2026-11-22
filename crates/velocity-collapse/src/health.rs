@@ -387,12 +387,17 @@ pub async fn repository_activity(
     Ok(dashboard.repositories)
 }
 
-/// Reads a single Collapse repository to check its configured downstream remote (#574).
+/// Reads a single Collapse repository to check its configured downstream remote (#574, #611).
+/// Queries `GET /api/downstream/{owner}/{name}` first and falls back to the repository detail
+/// route if downstream settings are not readable with the current credential.
 pub async fn repository_downstream(
     credentials: &CollapseCredentials,
     owner: &str,
     name: &str,
 ) -> Result<Option<String>, CollapseError> {
+    if let Ok(settings) = crate::downstream::get_downstream(credentials, owner, name).await {
+        return Ok(non_empty(&settings.remote));
+    }
     let client = Client::builder()
         .timeout(READ_TIMEOUT)
         .build()

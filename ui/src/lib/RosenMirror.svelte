@@ -5,6 +5,7 @@
     MirrorBehind,
     MirrorDivergence,
     MirrorState,
+    ProjectHealthItem,
   } from './ipc';
 
   // `state` is renamed here: the name would shadow the `$state` rune.
@@ -14,6 +15,7 @@
     divergence = null,
     project = null,
     collapse = null,
+    collapseForwarding = null,
   }: {
     state: MirrorState | null;
     // The project's base trails its mirror while a catch-up is pending (#520).
@@ -25,6 +27,8 @@
     // Collapse's forwarder to the downstream remote (#427). Only a stopped
     // forwarder or an archived repository needs the owner, so only those show.
     collapse?: CollapseMirrorHealth | null;
+    // Missing or failing GitHub downstream copy surfaced in the title bar (#611).
+    collapseForwarding?: ProjectHealthItem | null;
   } = $props();
 
   let running = $state('');
@@ -49,6 +53,16 @@
 
   function short(commit: string) {
     return commit.slice(0, 12);
+  }
+
+  function safeExternalUrl(url: string | null | undefined): string | null {
+    if (!url) return null;
+    try {
+      const parsed = new globalThis.URL(url);
+      return parsed.protocol === 'https:' ? parsed.toString() : null;
+    } catch {
+      return null;
+    }
   }
 </script>
 
@@ -125,7 +139,33 @@
     {#if error}<p role="alert">{error}</p>{/if}
   </section>
 {/if}
-{#if collapse && (collapse.forwarder === 'Stopped' || collapse.archived)}
+{#if collapseForwarding && !collapse?.archived}
+  {@const settingsUrl = safeExternalUrl(collapseForwarding.action_url)}
+  <section
+    class="mirror-status rejected"
+    role="status"
+    aria-label="GitHub downstream copy status"
+  >
+    <strong>{collapseForwarding.signal}</strong>
+    {#if collapseForwarding.detail}<pre>{collapseForwarding.detail}</pre>{/if}
+    {#if settingsUrl}
+      <div class="mirror-actions">
+        <a
+          class="mini"
+          href={settingsUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Configure the GitHub downstream in Collapse repository settings"
+          onclick={(event) => {
+            event.preventDefault();
+            void collapseCommands.openPage(settingsUrl);
+          }}>{collapseForwarding.action_label ?? 'Open Collapse settings'} ↗</a
+        >
+      </div>
+    {/if}
+  </section>
+{/if}
+{#if collapse && (collapse.archived || (collapse.forwarder === 'Stopped' && !collapseForwarding))}
   <section
     class="mirror-status rejected"
     role="status"
