@@ -55,10 +55,12 @@ pub struct IssueRead {
     pub held_issues: Vec<u32>,
 }
 
-/// Request to file a new issue on the project's mirror repository (#535).
+/// Request to file a new issue on the project's mirror repository or a registered sibling project (#535, #608).
 pub struct IssueCreate<'a> {
     pub member: &'a str,
     pub nick: &'a str,
+    pub repository: Option<String>,
+    pub held_issues: Vec<u32>,
     pub title: &'a str,
     pub body: &'a str,
     pub labels: &'a [String],
@@ -199,11 +201,19 @@ fn call_create(
     if body.is_empty() {
         return Err(Error::Invalid("An issue needs a body".into()));
     }
+    let repository = optional_repository(arguments)?;
+    let held_issues = if repository.is_some() {
+        member_held_issues(channel, member)
+    } else {
+        Vec::new()
+    };
     let labels = labels(arguments)?;
     let blockers = blocked_by(arguments)?;
     let answer = handler(IssueRequest::Create(IssueCreate {
         member,
         nick,
+        repository,
+        held_issues,
         title,
         body,
         labels: &labels,
@@ -216,7 +226,14 @@ fn call_create(
             .and_then(|number| u32::try_from(number).ok())
     {
         let filed_title = answer.get("title").and_then(Value::as_str).unwrap_or(title);
-        if let Ok(event) = Event::issue_filed(nick, number, filed_title) {
+        let event = match (
+            answer.get("cross_repository").and_then(Value::as_bool),
+            answer.get("repository").and_then(Value::as_str),
+        ) {
+            (Some(true), Some(repo)) => Event::issue_filed_in(nick, repo, number, filed_title),
+            _ => Event::issue_filed(nick, number, filed_title),
+        };
+        if let Ok(event) = event {
             let _ = channel.post_event(event);
         }
     }
@@ -342,12 +359,13 @@ pub(crate) fn tools() -> [Value; 7] {
         ),
         protocol::tool(
             "issue_create",
-            "File a new GitHub issue on this project's repository (for spec questions, contradictions, bugs or findings). Runs the duplicate check against open issues before filing and returns the matching issue instead of opening a duplicate. When the new issue waits on other issues, name them in blocked_by so they are linked as GitHub issue dependencies. Retired silent labels (needs-owner, on-hold) are refused; use tracking, blocked-upstream or blocked_by instead.",
+            "File a new issue on this project's repository (for spec questions, contradictions, bugs or findings) or on a sibling project registered in Velocity by passing repository as owner/name. Runs the duplicate check against open issues in the target repository before filing and returns the matching issue instead of opening a duplicate. When filing in a sibling project, labels must already exist there, the body gets the agent byline with the originating issue and thread, and the filed or matching issue is recorded as blocked_by on your held issue so it waits automatically without a hold label. When the new issue waits on other issues, name them in blocked_by so they are linked as issue dependencies. Retired silent labels (needs-owner, on-hold) are refused; use tracking, blocked-upstream or blocked_by instead.",
             json!({
                 "title":{"type":"string","minLength":1,"maxLength":MAX_TITLE_CHARS,"description":"One-line issue title"},
                 "body":{"type":"string","minLength":1,"description":"Issue description and evidence"},
+                "repository":{"type":"string","minLength":1,"description":"Optional repository as owner/name to file in a sibling project registered in Velocity. Omit for this project's repository."},
                 "labels":{"type":"array","items":{"type":"string","minLength":1},
-                    "description":"Labels from this repository, such as spec-question, tracking or blocked-upstream. Optional."},
+                    "description":"Labels from the target repository (for sibling projects, only labels that already exist there). Optional."},
                 "blocked_by":blockers
             }),
             &["title", "body"],

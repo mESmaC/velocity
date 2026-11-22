@@ -23,9 +23,10 @@ use velocity_store::continuous_dispatch::{
 use velocity_store::issues::ThreadIssue;
 use velocity_store::{ProjectItem, TaskAttribution, VersionControl};
 use velocity_threads::continuous_dispatch::{
-    DispatchView, DispatchWork, SkippedIssue, dispatchable_issue, dispatchable_task,
-    integration_notice, issue_number_from_piece, issue_skip_reason, ordered_work, plan_task,
-    stale_claim_reason, stalled_landed_issues, uncovered_base_notice,
+    DispatchView, DispatchWork, SkippedIssue, dispatchable_issue_in_projects, dispatchable_task,
+    integration_notice, issue_number_from_piece, issue_skip_reason_in_projects,
+    ordered_work_in_projects, plan_task, stale_claim_reason, stalled_landed_issues,
+    uncovered_base_notice,
 };
 
 #[derive(Clone, Default)]
@@ -127,7 +128,8 @@ fn view(application: &AppHandle, identifier: u32) -> Result<DispatchView, String
     include_overlap_waits(project, &backlog.repository, &mut claimed);
     include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
     restart_wait::include_restart_waits(application, identifier, &mut claimed);
-    let work = ordered_work(
+    let work = ordered_work_in_projects(
+        &store.state().projects,
         project,
         &backlog.repository,
         &backlog.issues,
@@ -218,7 +220,8 @@ pub(crate) fn integration_idle(application: &AppHandle, identifier: u32) -> Resu
     include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
     restart_wait::include_restart_waits(application, identifier, &mut claimed);
     Ok(busy_count(project) == 0
-        && ordered_work(
+        && ordered_work_in_projects(
+            &store.state().projects,
             project,
             &backlog.repository,
             &backlog.issues,
@@ -292,7 +295,14 @@ pub(crate) fn health_snapshot(
                 if let Some(wait) = restart_waits.get(&issue.number) {
                     return Some(wait.skipped());
                 }
-                issue_skip_reason(project, &backlog.repository, issue, &claimed, now)
+                issue_skip_reason_in_projects(
+                    &store.state().projects,
+                    project,
+                    &backlog.repository,
+                    issue,
+                    &claimed,
+                    now,
+                )
             })
             .collect()
     } else {
@@ -302,7 +312,8 @@ pub(crate) fn health_snapshot(
     include_launch_holds(project, &backlog.repository, &mut claimed);
     include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
     restart_wait::include_restart_waits(application, identifier, &mut claimed);
-    let ready_count = ordered_work(
+    let ready_count = ordered_work_in_projects(
+        &store.state().projects,
         project,
         &backlog.repository,
         &backlog.issues,
@@ -584,7 +595,8 @@ fn start_ready(
         include_launch_holds(project, &backlog.repository, &mut claimed);
         include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
         restart_wait::include_restart_waits(application, identifier, &mut claimed);
-        ordered_work(
+        ordered_work_in_projects(
+            &store.state().projects,
             project,
             &backlog.repository,
             &backlog.issues,
@@ -1117,8 +1129,13 @@ fn start_issue(
         if !project_has_capacity(project) || has_user_task(project, &claimed) {
             return Ok(());
         }
-        if !dispatchable_issue(project, repository, issue, &claimed)
-            || restart_wait::is_waiting(application, identifier, issue.number)
+        if !dispatchable_issue_in_projects(
+            &store.state().projects,
+            project,
+            repository,
+            issue,
+            &claimed,
+        ) || restart_wait::is_waiting(application, identifier, issue.number)
         {
             return Ok(());
         }
@@ -1392,6 +1409,12 @@ fn report_no_change_issues(
             Some(thread),
             pending.nick.as_deref(),
         );
+        let all_projects = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )
+        .map(|store| store.state().projects.clone())
+        .unwrap_or_default();
         let result = IssueClient::for_host(
             Path::new(&reader.directory),
             reader.host,
@@ -1404,7 +1427,8 @@ fn report_no_change_issues(
                 &byline,
                 &pending.reason,
                 |issue| {
-                    velocity_threads::continuous_dispatch::has_unsatisfied_blockers(
+                    velocity_threads::continuous_dispatch::has_unsatisfied_blockers_in_projects(
+                        &all_projects,
                         project,
                         &pending.issue.repository,
                         issue,

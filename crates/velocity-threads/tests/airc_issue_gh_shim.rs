@@ -12,7 +12,7 @@ use std::process::{Command, Output};
 
 use agent_client_protocol::v1::schema::McpServer;
 use velocity_acp::client::AircLaunch;
-use velocity_airc::{IssueRead, IssueRequest};
+use velocity_airc::{IssueCreate, IssueRead, IssueRequest};
 use velocity_github::GH_PROGRAM_ENV;
 use velocity_rosen::agent_run::{BLOCK_VCS_ENV, vcs_refusal};
 use velocity_store::{PersistedState, ProjectItem, StateStore};
@@ -20,8 +20,11 @@ use velocity_threads::issue_activity::{handle_issue_request, read_issue_tool_fai
 
 const CHILD_APP_DATA_ENV: &str = "VELOCITY_TEST_ISSUE_581_APP_DATA";
 const CHILD_EXPECT_FAILURE_ENV: &str = "VELOCITY_TEST_ISSUE_581_EXPECT_FAIL";
+const CHILD_CREATE_LOG_ENV: &str = "VELOCITY_TEST_ISSUE_608_CREATE_LOG";
+const CHILD_BLOCKED_BY_LOG_ENV: &str = "VELOCITY_TEST_ISSUE_608_BLOCKED_BY_LOG";
 const CHILD_TEST_NAME: &str = "child_executes_airc_issue_read";
 const CHILD_CROSS_REPO_TEST_NAME: &str = "child_executes_cross_repo_issue_read";
+const CHILD_CROSS_REPO_CREATE_TEST_NAME: &str = "child_executes_cross_repo_issue_create";
 const CHILD_REFUSAL_TEST_NAME: &str = "child_checks_agent_gh_refusal";
 
 struct TempTree(PathBuf);
@@ -64,6 +67,7 @@ fn airc_issue_read_reaches_real_gh_inside_rosen_agent_environment()
     verify_airc_launch_env(&fixture)?;
     verify_issue_read_bypasses_shim(&fixture)?;
     verify_cross_repo_issue_read(&fixture)?;
+    verify_cross_repo_issue_create(&fixture)?;
     verify_agent_shell_gh_still_refused(&fixture)?;
     verify_project_health_failure_recording(&fixture)?;
     Ok(())
@@ -83,6 +87,25 @@ fn verify_cross_repo_issue_read(fixture: &Fixture) -> Result<(), Box<dyn std::er
     assert!(
         read_issue_tool_failure(&fixture.app_data, 1).is_none(),
         "refusing an unallowed cross-repo read must not record a local tool health failure"
+    );
+    Ok(())
+}
+
+fn verify_cross_repo_issue_create(fixture: &Fixture) -> Result<(), Box<dyn std::error::Error>> {
+    // Risk (#608): AIRC issue_create must allow registered sibling Velocity projects, refuse
+    // unregistered repos and non-existent sibling labels without auto-creating them, check
+    // duplicates on the sibling repo first, add the agent/originating issue+thread byline,
+    // and link the sibling issue as blocked_by on the caller's held issue.
+    let cross_repo = run_child(
+        fixture,
+        CHILD_CROSS_REPO_CREATE_TEST_NAME,
+        Some(&fixture.real_gh),
+        false,
+    )?;
+    assert_child_ok("cross-repo issue_create", &cross_repo)?;
+    assert!(
+        read_issue_tool_failure(&fixture.app_data, 1).is_none(),
+        "refusing an unallowed cross-repo create must not record a local tool health failure"
     );
     Ok(())
 }
@@ -279,6 +302,135 @@ fn child_executes_cross_repo_issue_read() -> Result<(), Box<dyn std::error::Erro
 
 #[test]
 #[ignore = "invoked as a child process by airc_issue_read_reaches_real_gh_inside_rosen_agent_environment"]
+fn child_executes_cross_repo_issue_create() -> Result<(), Box<dyn std::error::Error>> {
+    let app_data =
+        PathBuf::from(std::env::var_os(CHILD_APP_DATA_ENV).ok_or("missing child app_data env")?);
+    let create_log = PathBuf::from(
+        std::env::var_os(CHILD_CREATE_LOG_ENV).ok_or("missing child create_log env")?,
+    );
+    let blocked_by_log = PathBuf::from(
+        std::env::var_os(CHILD_BLOCKED_BY_LOG_ENV).ok_or("missing child blocked_by_log env")?,
+    );
+
+    // 1. Unregistered repository is refused cleanly.
+    let refused = handle_issue_request(
+        &app_data,
+        "1",
+        IssueRequest::Create(IssueCreate {
+            member: "issue-607-345",
+            nick: "issue-607-345",
+            repository: Some("owner/unrelated".into()),
+            held_issues: vec![607],
+            title: "Need sibling change",
+            body: "Detailed evidence for sibling change.",
+            labels: &[],
+            blocked_by: &[],
+        }),
+    );
+    let Err(error) = refused else {
+        return Err("expected unregistered repository to be refused".into());
+    };
+    assert!(
+        error.to_string().contains("not allowed for issue_create"),
+        "unexpected refusal: {error}"
+    );
+
+    // 2. Non-existent label on sibling repo (even an auto-label like spec-question) is refused.
+    let missing_label = [String::from("spec-question")];
+    let refused_label = handle_issue_request(
+        &app_data,
+        "1",
+        IssueRequest::Create(IssueCreate {
+            member: "issue-607-345",
+            nick: "issue-607-345",
+            repository: Some("OWNER/SIBLING".into()),
+            held_issues: vec![607],
+            title: "Mint releases token from desktop session",
+            body: "Desktop credentials cannot mint a releases token yet.",
+            labels: &missing_label,
+            blocked_by: &[],
+        }),
+    );
+    let Err(label_error) = refused_label else {
+        return Err("expected missing sibling label to be refused".into());
+    };
+    assert!(
+        label_error.to_string().contains("Unknown label"),
+        "unexpected label refusal: {label_error}"
+    );
+
+    // 3. Duplicate search runs against the sibling repo first and links the existing issue.
+    let duplicate = handle_issue_request(
+        &app_data,
+        "1",
+        IssueRequest::Create(IssueCreate {
+            member: "issue-607-345",
+            nick: "issue-607-345",
+            repository: Some("owner/sibling".into()),
+            held_issues: vec![607],
+            title: "Fix mirror webhook signature header",
+            body: "Webhook HMAC validation rejects empty payloads with HTTP 400.",
+            labels: &[],
+            blocked_by: &[],
+        }),
+    )?;
+    assert_eq!(duplicate["outcome"], "duplicate");
+    assert_eq!(duplicate["repository"], "owner/sibling");
+    assert_eq!(duplicate["issue"]["number"], 215);
+    assert_eq!(duplicate["blocked_origin_issues"], serde_json::json!([607]));
+    assert_eq!(duplicate["origin_blocker"], "owner/sibling#215");
+
+    // 4. Distinct report files a new sibling issue with byline + originating issue/thread and links blocked_by.
+    let existing_label = [String::from("enhancement")];
+    let filed = handle_issue_request(
+        &app_data,
+        "1",
+        IssueRequest::Create(IssueCreate {
+            member: "issue-607-345",
+            nick: "issue-607-345",
+            repository: Some("OWNER/SIBLING".into()),
+            held_issues: vec![607],
+            title: "Allow desktop session to mint releases-scoped token",
+            body: "Verified server/internal/tokens/native.go refuses POST /api/tokens/personal.",
+            labels: &existing_label,
+            blocked_by: &[],
+        }),
+    )?;
+    assert_eq!(filed["outcome"], "filed");
+    assert_eq!(filed["repository"], "owner/sibling");
+    assert_eq!(filed["cross_repository"], true);
+    assert_eq!(filed["number"], 216);
+    assert_eq!(filed["blocked_origin_issues"], serde_json::json!([607]));
+    assert_eq!(filed["origin_blocker"], "owner/sibling#216");
+
+    let created_payload = fs::read_to_string(&create_log)?;
+    assert!(
+        created_payload.contains("Reported by an agent (`issue-607-345`)"),
+        "expected agent byline in sibling body, got:\n{created_payload}"
+    );
+    assert!(
+        created_payload.contains("Originating issue: owner/repo#607"),
+        "expected originating issue in sibling body, got:\n{created_payload}"
+    );
+    assert!(
+        created_payload.contains("velocity://thread/1/345"),
+        "expected originating thread link in sibling body, got:\n{created_payload}"
+    );
+    assert!(
+        created_payload.contains("L_ENH"),
+        "expected existing sibling label ID in createIssue input, got:\n{created_payload}"
+    );
+
+    let blocked_payload = fs::read_to_string(&blocked_by_log)?;
+    assert!(
+        blocked_payload.contains("I_607") && blocked_payload.contains("I_BLOCKER"),
+        "expected addBlockedBy mutation on originating issue, got:\n{blocked_payload}"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "invoked as a child process by airc_issue_read_reaches_real_gh_inside_rosen_agent_environment"]
 fn child_checks_agent_gh_refusal() -> Result<(), Box<dyn std::error::Error>> {
     let refusal = vcs_refusal("gh").ok_or("expected gh refusal inside Rosen workspace")?;
     assert!(refusal.contains("AIRC"), "unexpected refusal: {refusal}");
@@ -294,6 +446,8 @@ struct Fixture {
     github_404_gh: PathBuf,
     shim_log: PathBuf,
     real_log: PathBuf,
+    create_log: PathBuf,
+    blocked_by_log: PathBuf,
     agent_path: OsString,
 }
 
@@ -336,20 +490,52 @@ fn setup_fixture(root: &Path) -> Result<Fixture, Box<dyn std::error::Error>> {
     fs::write(shim_dir.join("velocity-program"), b"velocity")?;
     let shim_log = root.join("shim-called.log");
     let real_log = root.join("real-called.log");
+    let create_log = root.join("create-issue.log");
+    let blocked_by_log = root.join("add-blocked-by.log");
     let graphql_file = root.join("issue-42.json");
     let held_blockers_file = root.join("held-blockers.json");
     let open_blockers_file = root.join("open-blockers.json");
+    let labels_file = root.join("sibling-labels.json");
+    let sibling_open_file = root.join("sibling-open-issues.json");
+    let repo_id_file = root.join("repo-id.json");
+    let issue_id_file = root.join("issue-id.json");
+    let created_issue_file = root.join("created-issue.json");
+    let add_blocked_by_file = root.join("add-blocked-by.json");
     fs::write(
         &graphql_file,
         r#"{"data":{"repository":{"issue":{"id":"I_42","number":42,"title":"Stub issue","body":"Reached real gh","url":"https://github.com/owner/repo/issues/42","state":"OPEN","author":{"login":"octocat"},"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","closedAt":null,"milestone":null,"labels":{"nodes":[],"totalCount":0},"blockedBy":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}},"comments":{"totalCount":0,"nodes":[]}}}}}"#,
     )?;
     fs::write(
         &held_blockers_file,
-        r#"{"data":{"repository":{"issue":{"id":"I_589","blockedBy":{"nodes":[{"number":191,"repository":{"nameWithOwner":"owner/held-blocker"}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}"#,
+        r#"{"data":{"repository":{"issue":{"id":"I_607","blockedBy":{"nodes":[{"number":191,"repository":{"nameWithOwner":"owner/held-blocker"}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}"#,
     )?;
     fs::write(
         &open_blockers_file,
         r#"{"data":{"repository":{"issues":{"nodes":[{"blockedBy":{"nodes":[{"repository":{"nameWithOwner":"owner/open-blocker"}}]}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}"#,
+    )?;
+    fs::write(
+        &labels_file,
+        r#"{"data":{"repository":{"labels":{"nodes":[{"name":"enhancement","id":"L_ENH"}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}"#,
+    )?;
+    fs::write(
+        &sibling_open_file,
+        r#"{"data":{"repository":{"defaultBranchRef":null,"issues":{"nodes":[{"id":"I_215","number":215,"title":"Fix mirror webhook signature header","body":"Webhook HMAC validation rejects empty payloads with HTTP 400.","url":"https://github.com/owner/sibling/issues/215","state":"OPEN","author":{"login":"octocat"},"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","closedAt":null,"milestone":null,"labels":{"nodes":[{"name":"enhancement"}],"totalCount":1},"issueDependenciesSummary":{"blockedBy":0},"blockedBy":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}"#,
+    )?;
+    fs::write(
+        &repo_id_file,
+        r#"{"data":{"repository":{"id":"R_SIBLING"}}}"#,
+    )?;
+    fs::write(
+        &issue_id_file,
+        r#"{"data":{"repository":{"issue":{"id":"I_BLOCKER"}}}}"#,
+    )?;
+    fs::write(
+        &created_issue_file,
+        r#"{"data":{"createIssue":{"issue":{"id":"I_216","number":216,"title":"Allow desktop session to mint releases-scoped token","body":"Created","url":"https://github.com/owner/sibling/issues/216","state":"OPEN","author":{"login":"octocat"},"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","closedAt":null,"milestone":null,"labels":{"nodes":[{"name":"enhancement"}],"totalCount":1}}}}}"#,
+    )?;
+    fs::write(
+        &add_blocked_by_file,
+        r#"{"data":{"addBlockedBy":{"issue":{"id":"I_607"}}}}"#,
     )?;
 
     write_refusal_stub(
@@ -359,10 +545,20 @@ fn setup_fixture(root: &Path) -> Result<Fixture, Box<dyn std::error::Error>> {
     )?;
     let real_gh = write_real_stub(
         &real_dir,
-        &real_log,
-        &graphql_file,
-        &held_blockers_file,
-        &open_blockers_file,
+        &RealStubFiles {
+            log_file: &real_log,
+            create_log: &create_log,
+            blocked_by_log: &blocked_by_log,
+            graphql_file: &graphql_file,
+            held_blockers_file: &held_blockers_file,
+            open_blockers_file: &open_blockers_file,
+            labels_file: &labels_file,
+            sibling_open_file: &sibling_open_file,
+            repo_id_file: &repo_id_file,
+            issue_id_file: &issue_id_file,
+            created_issue_file: &created_issue_file,
+            add_blocked_by_file: &add_blocked_by_file,
+        },
     )?;
     let local_fail_gh = write_refusal_stub(
         &local_fail_dir,
@@ -388,8 +584,25 @@ fn setup_fixture(root: &Path) -> Result<Fixture, Box<dyn std::error::Error>> {
         github_404_gh,
         shim_log,
         real_log,
+        create_log,
+        blocked_by_log,
         agent_path,
     })
+}
+
+struct RealStubFiles<'a> {
+    log_file: &'a Path,
+    create_log: &'a Path,
+    blocked_by_log: &'a Path,
+    graphql_file: &'a Path,
+    held_blockers_file: &'a Path,
+    open_blockers_file: &'a Path,
+    labels_file: &'a Path,
+    sibling_open_file: &'a Path,
+    repo_id_file: &'a Path,
+    issue_id_file: &'a Path,
+    created_issue_file: &'a Path,
+    add_blocked_by_file: &'a Path,
 }
 
 fn run_child(
@@ -406,7 +619,9 @@ fn run_child(
         .env(BLOCK_VCS_ENV, "1")
         .env("ROSEN_CHANGE", "chg-issue-581-test")
         .env("ROSEN_ENDPOINT", "http://127.0.0.1:1")
-        .env(CHILD_APP_DATA_ENV, &fixture.app_data);
+        .env(CHILD_APP_DATA_ENV, &fixture.app_data)
+        .env(CHILD_CREATE_LOG_ENV, &fixture.create_log)
+        .env(CHILD_BLOCKED_BY_LOG_ENV, &fixture.blocked_by_log);
     match velocity_gh {
         Some(path) => {
             command.env(GH_PROGRAM_ENV, path);
@@ -478,13 +693,7 @@ fn assert_child_ok(label: &str, output: &Output) -> Result<(), Box<dyn std::erro
 }
 
 #[cfg(windows)]
-fn write_real_stub(
-    directory: &Path,
-    log_file: &Path,
-    graphql_file: &Path,
-    held_blockers_file: &Path,
-    open_blockers_file: &Path,
-) -> std::io::Result<PathBuf> {
+fn write_real_stub(directory: &Path, files: &RealStubFiles<'_>) -> std::io::Result<PathBuf> {
     let script = directory.join("gh.cmd");
     let stdin_file = directory.join("stdin.json");
     let body = format!(
@@ -501,36 +710,70 @@ fn write_real_stub(
          exit /b 0\r\n\
          :do_api\r\n\
          findstr \"^\" > \"{stdin}\"\r\n\
+         findstr /C:\"createIssue\" \"{stdin}\" > nul\r\n\
+         if not errorlevel 1 goto do_create_issue\r\n\
+         findstr /C:\"addBlockedBy\" \"{stdin}\" > nul\r\n\
+         if not errorlevel 1 goto do_add_blocked_by\r\n\
+         findstr /C:\"labels(first:100\" \"{stdin}\" > nul\r\n\
+         if not errorlevel 1 goto do_labels\r\n\
+         findstr /C:\"issueDependenciesSummary\" \"{stdin}\" > nul\r\n\
+         if not errorlevel 1 goto do_sibling_open\r\n\
          findstr /C:\"states:OPEN\" \"{stdin}\" > nul\r\n\
          if not errorlevel 1 goto do_open_blockers\r\n\
          findstr /C:\"id blockedBy\" \"{stdin}\" > nul\r\n\
          if not errorlevel 1 goto do_held_blockers\r\n\
+         findstr /C:\"issue(number:$number) {{ id }}\" \"{stdin}\" > nul\r\n\
+         if not errorlevel 1 goto do_issue_id\r\n\
+         findstr /C:\"repository(owner:$owner,name:$name) {{ id }}\" \"{stdin}\" > nul\r\n\
+         if not errorlevel 1 goto do_repo_id\r\n\
          type \"{graphql}\"\r\n\
+         exit /b 0\r\n\
+         :do_create_issue\r\n\
+         type \"{stdin}\" >> \"{create_log}\"\r\n\
+         type \"{created_issue}\"\r\n\
+         exit /b 0\r\n\
+         :do_add_blocked_by\r\n\
+         type \"{stdin}\" >> \"{blocked_by_log}\"\r\n\
+         type \"{add_blocked_by}\"\r\n\
+         exit /b 0\r\n\
+         :do_labels\r\n\
+         type \"{labels}\"\r\n\
+         exit /b 0\r\n\
+         :do_sibling_open\r\n\
+         type \"{sibling_open}\"\r\n\
          exit /b 0\r\n\
          :do_open_blockers\r\n\
          type \"{open_blockers}\"\r\n\
          exit /b 0\r\n\
          :do_held_blockers\r\n\
          type \"{held_blockers}\"\r\n\
+         exit /b 0\r\n\
+         :do_issue_id\r\n\
+         type \"{issue_id}\"\r\n\
+         exit /b 0\r\n\
+         :do_repo_id\r\n\
+         type \"{repo_id}\"\r\n\
          exit /b 0\r\n",
-        log = log_file.display(),
+        log = files.log_file.display(),
         stdin = stdin_file.display(),
-        open_blockers = open_blockers_file.display(),
-        held_blockers = held_blockers_file.display(),
-        graphql = graphql_file.display(),
+        create_log = files.create_log.display(),
+        created_issue = files.created_issue_file.display(),
+        blocked_by_log = files.blocked_by_log.display(),
+        add_blocked_by = files.add_blocked_by_file.display(),
+        labels = files.labels_file.display(),
+        sibling_open = files.sibling_open_file.display(),
+        open_blockers = files.open_blockers_file.display(),
+        held_blockers = files.held_blockers_file.display(),
+        issue_id = files.issue_id_file.display(),
+        repo_id = files.repo_id_file.display(),
+        graphql = files.graphql_file.display(),
     );
     fs::write(&script, body)?;
     Ok(script)
 }
 
 #[cfg(not(windows))]
-fn write_real_stub(
-    directory: &Path,
-    log_file: &Path,
-    graphql_file: &Path,
-    held_blockers_file: &Path,
-    open_blockers_file: &Path,
-) -> std::io::Result<PathBuf> {
+fn write_real_stub(directory: &Path, files: &RealStubFiles<'_>) -> std::io::Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let script = directory.join("gh");
     let stdin_file = directory.join("stdin.json");
@@ -546,6 +789,24 @@ fn write_real_stub(
          fi\n\
          if [ \"$1\" = \"api\" ]; then\n\
            cat > \"{stdin}\"\n\
+           if grep -q \"createIssue\" \"{stdin}\"; then\n\
+             cat \"{stdin}\" >> \"{create_log}\"\n\
+             cat \"{created_issue}\"\n\
+             exit 0\n\
+           fi\n\
+           if grep -q \"addBlockedBy\" \"{stdin}\"; then\n\
+             cat \"{stdin}\" >> \"{blocked_by_log}\"\n\
+             cat \"{add_blocked_by}\"\n\
+             exit 0\n\
+           fi\n\
+           if grep -q \"labels(first:100\" \"{stdin}\"; then\n\
+             cat \"{labels}\"\n\
+             exit 0\n\
+           fi\n\
+           if grep -q \"issueDependenciesSummary\" \"{stdin}\"; then\n\
+             cat \"{sibling_open}\"\n\
+             exit 0\n\
+           fi\n\
            if grep -q \"states:OPEN\" \"{stdin}\"; then\n\
              cat \"{open_blockers}\"\n\
              exit 0\n\
@@ -554,15 +815,31 @@ fn write_real_stub(
              cat \"{held_blockers}\"\n\
              exit 0\n\
            fi\n\
+           if grep -q \"issue(number:\\$number) {{ id }}\" \"{stdin}\"; then\n\
+             cat \"{issue_id}\"\n\
+             exit 0\n\
+           fi\n\
+           if grep -q \"repository(owner:\\$owner,name:\\$name) {{ id }}\" \"{stdin}\"; then\n\
+             cat \"{repo_id}\"\n\
+             exit 0\n\
+           fi\n\
            cat \"{graphql}\"\n\
            exit 0\n\
          fi\n\
          exit 1\n",
-        log = log_file.display(),
+        log = files.log_file.display(),
         stdin = stdin_file.display(),
-        open_blockers = open_blockers_file.display(),
-        held_blockers = held_blockers_file.display(),
-        graphql = graphql_file.display(),
+        create_log = files.create_log.display(),
+        created_issue = files.created_issue_file.display(),
+        blocked_by_log = files.blocked_by_log.display(),
+        add_blocked_by = files.add_blocked_by_file.display(),
+        labels = files.labels_file.display(),
+        sibling_open = files.sibling_open_file.display(),
+        open_blockers = files.open_blockers_file.display(),
+        held_blockers = files.held_blockers_file.display(),
+        issue_id = files.issue_id_file.display(),
+        repo_id = files.repo_id_file.display(),
+        graphql = files.graphql_file.display(),
     );
     fs::write(&script, body)?;
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700))?;

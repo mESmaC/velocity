@@ -222,6 +222,19 @@ pub fn issue_skip_reason(
     claimed: &HashSet<String>,
     now: u64,
 ) -> Option<SkippedIssue> {
+    issue_skip_reason_in_projects(&[], project, repository, issue, claimed, now)
+}
+
+/// Like [`issue_skip_reason`], also treating cross-project blockers whose Rosen land passed
+/// integration in another registered project as satisfied (#608).
+pub fn issue_skip_reason_in_projects(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    claimed: &HashSet<String>,
+    now: u64,
+) -> Option<SkippedIssue> {
     if issue.state != IssueState::Open {
         return None;
     }
@@ -270,7 +283,8 @@ pub fn issue_skip_reason(
             reason: format!("overlap: {}", wait.reason()),
         });
     }
-    let (named_blockers, unnamed_blockers) = unsatisfied_blockers(project, repository, issue);
+    let (named_blockers, unnamed_blockers) =
+        unsatisfied_blockers_in_projects(projects, project, repository, issue);
     if unnamed_blockers > 0 || !named_blockers.is_empty() {
         let blockers = if named_blockers.is_empty() {
             format!("{unnamed_blockers} open blocker(s)")
@@ -392,10 +406,12 @@ pub fn summarize_skipped_issues(skipped: &[SkippedIssue], limit: usize) -> Strin
     }
 }
 
-/// Unsatisfied open blockers for `issue` in `project` (#529).
-/// A blocker whose Rosen land Velocity has confirmed integration-green is satisfied for
-/// dispatch even while GitHub still lists it open during the after-land review window.
-fn unsatisfied_blockers<'a>(
+/// Unsatisfied open blockers for `issue` in `project` (#529, #608).
+/// A blocker whose Rosen land Velocity has confirmed integration-green in `project` or any
+/// registered sibling project in `projects` is satisfied for dispatch even while the issue
+/// host still lists it open during the after-land review window.
+fn unsatisfied_blockers_in_projects<'a>(
+    projects: &[ProjectItem],
     project: &ProjectItem,
     repository: &str,
     issue: &'a GitHubIssue,
@@ -407,12 +423,17 @@ fn unsatisfied_blockers<'a>(
         .open_blockers
         .iter()
         .map(String::as_str)
-        .filter(|blocker| !blocker_satisfied(project, repository, blocker))
+        .filter(|blocker| !blocker_satisfied_in_projects(projects, project, repository, blocker))
         .collect();
     (named, unnamed)
 }
 
-fn blocker_satisfied(project: &ProjectItem, repository: &str, blocker: &str) -> bool {
+fn blocker_satisfied_in_projects(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    blocker: &str,
+) -> bool {
     let Some(reference) = velocity_core::issue_dependencies::IssueReference::parse(blocker) else {
         return false;
     };
@@ -421,6 +442,9 @@ fn blocker_satisfied(project: &ProjectItem, repository: &str, blocker: &str) -> 
         reference.number(),
     );
     project.rosen_issue_integration_green(&identity)
+        || projects.iter().any(|candidate| {
+            candidate.id != project.id && candidate.rosen_issue_integration_green(&identity)
+        })
 }
 
 /// Whether `issue` still waits on any open blocker not yet confirmed integration-green (#529).
@@ -429,7 +453,17 @@ pub fn has_unsatisfied_blockers(
     repository: &str,
     issue: &GitHubIssue,
 ) -> bool {
-    let (named, unnamed) = unsatisfied_blockers(project, repository, issue);
+    has_unsatisfied_blockers_in_projects(&[], project, repository, issue)
+}
+
+/// Like [`has_unsatisfied_blockers`], also checking sibling projects in `projects` (#608).
+pub fn has_unsatisfied_blockers_in_projects(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+) -> bool {
+    let (named, unnamed) = unsatisfied_blockers_in_projects(projects, project, repository, issue);
     unnamed > 0 || !named.is_empty()
 }
 
@@ -459,7 +493,19 @@ pub fn actionable(issue: &GitHubIssue) -> bool {
 /// Automatic-work eligibility in `project`, treating blockers whose Rosen land is
 /// confirmed integration-green as satisfied even while still open for review (#529).
 pub fn actionable_in_project(project: &ProjectItem, repository: &str, issue: &GitHubIssue) -> bool {
-    !has_unsatisfied_blockers(project, repository, issue) && actionable_without_blockers(issue)
+    actionable_in_projects(&[], project, repository, issue)
+}
+
+/// Like [`actionable_in_project`], also checking sibling projects in `projects` for
+/// integration-green cross-project blockers (#608).
+pub fn actionable_in_projects(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+) -> bool {
+    !has_unsatisfied_blockers_in_projects(projects, project, repository, issue)
+        && actionable_without_blockers(issue)
 }
 
 fn needs_owner_decision(text: &str) -> bool {
@@ -489,9 +535,21 @@ pub fn dispatchable_issue(
     issue: &GitHubIssue,
     claimed: &HashSet<String>,
 ) -> bool {
+    dispatchable_issue_in_projects(&[], project, repository, issue, claimed)
+}
+
+/// Like [`dispatchable_issue`], also checking sibling projects in `projects` for
+/// integration-green cross-project blockers (#608).
+pub fn dispatchable_issue_in_projects(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    claimed: &HashSet<String>,
+) -> bool {
     let identity = ThreadIssue::new(repository.into(), issue.number);
     let version = IssueVersion::from_github(issue);
-    actionable_in_project(project, repository, issue)
+    actionable_in_projects(projects, project, repository, issue)
         && !claimed.contains(&format!("issue:{}", issue.number))
         && issue_thread(project, &identity).is_none()
         && !project.rosen_issue_completed_for_version(&identity, version)
@@ -517,9 +575,23 @@ pub fn ordered_issues(
     claimed: &HashSet<String>,
     unblocks: &BTreeMap<u32, u32>,
 ) -> Vec<(GitHubIssue, u32)> {
+    ordered_issues_in_projects(&[], project, repository, issues, claimed, unblocks)
+}
+
+/// Like [`ordered_issues`], also checking sibling projects in `projects` (#608).
+pub fn ordered_issues_in_projects(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issues: &[GitHubIssue],
+    claimed: &HashSet<String>,
+    unblocks: &BTreeMap<u32, u32>,
+) -> Vec<(GitHubIssue, u32)> {
     let mut ready: Vec<_> = issues
         .iter()
-        .filter(|issue| dispatchable_issue(project, repository, issue, claimed))
+        .filter(|issue| {
+            dispatchable_issue_in_projects(projects, project, repository, issue, claimed)
+        })
         .map(|issue| {
             let unblocked = unblocks.get(&issue.number).copied().unwrap_or(0);
             (issue.clone(), unblocked)
@@ -560,6 +632,27 @@ pub fn ordered_work(
     issues_known: bool,
     unblocks: &BTreeMap<u32, u32>,
 ) -> Vec<DispatchWork> {
+    ordered_work_in_projects(
+        &[],
+        project,
+        repository,
+        issues,
+        claimed,
+        issues_known,
+        unblocks,
+    )
+}
+
+/// Like [`ordered_work`], also checking sibling projects in `projects` (#608).
+pub fn ordered_work_in_projects(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issues: &[GitHubIssue],
+    claimed: &HashSet<String>,
+    issues_known: bool,
+    unblocks: &BTreeMap<u32, u32>,
+) -> Vec<DispatchWork> {
     if !project.spec_locked || project.version_control != VersionControl::Rosen {
         return Vec::new();
     }
@@ -573,7 +666,7 @@ pub fn ordered_work(
     let mut work: Vec<_> = user.into_iter().cloned().map(DispatchWork::Task).collect();
     if issues_known {
         work.extend(
-            ordered_issues(project, repository, issues, claimed, unblocks)
+            ordered_issues_in_projects(projects, project, repository, issues, claimed, unblocks)
                 .into_iter()
                 .map(|(issue, unblocked)| DispatchWork::Issue(Box::new(issue), unblocked)),
         );
@@ -942,6 +1035,102 @@ mod tests {
             Some(SkipCategory::Claimed)
         );
         assert!(issue_skip_reason(project, "owner/repo", &sample_issue(42), &claimed, 0).is_none());
+
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#608): an issue blocked by a sibling project's issue must show "blocked by <repo>#N"
+    // and return to dispatch when that sibling issue passes integration (or closes) across save/load.
+    #[test]
+    fn cross_project_blocker_waits_and_returns_when_sibling_passes_integration()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory =
+            std::env::temp_dir().join(format!("velocity-dispatch-608-{}", uuid::Uuid::new_v4()));
+        let mut home = ProjectItem::new(1, "velocity".into(), "Z:/velocity".into());
+        home.version_control = VersionControl::Rosen;
+        home.spec_locked = true;
+        home.github_remote = Some("mESmaC/velocity".into());
+
+        let mut sibling = ProjectItem::new(2, "collapse.sh".into(), "Z:/collapse".into());
+        sibling.version_control = VersionControl::Rosen;
+        sibling.spec_locked = true;
+        sibling.github_remote = Some("mESmaC/collapse.sh".into());
+        sibling
+            .rosen_work_items
+            .push(velocity_core::work_pool::WorkItem {
+                key: velocity_core::work_pool::WorkKey::issue("mESmaC/collapse.sh", 216),
+                title: "Desktop session release token".into(),
+                thread_identifier: None,
+                change: Some("chg-216".into()),
+                status: velocity_core::work_pool::WorkStatus::Landed,
+                claimed_at: None,
+                updated_at: None,
+                landed_at: None,
+                green_at: None,
+                reverted_at: None,
+                landed_commit: Some("abc1234".into()),
+                revert_reason: None,
+            });
+
+        std::fs::create_dir_all(&directory)?;
+        let mut persisted = velocity_store::PersistedState::default();
+        persisted.projects.push(home);
+        persisted.projects.push(sibling);
+        std::fs::write(
+            directory.join(velocity_store::STATE_FILE_NAME),
+            serde_json::to_vec(&persisted)?,
+        )?;
+        let loaded = StateStore::load_or_default(&directory)?;
+        let projects = &loaded.state().projects;
+        let home_project = loaded.project(1).ok_or("home project missing")?;
+        let claimed = HashSet::new();
+
+        let mut blocked = sample_issue(607);
+        blocked.open_blocker_count = 1;
+        blocked.open_blockers = vec!["mESmaC/collapse.sh#216".into()];
+
+        // While the sibling issue has not passed integration, home issue waits with blocked_by reason.
+        assert!(!dispatchable_issue_in_projects(
+            projects,
+            home_project,
+            "mESmaC/velocity",
+            &blocked,
+            &claimed,
+        ));
+        let skipped = issue_skip_reason_in_projects(
+            projects,
+            home_project,
+            "mESmaC/velocity",
+            &blocked,
+            &claimed,
+            0,
+        )
+        .ok_or("expected blocked issue to be skipped")?;
+        assert_eq!(skipped.category, SkipCategory::Blocker);
+        assert_eq!(skipped.reason, "blocked by mESmaC/collapse.sh#216");
+
+        // Once the sibling issue reaches Green in its own project, home issue returns to dispatch.
+        let mut green_projects = projects.clone();
+        green_projects[1].rosen_work_items[0].status = velocity_core::work_pool::WorkStatus::Green;
+        assert!(dispatchable_issue_in_projects(
+            &green_projects,
+            &green_projects[0],
+            "mESmaC/velocity",
+            &blocked,
+            &claimed,
+        ));
+        assert!(
+            issue_skip_reason_in_projects(
+                &green_projects,
+                &green_projects[0],
+                "mESmaC/velocity",
+                &blocked,
+                &claimed,
+                0,
+            )
+            .is_none()
+        );
 
         std::fs::remove_dir_all(directory)?;
         Ok(())

@@ -196,6 +196,23 @@ impl Event {
         ))
     }
 
+    /// `issue`: `<actor> filed <owner/name>#<n> <title>` when filing in a sibling project (#608).
+    pub fn issue_filed_in(
+        actor_nick: &str,
+        repository: &str,
+        number: u32,
+        title: &str,
+    ) -> Result<Self, Error> {
+        require_text(repository)?;
+        require_text(title)?;
+        let actor = nick(actor_nick, NICK_LIMIT);
+        Ok(Self::new(
+            "issue",
+            &actor,
+            &format!("filed {repository}#{number} {}", one_line(title)),
+        ))
+    }
+
     /// `task`: `<actor> added to the Task List: <title>` (F3, F8, F14).
     pub fn task_added(actor_nick: &str, title: &str) -> Result<Self, Error> {
         require_text(title)?;

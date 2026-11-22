@@ -176,30 +176,51 @@ fn find_configured_project_repository(
     app_data: &Path,
     requested_name: &str,
 ) -> Result<Option<(IssueHost, RepositoryName)>, IssueActivityFailure> {
+    Ok(find_configured_project(app_data, requested_name)?
+        .map(|(_, host, repository)| (host, repository)))
+}
+
+fn find_configured_project(
+    app_data: &Path,
+    requested_name: &str,
+) -> Result<Option<(ProjectItem, IssueHost, RepositoryName)>, IssueActivityFailure> {
     let projects = velocity_store::read_all_project_snapshots(app_data, false)
         .map_err(|error| IssueActivityFailure::Local(Error::Invalid(error.to_string())))?;
     for item in projects {
-        let effective_host = item.effective_issue_host();
-        if let Some(collapse) = item
-            .collapse_repository
-            .as_deref()
-            .and_then(|remote| RepositoryName::parse(remote).ok())
-            && collapse.full_name().eq_ignore_ascii_case(requested_name)
-        {
-            return Ok(Some((effective_host, collapse)));
-        }
-        let github = item
-            .github_remote
-            .as_deref()
-            .and_then(|remote| RepositoryName::parse(remote).ok())
-            .or_else(|| velocity_github::checkout_repository(Path::new(&item.repository_path)));
-        if let Some(repository) = github
-            && repository.full_name().eq_ignore_ascii_case(requested_name)
-        {
-            return Ok(Some((effective_host, repository)));
+        if let Some((host, repository)) = project_matches_repository(&item, requested_name) {
+            return Ok(Some((item, host, repository)));
         }
     }
     Ok(None)
+}
+
+fn project_matches_repository(
+    item: &ProjectItem,
+    requested_name: &str,
+) -> Option<(IssueHost, RepositoryName)> {
+    let effective_host = item.effective_issue_host();
+    let collapse = item
+        .collapse_repository
+        .as_deref()
+        .and_then(|remote| RepositoryName::parse(remote).ok());
+    let github = item
+        .github_remote
+        .as_deref()
+        .and_then(|remote| RepositoryName::parse(remote).ok())
+        .or_else(|| velocity_github::checkout_repository(Path::new(&item.repository_path)));
+    let matched = collapse
+        .as_ref()
+        .filter(|repo| repo.full_name().eq_ignore_ascii_case(requested_name))
+        .or_else(|| {
+            github
+                .as_ref()
+                .filter(|repo| repo.full_name().eq_ignore_ascii_case(requested_name))
+        })?;
+    let canonical = match effective_host {
+        IssueHost::Collapse => collapse.as_ref().unwrap_or(matched),
+        IssueHost::GitHub => github.as_ref().unwrap_or(matched),
+    };
+    Some((effective_host, canonical.clone()))
 }
 
 fn find_blocker_repository(
@@ -208,7 +229,12 @@ fn find_blocker_repository(
     read: &IssueRead,
     requested_name: &str,
 ) -> Result<Option<RepositoryName>, IssueActivityFailure> {
-    for issue_number in caller_issue_numbers(project, client.repository(), read) {
+    for issue_number in caller_issue_numbers(
+        project,
+        client.repository(),
+        read.member.as_deref(),
+        &read.held_issues,
+    ) {
         let blockers = match client.linked_blocker_repositories(issue_number) {
             Ok(repositories) => repositories,
             Err(GitHubCommandError::Missing(_)) => continue,
@@ -227,18 +253,15 @@ fn find_blocker_repository(
 fn caller_issue_numbers(
     project: &ProjectItem,
     home_repository: &str,
-    read: &IssueRead,
+    member: Option<&str>,
+    held_issues: &[u32],
 ) -> BTreeSet<u32> {
-    let mut issues: BTreeSet<u32> = read
-        .held_issues
+    let mut issues: BTreeSet<u32> = held_issues
         .iter()
         .copied()
         .filter(|number| *number > 0)
         .collect();
-    let Some(thread_id) = read
-        .member
-        .as_deref()
-        .and_then(velocity_core::thread_titles::thread_id_from_member)
+    let Some(thread_id) = member.and_then(velocity_core::thread_titles::thread_id_from_member)
     else {
         return issues;
     };
@@ -334,6 +357,17 @@ fn create_issue(
     let blockers = velocity_core::issue_dependencies::parse_blockers(create.blocked_by)
         .map_err(|error| IssueActivityFailure::External(Error::Invalid(error)))?;
     let thread = velocity_core::thread_titles::thread_id_from_member(create.member);
+    if let Some((sibling_project, sibling_host, sibling_repo)) =
+        resolve_create_target(app_data, client, create.repository.as_deref())?
+    {
+        return create_sibling_issue(
+            app_data,
+            project,
+            client,
+            (&sibling_project, sibling_host, &sibling_repo),
+            (&create, &blockers, thread),
+        );
+    }
     let byline = issue_byline(project.id, thread, Some(create.nick));
     let draft = AgentIssueDraft {
         title: create.title,
@@ -341,13 +375,183 @@ fn create_issue(
         labels: create.labels,
         blocked_by: &blockers,
         byline: &byline,
+        existing_labels_only: false,
     };
     let outcome = client
         .create_agent_issue(&draft, |texts| {
             mentioned_issue_paths(app_data, project, texts)
         })
         .map_err(IssueActivityFailure::from_github)?;
-    Ok(match outcome {
+    Ok(format_create_outcome(outcome))
+}
+
+fn resolve_create_target(
+    app_data: &Path,
+    client: &IssueClient,
+    raw_repository: Option<&str>,
+) -> Result<Option<(ProjectItem, IssueHost, RepositoryName)>, IssueActivityFailure> {
+    let Some(raw_repository) = raw_repository else {
+        return Ok(None);
+    };
+    let requested = RepositoryName::parse(raw_repository)
+        .map_err(|error| IssueActivityFailure::External(Error::Invalid(error.to_string())))?;
+    let requested_name = requested.full_name();
+    if requested_name.eq_ignore_ascii_case(client.repository()) {
+        return Ok(None);
+    }
+    if let Some(configured) = find_configured_project(app_data, &requested_name)? {
+        return Ok(Some(configured));
+    }
+    Err(IssueActivityFailure::External(Error::Invalid(format!(
+        "Repository `{requested_name}` is not allowed for issue_create. Only this project's repository (`{}`) and repositories of projects registered in Velocity may be used.",
+        client.repository()
+    ))))
+}
+
+fn create_sibling_issue(
+    app_data: &Path,
+    project: &ProjectItem,
+    client: &IssueClient,
+    (sibling_project, sibling_host, sibling_repo): (&ProjectItem, IssueHost, &RepositoryName),
+    (create, blockers, thread): (
+        &IssueCreate<'_>,
+        &[velocity_core::issue_dependencies::IssueReference],
+        Option<u32>,
+    ),
+) -> Result<Value, IssueActivityFailure> {
+    let origin_issues = caller_issue_numbers(
+        project,
+        client.repository(),
+        Some(create.member),
+        &create.held_issues,
+    );
+    let byline = sibling_issue_byline(
+        project.id,
+        client.repository(),
+        &origin_issues,
+        thread,
+        Some(create.nick),
+    );
+    let sibling_client = IssueClient::for_host(
+        Path::new(&sibling_project.repository_path),
+        sibling_host,
+        &sibling_repo.full_name(),
+    )
+    .map_err(IssueActivityFailure::from_github)?;
+    let draft = AgentIssueDraft {
+        title: create.title,
+        body: create.body,
+        labels: create.labels,
+        blocked_by: blockers,
+        byline: &byline,
+        existing_labels_only: true,
+    };
+    let outcome = sibling_client
+        .create_agent_issue(&draft, |texts| {
+            mentioned_issue_paths(app_data, sibling_project, texts)
+        })
+        .map_err(IssueActivityFailure::from_github)?;
+    let target_number = match &outcome {
+        AgentIssueOutcome::Filed { issue, .. } | AgentIssueOutcome::Duplicate { issue, .. } => {
+            issue.number
+        }
+    };
+    let (linked_origin_issues, link_warning) =
+        link_origin_blockers(client, &sibling_client, &origin_issues, target_number);
+    let mut reply = format_create_outcome(outcome);
+    reply["repository"] = json!(sibling_client.repository());
+    reply["cross_repository"] = json!(true);
+    if !linked_origin_issues.is_empty() {
+        reply["blocked_origin_issues"] = json!(linked_origin_issues);
+        reply["origin_blocker"] = json!(format!("{}#{target_number}", sibling_client.repository()));
+    }
+    if let Some(warning) = link_warning {
+        reply["origin_link_warning"] = json!(warning);
+    }
+    Ok(reply)
+}
+
+fn link_origin_blockers(
+    home_client: &IssueClient,
+    sibling_client: &IssueClient,
+    origin_issues: &BTreeSet<u32>,
+    sibling_number: u32,
+) -> (Vec<u32>, Option<String>) {
+    if origin_issues.is_empty() {
+        return (Vec::new(), None);
+    }
+    let sibling_repo = sibling_client.repository();
+    if home_client.host() != sibling_client.host() {
+        return (
+            Vec::new(),
+            Some(format!(
+                "Recorded {sibling_repo}#{sibling_number} on {}, while this project uses {}; native cross-host blocked_by linking is unavailable.",
+                host_label(sibling_client.host()),
+                host_label(home_client.host()),
+            )),
+        );
+    }
+    let Some(blocker_ref) =
+        velocity_core::issue_dependencies::IssueReference::new(Some(sibling_repo), sibling_number)
+    else {
+        return (Vec::new(), None);
+    };
+    let mut linked = Vec::new();
+    let mut warnings = Vec::new();
+    for &origin_number in origin_issues {
+        match home_client.link_blockers(origin_number, std::slice::from_ref(&blocker_ref)) {
+            Ok(_) => linked.push(origin_number),
+            Err(error) => warnings.push(format!(
+                "Could not link {sibling_repo}#{sibling_number} as blocked_by on #{origin_number}: {error}"
+            )),
+        }
+    }
+    let warning = (!warnings.is_empty()).then(|| warnings.join("; "));
+    (linked, warning)
+}
+
+fn host_label(host: IssueHost) -> &'static str {
+    match host {
+        IssueHost::GitHub => "GitHub",
+        IssueHost::Collapse => "Collapse",
+    }
+}
+
+fn sibling_issue_byline(
+    project: u32,
+    origin_repository: &str,
+    origin_issues: &BTreeSet<u32>,
+    thread: Option<u32>,
+    nick: Option<&str>,
+) -> String {
+    let agent = nick.map_or_else(
+        || "Reported by an agent".into(),
+        |nick| format!("Reported by an agent (`{nick}`)"),
+    );
+    let mut parts = vec![agent];
+    if !origin_issues.is_empty() {
+        let refs: Vec<String> = origin_issues
+            .iter()
+            .map(|number| format!("{origin_repository}#{number}"))
+            .collect();
+        let label = if refs.len() == 1 {
+            "Originating issue"
+        } else {
+            "Originating issues"
+        };
+        parts.push(format!("{label}: {}", refs.join(", ")));
+    } else {
+        parts.push(format!("Originating project: {origin_repository}"));
+    }
+    if let Some(thread) = thread {
+        let link = format!("velocity://thread/{project}/{thread}");
+        parts.push(format!("[Thread {thread}]({link}) · `{link}`"));
+    }
+    parts.join(" · ")
+}
+
+fn format_create_outcome(outcome: AgentIssueOutcome) -> Value {
+    match outcome {
         AgentIssueOutcome::Filed {
             issue,
             blocked_by,
@@ -379,7 +583,7 @@ fn create_issue(
             },
             "reason": reason,
         }),
-    })
+    }
 }
 
 fn post_update(

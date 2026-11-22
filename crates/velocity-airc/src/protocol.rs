@@ -136,7 +136,7 @@ fn instructions(
         "Use task_add, task_update and task_delete only when the user explicitly asks you to add, change or remove Task List items. Otherwise file issues."
     };
     let issue_rule = if has_issue_tools {
-        " Use issue_read to inspect any issue in this project's repository (or pass repository as owner/name for configured Velocity projects and blocked_by dependencies) and issue_create to file spec questions, contradictions or findings on this project's repository."
+        " Use issue_read to inspect any issue in this project's repository (or pass repository as owner/name for configured Velocity projects and blocked_by dependencies) and issue_create to file spec questions, contradictions or findings on this project's repository (or pass repository as owner/name for another project registered in Velocity, which also links the filed or matching issue as blocked_by on your held issue)."
     } else {
         ""
     };

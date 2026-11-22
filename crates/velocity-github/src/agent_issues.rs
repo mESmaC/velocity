@@ -60,13 +60,16 @@ pub struct IssueDetail {
     pub comments: Vec<IssueCommentEntry>,
 }
 
-/// An agent's request to file a new issue on the project's mirror repository.
+/// An agent's request to file a new issue on the project's mirror repository or a registered sibling project.
 pub struct AgentIssueDraft<'a> {
     pub title: &'a str,
     pub body: &'a str,
     pub labels: &'a [String],
     pub blocked_by: &'a [IssueReference],
     pub byline: &'a str,
+    /// When true (sibling-project filing, #608), labels must already exist in the target
+    /// repository and no auto-labels are created there.
+    pub existing_labels_only: bool,
 }
 
 /// Outcome of `issue_create`: either a new issue or an existing matching open issue (#471).
@@ -216,7 +219,7 @@ impl IssueClient {
     }
 
     /// Files an agent issue on the project's configured issue host after checking for
-    /// duplicates (#471) and linking any `blocked_by` issues as dependencies (#511, #589).
+    /// duplicates (#471) and linking any `blocked_by` issues as dependencies (#511, #589, #608).
     pub fn create_agent_issue(
         &self,
         draft: &AgentIssueDraft<'_>,
@@ -228,10 +231,11 @@ impl IssueClient {
                 collapse,
                 (title, body, &full_body, &labels),
                 draft.blocked_by,
+                draft.existing_labels_only,
                 mentioned_paths,
             );
         }
-        let label_ids = self.resolve_agent_labels(&labels)?;
+        let label_ids = self.resolve_agent_labels(&labels, !draft.existing_labels_only)?;
         // Refuse invalid blockers before running the duplicate scan or creating the issue (#511).
         let blockers = self.resolve_blockers(draft.blocked_by)?;
         let blocked_by: Vec<String> = blockers
@@ -245,9 +249,10 @@ impl IssueClient {
         let open = self.open_issues_fresh()?;
         if let Some(existing) = find_matching_open_issue(title, body, &open, mentioned_paths) {
             return Ok(AgentIssueOutcome::Duplicate {
-                reason: format!(
-                    "Open issue #{} already matches this report. Read it with issue_read instead of opening a duplicate.",
-                    existing.number
+                reason: duplicate_reason(
+                    self.repository(),
+                    existing.number,
+                    draft.existing_labels_only,
                 ),
                 issue: existing.clone(),
             });
@@ -275,9 +280,10 @@ impl IssueClient {
         collapse: &crate::collapse_issues::CollapseIssueTransport,
         (title, body, full_body, labels): (&str, &str, &str, &[String]),
         raw_blockers: &[IssueReference],
+        existing_labels_only: bool,
         mentioned_paths: impl FnOnce(&[(&str, &str)]) -> Vec<BTreeSet<String>>,
     ) -> Result<AgentIssueOutcome, GitHubCommandError> {
-        let resolved_labels = resolve_collapse_labels(collapse, labels)?;
+        let resolved_labels = resolve_collapse_labels(collapse, labels, !existing_labels_only)?;
         let blocked_by = collapse.validate_blockers(raw_blockers)?;
         let lock = agent_filing_lock(&format!("collapse:{}", self.repository()))?;
         let _guard = lock
@@ -286,10 +292,7 @@ impl IssueClient {
         let open = collapse.open_issues_fresh()?;
         if let Some(existing) = find_matching_open_issue(title, body, &open, mentioned_paths) {
             return Ok(AgentIssueOutcome::Duplicate {
-                reason: format!(
-                    "Open issue #{} already matches this report. Read it with issue_read instead of opening a duplicate.",
-                    existing.number
-                ),
+                reason: duplicate_reason(self.repository(), existing.number, existing_labels_only),
                 issue: existing.clone(),
             });
         }
@@ -335,30 +338,36 @@ impl IssueClient {
             .collect())
     }
 
-    fn resolve_agent_labels(&self, names: &[String]) -> Result<Vec<String>, GitHubCommandError> {
+    fn resolve_agent_labels(
+        &self,
+        names: &[String],
+        auto_create: bool,
+    ) -> Result<Vec<String>, GitHubCommandError> {
         if names.is_empty() {
             return Ok(Vec::new());
         }
         let mut available = self.label_identifiers()?;
-        let auto_labels = [
-            SPEC_QUESTION_LABEL,
-            TRACKING_LABEL,
-            BLOCKED_UPSTREAM_LABEL,
-            HOLD_LABEL,
-        ];
-        let mut ensured = false;
-        for auto in auto_labels {
-            if names.iter().any(|name| name.eq_ignore_ascii_case(auto))
-                && !available
-                    .keys()
-                    .any(|label| label.eq_ignore_ascii_case(auto))
-            {
-                self.ensure_repository_label(auto)?;
-                ensured = true;
+        if auto_create {
+            let auto_labels = [
+                SPEC_QUESTION_LABEL,
+                TRACKING_LABEL,
+                BLOCKED_UPSTREAM_LABEL,
+                HOLD_LABEL,
+            ];
+            let mut ensured = false;
+            for auto in auto_labels {
+                if names.iter().any(|name| name.eq_ignore_ascii_case(auto))
+                    && !available
+                        .keys()
+                        .any(|label| label.eq_ignore_ascii_case(auto))
+                {
+                    self.ensure_repository_label(auto)?;
+                    ensured = true;
+                }
             }
-        }
-        if ensured {
-            available = self.label_identifiers()?;
+            if ensured {
+                available = self.label_identifiers()?;
+            }
         }
         let mut identifiers = Vec::new();
         for name in names {
@@ -398,19 +407,22 @@ impl IssueClient {
 fn resolve_collapse_labels(
     collapse: &crate::collapse_issues::CollapseIssueTransport,
     names: &[String],
+    auto_create: bool,
 ) -> Result<Vec<String>, GitHubCommandError> {
     if names.is_empty() {
         return Ok(Vec::new());
     }
-    let auto_labels = [
-        SPEC_QUESTION_LABEL,
-        TRACKING_LABEL,
-        BLOCKED_UPSTREAM_LABEL,
-        HOLD_LABEL,
-    ];
-    for auto in auto_labels {
-        if names.iter().any(|name| name.eq_ignore_ascii_case(auto)) {
-            collapse.ensure_label(auto)?;
+    if auto_create {
+        let auto_labels = [
+            SPEC_QUESTION_LABEL,
+            TRACKING_LABEL,
+            BLOCKED_UPSTREAM_LABEL,
+            HOLD_LABEL,
+        ];
+        for auto in auto_labels {
+            if names.iter().any(|name| name.eq_ignore_ascii_case(auto)) {
+                collapse.ensure_label(auto)?;
+            }
         }
     }
     let available: BTreeMap<String, String> = collapse
@@ -431,6 +443,18 @@ fn resolve_collapse_labels(
         }
     }
     Ok(resolved)
+}
+
+fn duplicate_reason(repository: &str, number: u32, cross_repository: bool) -> String {
+    if cross_repository {
+        format!(
+            "Open issue {repository}#{number} already matches this report. Read it with issue_read (repository: {repository:?}) instead of opening a duplicate."
+        )
+    } else {
+        format!(
+            "Open issue #{number} already matches this report. Read it with issue_read instead of opening a duplicate."
+        )
+    }
 }
 
 fn issue_detail_query(comment_limit: usize, variables: Value) -> (String, Value) {
@@ -497,10 +521,13 @@ fn validate_draft<'a>(
         }
         labels.push(trimmed.to_owned());
     }
-    let full_body = if draft.byline.trim().is_empty() {
+    let byline = draft.byline.trim();
+    let full_body = if byline.is_empty() {
         body.to_owned()
+    } else if byline.starts_with("Reported by ") {
+        format!("{body}\n\n{byline}")
     } else {
-        format!("{body}\n\nFiled by {}.", draft.byline.trim())
+        format!("{body}\n\nFiled by {byline}.")
     };
     if full_body.len() > MAX_BODY_BYTES {
         return Err(GitHubCommandError::Invalid(
