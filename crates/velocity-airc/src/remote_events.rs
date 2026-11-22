@@ -357,6 +357,17 @@ fn ledger_entry(stored: rosen_client::protocol::channel::LedgerEntry) -> Result<
             .and_then(|text| serde_json::from_str::<crate::remote::DiscoveryEnvelope>(text).ok())
     {
         record.text = discovery.text;
+        if stored.member.is_none() {
+            if let Some(member) = discovery.member.filter(|value| !value.trim().is_empty()) {
+                record.member = member;
+            }
+            if let Some(nick) = discovery.nick.filter(|value| !value.trim().is_empty()) {
+                record.nick = nick;
+            }
+            if let Some(change) = discovery.change.filter(|value| !value.trim().is_empty()) {
+                record.change = Some(change);
+            }
+        }
         if record.velocity_issue.is_none() {
             record.velocity_issue = discovery.velocity_issue;
         }
@@ -1347,5 +1358,157 @@ fn copy_rows(project_rows: &mut [OverlapDetail], targeted_rows: &[OverlapDetail]
         if !targeted_row.symbols.is_empty() {
             project_row.symbols.clone_from(&targeted_row.symbols);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ledger_entry;
+    use crate::Channel;
+    use crate::remote::{DISCOVERY_PREFIX, RECORD_PREFIX, Remote};
+    use rosen_client::protocol::channel::{Author, Ledger, LedgerEntry};
+
+    // Risk (#667): automatic post-land failure discoveries must be stored in Rosen's native
+    // `discovery` ledger with the `velocity-airc/discovery/v1:` envelope that Rosen's ledger
+    // forwarder unwraps (never `past_work` / `velocity-airc/v1:`), while preserving `nick`,
+    // `member`, `change`, and unprefixed event text on decode.
+    #[test]
+    fn automatic_post_land_discovery_uses_native_discovery_ledger_and_round_trips()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let remote = Remote::new(std::path::Path::new("."), "tcp://127.0.0.1:1".into());
+        let text = "Post-land integration test failure (session 6 · change zznnsxsw · commit a2c2ebc7b50c · fix forward): Integration build failed";
+        let change_id = "zznnsxswabcdefghijklmnopqrstuvwx";
+        let mut record = remote.record("discovery", "velocity", "velocity", text);
+        record.change = Some(change_id.into());
+
+        let request = remote.discovery_append_request(&record)?;
+        assert_eq!(request.ledger, Ledger::Discovery);
+        assert_eq!(request.author, Author::User);
+        assert_eq!(request.velocity_issue, None);
+        assert!(!request.text.starts_with(RECORD_PREFIX));
+        let payload = request
+            .text
+            .strip_prefix(DISCOVERY_PREFIX)
+            .ok_or("expected discovery envelope prefix")?;
+        let fields: serde_json::Map<String, serde_json::Value> = serde_json::from_str(payload)?;
+        let forwarded_text = fields
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("missing text field for Rosen ledger_push unwrapper")?;
+        assert_eq!(forwarded_text, text);
+        assert!(!forwarded_text.starts_with("velocity-airc/"));
+
+        let stored = LedgerEntry {
+            seq: 17339,
+            ledger: Ledger::Discovery,
+            nick: "you".into(),
+            member: None,
+            text: request.text,
+            velocity_issue: request.velocity_issue,
+            time: 1_700_000_000_000,
+        };
+        let decoded = ledger_entry(stored)?;
+        assert_eq!(decoded.kind, "discovery");
+        assert_eq!(decoded.nick, "velocity");
+        assert_eq!(decoded.member, "velocity");
+        assert_eq!(decoded.change.as_deref(), Some(change_id));
+        assert_eq!(decoded.text, text);
+        assert_eq!(decoded.as_event_entry().text, text);
+        Ok(())
+    }
+
+    // Risk (#667): agent-authored discovery envelopes must not spoof Velocity's nick, member
+    // or change metadata, while legacy `past_work` `velocity-airc/v1:` discoveries still
+    // decode as `discovery` for deduplication compatibility.
+    #[test]
+    fn discovery_envelope_respects_author_and_keeps_legacy_decode()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let spoofed = LedgerEntry {
+            seq: 42,
+            ledger: Ledger::Discovery,
+            nick: "agent-1".into(),
+            member: Some("0123456789abcdef/agent-1".into()),
+            text: format!(
+                "{DISCOVERY_PREFIX}{}",
+                serde_json::json!({
+                    "text": "Agent finding",
+                    "nick": "velocity",
+                    "member": "velocity",
+                    "change": "spoofedchangeid"
+                })
+            ),
+            velocity_issue: None,
+            time: 1_700_000_000_000,
+        };
+        let decoded_agent = ledger_entry(spoofed)?;
+        assert_eq!(decoded_agent.kind, "discovery");
+        assert_eq!(decoded_agent.nick, "agent-1");
+        assert_eq!(decoded_agent.member, "0123456789abcdef/agent-1");
+        assert_eq!(decoded_agent.change, None);
+        assert_eq!(decoded_agent.text, "Agent finding");
+
+        let remote = Remote::new(std::path::Path::new("."), "tcp://127.0.0.1:1".into());
+        let mut legacy = remote.record(
+            "discovery",
+            "velocity",
+            "velocity",
+            "Post-land build failure (session 5 · change oldchang · commit 1234567890ab · reverted): failed",
+        );
+        legacy.change = Some("oldchangeid000000000000000000000".into());
+        let stored_legacy = LedgerEntry {
+            seq: 17,
+            ledger: Ledger::PastWork,
+            nick: "you".into(),
+            member: None,
+            text: format!("{RECORD_PREFIX}{}", serde_json::to_string(&legacy)?),
+            velocity_issue: None,
+            time: 1_700_000_000_000,
+        };
+        let decoded_legacy = ledger_entry(stored_legacy)?;
+        assert_eq!(decoded_legacy.kind, "discovery");
+        assert_eq!(
+            decoded_legacy.change.as_deref(),
+            Some("oldchangeid000000000000000000000")
+        );
+        assert!(decoded_legacy.text.contains("session 5 ·"));
+        Ok(())
+    }
+
+    // Risk (#667): automatic post-land discovery recording must preserve change ID and
+    // deduplicate repeated calls with the same session marker.
+    #[test]
+    fn record_discovery_once_preserves_change_and_deduplicates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "velocity-airc-discovery-667-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let channel = Channel::open(&root, "1")?;
+        let text = "Post-land test failure (session 6 · change zznnsxsw · commit a2c2ebc7b50c · fix forward)";
+        let first = channel.record_discovery_once(
+            "velocity",
+            Some("zznnsxswabcdefghijklmnopqrstuvwx"),
+            "session 6 ·",
+            text,
+        )?;
+        let second = channel.record_discovery_once(
+            "velocity",
+            Some("zznnsxswabcdefghijklmnopqrstuvwx"),
+            "session 6 ·",
+            text,
+        )?;
+        assert!(first.is_some());
+        assert!(second.is_none());
+        let ledger = channel.ledger("discovery", 0)?;
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(
+            ledger[0].change.as_deref(),
+            Some("zznnsxswabcdefghijklmnopqrstuvwx")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 }

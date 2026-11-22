@@ -61,14 +61,21 @@ pub(crate) struct Remote {
 
 pub(crate) const RECORD_PREFIX: &str = "velocity-airc/v1:";
 
-// The pinned Rosen protocol only has velocity_issue. Keep Rosen/Collapse reports and
-// structured friction/tool_request metadata in the durable discovery ledger with agent
-// authorship until the protocol supports native fields (#303, #620).
+// The pinned Rosen protocol only has velocity_issue. Keep Rosen/Collapse reports,
+// structured friction/tool_request metadata, and Velocity-authored discovery metadata
+// (nick/member/change) in the durable discovery ledger until the protocol supports
+// native fields (#303, #620, #667).
 pub(crate) const DISCOVERY_PREFIX: &str = "velocity-airc/discovery/v1:";
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct DiscoveryEnvelope {
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nick: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub velocity_issue: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -93,12 +100,34 @@ impl DiscoveryEnvelope {
         };
         let envelope = Self {
             text: text.into(),
+            nick: None,
+            member: None,
+            change: None,
             velocity_issue,
             rosen_issue,
             collapse_issue,
             discovery_kind: (discovery.kind != DiscoveryKind::Problem).then_some(discovery.kind),
             friction: discovery.friction,
             tool_request: discovery.tool_request,
+        };
+        Ok(format!(
+            "{DISCOVERY_PREFIX}{}",
+            serde_json::to_string(&envelope)?
+        ))
+    }
+
+    pub(crate) fn encode_record(record: &Entry, member: String) -> Result<String, Error> {
+        let envelope = Self {
+            text: record.text.clone(),
+            nick: Some(record.nick.clone()),
+            member: Some(member),
+            change: record.change.clone(),
+            velocity_issue: record.velocity_issue.clone(),
+            rosen_issue: record.rosen_issue.clone(),
+            collapse_issue: record.collapse_issue.clone(),
+            discovery_kind: record.discovery_kind,
+            friction: record.friction.clone(),
+            tool_request: record.tool_request.clone(),
         };
         Ok(format!(
             "{DISCOVERY_PREFIX}{}",
@@ -363,6 +392,29 @@ impl Remote {
             client.ledger_append(request).await?;
             Ok(())
         })
+    }
+
+    /// Appends a Velocity-authored discovery directly to Rosen's native `discovery`
+    /// ledger using the versioned discovery envelope so native consumers and Rosen's
+    /// ledger forwarder receive it while Velocity preserves nick, member and change ID (#667).
+    pub(crate) fn append_discovery(&self, record: &Entry) -> Result<Entry, Error> {
+        let request = self.discovery_append_request(record)?;
+        let stored_seq =
+            self.run(move |client| async move { Ok(client.ledger_append(request).await?.seq) })?;
+        let sequence = self.wait_ledger_sequence(stored_seq)?;
+        let mut record = record.clone();
+        record.sequence = sequence;
+        Ok(record)
+    }
+
+    pub(crate) fn discovery_append_request(&self, record: &Entry) -> Result<AppendEntry, Error> {
+        crate::channel::require_text(&record.text)?;
+        let text = DiscoveryEnvelope::encode_record(record, self.member(&record.member))?;
+        wire(json!({
+            "ledger": "discovery",
+            "author": {"kind": "user"},
+            "text": text,
+        }))
     }
 
     /// Runner metadata and observed Velocity events also live on the server. The

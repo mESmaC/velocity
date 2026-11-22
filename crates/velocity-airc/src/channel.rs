@@ -615,19 +615,17 @@ impl Channel {
     ) -> Result<Entry, Error> {
         require_text(nick_name)?;
         require_text(text)?;
+        let normalized_nick = nick(nick_name, NICK_LIMIT);
+        let normalized_change = change.filter(|id| !id.trim().is_empty()).map(str::to_owned);
+        if let Some(remote) = &self.remote {
+            let mut record = remote.record("discovery", "velocity", &normalized_nick, text);
+            record.change = normalized_change;
+            return remote.append_discovery(&record);
+        }
         let storage = Storage::open(self)?;
         let entries = self.read_presence_log(&storage)?;
-        let mut record = entry(
-            &entries,
-            "discovery",
-            "velocity",
-            &nick(nick_name, NICK_LIMIT),
-            text,
-        );
-        record.change = change.filter(|id| !id.trim().is_empty()).map(str::to_owned);
-        if let Some(remote) = &self.remote {
-            return remote.append_record(&record);
-        }
+        let mut record = entry(&entries, "discovery", "velocity", &normalized_nick, text);
+        record.change = normalized_change;
         storage.append(&record)?;
         Ok(record)
     }
