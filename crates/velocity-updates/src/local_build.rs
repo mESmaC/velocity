@@ -5,8 +5,37 @@
 //! the release key.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+
+/// How long auto-restart waits before retrying a commit whose restart failed (#605).
+pub const AUTO_RESTART_RETRY_DELAY: Duration = Duration::from_secs(10 * 60);
+
+/// The last failed auto-restart attempt, held so Velocity retries after
+/// [`AUTO_RESTART_RETRY_DELAY`] or after a newer local build instead of skipping forever (#605).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FailedAutoRestart {
+    pub commit: String,
+    pub reason: String,
+    pub failed_at: Instant,
+}
+
+impl FailedAutoRestart {
+    pub fn new(commit: String, reason: String, failed_at: Instant) -> Self {
+        Self {
+            commit,
+            reason,
+            failed_at,
+        }
+    }
+
+    /// `true` while `commit` is still inside its retry backoff window.
+    pub fn blocks(&self, commit: &str, now: Instant) -> bool {
+        self.commit.eq_ignore_ascii_case(commit)
+            && now.saturating_duration_since(self.failed_at) < AUTO_RESTART_RETRY_DELAY
+    }
+}
 
 const FOLDER: &str = "local-builds";
 const RECORD: &str = "build.json";
@@ -461,13 +490,15 @@ impl LocalBuildState {
 
     /// Returns the commit to auto-restart into when auto-restart is enabled, the newest
     /// local build strictly descends from the running copy, nothing is busy or awaiting
-    /// confirmation, this commit has not already failed auto-restart, and either a waiting
-    /// issue needs a land contained in it or no agent turn has been running for 2 minutes (#601).
+    /// confirmation, this commit is not inside its 10-minute failure backoff window (#605),
+    /// and either a waiting issue needs a land contained in it or no agent turn has been
+    /// running for 2 minutes (#601).
     pub fn should_auto_restart(
         &self,
         waiting_need_satisfied: bool,
         idle_ready: bool,
-        failed_auto_commit: Option<&str>,
+        failed_auto: Option<&FailedAutoRestart>,
+        now: Instant,
     ) -> Option<String> {
         if !self.auto_restart
             || self.busy()
@@ -477,7 +508,7 @@ impl LocalBuildState {
             return None;
         }
         let commit = self.newest_descendant_commit()?;
-        if failed_auto_commit.is_some_and(|failed| failed.eq_ignore_ascii_case(commit)) {
+        if failed_auto.is_some_and(|failed| failed.blocks(commit, now)) {
             return None;
         }
         Some(commit.to_owned())
@@ -945,18 +976,52 @@ mod tests {
         assert_eq!(view.waiting_issues, 2);
         assert_eq!(view.waiting_label, "2 issues waiting for restart");
         assert!(view.auto_restart);
-        assert_eq!(state.should_auto_restart(false, false, None), None);
+        let now = Instant::now();
+        assert_eq!(state.should_auto_restart(false, false, None, now), None);
         assert_eq!(
-            state.should_auto_restart(true, false, None),
+            state.should_auto_restart(true, false, None, now),
             Some(newer.clone())
         );
         assert_eq!(
-            state.should_auto_restart(false, true, None),
+            state.should_auto_restart(false, true, None, now),
             Some(newer.clone())
         );
-        assert_eq!(state.should_auto_restart(true, true, Some(&newer)), None);
+        let failed = FailedAutoRestart::new(newer.clone(), "MoveAside".into(), now);
+        assert_eq!(
+            state.should_auto_restart(true, true, Some(&failed), now),
+            None
+        );
+        assert_eq!(
+            state.should_auto_restart(
+                true,
+                true,
+                Some(&failed),
+                now + AUTO_RESTART_RETRY_DELAY - Duration::from_secs(1),
+            ),
+            None
+        );
+        assert_eq!(
+            state.should_auto_restart(true, true, Some(&failed), now + AUTO_RESTART_RETRY_DELAY),
+            Some(newer.clone())
+        );
+        // A newer local build retries immediately without waiting out the old commit's backoff.
+        let even_newer = "b896831".to_owned() + &"0".repeat(33);
+        let even_newer_build = LocalBuild {
+            commit: even_newer.clone(),
+            version: local_version("0.1.0-beta.20", &even_newer),
+            built_at: 300,
+            executable_bytes: 16,
+        };
+        state.built(
+            vec![even_newer_build],
+            BTreeMap::from([(even_newer.clone(), CommitRelation::Descendant)]),
+        );
+        assert_eq!(
+            state.should_auto_restart(true, true, Some(&failed), now),
+            Some(even_newer)
+        );
         state.set_auto_restart(false);
-        assert_eq!(state.should_auto_restart(true, true, None), None);
+        assert_eq!(state.should_auto_restart(true, true, None, now), None);
         Ok(())
     }
 }

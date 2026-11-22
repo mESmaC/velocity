@@ -82,10 +82,15 @@ pub fn supervise() -> io::Result<bool> {
     let notice_path = restart_notice_path(launcher_pid);
     let _ = remove_file_if_present(&notice_path);
     let mut failures = 0;
+    let mut first_attempt = true;
     loop {
         let started = Instant::now();
-        let (reason, clean_without_intent) = match run_child(&executable, &arguments, launcher_pid)
-        {
+        let (reason, clean_without_intent) = match run_child(
+            &executable,
+            &arguments,
+            launcher_pid,
+            first_attempt,
+        ) {
             Ok(exit) if exit.intentional() => {
                 if !exit.socket_intent && exit.marker_intent {
                     report(&format!(
@@ -99,6 +104,7 @@ pub fn supervise() -> io::Result<bool> {
             Ok(exit) => (exit.unexpected_reason(), exit.clean_exit_without_intent()),
             Err(error) => (format!("Could not run Velocity: {error}"), false),
         };
+        first_attempt = false;
         if started.elapsed() >= STABLE_RUN {
             failures = 0;
         }
@@ -132,12 +138,17 @@ fn run_child(
     executable: &Path,
     arguments: &[OsString],
     launcher_pid: u32,
+    first_attempt: bool,
 ) -> io::Result<ChildExit> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     listener.set_nonblocking(true)?;
     let marker_path = intent_marker_path(launcher_pid);
     let _ = remove_file_if_present(&marker_path);
-    let mut child = super::portable::hidden_command(executable)
+    let mut command = super::portable::hidden_command(executable);
+    if !first_attempt {
+        super::portable::clear_replaced_env(&mut command);
+    }
+    let mut child = command
         .args(arguments)
         .arg(CHILD_ARGUMENT)
         .arg(listener.local_addr()?.to_string())
@@ -531,6 +542,14 @@ pub fn application_arguments() -> Vec<OsString> {
         .skip(1)
         .take_while(|argument| argument != CHILD_ARGUMENT)
         .collect()
+}
+
+/// The supervisor launcher's PID when this process is a supervised backend child (#605).
+pub(crate) fn launcher_pid() -> Option<u32> {
+    child_target()
+        .ok()
+        .flatten()
+        .map(|target| target.launcher_pid)
 }
 
 fn intent_marker_path(launcher_pid: u32) -> PathBuf {

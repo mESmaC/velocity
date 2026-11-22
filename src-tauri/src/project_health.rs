@@ -45,6 +45,7 @@ use crate::rosen_mirror::MirrorRetryOutcome;
 
 const SOURCE: &str = "project health";
 const COLLAPSE_FORWARDING_KEY: &str = "collapse-forwarding";
+const LOCAL_BUILD_RESTART_FAILED_KEY: &str = "local-build-restart-failed";
 const FIRST_CHECK: Duration = Duration::from_secs(30);
 const CHECK_INTERVAL: Duration = Duration::from_secs(60);
 const MIRROR_RETRY_COOLDOWN_SECS: u64 = 10 * 60;
@@ -600,6 +601,9 @@ async fn check_project(application: &AppHandle, app_data: &Path, project: &Proje
     if let Some(item) = check_airc_issue_tool_health(app_data, project.id, now_ms) {
         items.push(item);
     }
+    if let Some(item) = check_local_build_restart_health(application, project, now_ms) {
+        items.push(item);
+    }
     items.extend(check_deploy_health(project, &server, now_ms).await);
     items.extend(check_release_health(application, project, &server, now, now_ms).await);
     items.extend(collect_recent_actions(application, project.id, now, &items));
@@ -713,6 +717,118 @@ pub(crate) fn record_deploy_skipped(
 
 fn deploy_health_key(step: &str) -> String {
     format!("deploy:{step}")
+}
+
+/// Immediately reflects a failed local-build restart on Velocity's own project while at
+/// least one issue is waiting for a restart, and clears the row once resolved (#605).
+pub(crate) fn sync_local_build_restart_health(application: &AppHandle) {
+    let Some(project_id) = velocity_rosen_project_id(application) else {
+        return;
+    };
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let now_ms = unix_millis();
+    let item = local_build_restart_health_item(application, now_ms);
+    let updated = {
+        let mut reg = registry(&managed);
+        let list = reg.views.entry(project_id).or_default();
+        match item {
+            Some(item) => {
+                let changed = list
+                    .iter()
+                    .find(|entry| entry.key == LOCAL_BUILD_RESTART_FAILED_KEY)
+                    .is_none_or(|existing| {
+                        existing.signal != item.signal
+                            || existing.action != item.action
+                            || existing.detail != item.detail
+                    });
+                if changed {
+                    upsert_item(list, item);
+                    Some(list.clone())
+                } else {
+                    None
+                }
+            }
+            None => {
+                let before = list.len();
+                list.retain(|entry| entry.key != LOCAL_BUILD_RESTART_FAILED_KEY);
+                (list.len() != before).then(|| list.clone())
+            }
+        }
+    };
+    if let Some(items) = updated {
+        emit_view(application, project_id, items);
+    }
+}
+
+fn velocity_rosen_project_id(application: &AppHandle) -> Option<u32> {
+    let store = application.try_state::<crate::state::ManagedStateStore>()?;
+    let store = store.lock().ok()?;
+    store
+        .state()
+        .projects
+        .iter()
+        .find(|project| is_velocity_rosen_project(project))
+        .map(|project| project.id)
+}
+
+fn is_velocity_rosen_project(project: &ProjectItem) -> bool {
+    project.rosen_in_use()
+        && project.github_remote.as_deref().is_some_and(|remote| {
+            remote.eq_ignore_ascii_case(velocity_github::velocity_reports::VELOCITY_REPOSITORY)
+        })
+}
+
+fn check_local_build_restart_health(
+    application: &AppHandle,
+    project: &ProjectItem,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    if !is_velocity_rosen_project(project) {
+        return None;
+    }
+    local_build_restart_health_item(application, now_ms)
+}
+
+fn local_build_restart_health_item(
+    application: &AppHandle,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    let failure = crate::local_build::restart_failure_health(application)?;
+    let issues = if failure.waiting_issues == 1 {
+        "1 issue waiting for restart".to_owned()
+    } else {
+        format!("{} issues waiting for restart", failure.waiting_issues)
+    };
+    let signal = match failure.commit.as_deref() {
+        Some(commit) => format!(
+            "Restart into {} failed ({issues})",
+            velocity_updates::local_build::short_commit(commit)
+        ),
+        None => format!("Local build restart failed ({issues})"),
+    };
+    let action = if failure.auto_restart {
+        "Auto-restart will retry after the next local build or in 10 min".to_owned()
+    } else {
+        "Auto-restart is off; use Restart in the title bar".to_owned()
+    };
+    let detail = if failure.waiting_detail.is_empty() {
+        Some(failure.reason)
+    } else {
+        Some(format!("{} · {}", failure.reason, failure.waiting_detail))
+    };
+    Some(
+        ProjectHealthItem::new(
+            LOCAL_BUILD_RESTART_FAILED_KEY,
+            HealthSignalKind::LocalBuildRestartFailed,
+            HealthSeverity::Error,
+            signal,
+            action,
+            now_ms,
+        )
+        .with_detail(detail),
+    )
 }
 
 fn upsert_health_item(application: &AppHandle, project: u32, item: ProjectHealthItem) {

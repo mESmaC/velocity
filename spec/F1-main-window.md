@@ -36,11 +36,14 @@ There are two views of the same work, switched from the title bar or with `B`:
   - **Restart into `<commit>`** shows only when the newest build strictly descends from the running copy.
     Installing never replaces Velocity with an ancestor of the running build; if the running build's commit or ancestry is unknown, Velocity asks first and names both commits.
     **Restart into previous** shows while the running copy is the newest build and the build before it is kept, as an explicit rollback.
-    Either one saves state, stops the Rosen servers, replaces the running executable with the build's and starts it, as a portable update does, so stopped turns continue by themselves (§3.2 Resume after a restart).
+    Either one saves state, stops the Rosen servers and any previous copy's process trees or helper children, moves the running copy to a unique `<name>.old-<unix-ms>`, puts the new executable in place and starts it, as a portable update does, so stopped turns continue by themselves (§3.2 Resume after a restart) (#605).
+    On start, Velocity stops orphaned `velocity-app.exe` child helpers (graph-project, MCP servers) whose parent Velocity process is gone and removes every unlocked `.old*` copy (#605).
+    If the swap or relaunch fails after state was saved, Velocity restores the previous executable if needed and keeps running or starts the existing executable again so Velocity never stays closed (#605).
     Both wait while a build is running.
   - In Velocity's own project, a `blocked_by` issue whose land touched agent tooling (MCP servers, tool policy, AIRC tools, graph tools or MCP registration) counts as satisfied only once the running copy contains that land (#601).
     Until then the issue shows "waiting for restart into `<commit>`" and is not dispatched, and the title bar shows "N issues waiting for restart" next to **Restart into `<commit>`**.
     With **Auto-restart into local builds** enabled (default on, Settings → Agents), Velocity restarts into the newest local build by itself when it contains every tooling land a waiting issue needs, or when no agent turn has been running for 2 minutes.
+    Every `RestartFailed`, `Refuse` and `ConfirmRestart` outcome is logged with its reason under `[local build]`, and a failed auto-restart is retried after the next local build or after 10 minutes (#605).
   - A failed build shows "Build of `<commit>` failed" with the reason in its tooltip.
     That commit is not built again; the next green commit is.
   - After a published update, builds made on the older release are no longer offered.

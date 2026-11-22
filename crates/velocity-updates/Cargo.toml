@@ -13,6 +13,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde.workspace = true
 serde_json.workspace = true
 specta = { workspace = true, optional = true }
+sysinfo = { workspace = true, features = ["system"] }
 thiserror.workspace = true
 
 [lints]

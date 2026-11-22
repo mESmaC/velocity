@@ -5,13 +5,16 @@
 mod install_kind;
 pub mod local_build;
 mod portable;
+mod process_tree;
 mod status;
 pub mod supervision;
 
 pub use install_kind::{InstallKind, classify, detect};
 pub use portable::{
-    REPLACED_MARKER, UpdateError, relaunch, remove_previous, replace_running, wait_for_previous,
+    REPLACED_MARKER, UpdateError, relaunch, relaunch_replaced, remove_previous, replace_running,
+    restore_previous, wait_for_previous,
 };
+pub use process_tree::{StopSummary, stop_before_swap, stop_orphaned_helpers};
 pub use status::{
     AvailableUpdate, ManifestLag, UpdateAction, UpdatePhase, UpdateState, UpdateView,
 };

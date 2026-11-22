@@ -58,7 +58,7 @@ pub fn wait_after_portable_update() {
         return;
     }
     if let Ok(executable) = std::env::current_exe() {
-        velocity_updates::wait_for_previous(&executable, Duration::from_secs(15));
+        velocity_updates::wait_for_previous(&executable, Duration::from_secs(20));
     }
 }
 
@@ -67,10 +67,25 @@ pub fn initialize(application: &AppHandle) {
     let kind = executable
         .as_deref()
         .map_or(InstallKind::Portable, velocity_updates::detect);
-    if kind == InstallKind::Portable
-        && let Some(executable) = &executable
-    {
-        velocity_updates::remove_previous(executable);
+    if let Some(cleanup_executable) = executable.clone() {
+        tauri::async_runtime::spawn_blocking(move || {
+            let stopped = velocity_updates::stop_orphaned_helpers(
+                &cleanup_executable,
+                Duration::from_secs(5),
+            );
+            if !stopped.stopped.is_empty() || !stopped.still_running.is_empty() {
+                crate::diagnostics::record(
+                    "local build",
+                    &format!(
+                        "Startup orphan cleanup: stopped {:?}, still running {:?}",
+                        stopped.stopped, stopped.still_running
+                    ),
+                );
+            }
+            if kind == InstallKind::Portable {
+                velocity_updates::remove_previous(&cleanup_executable);
+            }
+        });
     }
     let version = application.package_info().version.to_string();
     application.manage(ManagedUpdates {
@@ -395,10 +410,62 @@ async fn install_download(
     .await
 }
 
+/// Starts the existing executable again if a restart fails or aborts after state was
+/// saved and this window cannot keep running safely, so Velocity never stays closed (#605).
+struct RelaunchOnDrop {
+    executable: Option<std::path::PathBuf>,
+    armed: bool,
+}
+
+impl RelaunchOnDrop {
+    fn arm(executable: Option<std::path::PathBuf>) -> Self {
+        Self {
+            executable,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    fn relaunch_now(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.armed = false;
+        let Some(executable) = self.executable.as_deref() else {
+            return;
+        };
+        if let Err(error) = velocity_updates::relaunch(executable) {
+            crate::diagnostics::record(
+                "local build",
+                &format!(
+                    "Could not restart existing executable {}: {error}",
+                    executable.display()
+                ),
+            );
+        }
+    }
+}
+
+impl Drop for RelaunchOnDrop {
+    fn drop(&mut self) {
+        self.relaunch_now();
+    }
+}
+
+fn main_window_open(application: &AppHandle) -> bool {
+    application
+        .get_webview_window(crate::window::MAIN_WINDOW)
+        .is_some()
+}
+
 /// Makes way for another copy of Velocity, then runs `replace`, which puts that copy in
 /// place and exits this one. An update and a restart into a local build (#512) both go
 /// through here, so both keep state and resume threads the same way. When `replace` fails,
-/// work carries on in this copy.
+/// work carries on in this copy, or restarts the existing executable if this copy cannot
+/// safely remain open (#605).
 pub(crate) async fn hand_over(
     application: &AppHandle,
     not_done: &str,
@@ -407,35 +474,80 @@ pub(crate) async fn hand_over(
     // The installer exits Velocity without an exit event, so save first, and don't
     // replace this copy over changes that couldn't be saved.
     crate::state::save_now(application).map_err(|error| format!("{error}. {not_done}."))?;
+    let mut fallback = RelaunchOnDrop::arm(std::env::current_exe().ok());
     crate::rosen::shutdown_servers(application).await;
     let recovery =
         application.state::<std::sync::Arc<velocity_updates::supervision::RecoveryConnection>>();
     if let Err(error) = recovery.set_intentional_exit(true) {
         crate::rosen::restart_servers(application).await;
+        if main_window_open(application) {
+            fallback.disarm();
+        }
         return Err(format!(
             "Could not hand off recovery to the restart: {error}"
         ));
     }
     let replaced = replace();
-    if replaced.is_err() {
-        if let Err(error) = recovery.set_intentional_exit(false) {
-            crate::diagnostics::record("recovery", &error.to_string());
+    match replaced {
+        Ok(()) => {
+            fallback.disarm();
+            Ok(())
         }
-        crate::rosen::restart_servers(application).await;
+        Err(error) => {
+            let cleared = match recovery.set_intentional_exit(false) {
+                Ok(()) => true,
+                Err(recovery_error) => {
+                    crate::diagnostics::record("recovery", &recovery_error.to_string());
+                    false
+                }
+            };
+            crate::rosen::restart_servers(application).await;
+            if cleared && main_window_open(application) {
+                fallback.disarm();
+            } else {
+                crate::diagnostics::record(
+                    "local build",
+                    "Restart failed after state was saved; starting the existing executable again.",
+                );
+                fallback.relaunch_now();
+                application.exit(0);
+            }
+            Err(error)
+        }
     }
-    replaced
 }
 
 /// The caller vouches for the bytes: `download` verified an update's against the release
-/// key, and a local build's were made on this machine. The new executable takes the
-/// running one's name, starts with the same arguments, and this copy exits.
+/// key, and a local build's were made on this machine. Any previous copy's process trees
+/// and our own helper children are stopped first, then the new executable takes the
+/// running one's name, starts with the same arguments, and this copy exits (#605).
 pub(crate) fn restart_portable(application: &AppHandle, bytes: &[u8]) -> Result<(), String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("Could not find Velocity's executable: {error}"))?;
-    velocity_updates::replace_running(&executable, bytes).map_err(|error| error.to_string())?;
-    velocity_updates::relaunch(&executable).map_err(|error| {
-        format!("The new version is in place but didn't start ({error}). Start Velocity again.")
-    })?;
+    let stopped = velocity_updates::stop_before_swap(&executable, Duration::from_secs(5));
+    if !stopped.stopped.is_empty() || !stopped.still_running.is_empty() {
+        crate::diagnostics::record(
+            "local build",
+            &format!(
+                "Pre-swap process cleanup: stopped {:?}, still running {:?}",
+                stopped.stopped, stopped.still_running
+            ),
+        );
+    }
+    let previous =
+        velocity_updates::replace_running(&executable, bytes).map_err(|error| error.to_string())?;
+    if let Err(error) = velocity_updates::relaunch_replaced(&executable, &previous) {
+        let restored = match velocity_updates::restore_previous(&executable, &previous) {
+            Ok(()) => "the previous copy was restored".to_owned(),
+            Err(restore_error) => format!(
+                "could not restore the previous copy ({restore_error}); it remains at {}",
+                previous.display()
+            ),
+        };
+        return Err(format!(
+            "The new version could not be started ({error}); {restored}"
+        ));
+    }
     application.exit(0);
     Ok(())
 }

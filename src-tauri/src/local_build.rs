@@ -19,8 +19,8 @@ use velocity_rosen::post_land::{CommitAncestry, commit_contains, compare_commits
 use velocity_store::duty::LandingProject;
 use velocity_threads::local_release::{self, LocalRelease};
 use velocity_updates::local_build::{
-    CommitRelation, FailedBuild, InstallDecision, LocalBuild, LocalBuildPhase, LocalBuildSettings,
-    LocalBuildState, LocalBuildView, LocalBuilds, short_commit,
+    CommitRelation, FailedAutoRestart, FailedBuild, InstallDecision, LocalBuild, LocalBuildPhase,
+    LocalBuildSettings, LocalBuildState, LocalBuildView, LocalBuilds, short_commit,
 };
 
 use crate::rosen_mirror::CatchUpCheck;
@@ -56,7 +56,17 @@ pub(crate) struct WaitingIssueNeed {
 struct AutoRestartTracker {
     idle_since: Option<Instant>,
     waiting: Vec<WaitingIssueNeed>,
-    failed_commit: Option<String>,
+    failed_auto: Option<FailedAutoRestart>,
+}
+
+/// Active local-build restart failure while Velocity issues are waiting for restart (#605).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RestartFailureHealth {
+    pub commit: Option<String>,
+    pub reason: String,
+    pub waiting_issues: u32,
+    pub waiting_detail: String,
+    pub auto_restart: bool,
 }
 
 pub struct ManagedLocalBuilds {
@@ -152,12 +162,51 @@ pub(crate) fn update_waiting_issues(application: &AppHandle, waiting: Vec<Waitin
     let count = u32::try_from(waiting.len()).unwrap_or(u32::MAX);
     let detail = waiting_tooltip(&waiting);
     change(application, |state| state.set_waiting_issues(count, detail));
+    crate::project_health::sync_local_build_restart_health(application);
     if changed && !waiting.is_empty() && !cfg!(debug_assertions) && cfg!(windows) {
         let handle = application.clone();
         tauri::async_runtime::spawn(async move {
             check_auto_restart(&handle).await;
         });
     }
+}
+
+/// Returns the active restart failure when at least one Velocity issue is waiting for a
+/// restart, so project health can surface why dispatch is blocked (#605).
+pub(crate) fn restart_failure_health(application: &AppHandle) -> Option<RestartFailureHealth> {
+    let local = application.try_state::<ManagedLocalBuilds>()?;
+    let (waiting_issues, waiting_detail, auto_restart, phase_failure, fallback_commit) = {
+        let current = state(&local);
+        let view = current.view();
+        let phase_failure = match &current.phase {
+            LocalBuildPhase::RestartFailed(reason) => Some(reason.clone()),
+            _ => None,
+        };
+        (
+            view.waiting_issues,
+            view.waiting_detail,
+            view.auto_restart,
+            phase_failure,
+            current.newest_descendant_commit().map(str::to_owned),
+        )
+    };
+    if waiting_issues == 0 {
+        return None;
+    }
+    let failed_auto = auto_tracker(&local).failed_auto.clone();
+    let (commit, reason) = match (phase_failure, failed_auto) {
+        (Some(reason), Some(auto)) => (Some(auto.commit), reason),
+        (Some(reason), None) => (fallback_commit, reason),
+        (None, Some(auto)) => (Some(auto.commit), auto.reason),
+        (None, None) => return None,
+    };
+    Some(RestartFailureHealth {
+        commit,
+        reason,
+        waiting_issues,
+        waiting_detail,
+        auto_restart,
+    })
 }
 
 fn waiting_tooltip(waiting: &[WaitingIssueNeed]) -> String {
@@ -193,7 +242,7 @@ pub fn set_local_build_auto_restart(
         .map_err(|error| error.to_string())?;
     change(&application, |state| state.set_auto_restart(enabled));
     if enabled {
-        auto_tracker(&local).failed_commit = None;
+        auto_tracker(&local).failed_auto = None;
         if !cfg!(debug_assertions) && cfg!(windows) {
             let handle = application.clone();
             tauri::async_runtime::spawn(async move {
@@ -201,6 +250,7 @@ pub fn set_local_build_auto_restart(
             });
         }
     }
+    crate::project_health::sync_local_build_restart_health(&application);
     Ok(view(&application))
 }
 
@@ -220,6 +270,13 @@ pub async fn restart_into_local_build(
     view(&application)
 }
 
+enum BeginRestart {
+    Proceed,
+    Busy,
+    Confirm(String),
+    Refuse(String),
+}
+
 async fn perform_restart(
     application: &AppHandle,
     commit: &str,
@@ -227,21 +284,55 @@ async fn perform_restart(
     rollback: bool,
 ) -> Result<(), String> {
     let Some(local) = application.try_state::<ManagedLocalBuilds>() else {
-        return Err("Local builds haven't started yet".into());
+        let message = "Local builds haven't started yet".to_owned();
+        crate::diagnostics::record(
+            "local build",
+            &format!("Restart into {} failed: {message}", short_commit(commit)),
+        );
+        return Err(message);
     };
     let Some(build) = target_build(&local, commit) else {
-        return Err(format!(
+        let message = format!(
             "Local build {} is no longer available",
             short_commit(commit)
-        ));
+        );
+        crate::diagnostics::record(
+            "local build",
+            &format!("Restart into {} failed: {message}", short_commit(commit)),
+        );
+        return Err(message);
     };
     let relation = live_relation(application, &local, &build.commit).await;
-    if begin_restart(application, &build, relation, confirmed, rollback)
-        && let Err(message) = restart(application, &build).await
-    {
+    match begin_restart(application, &build, relation, confirmed, rollback) {
+        BeginRestart::Proceed => {}
+        BeginRestart::Busy => {
+            let message = "Another local build or restart is already in progress".to_owned();
+            crate::diagnostics::record(
+                "local build",
+                &format!(
+                    "Restart into {} skipped: {message}",
+                    short_commit(&build.commit)
+                ),
+            );
+            return Err(message);
+        }
+        BeginRestart::Confirm(message) | BeginRestart::Refuse(message) => {
+            crate::project_health::sync_local_build_restart_health(application);
+            return Err(message);
+        }
+    }
+    if let Err(message) = restart(application, &build).await {
+        crate::diagnostics::record(
+            "local build",
+            &format!(
+                "RestartFailed for {}: {message}",
+                short_commit(&build.commit)
+            ),
+        );
         change(application, |state| {
             state.phase = LocalBuildPhase::RestartFailed(message.clone());
         });
+        crate::project_health::sync_local_build_restart_health(application);
         return Err(message);
     }
     Ok(())
@@ -496,8 +587,9 @@ async fn build(
         Ok(_) => {
             let builds = local.builds.list();
             let relations = compute_relations(local, server, &builds).await;
-            auto_tracker(local).failed_commit = None;
+            auto_tracker(local).failed_auto = None;
             change(application, |state| state.built(builds, relations));
+            crate::project_health::sync_local_build_restart_health(application);
             check_auto_restart(application).await;
         }
         Err(reason) => {
@@ -555,35 +647,44 @@ async fn check_auto_restart(application: &AppHandle) {
     };
     let (waiting, failed_auto) = {
         let tracker = auto_tracker(&local);
-        (tracker.waiting.clone(), tracker.failed_commit.clone())
+        (tracker.waiting.clone(), tracker.failed_auto.clone())
     };
     let waiting_need_satisfied = waiting_needs_satisfied(application, &candidate, &waiting).await;
+    let now = Instant::now();
     let target = state(&local).should_auto_restart(
         waiting_need_satisfied,
         idle_ready,
-        failed_auto.as_deref(),
+        failed_auto.as_ref(),
+        now,
     );
     let Some(commit) = target else {
         return;
     };
+    let retrying = failed_auto
+        .as_ref()
+        .is_some_and(|failed| failed.commit.eq_ignore_ascii_case(&commit));
+    let verb = if retrying {
+        "Retrying auto-restart into"
+    } else {
+        "Auto-restarting into"
+    };
     let reason = if waiting_need_satisfied {
         format!(
-            "Auto-restarting into {} for {} waiting issue(s)",
+            "{verb} {} for {} waiting issue(s)",
             short_commit(&commit),
             waiting.len()
         )
     } else {
         format!(
-            "Auto-restarting into {} after 2 minutes with no running agent turn",
+            "{verb} {} after 2 minutes with no running agent turn",
             short_commit(&commit)
         )
     };
     crate::diagnostics::record("local build", &reason);
-    if perform_restart(application, &commit, false, false)
-        .await
-        .is_err()
-    {
-        auto_tracker(&local).failed_commit = Some(commit);
+    if let Err(failure) = perform_restart(application, &commit, false, false).await {
+        auto_tracker(&local).failed_auto =
+            Some(FailedAutoRestart::new(commit, failure, Instant::now()));
+        crate::project_health::sync_local_build_restart_health(application);
     }
 }
 
@@ -647,33 +748,45 @@ fn begin_restart(
     relation: CommitRelation,
     confirmed: bool,
     rollback: bool,
-) -> bool {
+) -> BeginRestart {
     let Some(local) = application.try_state::<ManagedLocalBuilds>() else {
-        return false;
+        return BeginRestart::Busy;
     };
-    let proceed = {
+    let outcome = {
         let mut state = state(&local);
         if state.busy() {
-            return false;
+            return BeginRestart::Busy;
         }
         match state.install_decision(&build.commit, relation, confirmed, rollback) {
             InstallDecision::Allow => {
                 state.phase = LocalBuildPhase::Restarting(build.commit.clone());
-                true
+                BeginRestart::Proceed
             }
             InstallDecision::Confirm(prompt) => {
+                crate::diagnostics::record(
+                    "local build",
+                    &format!(
+                        "ConfirmRestart for {}: {}",
+                        short_commit(&build.commit),
+                        prompt.message
+                    ),
+                );
+                let message = prompt.message.clone();
                 state.phase = LocalBuildPhase::ConfirmRestart(prompt);
-                false
+                BeginRestart::Confirm(message)
             }
             InstallDecision::Refuse(reason) => {
-                crate::diagnostics::record("local build", &reason);
-                state.phase = LocalBuildPhase::RestartFailed(reason);
-                false
+                crate::diagnostics::record(
+                    "local build",
+                    &format!("Refuse for {}: {reason}", short_commit(&build.commit)),
+                );
+                state.phase = LocalBuildPhase::RestartFailed(reason.clone());
+                BeginRestart::Refuse(reason)
             }
         }
     };
     publish(application);
-    proceed
+    outcome
 }
 
 async fn restart(application: &AppHandle, build: &LocalBuild) -> Result<(), String> {
