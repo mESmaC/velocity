@@ -183,7 +183,8 @@ impl StateStore {
     }
 
     /// Saves the project's explicit issue host (`github` or `collapse`) (#589) and reports
-    /// whether the saved value changed.
+    /// whether the saved value changed. Clears cached `base_ci` when the effective host flips
+    /// so GitHub Actions status is never shown while CI runs from Rosen (#592).
     pub fn save_issue_host(
         &mut self,
         project: u32,
@@ -196,7 +197,11 @@ impl StateStore {
             return Ok(false);
         }
         self.edit_project_in_place(project, |item| {
+            let previous = item.effective_issue_host();
             item.issue_host = Some(host);
+            if item.effective_issue_host() != previous {
+                item.base_ci = None;
+            }
             (true, ())
         })?;
         Ok(true)
@@ -445,6 +450,7 @@ mod tests {
     // silently redirect dispatch, holds and agent issue tools to the wrong host.
     #[test]
     fn issue_host_defaults_and_survives_reload() -> Result<(), Box<dyn std::error::Error>> {
+        use velocity_core::base_ci::{BaseCi, BaseCiState};
         use velocity_core::collapse::IssueHost;
 
         let unique = std::time::SystemTime::now()
@@ -474,6 +480,16 @@ mod tests {
         assert!(store.save_github_remote(1, Some("mESmaC/one".into()))?);
         assert!(store.save_issue_host(1, IssueHost::GitHub)?);
         assert!(!store.save_issue_host(1, IssueHost::GitHub)?);
+        store.save_base_ci(
+            1,
+            Some(BaseCi {
+                source: velocity_core::base_ci::BaseCiSource::GitHub,
+                state: BaseCiState::Green,
+                commit: Some("a".repeat(40)),
+                failing: Vec::new(),
+                running: false,
+            }),
+        )?;
 
         let mut store = StateStore::load_or_default(&directory)?;
         assert_eq!(store.state.projects[0].issue_host, Some(IssueHost::GitHub));
@@ -481,7 +497,9 @@ mod tests {
             store.state.projects[0].effective_issue_host(),
             IssueHost::GitHub
         );
+        assert!(store.state.projects[0].base_ci.is_some());
         assert!(store.save_issue_host(1, IssueHost::Collapse)?);
+        assert_eq!(store.state.projects[0].base_ci, None);
 
         let store = StateStore::load_or_default(&directory)?;
         assert_eq!(

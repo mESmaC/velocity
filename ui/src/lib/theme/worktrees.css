@@ -271,6 +271,114 @@
   border-color: var(--err);
   color: var(--err);
 }
+.collapse-cutover {
+  padding: var(--sp-5);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--r-md);
+  background: var(--glass);
+}
+.collapse-cutover-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--sp-4);
+  width: 100%;
+}
+.collapse-cutover-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.collapse-cutover-field input {
+  height: var(--h-md);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--line-mid);
+  border-radius: var(--r-sm);
+  background: var(--field);
+  color: var(--text);
+  font: var(--fs-sm) var(--mono);
+}
+.collapse-cutover-radios {
+  justify-content: flex-start;
+  gap: var(--sp-6);
+}
+.collapse-cutover-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  width: 100%;
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.collapse-cutover-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--field);
+}
+.collapse-cutover-step-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.collapse-cutover-badge {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+}
+.collapse-cutover-summary,
+.collapse-cutover-detail {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.collapse-cutover-link {
+  align-self: flex-start;
+  margin-top: var(--sp-1);
+  text-decoration: none;
+}
+.collapse-check-report {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--field);
+}
+.collapse-check-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.collapse-check-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+.collapse-check-status {
+  min-width: 56px;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+}
+.collapse-check-name {
+  font-family: var(--mono);
+  color: var(--text);
+}
+.collapse-check-detail,
+.collapse-check-hint {
+  overflow-wrap: anywhere;
+}
 .worktree-input {
   flex: 1;
   display: flex;

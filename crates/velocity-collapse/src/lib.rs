@@ -12,6 +12,7 @@ pub mod deploy_credential;
 pub mod downstream;
 mod git_credential;
 pub mod health;
+pub mod issue_import;
 pub mod issues;
 pub mod post_land;
 pub mod provision;
@@ -36,10 +37,14 @@ pub use git_credential::{
     resolve_remote_tag_commit,
 };
 pub use health::{RepositoryActivity, repository_activity, repository_downstream};
+pub use issue_import::{
+    GitHubIssueImportResult, GitHubIssueImportStatus, IssueImportFailure, get_issue_import_status,
+    import_github_issues_and_wait,
+};
 pub use post_land::{RepositoryPostLand, repository_post_land};
 pub use provision::{
-    MirrorRequest, ProvisionedMirror, check_push_token, prepare_existing_mirror, provision_mirror,
-    share_push_token,
+    MirrorRequest, ProvisionedMirror, check_push_token, ensure_mirror, prepare_existing_mirror,
+    provision_mirror, repository_exists, share_push_token,
 };
 
 /// Collapse's read-only MCP endpoint (Collapse C9), streamable HTTP with a bearer token.

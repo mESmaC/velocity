@@ -16,6 +16,7 @@ mod build_gate;
 mod code_graph;
 mod collapse;
 mod collapse_connection;
+mod collapse_cutover;
 mod collapse_mirror;
 mod continuous_dispatch;
 mod diagnostics;
@@ -104,6 +105,7 @@ fn bindings() -> Builder<tauri::Wry> {
         collapse_connection::disconnect_collapse,
         collapse_connection::get_collapse_connection,
         collapse_connection::set_collapse_mcp,
+        collapse_cutover::move_to_collapse,
         collapse_mirror::clear_collapse_issues_token,
         collapse_mirror::get_project_collapse_settings,
         collapse_mirror::mirror_to_collapse,

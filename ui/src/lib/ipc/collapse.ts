@@ -8,15 +8,25 @@ import {
   type CollapseRelayKind,
   type IssueHost,
   type LayoutSnapshot_Serialize,
+  type MoveToCollapseRequest_Deserialize,
+  type MoveToCollapseResult_Serialize,
   type ProjectCollapseSettings,
 } from '../bindings';
 export type {
   CollapseActionResult,
+  CollapseCheckItemResult_Serialize as CollapseCheckItemResult,
+  CollapseCheckItemStatus,
+  CollapseCheckSummary_Serialize as CollapseCheckSummary,
   CollapseConnection,
   CollapseFeedHealth,
   CollapseLinkOpened_Serialize as CollapseLinkOpened,
   CollapseRelayKind,
   IssueHost,
+  MoveToCollapseRequest_Deserialize as MoveToCollapseRequest,
+  MoveToCollapseResult_Serialize as MoveToCollapseResult,
+  MoveToCollapseStepId,
+  MoveToCollapseStepResult_Serialize as MoveToCollapseStepResult,
+  MoveToCollapseStepStatus,
   ProjectCollapseSettings,
   PushTokenStatus,
 } from '../bindings';
@@ -68,6 +78,10 @@ export const collapseCommands = {
     commands.clearCollapseIssuesToken(project),
   unlink: (project: number): Promise<CollapseActionResult> =>
     commands.unlinkCollapse(project),
+  moveToCollapse: (
+    request: MoveToCollapseRequest_Deserialize,
+  ): Promise<MoveToCollapseResult_Serialize> =>
+    commands.moveToCollapse(request),
 };
 
 // Collapse's read-only MCP server (#430). The tokens stay in the OS credential

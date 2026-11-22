@@ -544,10 +544,14 @@ fn velocity_project(application: &AppHandle) -> Option<LandingProject> {
     let store = store.lock().ok()?;
     let project = store.state().projects.iter().find(|project| {
         project.rosen_in_use()
-            && project
-                .github_remote
+            && (project
+                .collapse_repository
                 .as_deref()
                 .is_some_and(|remote| remote.eq_ignore_ascii_case(VELOCITY_REPOSITORY))
+                || project
+                    .github_remote
+                    .as_deref()
+                    .is_some_and(|remote| remote.eq_ignore_ascii_case(VELOCITY_REPOSITORY)))
     })?;
     Some(LandingProject {
         project: project.clone(),

@@ -495,6 +495,83 @@ pub struct CollapseMirrorHealth {
     pub downstream_github: Option<String>,
 }
 
+/// Outcome of one probe inside `rosen collapse check` (#592).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[serde(rename_all = "snake_case")]
+pub enum CollapseCheckItemStatus {
+    Pass,
+    Moved,
+    Fail,
+    Skipped,
+}
+
+/// One probe row returned by `rosen collapse check` (#592).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct CollapseCheckItemResult {
+    pub name: String,
+    pub status: CollapseCheckItemStatus,
+    pub detail: String,
+    #[serde(default)]
+    pub hint: Option<String>,
+}
+
+/// Serializable summary of `rosen collapse check` for project settings (#592).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct CollapseCheckSummary {
+    pub ok: bool,
+    #[serde(default)]
+    pub mirror_remote: Option<String>,
+    #[serde(default)]
+    pub collapse: Option<String>,
+    #[serde(default)]
+    pub ledger_endpoint: Option<String>,
+    pub mirror_owner: bool,
+    pub mirror_proactive_auth: bool,
+    pub checks: Vec<CollapseCheckItemResult>,
+}
+
+/// Identifier for each step in the Move to Collapse cut-over (#592).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[serde(rename_all = "snake_case")]
+pub enum MoveToCollapseStepId {
+    ImportIssues,
+    SwitchMirror,
+    SetIssuesAndCi,
+    ConfigureDownstream,
+    CollapseCheck,
+}
+
+/// Result status of one Move to Collapse cut-over step (#592).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[serde(rename_all = "snake_case")]
+pub enum MoveToCollapseStepStatus {
+    Passed,
+    Warning,
+    Skipped,
+    Failed,
+}
+
+/// Reported outcome for one step of Move to Collapse (#592).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct MoveToCollapseStepResult {
+    pub step: MoveToCollapseStepId,
+    pub title: String,
+    pub status: MoveToCollapseStepStatus,
+    pub summary: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub action_url: Option<String>,
+    #[serde(default)]
+    pub action_label: Option<String>,
+}
+
 fn strip_prefix_ignoring_case<'text>(text: &'text str, prefix: &str) -> Option<&'text str> {
     let head = text.get(..prefix.len())?;
     head.eq_ignore_ascii_case(prefix)

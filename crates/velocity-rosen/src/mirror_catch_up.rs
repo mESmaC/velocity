@@ -137,6 +137,122 @@ pub async fn adopt_mirror_tip(server: &ProjectServer, commit: &str) -> Result<St
     }
 }
 
+/// How a candidate remote's base branch compares to Rosen's local base (#592).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoteBaseComparison {
+    /// Rosen has no imported base ref yet.
+    NoBase,
+    /// The remote has no branch matching Rosen's base branch yet (e.g. a brand-new repository).
+    EmptyRemote { branch: String, base_commit: String },
+    /// The remote's branch already points to Rosen's base commit.
+    UpToDate { branch: String, base_commit: String },
+    /// The remote's branch is an ancestor of Rosen's base and can be fast-forwarded cleanly.
+    BehindBy {
+        branch: String,
+        base_commit: String,
+        remote_tip: String,
+        commits_behind: u32,
+    },
+    /// The remote's branch holds commits not present in Rosen's base (ahead or diverged).
+    NotAncestor {
+        branch: String,
+        base_commit: String,
+        remote_tip: String,
+    },
+}
+
+/// Compares `remote`'s branch matching Rosen's local base ref against Rosen's base commit
+/// without mutating either side (#592). Used before linking an existing Collapse repository
+/// so Move to Collapse verifies it can fast-forward cleanly and reports how many commits
+/// behind it was.
+pub async fn probe_remote_against_base(
+    server: &ProjectServer,
+    remote: &str,
+) -> Result<RemoteBaseComparison, RosenError> {
+    let reading = server.clone();
+    let Some((branch, base_commit)) = tokio::task::spawn_blocking(move || read_base_ref(&reading))
+        .await
+        .map_err(|error| RosenError::MirrorData(error.to_string()))??
+    else {
+        return Ok(RemoteBaseComparison::NoBase);
+    };
+    let resolved = resolve_remote(server, remote)?;
+    let tip = {
+        let dir = server.data_dir().to_path_buf();
+        let remote_url = resolved.clone();
+        let branch_name = branch.clone();
+        tokio::task::spawn_blocking(move || read_remote_tip(&dir, &remote_url, &branch_name))
+            .await
+            .map_err(|error| RosenError::MirrorData(error.to_string()))??
+    };
+    let Some(tip) = tip else {
+        return Ok(RemoteBaseComparison::EmptyRemote {
+            branch,
+            base_commit,
+        });
+    };
+    if tip == base_commit {
+        return Ok(RemoteBaseComparison::UpToDate {
+            branch,
+            base_commit,
+        });
+    }
+    if !is_local_ancestor(server, &tip, &base_commit).await {
+        return Ok(RemoteBaseComparison::NotAncestor {
+            branch,
+            base_commit,
+            remote_tip: tip,
+        });
+    }
+    let reading = server.clone();
+    let tip_for_count = tip.clone();
+    let base_for_count = base_commit.clone();
+    let commits_behind = tokio::task::spawn_blocking(move || {
+        count_local_commits(&reading, &resolved, &tip_for_count, &base_for_count)
+    })
+    .await
+    .map_err(|error| RosenError::MirrorData(error.to_string()))??;
+    Ok(RemoteBaseComparison::BehindBy {
+        branch,
+        base_commit,
+        remote_tip: tip,
+        commits_behind,
+    })
+}
+
+pub(crate) fn read_base_ref(
+    server: &ProjectServer,
+) -> Result<Option<(String, String)>, RosenError> {
+    let path = server.data_dir().join("metadata.sqlite");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(Duration::from_secs(2))?;
+    if !has_table(&connection, "base_refs")? {
+        return Ok(None);
+    }
+    Ok(connection
+        .query_row("SELECT name, target FROM base_refs LIMIT 1", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .optional()?)
+}
+
+fn count_local_commits(
+    server: &ProjectServer,
+    remote: &str,
+    from: &str,
+    to: &str,
+) -> Result<u32, RosenError> {
+    let scratch = tempfile::tempdir_in(server.data_dir())
+        .or_else(|_| tempfile::tempdir())
+        .map_err(|error| RosenError::MirrorData(error.to_string()))?;
+    prepare_scratch_repo(scratch.path(), &server.data_dir().join("objects"), remote)?;
+    let count = rev_list_count(scratch.path(), remote, from, to)?;
+    Ok(u32::try_from(count).unwrap_or(u32::MAX))
+}
+
 /// Checks whether the project's Git mirror has moved ahead of Rosen's local base (#520).
 ///
 /// The fast path runs only `git ls-remote` (and a local `merge_base` check when the base

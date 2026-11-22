@@ -3,9 +3,12 @@
   import {
     collapseCommands,
     releaseCommands,
+    type CollapseCheckItemStatus,
     type CollapseFeedHealth,
     type CollapseRelayKind,
     type IssueHost,
+    type MoveToCollapseResult,
+    type MoveToCollapseStepStatus,
     type ProjectCollapseSettings,
     type PushTokenStatus,
     type ReleaseCredentialsStatus,
@@ -30,6 +33,13 @@
   let signingPasswordInput = $state('');
   let releaseTokenInput = $state('');
   let issuesTokenInput = $state('');
+  let moveCollapseRepoInput = $state('');
+  let moveGitHubRepoInput = $state('');
+  let moveGitHubTokenInput = $state('');
+  let moveKeepDownstream = $state(false);
+  let moveDefaultsLoadedFor = $state<number | null>(null);
+  let moving = $state(false);
+  let moveResult = $state<MoveToCollapseResult | null>(null);
   let loadError = $state('');
   let actionError = $state('');
   let notice = $state('');
@@ -46,6 +56,13 @@
       if (target === currentProject) {
         settings = loaded;
         releaseCreds = creds;
+        if (loaded && moveDefaultsLoadedFor !== target) {
+          moveDefaultsLoadedFor = target;
+          moveCollapseRepoInput = loaded.collapse_repository ?? '';
+          moveGitHubRepoInput =
+            loaded.github_repository ?? loaded.downstream_github ?? '';
+          moveKeepDownstream = Boolean(loaded.downstream_github);
+        }
         loadError = '';
       }
     } catch (reason) {
@@ -58,15 +75,97 @@
   $effect(() => {
     const target = currentProject;
     settings = undefined;
+    moveDefaultsLoadedFor = null;
+    moveCollapseRepoInput = '';
+    moveGitHubRepoInput = '';
+    moveGitHubTokenInput = '';
+    moveKeepDownstream = false;
+    moveResult = null;
+    moving = false;
     loadError = '';
     actionError = '';
     notice = '';
     void load(target);
     const timer = globalThis.setInterval(() => {
-      if (!busy) void load(target);
+      if (!busy && !moving) void load(target);
     }, 5000);
     return () => globalThis.clearInterval(timer);
   });
+
+  function stepStatusLabel(status: MoveToCollapseStepStatus): string {
+    switch (status) {
+      case 'passed':
+        return 'Pass';
+      case 'warning':
+        return 'Attention';
+      case 'skipped':
+        return 'Skipped';
+      case 'failed':
+        return 'Failed';
+    }
+  }
+
+  function checkStatusLabel(status: CollapseCheckItemStatus): string {
+    switch (status) {
+      case 'pass':
+        return 'pass';
+      case 'moved':
+        return 'moved';
+      case 'fail':
+        return 'fail';
+      case 'skipped':
+        return 'skipped';
+    }
+  }
+
+  function safeExternalUrl(url: string | null | undefined): string | null {
+    if (!url) return null;
+    try {
+      const parsed = new globalThis.URL(url);
+      return parsed.protocol === 'https:' ? parsed.toString() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function runMoveToCollapse() {
+    if (busy || moving || !settings) return;
+    const target = currentProject;
+    moving = true;
+    busy = true;
+    actionError = '';
+    notice = '';
+    try {
+      const result = await collapseCommands.moveToCollapse({
+        project_identifier: target,
+        collapse_repository: moveCollapseRepoInput.trim() || null,
+        github_repository: moveGitHubRepoInput.trim() || null,
+        keep_github_downstream: moveKeepDownstream,
+        github_import_token: moveGitHubTokenInput.trim() || null,
+      });
+      if (target === currentProject) {
+        moveResult = result;
+        settings = result.settings;
+        moveGitHubTokenInput = '';
+        if (result.collapse_repository) {
+          moveCollapseRepoInput = result.collapse_repository;
+        }
+        if (result.github_repository && moveKeepDownstream) {
+          moveGitHubRepoInput = result.github_repository;
+        }
+        notice = result.ok
+          ? 'Move to Collapse completed.'
+          : 'Move to Collapse finished with items that need attention.';
+      }
+    } catch (reason) {
+      if (target === currentProject) actionError = formatError(reason);
+    } finally {
+      if (target === currentProject) {
+        moving = false;
+        busy = false;
+      }
+    }
+  }
 
   function formatError(reason: unknown): string {
     return reason instanceof Error ? reason.message : String(reason);
@@ -355,6 +454,191 @@
           {settings.config_error}
         </p>
       {/if}
+
+      <div class="worktree-setting-row collapse-relay-block collapse-cutover">
+        <div class="collapse-relay-header">
+          <span>Move to Collapse</span>
+          <span class="hint">
+            Import GitHub issues, link and fast-forward an existing Collapse
+            repository (or create one), set Issues on Collapse and CI from
+            Rosen, configure GitHub downstream, and run
+            <code>rosen collapse check</code>. Safe to re-run.
+          </span>
+        </div>
+        <div class="collapse-cutover-fields">
+          <label class="collapse-cutover-field">
+            <span class="hint"
+              >Collapse repository (blank auto-links existing)</span
+            >
+            <input
+              type="text"
+              aria-label="Collapse repository"
+              placeholder={settings.collapse_repository ??
+                settings.github_repository ??
+                'owner/name or blank'}
+              bind:value={moveCollapseRepoInput}
+              disabled={busy || moving}
+              spellcheck="false"
+              autocomplete="off"
+            />
+          </label>
+          <label class="collapse-cutover-field">
+            <span class="hint"
+              >GitHub repository (for issue import / downstream)</span
+            >
+            <input
+              type="text"
+              aria-label="GitHub repository for cut-over"
+              placeholder={settings.github_repository ??
+                settings.downstream_github ??
+                'owner/repo (auto-detect)'}
+              bind:value={moveGitHubRepoInput}
+              disabled={busy || moving}
+              spellcheck="false"
+              autocomplete="off"
+            />
+          </label>
+          <label class="collapse-cutover-field">
+            <span class="hint"
+              >GitHub token for issue import (optional; blank uses Collapse
+              GitHub App)</span
+            >
+            <input
+              type="password"
+              aria-label="Optional GitHub token for issue import"
+              placeholder="Optional GitHub token (not saved)"
+              bind:value={moveGitHubTokenInput}
+              disabled={busy || moving}
+              autocomplete="off"
+            />
+          </label>
+        </div>
+        <div
+          class="collapse-row-value collapse-cutover-radios"
+          role="radiogroup"
+          aria-label="GitHub downstream mirror"
+        >
+          <label class="worktree-check">
+            <input
+              type="radio"
+              name={`move-downstream-${currentProject}`}
+              checked={!moveKeepDownstream}
+              disabled={busy || moving}
+              onchange={() => (moveKeepDownstream = false)}
+            />
+            Remove GitHub downstream
+          </label>
+          <label class="worktree-check">
+            <input
+              type="radio"
+              name={`move-downstream-${currentProject}`}
+              checked={moveKeepDownstream}
+              disabled={busy || moving}
+              onchange={() => (moveKeepDownstream = true)}
+            />
+            Keep GitHub as a one-way downstream copy
+          </label>
+        </div>
+        <div class="collapse-row-value">
+          <button
+            type="button"
+            class="worktree-button"
+            disabled={busy ||
+              moving ||
+              !settings.collapse_connected ||
+              Boolean(settings.config_error)}
+            onclick={() => void runMoveToCollapse()}
+          >
+            {moving
+              ? 'Moving to Collapse…'
+              : moveResult || (linked && settings.issue_host === 'collapse')
+                ? 'Re-run Move to Collapse'
+                : 'Move to Collapse'}
+          </button>
+          {#if !settings.collapse_connected}
+            <span class="hint">
+              Connect Collapse in Settings → Agents → Shared MCP servers first.
+            </span>
+          {:else if !settings.collapse_issues_token_stored}
+            <span class="hint">
+              Save a Collapse PAT with the issues scope below before importing
+              issues.
+            </span>
+          {/if}
+        </div>
+        {#if moveResult}
+          <ol
+            class="collapse-cutover-steps"
+            aria-label="Move to Collapse steps"
+          >
+            {#each moveResult.steps as step (step.step)}
+              {@const externalUrl = safeExternalUrl(step.action_url)}
+              <li class="collapse-cutover-step">
+                <div class="collapse-cutover-step-head">
+                  <span
+                    class="collapse-cutover-badge"
+                    class:collapse-status-ok={step.status === 'passed'}
+                    class:collapse-status-warn={step.status === 'warning'}
+                    class:collapse-status-err={step.status === 'failed'}
+                    class:hint={step.status === 'skipped'}
+                  >
+                    {stepStatusLabel(step.status)}
+                  </span>
+                  <strong>{step.title}</strong>
+                </div>
+                <p class="collapse-cutover-summary">{step.summary}</p>
+                {#if step.detail}
+                  <p class="hint collapse-cutover-detail">{step.detail}</p>
+                {/if}
+                {#if externalUrl}
+                  <a
+                    href={externalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="worktree-button mini collapse-cutover-link"
+                  >
+                    {step.action_label ?? 'Open on Collapse'} ↗
+                  </a>
+                {/if}
+              </li>
+            {/each}
+          </ol>
+          {#if moveResult.collapse_check}
+            <div class="collapse-check-report">
+              <div class="collapse-cutover-step-head">
+                <span
+                  class="collapse-cutover-badge"
+                  class:collapse-status-ok={moveResult.collapse_check.ok}
+                  class:collapse-status-err={!moveResult.collapse_check.ok}
+                >
+                  {moveResult.collapse_check.ok ? 'OK' : 'Failed'}
+                </span>
+                <code>rosen collapse check</code>
+              </div>
+              <ul class="collapse-check-list">
+                {#each moveResult.collapse_check.checks as item (item.name)}
+                  <li class="collapse-check-item">
+                    <span
+                      class="collapse-check-status"
+                      class:collapse-status-ok={item.status === 'pass'}
+                      class:collapse-status-warn={item.status === 'moved'}
+                      class:collapse-status-err={item.status === 'fail'}
+                      class:hint={item.status === 'skipped'}
+                    >
+                      {checkStatusLabel(item.status)}
+                    </span>
+                    <code class="collapse-check-name">{item.name}</code>
+                    <span class="collapse-check-detail">{item.detail}</span>
+                    {#if item.hint}
+                      <span class="hint collapse-check-hint">{item.hint}</span>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          {/if}
+        {/if}
+      </div>
 
       <div class="worktree-setting-row">
         <span>Collapse root</span>

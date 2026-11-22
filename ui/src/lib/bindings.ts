@@ -52,6 +52,11 @@ export const commands = {
 	/**  `set_collapse_mcp { enabled }` (§3.1): the Settings switch. Running agents keep theirs. */
 	setCollapseMcp: (enabled: boolean) => __TAURI_INVOKE<CollapseConnection_Serialize>("set_collapse_mcp", { enabled }),
 	/**
+	 *  `move_to_collapse` (§3.1): runs the full GitHub-to-Collapse cut-over for a Rosen project,
+	 *  reports each step's result and `rosen collapse check`, and is safe to re-run (#592).
+	 */
+	moveToCollapse: (request: MoveToCollapseRequest_Deserialize) => __TAURI_INVOKE<MoveToCollapseResult_Serialize>("move_to_collapse", { request }),
+	/**
 	 *  `clear_collapse_issues_token` (§3.1): removes the saved Collapse `issues` token from
 	 *  Windows Credential Manager (#589).
 	 */
@@ -962,6 +967,53 @@ export type CollapseActionResult_Deserialize = {
 export type CollapseActionResult_Serialize = {
 	settings: ProjectCollapseSettings_Serialize,
 	message: string,
+};
+
+/**  One probe row returned by `rosen collapse check` (#592). */
+export type CollapseCheckItemResult = CollapseCheckItemResult_Serialize | CollapseCheckItemResult_Deserialize;
+
+/**  One probe row returned by `rosen collapse check` (#592). */
+export type CollapseCheckItemResult_Deserialize = {
+	name: string,
+	status: CollapseCheckItemStatus,
+	detail: string,
+	hint?: string | null,
+};
+
+/**  One probe row returned by `rosen collapse check` (#592). */
+export type CollapseCheckItemResult_Serialize = {
+	name: string,
+	status: CollapseCheckItemStatus,
+	detail: string,
+	hint: string | null,
+};
+
+/**  Outcome of one probe inside `rosen collapse check` (#592). */
+export type CollapseCheckItemStatus = "pass" | "moved" | "fail" | "skipped";
+
+/**  Serializable summary of `rosen collapse check` for project settings (#592). */
+export type CollapseCheckSummary = CollapseCheckSummary_Serialize | CollapseCheckSummary_Deserialize;
+
+/**  Serializable summary of `rosen collapse check` for project settings (#592). */
+export type CollapseCheckSummary_Deserialize = {
+	ok: boolean,
+	mirror_remote?: string | null,
+	collapse?: string | null,
+	ledger_endpoint?: string | null,
+	mirror_owner: boolean,
+	mirror_proactive_auth: boolean,
+	checks: CollapseCheckItemResult_Deserialize[],
+};
+
+/**  Serializable summary of `rosen collapse check` for project settings (#592). */
+export type CollapseCheckSummary_Serialize = {
+	ok: boolean,
+	mirror_remote: string | null,
+	collapse: string | null,
+	ledger_endpoint: string | null,
+	mirror_owner: boolean,
+	mirror_proactive_auth: boolean,
+	checks: CollapseCheckItemResult_Serialize[],
 };
 
 /**  What Settings shows for Collapse's MCP server. */
@@ -3497,6 +3549,95 @@ export type ModelPillView_Serialize = {
 	preserve_requested_fast: boolean,
 };
 
+/**  Input for `move_to_collapse` (§3.1, #592). */
+export type MoveToCollapseRequest = MoveToCollapseRequest_Serialize | MoveToCollapseRequest_Deserialize;
+
+/**  Input for `move_to_collapse` (§3.1, #592). */
+export type MoveToCollapseRequest_Deserialize = {
+	project_identifier: number,
+	/**
+	 *  Optional explicit Collapse `owner/name` (or `name`). When omitted, Velocity links a
+	 *  matching existing repository on Collapse before creating a new one.
+	 */
+	collapse_repository?: string | null,
+	/**  Optional explicit GitHub `owner/name` to import issues from and optionally forward to. */
+	github_repository?: string | null,
+	/**  Keep GitHub as a one-way downstream copy (C4) when `true`; clear it when `false`. */
+	keep_github_downstream: boolean,
+	/**  Optional transient GitHub token used only for the issue import request; never stored. */
+	github_import_token?: string | null,
+};
+
+/**  Input for `move_to_collapse` (§3.1, #592). */
+export type MoveToCollapseRequest_Serialize = {
+	project_identifier: number,
+	/**
+	 *  Optional explicit Collapse `owner/name` (or `name`). When omitted, Velocity links a
+	 *  matching existing repository on Collapse before creating a new one.
+	 */
+	collapse_repository: string | null,
+	/**  Optional explicit GitHub `owner/name` to import issues from and optionally forward to. */
+	github_repository: string | null,
+	/**  Keep GitHub as a one-way downstream copy (C4) when `true`; clear it when `false`. */
+	keep_github_downstream: boolean,
+	/**  Optional transient GitHub token used only for the issue import request; never stored. */
+	github_import_token: string | null,
+};
+
+/**  Step-by-step outcome of `move_to_collapse` (§3.1, #592). */
+export type MoveToCollapseResult = MoveToCollapseResult_Serialize | MoveToCollapseResult_Deserialize;
+
+/**  Step-by-step outcome of `move_to_collapse` (§3.1, #592). */
+export type MoveToCollapseResult_Deserialize = {
+	ok: boolean,
+	collapse_repository?: string | null,
+	github_repository?: string | null,
+	steps: MoveToCollapseStepResult_Deserialize[],
+	collapse_check?: CollapseCheckSummary_Deserialize | null,
+	settings: ProjectCollapseSettings_Deserialize,
+};
+
+/**  Step-by-step outcome of `move_to_collapse` (§3.1, #592). */
+export type MoveToCollapseResult_Serialize = {
+	ok: boolean,
+	collapse_repository: string | null,
+	github_repository: string | null,
+	steps: MoveToCollapseStepResult_Serialize[],
+	collapse_check: CollapseCheckSummary_Serialize | null,
+	settings: ProjectCollapseSettings_Serialize,
+};
+
+/**  Identifier for each step in the Move to Collapse cut-over (#592). */
+export type MoveToCollapseStepId = "import_issues" | "switch_mirror" | "set_issues_and_ci" | "configure_downstream" | "collapse_check";
+
+/**  Reported outcome for one step of Move to Collapse (#592). */
+export type MoveToCollapseStepResult = MoveToCollapseStepResult_Serialize | MoveToCollapseStepResult_Deserialize;
+
+/**  Reported outcome for one step of Move to Collapse (#592). */
+export type MoveToCollapseStepResult_Deserialize = {
+	step: MoveToCollapseStepId,
+	title: string,
+	status: MoveToCollapseStepStatus,
+	summary: string,
+	detail?: string | null,
+	action_url?: string | null,
+	action_label?: string | null,
+};
+
+/**  Reported outcome for one step of Move to Collapse (#592). */
+export type MoveToCollapseStepResult_Serialize = {
+	step: MoveToCollapseStepId,
+	title: string,
+	status: MoveToCollapseStepStatus,
+	summary: string,
+	detail: string | null,
+	action_url: string | null,
+	action_label: string | null,
+};
+
+/**  Result status of one Move to Collapse cut-over step (#592). */
+export type MoveToCollapseStepStatus = "passed" | "warning" | "skipped" | "failed";
+
 export type NavigationIntent = NavigationIntent_Serialize | NavigationIntent_Deserialize;
 
 export type NavigationIntent_Deserialize = "Palette" | "NewThread" | "NewProject" | "Settings" | "ShowNumbers" | ({ Jump: string }) & { Answer?: never } | "Search" | "Task" | "Swarm" | "Goal" | "Airc" | "Dismiss" | "Submit" | "Dispatch" | "Resume" | "Fanout" | "Scouts" | ({ Answer: string }) & { Jump?: never } | "Lock" | "SpecFile" | "Grill" | "Diff" | "Editor" | "SaveAgents" | 
@@ -3928,10 +4069,10 @@ export type ProcessMemory = {
 	budget_mib: number,
 };
 
-/**  Project settings view for the Collapse section (#576, #589). */
+/**  Project settings view for the Collapse section (#576, #589, #592). */
 export type ProjectCollapseSettings = ProjectCollapseSettings_Serialize | ProjectCollapseSettings_Deserialize;
 
-/**  Project settings view for the Collapse section (#576, #589). */
+/**  Project settings view for the Collapse section (#576, #589, #592). */
 export type ProjectCollapseSettings_Deserialize = {
 	project_identifier: number,
 	collapse_repository?: string | null,
@@ -3950,9 +4091,13 @@ export type ProjectCollapseSettings_Deserialize = {
 	collapse_issues_token_stored: boolean,
 	/**  Whether a Collapse account is connected on this machine (#589). */
 	collapse_connected: boolean,
+	/**  Saved GitHub `owner/repository` for this project, when configured (#592). */
+	github_repository?: string | null,
+	/**  Downstream GitHub `owner/repository` last reported by Collapse, when configured (#592). */
+	downstream_github?: string | null,
 };
 
-/**  Project settings view for the Collapse section (#576, #589). */
+/**  Project settings view for the Collapse section (#576, #589, #592). */
 export type ProjectCollapseSettings_Serialize = {
 	project_identifier: number,
 	collapse_repository: string | null,
@@ -3971,6 +4116,10 @@ export type ProjectCollapseSettings_Serialize = {
 	collapse_issues_token_stored: boolean,
 	/**  Whether a Collapse account is connected on this machine (#589). */
 	collapse_connected: boolean,
+	/**  Saved GitHub `owner/repository` for this project, when configured (#592). */
+	github_repository: string | null,
+	/**  Downstream GitHub `owner/repository` last reported by Collapse, when configured (#592). */
+	downstream_github: string | null,
 };
 
 /**  Project settings view for `[deploy]` steps and Windows Credential Manager secrets (#594). */

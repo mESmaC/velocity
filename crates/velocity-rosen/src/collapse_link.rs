@@ -6,18 +6,127 @@
 //! `collapse_channel`. The relay runs only the kinds this server's operator allowed, which
 //! Velocity keeps in project state and re-applies whenever it starts the server.
 
+use std::time::{Duration, Instant};
+
 use rosen_client::Error;
-use rosen_client::protocol::RelayKind;
+use rosen_client::protocol::{CollapseCheckStatus, RelayKind};
 use rosen_core::ProjectConfig;
 use toml_edit::{DocumentMut, Entry, Item, value};
-use velocity_core::collapse::{CollapseFeedHealth, CollapseRelayKind};
+use velocity_core::collapse::{
+    CollapseCheckItemResult, CollapseCheckItemStatus, CollapseCheckSummary, CollapseFeedHealth,
+    CollapseRelayKind,
+};
 
 use crate::connection::requests;
+use crate::mirror::{mirror_lag, mirror_remote};
+use crate::mirror_catch_up::{CatchUp, catch_up_from_mirror};
 use crate::workspace::session;
 use crate::workspace_settings::{
     SETTINGS_AGENT, WorkspaceSettingsError, invalid, read_config, table, write_config,
 };
 use crate::{ProjectServer, RosenError};
+
+pub use crate::mirror_catch_up::{RemoteBaseComparison, probe_remote_against_base};
+
+/// Outcome of waiting for Rosen's mirror worker to fast-forward a Collapse remote (#592).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MirrorFastForwardOutcome {
+    /// Rosen confirmed the mirror remote holds Rosen's current base commit.
+    Synced { base_commit: Option<String> },
+    /// This Rosen server is not marked as the mirror owner, so it cannot push.
+    NotOwner,
+    /// The remote rejected the push (for example non-fast-forward).
+    Rejected { error: String },
+    /// Timed out waiting for Rosen's background push to finish.
+    StillPushing { error: Option<String> },
+}
+
+/// Runs `rosen collapse check` against `server` without mutating state (#592).
+pub async fn collapse_check(server: &ProjectServer) -> Result<CollapseCheckSummary, RosenError> {
+    let client = requests(server.endpoint()).await?;
+    let report = client.collapse_check().await?;
+    Ok(CollapseCheckSummary {
+        ok: report.ok,
+        mirror_remote: report.mirror_remote,
+        collapse: report.collapse,
+        ledger_endpoint: report.ledger_endpoint,
+        mirror_owner: report.mirror_owner,
+        mirror_proactive_auth: report.mirror_proactive_auth,
+        checks: report
+            .checks
+            .into_iter()
+            .map(|item| CollapseCheckItemResult {
+                name: item.name,
+                status: match item.status {
+                    CollapseCheckStatus::Pass => CollapseCheckItemStatus::Pass,
+                    CollapseCheckStatus::Moved => CollapseCheckItemStatus::Moved,
+                    CollapseCheckStatus::Fail => CollapseCheckItemStatus::Fail,
+                    CollapseCheckStatus::Skipped => CollapseCheckItemStatus::Skipped,
+                },
+                detail: item.detail,
+                hint: item.hint,
+            })
+            .collect(),
+    })
+}
+
+/// Wakes Rosen's mirror push worker (safe when the base is ahead of or equal to the remote)
+/// and waits until Rosen records `expected_remote` pushed up to the base commit (#592).
+pub async fn wait_for_mirror_fast_forward(
+    server: &ProjectServer,
+    expected_remote: &str,
+    timeout: Duration,
+) -> Result<MirrorFastForwardOutcome, RosenError> {
+    // Asking Rosen to check catch-up when our base leads wakes its mirror push worker out of
+    // idle or retry backoff immediately without rewriting history.
+    if let Ok(CatchUp::Diverged(divergence)) = catch_up_from_mirror(server).await {
+        return Ok(MirrorFastForwardOutcome::Rejected {
+            error: divergence.detail,
+        });
+    }
+    let deadline = Instant::now() + timeout;
+    let mut last_error: Option<String> = None;
+    loop {
+        let remote = mirror_remote(server).await?;
+        let remote_matches = remote
+            .as_deref()
+            .is_some_and(|current| current.eq_ignore_ascii_case(expected_remote));
+        if remote_matches {
+            match mirror_lag(server).await? {
+                None => {
+                    let base = read_current_base(server).await;
+                    return Ok(MirrorFastForwardOutcome::Synced { base_commit: base });
+                }
+                Some(lag) if lag.not_owner => return Ok(MirrorFastForwardOutcome::NotOwner),
+                Some(lag) if lag.rejected => {
+                    return Ok(MirrorFastForwardOutcome::Rejected {
+                        error: lag
+                            .error
+                            .unwrap_or_else(|| "mirror push was rejected".into()),
+                    });
+                }
+                Some(lag) => {
+                    if lag.error.is_some() {
+                        last_error = lag.error;
+                    }
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Ok(MirrorFastForwardOutcome::StillPushing { error: last_error });
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn read_current_base(server: &ProjectServer) -> Option<String> {
+    let reading = server.clone();
+    tokio::task::spawn_blocking(move || crate::mirror_catch_up::read_base_ref(&reading))
+        .await
+        .ok()?
+        .ok()?
+        .map(|(_, commit)| commit)
+}
 
 /// What `rosen.toml` names for the project's Collapse repository.
 pub struct CollapseLink<'link> {

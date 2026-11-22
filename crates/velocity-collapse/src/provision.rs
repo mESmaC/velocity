@@ -110,6 +110,48 @@ struct MintedToken {
     secret: String,
 }
 
+/// Checks whether `owner/name` already exists on Collapse and is visible to `credentials`
+/// without creating it (#592). Returns `None` on HTTP 404.
+pub async fn repository_exists(
+    credentials: &CollapseCredentials,
+    owner: &str,
+    name: &str,
+) -> Result<Option<ProvisionedMirror>, CollapseError> {
+    let client = Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(failed)?;
+    let path = format!("/api/repositories/{}/{}", encode(owner), encode(name));
+    let response = authorized(&client, Method::GET, &path, &credentials.mcp_token)
+        .send()
+        .await
+        .map_err(failed)?;
+    if response.status() == StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    let reply: RepositoryReply = success(response, "read the repository")
+        .await?
+        .json()
+        .await
+        .map_err(failed)?;
+    Ok(Some(mirror_from(reply, false)))
+}
+
+/// Ensures `request` has a ready Collapse repository with a fresh push token stored in git's
+/// credential helper (#592). When the repository already exists on Collapse (for example an
+/// older import under a personal or organization namespace), this links and prepares it
+/// without attempting to create a new repository.
+pub async fn ensure_mirror(
+    credentials: &CollapseCredentials,
+    request: &MirrorRequest<'_>,
+) -> Result<ProvisionedMirror, CollapseError> {
+    let owner = request.owner.unwrap_or(&credentials.account);
+    if let Some(existing) = repository_exists(credentials, owner, request.name).await? {
+        return prepare_existing_mirror(credentials, &existing.owner, &existing.name).await;
+    }
+    provision_mirror(credentials, request).await
+}
+
 /// Creates the repository when it is missing, waits until Collapse has set it up, mints a
 /// push token and stores it in the git credential helper under the mirror URL and the
 /// endpoints Rosen's state feed, ledger push and relay authenticate at.

@@ -36,7 +36,7 @@ use crate::layout::MainLayout;
 use crate::state::ManagedStateStore;
 use crate::threads::lock;
 
-const NOT_CONNECTED: &str = "Connect Collapse in Settings → Agents → Shared MCP servers first, so Velocity can create the repository";
+pub(crate) const NOT_CONNECTED: &str = "Connect Collapse in Settings → Agents → Shared MCP servers first, so Velocity can create the repository";
 const NOT_CONNECTED_OPEN: &str = "Connect Collapse in Settings → Agents → Shared MCP servers first, so Velocity can read and open your Collapse repositories";
 const NO_PUSH_TOKEN: &str = "Git's credential helper holds no push token for this project's Collapse mirror. Connect Collapse in Settings → Agents → Shared MCP servers so Velocity can create one";
 /// New projects start their Rosen base on `main` (F2).
@@ -142,7 +142,7 @@ pub(crate) struct PreparedCollapseDownstream {
     result: DownstreamResult,
 }
 
-enum DownstreamResult {
+pub(crate) enum DownstreamResult {
     Configured {
         github_repository: String,
     },
@@ -265,7 +265,7 @@ async fn share_hand_stored_token(repository: &str) {
 }
 
 /// The dialog's text without Collapse's git host or `.git`, as `owner/name`, `name` or empty.
-fn typed_repository(repository: &str) -> String {
+pub(crate) fn typed_repository(repository: &str) -> String {
     let trimmed = repository.trim().trim_end_matches('/');
     let trimmed = trimmed
         .strip_prefix("https://api.collapse.sh/")
@@ -284,16 +284,19 @@ fn folder_repository_name(folder: &Path) -> Result<String, String> {
 }
 
 /// What Mirror to Collapse and Send Collapse its live state need from the saved project.
-struct MirrorSubject {
-    name: String,
-    branch: String,
-    repository_path: PathBuf,
-    github_remote: Option<String>,
+pub(crate) struct MirrorSubject {
+    pub(crate) name: String,
+    pub(crate) branch: String,
+    pub(crate) repository_path: PathBuf,
+    pub(crate) github_remote: Option<String>,
     /// The Collapse repository the project already mirrors to.
-    repository: Option<String>,
+    pub(crate) repository: Option<String>,
 }
 
-fn mirror_subject(application: &AppHandle, project: u32) -> Result<MirrorSubject, String> {
+pub(crate) fn mirror_subject(
+    application: &AppHandle,
+    project: u32,
+) -> Result<MirrorSubject, String> {
     let store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -354,7 +357,7 @@ async fn preserve_github_remote(
     Ok(Some(repository))
 }
 
-/// Project settings view for the Collapse section (#576, #589).
+/// Project settings view for the Collapse section (#576, #589, #592).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
 pub struct ProjectCollapseSettings {
     pub project_identifier: u32,
@@ -374,6 +377,10 @@ pub struct ProjectCollapseSettings {
     pub collapse_issues_token_stored: bool,
     /// Whether a Collapse account is connected on this machine (#589).
     pub collapse_connected: bool,
+    /// Saved GitHub `owner/repository` for this project, when configured (#592).
+    pub github_repository: Option<String>,
+    /// Downstream GitHub `owner/repository` last reported by Collapse, when configured (#592).
+    pub downstream_github: Option<String>,
 }
 
 /// Result of a Collapse settings action that lands a `rosen.toml` change (#576).
@@ -591,21 +598,31 @@ async fn uses_rosen(application: &AppHandle, project: u32) -> Result<bool, Strin
     .await
 }
 
-async fn read_project_collapse_settings(
+pub(crate) async fn read_project_collapse_settings(
     application: &AppHandle,
     project: u32,
 ) -> Result<ProjectCollapseSettings, String> {
-    let (collapse_repository, saved_override, effective_allow, issue_host) =
-        crate::state::try_with_store(application, move |store| {
-            let item = store.project(project).ok_or("Unknown project")?;
-            Ok((
-                item.collapse_repository.clone(),
-                item.collapse_relay_allow.clone(),
-                store.collapse_relay_allow(project),
-                item.effective_issue_host(),
-            ))
-        })
-        .await?;
+    let (
+        collapse_repository,
+        saved_override,
+        effective_allow,
+        issue_host,
+        github_repository,
+        downstream_github,
+    ) = crate::state::try_with_store(application, move |store| {
+        let item = store.project(project).ok_or("Unknown project")?;
+        Ok((
+            item.collapse_repository.clone(),
+            item.collapse_relay_allow.clone(),
+            store.collapse_relay_allow(project),
+            item.effective_issue_host(),
+            item.github_remote.clone(),
+            item.collapse_mirror_health
+                .as_ref()
+                .and_then(|health| health.downstream_github.clone()),
+        ))
+    })
+    .await?;
     let (collapse_issues_token_stored, collapse_connected) =
         tauri::async_runtime::spawn_blocking(|| {
             (
@@ -664,6 +681,8 @@ async fn read_project_collapse_settings(
         issue_host,
         collapse_issues_token_stored,
         collapse_connected,
+        github_repository,
+        downstream_github,
     })
 }
 
@@ -740,7 +759,7 @@ pub async fn mirror_to_collapse(
     refresh_health(&application).await
 }
 
-async fn configure_downstream(
+pub(crate) async fn configure_downstream(
     credentials: &CollapseCredentials,
     owner: &str,
     name: &str,
@@ -791,7 +810,7 @@ fn downstream_note(downstream: Option<&DownstreamResult>) -> String {
     }
 }
 
-fn finish_downstream_setup(
+pub(crate) fn finish_downstream_setup(
     application: &AppHandle,
     project: u32,
     collapse_repository: &str,
@@ -949,14 +968,17 @@ async fn land_link(
     ))
 }
 
-fn refusal_reason(refusal: LandRefusal) -> String {
+pub(crate) fn refusal_reason(refusal: LandRefusal) -> String {
     match refusal {
         LandRefusal::Regenerate { paths } => format!("regenerate {}", paths.join(", ")),
         LandRefusal::Conflict { message, .. } | LandRefusal::Other { message, .. } => message,
     }
 }
 
-async fn saved_relay_allow(application: &AppHandle, project: u32) -> Vec<CollapseRelayKind> {
+pub(crate) async fn saved_relay_allow(
+    application: &AppHandle,
+    project: u32,
+) -> Vec<CollapseRelayKind> {
     crate::state::with_store(application, move |store| {
         store.collapse_relay_allow(project)
     })
@@ -966,7 +988,7 @@ async fn saved_relay_allow(application: &AppHandle, project: u32) -> Vec<Collaps
 
 /// Applies the project's relay allow-list to its server and says so in the toast.
 /// A failure leaves the mirror and the feed working, so it is reported, not returned.
-async fn relay_note(
+pub(crate) async fn relay_note(
     server: &velocity_rosen::ProjectServer,
     project: &str,
     allow: &[CollapseRelayKind],
@@ -1037,7 +1059,7 @@ pub(crate) async fn allow_relay_after_create(application: &AppHandle, project: u
     }
 }
 
-fn toast(application: &AppHandle, message: String) -> Result<(), String> {
+pub(crate) fn toast(application: &AppHandle, message: String) -> Result<(), String> {
     let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;
     layout.show_toast(message, None);
     crate::layout::publish(application, &layout.snapshot(), None)
