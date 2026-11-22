@@ -13,7 +13,8 @@ use velocity_collapse::releases::{
     self as collapse_releases, CollapseRelease, CreateReleaseRequest, ROSEN_REPOSITORY,
 };
 use velocity_core::rosen_pin::{
-    PostLandSnapshot, PostLandState, RosenCommit, RosenPin, merge_post_land_states, short_commit,
+    PlatformPostLand, PostLandSnapshot, PostLandState, RosenCommit, RosenPin,
+    merge_post_land_states, short_commit,
 };
 use velocity_github::IssueHost;
 use velocity_github::rosen_pin::{IssueLook, PinIssue, ReleaseLook, RosenPinWatch};
@@ -175,6 +176,9 @@ fn observe(
     let mut client = RosenPinWatch::for_host(target.host, &target.repository)?;
     if let Some(collapse_repo) = target.collapse_repository.as_deref() {
         client = client.with_collapse_repository(collapse_repo);
+    }
+    if target.host == IssueHost::Collapse || rosen_project_on_collapse(application) {
+        client = client.with_rosen_only_ci(true);
     }
     if !watch.maintainer {
         watch.maintainer = client.can_maintain()?;
@@ -381,8 +385,11 @@ fn read_post_land(
         .collect();
     if let Some((project_id, _)) = &local {
         match crate::rosen::observation_server(application, *project_id).and_then(|server| {
-            velocity_rosen::integration::post_land_states(&server, &candidate_commits)
-                .map_err(|error| error.to_string())
+            tauri::async_runtime::block_on(velocity_rosen::integration::post_land_states_verified(
+                &server,
+                &candidate_commits,
+            ))
+            .map_err(|error| error.to_string())
         }) {
             Ok(local_states) => states = local_states,
             Err(error) => crate::diagnostics::record(
@@ -402,6 +409,28 @@ fn read_post_land(
         }
     }
     states
+}
+
+/// True when a local Rosen repository project on this machine has Issues on Collapse (#591).
+fn rosen_project_on_collapse(application: &AppHandle) -> bool {
+    let Some(store) = application.try_state::<ManagedStateStore>() else {
+        return false;
+    };
+    let Ok(store) = store.lock() else {
+        return false;
+    };
+    store.state().projects.iter().any(|project| {
+        project.rosen_in_use()
+            && project.effective_issue_host() == IssueHost::Collapse
+            && (project
+                .collapse_repository
+                .as_deref()
+                .is_some_and(|remote| remote.eq_ignore_ascii_case(ROSEN_REPOSITORY))
+                || project
+                    .github_remote
+                    .as_deref()
+                    .is_some_and(|remote| remote.eq_ignore_ascii_case(ROSEN_REPOSITORY)))
+    })
 }
 
 /// Finds a local Rosen project on this machine corresponding to `repository` (such as
@@ -465,13 +494,24 @@ fn read_collapse_post_land(
             return None;
         }
     };
+    let platforms: Vec<PlatformPostLand> = post_land
+        .platforms
+        .into_iter()
+        .map(|entry| PlatformPostLand {
+            platform: entry.platform,
+            required_build: entry.required_build,
+            required_test: entry.required_test,
+            last_built: entry.last_built,
+            last_green: entry.last_green,
+        })
+        .collect();
     let snapshot = PostLandSnapshot {
         green_commit: post_land.green_commit,
         green_at: post_land.green_at,
         green_events: post_land.green_events,
         failed_commits: post_land.failed_commits,
     };
-    Some(snapshot.states_for(ahead))
+    Some(snapshot.states_for_platforms(ahead, &platforms))
 }
 
 async fn fetch_collapse_post_land(

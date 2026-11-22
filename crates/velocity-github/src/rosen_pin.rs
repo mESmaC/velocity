@@ -89,6 +89,7 @@ pub struct RosenPinWatch {
     transport: WatchTransport,
     velocity: String,
     collapse_repository: String,
+    rosen_only_ci: bool,
 }
 
 impl RosenPinWatch {
@@ -121,12 +122,20 @@ impl RosenPinWatch {
             transport,
             velocity: full_name,
             collapse_repository: COLLAPSE_REPOSITORY.to_owned(),
+            rosen_only_ci: host == IssueHost::Collapse,
         })
     }
 
     /// Overrides the Collapse repository read for open issues that reference landed Rosen issues.
     pub fn with_collapse_repository(mut self, repository: &str) -> Self {
         self.collapse_repository = repository.to_owned();
+        self
+    }
+
+    /// When true, decides commit green status from Rosen's per-platform post-land results alone
+    /// without reading GitHub Actions (`actions/runs`) (#591).
+    pub fn with_rosen_only_ci(mut self, rosen_only_ci: bool) -> Self {
+        self.rosen_only_ci = rosen_only_ci;
         self
     }
 
@@ -259,13 +268,14 @@ impl RosenPinWatch {
             if matches!(rosen_state, PostLandState::Failed) {
                 continue;
             }
-            let github_state = match &self.transport {
-                WatchTransport::Collapse(_) => CiState::NotRun,
-                WatchTransport::GitHub(_) => self.ci_state(rosen, &commit.commit)?,
-            };
-            if let PinVerdict::Green(green_source) =
-                rosen_pin::pin_verdict(rosen_state, github_state)
-            {
+            let verdict =
+                if self.rosen_only_ci || matches!(self.transport, WatchTransport::Collapse(_)) {
+                    rosen_pin::pin_verdict_rosen_only(rosen_state)
+                } else {
+                    let github_state = self.ci_state(rosen, &commit.commit)?;
+                    rosen_pin::pin_verdict(rosen_state, github_state)
+                };
+            if let PinVerdict::Green(green_source) = verdict {
                 return Ok(Ahead::Green {
                     commits: ahead[index..].to_vec(),
                     more: !found,

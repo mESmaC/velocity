@@ -9,6 +9,8 @@ use std::fmt;
 /// How a requested run's row in the thread starts. The row stays running for as long as
 /// GitHub takes, and the stall check reads this to know the thread is waiting, not silent.
 pub const RUN_TITLE: &str = "GitHub workflow ";
+/// How a requested Rosen check-set run's row in the thread starts (#591).
+pub const ROSEN_CHECK_TITLE: &str = "Rosen check ";
 /// Where GitHub reads workflow files, which a request or a list entry may spell out.
 const WORKFLOW_FOLDER: &str = ".github/workflows/";
 /// GitHub refuses a `workflow_dispatch` with more inputs than this.
@@ -127,4 +129,192 @@ fn is_input_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
+}
+
+/// Which check set in `rosen.toml` a Rosen check-set request targets (#591).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RosenCheckKind {
+    PreLand,
+    PostLand,
+}
+
+impl RosenCheckKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PreLand => "pre-land",
+            Self::PostLand => "post-land",
+        }
+    }
+}
+
+/// Summary of one configured check set in `rosen.toml` for pure admission decisions (#591).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfiguredCheckSet {
+    pub kind: RosenCheckKind,
+    pub name: String,
+    pub platforms: Vec<String>,
+    pub has_commands: bool,
+}
+
+/// Admitted Rosen check-set request resolved against the base `rosen.toml` (#591).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedRosenCheck {
+    pub kind: RosenCheckKind,
+    pub check_set: String,
+    pub platform: Option<String>,
+    pub reference: Option<String>,
+}
+
+/// Why a Rosen check-set request was refused, worded for the agent (#591).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RosenCheckRefusal {
+    UnknownCheckSet {
+        requested: String,
+        available: Vec<String>,
+    },
+    EmptyCheckSet(String),
+    UnknownPlatform {
+        requested: String,
+        allowed: Vec<String>,
+    },
+    PlatformRequired {
+        check_set: String,
+        allowed: Vec<String>,
+    },
+    InvalidReference(String),
+}
+
+impl fmt::Display for RosenCheckRefusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownCheckSet {
+                requested,
+                available,
+            } => write!(
+                formatter,
+                "`{requested}` is not a configured Rosen check set in the base's rosen.toml. Available check sets: {}.",
+                available.join(", ")
+            ),
+            Self::EmptyCheckSet(name) => write!(
+                formatter,
+                "Check set `{name}` has no commands configured in the base's rosen.toml."
+            ),
+            Self::UnknownPlatform { requested, allowed } => write!(
+                formatter,
+                "Platform `{requested}` is not configured for this check set in the base's rosen.toml. Configured platforms: {}.",
+                allowed.join(", ")
+            ),
+            Self::PlatformRequired { check_set, allowed } => write!(
+                formatter,
+                "Check set `{check_set}` configures multiple platforms ({}); pass `platform` to choose one.",
+                allowed.join(", ")
+            ),
+            Self::InvalidReference(reference) => {
+                write!(formatter, "`{reference}` is not a valid commit or ref name")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RosenCheckRefusal {}
+
+/// Resolves a requested check set name and optional platform against the base's configured
+/// Rosen check sets (#591). `host_os` is `"windows"`, `"macos"`, or `"linux"`.
+pub fn admit_rosen_check_set(
+    sets: &[ConfiguredCheckSet],
+    requested: &str,
+    platform: Option<&str>,
+    reference: Option<&str>,
+    host_os: &str,
+) -> Result<AdmittedRosenCheck, RosenCheckRefusal> {
+    let trimmed = requested.trim();
+    let matched = sets
+        .iter()
+        .find(|set| check_set_matches(set, trimmed))
+        .ok_or_else(|| RosenCheckRefusal::UnknownCheckSet {
+            requested: trimmed.to_owned(),
+            available: sets.iter().map(|set| set.name.clone()).collect(),
+        })?;
+    if !matched.has_commands {
+        return Err(RosenCheckRefusal::EmptyCheckSet(matched.name.clone()));
+    }
+    if let Some(reference) = reference
+        && !is_reference(reference)
+    {
+        return Err(RosenCheckRefusal::InvalidReference(reference.to_owned()));
+    }
+    let resolved_platform = resolve_rosen_platform(matched, platform, host_os)?;
+    Ok(AdmittedRosenCheck {
+        kind: matched.kind,
+        check_set: matched.name.clone(),
+        platform: resolved_platform,
+        reference: reference.map(str::to_owned),
+    })
+}
+
+fn check_set_matches(set: &ConfiguredCheckSet, requested: &str) -> bool {
+    if requested.is_empty() {
+        return false;
+    }
+    if set.name.eq_ignore_ascii_case(requested) {
+        return true;
+    }
+    match set.kind {
+        RosenCheckKind::PreLand => {
+            requested.eq_ignore_ascii_case("pre-land") || requested.eq_ignore_ascii_case("pre_land")
+        }
+        RosenCheckKind::PostLand => {
+            requested.eq_ignore_ascii_case("post-land")
+                || requested.eq_ignore_ascii_case("post_land")
+        }
+    }
+}
+
+fn resolve_rosen_platform(
+    set: &ConfiguredCheckSet,
+    requested: Option<&str>,
+    host_os: &str,
+) -> Result<Option<String>, RosenCheckRefusal> {
+    if let Some(raw) = requested.map(str::trim).filter(|value| !value.is_empty()) {
+        if set.platforms.is_empty() {
+            return Ok(Some(raw.to_ascii_lowercase()));
+        }
+        let lower = raw.to_ascii_lowercase();
+        if let Some(exact) = set
+            .platforms
+            .iter()
+            .find(|configured| configured.eq_ignore_ascii_case(&lower))
+        {
+            return Ok(Some(exact.clone()));
+        }
+        let requested_os = lower.split('-').next().unwrap_or(&lower);
+        if let Some(by_os) = set
+            .platforms
+            .iter()
+            .find(|configured| configured.eq_ignore_ascii_case(requested_os))
+        {
+            return Ok(Some(by_os.clone()));
+        }
+        return Err(RosenCheckRefusal::UnknownPlatform {
+            requested: raw.to_owned(),
+            allowed: set.platforms.clone(),
+        });
+    }
+    match set.platforms.as_slice() {
+        [] => Ok(None),
+        [only] => Ok(Some(only.clone())),
+        many => {
+            if let Some(host_match) = many
+                .iter()
+                .find(|configured| configured.split('-').next() == Some(host_os))
+            {
+                Ok(Some(host_match.clone()))
+            } else {
+                Err(RosenCheckRefusal::PlatformRequired {
+                    check_set: set.name.clone(),
+                    allowed: set.platforms.clone(),
+                })
+            }
+        }
+    }
 }

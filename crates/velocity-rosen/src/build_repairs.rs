@@ -14,6 +14,7 @@ pub struct BuildFailure {
     pub commit: String,
     pub change: String,
     pub output: String,
+    pub platform: Option<String>,
     pub reverted: bool,
     pub recorded_at: u64,
     pub refusal: Option<String>,
@@ -26,6 +27,7 @@ impl BuildFailure {
             commit,
             change,
             output,
+            platform: None,
             recorded_at,
             reverted: false,
             refusal: None,
@@ -50,22 +52,30 @@ impl BuildFailure {
 pub async fn build_failures(server: &ProjectServer) -> Result<Vec<BuildFailure>, RosenError> {
     let client = crate::connection::requests(server.endpoint()).await?;
     let failures = client.post_land_failures(None).await?;
+    let host = rosen_core::Platform::host();
     let (integrations, builds): (Vec<_>, Vec<_>) = failures
         .into_iter()
         .filter(|failure| {
-            (failure.kind == CheckKind::Build && failure.requires_revert) || is_integration(failure)
+            let local_platform = failure.platform.as_deref().is_none_or(|raw| {
+                rosen_core::Platform::parse(raw).is_ok_and(|target| host.matches(&target))
+            });
+            ((failure.kind == CheckKind::Build && failure.requires_revert)
+                || is_integration(failure))
+                && local_platform
         })
         .partition(is_integration);
     let mut repairs: Vec<_> = integrations
         .into_iter()
         .map(|failure| {
-            BuildFailure::new(
+            let mut repair = BuildFailure::new(
                 failure.commit.to_string(),
                 failure.change,
                 failure.output,
                 0,
             )
-            .with_refusal("Integration failures are fixed forward.".into(), Vec::new())
+            .with_refusal("Integration failures are fixed forward.".into(), Vec::new());
+            repair.platform = failure.platform;
+            repair
         })
         .collect();
     if builds.is_empty() {
@@ -86,6 +96,7 @@ pub async fn build_failures(server: &ProjectServer) -> Result<Vec<BuildFailure>,
                 commit,
                 change: failure.change,
                 output: failure.output,
+                platform: failure.platform,
                 reverted: failure.revert.is_some(),
                 recorded_at: evidence.recorded_at,
                 refusal: evidence.refusal,

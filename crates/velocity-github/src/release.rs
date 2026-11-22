@@ -79,8 +79,11 @@ impl IssueClient {
     }
 
     /// Whether `commit` carries the green `velocity/integration` status the release gate
-    /// requires on Rosen's green commit. GitHub lists a context's newest status first.
+    /// requires on Rosen's green commit. On Collapse, reads Rosen's post-land green state (#591).
     pub fn integration_passed(&self, commit: &str) -> Result<bool, GitHubCommandError> {
+        if self.host() == crate::IssueHost::Collapse {
+            return Ok(self.integration_status_covering(commit)?.is_some());
+        }
         if crate::commit_cache::is_known_green(self.repository(), commit) {
             return Ok(true);
         }
@@ -105,11 +108,38 @@ impl IssueClient {
     }
 
     /// The newest commit on GitHub's default branch carrying a green `velocity/integration`
-    /// status, scanning up to `limit` recent commits (#521).
+    /// status, scanning up to `limit` recent commits (#521). On Collapse, returns the newest
+    /// Rosen green commit covering all required platforms (#591).
     pub fn newest_integration_green(
         &self,
         limit: usize,
     ) -> Result<Option<String>, GitHubCommandError> {
+        if self.host() == crate::IssueHost::Collapse {
+            let Some((owner, name)) = velocity_core::collapse::parse_repository(self.repository())
+            else {
+                return Ok(None);
+            };
+            let credentials = match velocity_collapse::load_credentials() {
+                Ok(Some(credentials)) => credentials,
+                Ok(None) => return Ok(None),
+                Err(error) => return Err(GitHubCommandError::Invalid(error.to_string())),
+            };
+            let post_land = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| GitHubCommandError::Invalid(error.to_string()))?
+                .block_on(velocity_collapse::repository_post_land(
+                    &credentials,
+                    &owner,
+                    &name,
+                )) {
+                Ok(post_land) => post_land,
+                Err(error) => return Err(GitHubCommandError::Invalid(error.to_string())),
+            };
+            return Ok(post_land
+                .filter(|state| state.all_required_platforms_have_green())
+                .and_then(|state| state.green_commit));
+        }
         if let Ok(snapshot) = self.branch_tip_snapshot()
             && let Some(green) = snapshot
                 .history
@@ -151,9 +181,13 @@ impl IssueClient {
     /// Detects when the newest `release.yml` workflow run failed its `Release gate checks`
     /// job without an open `release-blocker` issue (and no newer release run is in flight),
     /// indicating the release commit lacked a green `velocity/integration` status (#521).
+    /// Returns `None` on Collapse projects so `actions/runs` is never read (#591).
     pub fn latest_refused_release_gate(
         &self,
     ) -> Result<Option<RefusedReleaseGate>, GitHubCommandError> {
+        if self.host() == crate::IssueHost::Collapse {
+            return Ok(None);
+        }
         let Some(runs) = self.recent_release_runs()? else {
             return Ok(None);
         };

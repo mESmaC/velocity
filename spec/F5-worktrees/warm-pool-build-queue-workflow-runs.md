@@ -22,3 +22,4 @@
   A thread waiting for a workflow run counts as waiting, as it does in the build queue, so it is never stalled.
   Stopping the session ends the wait and leaves the run going on GitHub.
   Until the pinned Rosen accepts the `[ci]` table, a `rosen.toml` cannot hold the list and every request is refused.
+  On a project with Issues on Collapse (or no GitHub mirror), `workflow_run` accepts a named Rosen check set (`check_set` or `workflow`, such as `pre-land` or `post-land`) and an optional `platform` (such as `windows`, `macos` or `linux`) configured in the base's `rosen.toml`, running it locally when the platform matches this machine or awaiting Rosen's connected per-platform checker without touching GitHub Actions (#591).

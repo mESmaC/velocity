@@ -1,6 +1,6 @@
-//! The `workflow_run` tool (#508), served by the same stdio subprocess as `queue_run`.
-//! Agents have no `gh`, so a workflow an owner allows is requested here and its result
-//! arrives the way a queued command's does.
+//! The `workflow_run` tool (#508, #591), served by the same stdio subprocess as `queue_run`.
+//! On GitHub projects, dispatches owner-allowed GitHub Actions workflows. On Collapse /
+//! GitHub-free projects, asks Rosen to run or verify a named check set on a platform.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -14,19 +14,25 @@ pub const WORKFLOW_RUN_TOOL: &str = "workflow_run";
 /// The session reads the project's configuration from Rosen before it answers.
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(20);
 
-const DESCRIPTION: &str = "Ask Velocity to run a GitHub Actions workflow in this project's \
-    repository, since agents do not run `gh` directly. Pass the workflow's file name, such as \
-    `ci.yml`. Only workflows the project owner lists under `[ci] dispatchable` in the base's \
-    rosen.toml run; any other request is refused with the reason. After a request is \
-    accepted, end your turn. Velocity waits for the run and sends its conclusion, each \
-    job's result, failed steps' output and the artifacts, with small text artifacts in \
-    full, in your next prompt. GitHub has no API for step summaries, so a workflow uploads \
-    a table it wants read as a text artifact.";
+const DESCRIPTION: &str = "Ask Velocity to run an owner-allowed CI check in this project. \
+    On a project with Issues on Collapse (or without a GitHub mirror), pass `check_set` \
+    (or `workflow`) naming a configured check set from the base's rosen.toml such as \
+    `pre-land` or `post-land`, and an optional `platform` such as `windows`, `macos` or \
+    `linux`; Velocity runs the check set on Rosen (locally or on a connected platform checker) \
+    without calling GitHub Actions. On a GitHub project, pass the workflow file name under \
+    `.github/workflows` such as `ci.yml`; only workflows listed under `[ci] dispatchable` in \
+    the base's rosen.toml run. After a request is accepted, end your turn; Velocity sends the \
+    result, output excerpt and saved log path in your next prompt.";
 
-/// A workflow to run, as the tool hands it to the session that owns the queue.
+/// A workflow or Rosen check-set run, as the tool hands it to the session that owns the queue.
 #[derive(Deserialize, Serialize)]
 pub(super) struct WorkflowRequest {
+    #[serde(default)]
     pub workflow: String,
+    #[serde(default)]
+    pub check_set: Option<String>,
+    #[serde(default)]
+    pub platform: Option<String>,
     #[serde(default, rename = "ref")]
     pub reference: Option<String>,
     #[serde(default)]
@@ -37,7 +43,12 @@ pub(super) struct WorkflowRequest {
 /// boolean or a number for an input declared as one.
 #[derive(Deserialize)]
 struct Arguments {
-    workflow: String,
+    #[serde(default)]
+    workflow: Option<String>,
+    #[serde(default)]
+    check_set: Option<String>,
+    #[serde(default)]
+    platform: Option<String>,
     #[serde(default, rename = "ref")]
     reference: Option<String>,
     #[serde(default)]
@@ -51,11 +62,12 @@ pub fn workflow_run_tool() -> Value {
         "inputSchema": {
             "type": "object",
             "properties": {
-                "workflow": {"type": "string", "description": "Workflow file under .github/workflows, e.g. ci.yml"},
-                "ref": {"type": "string", "description": "Branch or tag to run at. Defaults to the repository's default branch"},
-                "inputs": {"type": "object", "description": "The workflow's workflow_dispatch inputs", "additionalProperties": {"type": ["string", "number", "boolean"]}}
-            },
-            "required": ["workflow"]
+                "workflow": {"type": "string", "description": "GitHub Actions workflow file (e.g. ci.yml) or Rosen check set name (e.g. post-land)"},
+                "check_set": {"type": "string", "description": "Named Rosen check set from rosen.toml (e.g. pre-land or post-land) for projects on Collapse"},
+                "platform": {"type": "string", "description": "Target platform for a Rosen check set (e.g. windows, macos, linux, macos-arm64)"},
+                "ref": {"type": "string", "description": "Branch, tag or commit to run at. Defaults to the default branch or base tip"},
+                "inputs": {"type": "object", "description": "GitHub workflow_dispatch inputs", "additionalProperties": {"type": ["string", "number", "boolean"]}}
+            }
         }
     })
 }
@@ -63,6 +75,22 @@ pub fn workflow_run_tool() -> Value {
 pub fn request_workflow_run(port: u16, token: &str, arguments: Value) -> Result<Value, String> {
     let arguments: Arguments =
         serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+    let workflow = arguments
+        .workflow
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_default()
+        .to_owned();
+    let check_set = arguments
+        .check_set
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned);
+    if workflow.is_empty() && check_set.is_none() {
+        return Err("Provide `workflow` (GitHub Actions) or `check_set` (Rosen check set)".into());
+    }
     let inputs = arguments
         .inputs
         .into_iter()
@@ -71,13 +99,15 @@ pub fn request_workflow_run(port: u16, token: &str, arguments: Value) -> Result<
     let request = Request {
         token: token.to_owned(),
         work: Work::Workflow(WorkflowRequest {
-            workflow: arguments.workflow,
+            workflow,
+            check_set,
+            platform: arguments.platform.filter(|name| !name.trim().is_empty()),
             reference: arguments.reference.filter(|name| !name.trim().is_empty()),
             inputs,
         }),
     };
     submit::<String>(port, &request, ADMISSION_TIMEOUT)
-        .map_err(|error| format!("Could not request the workflow: {error}"))?
+        .map_err(|error| format!("Could not request the run: {error}"))?
         .map(|run| json!({"queued": true, "run": run, "next": "End your turn. Velocity will send the run's result when it finishes."}))
 }
 

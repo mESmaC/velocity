@@ -485,6 +485,7 @@ pub async fn set_project_issue_host(
             .map_err(|error| error.to_string())
     })
     .await?;
+    crate::base_ci::wake(&application);
     read_project_collapse_settings(&application, project_identifier).await
 }
 

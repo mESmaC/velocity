@@ -13,6 +13,7 @@ pub mod brief;
 pub mod build_repairs;
 pub mod bundled;
 pub mod change_details;
+pub mod check_run;
 pub mod checker;
 mod checkout;
 pub mod collapse_link;

@@ -269,8 +269,12 @@ async fn cut_collapse_release(
     tag: String,
     requested: Option<&str>,
 ) -> Result<ReleaseCut, String> {
-    match velocity_rosen::release::release_commit(server, requested).await {
-        Ok(release) => {
+    use velocity_rosen::release::{ReleaseGateCheck, check_release_gate};
+    match check_release_gate(server, requested)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        ReleaseGateCheck::Ready(release) => {
             start_collapse_release_job(
                 application,
                 project,
@@ -281,26 +285,60 @@ async fn cut_collapse_release(
             )
             .await
         }
-        Err(_) if requested.is_some() => {
+        ReleaseGateCheck::Waiting {
+            local_needs_run,
+            message,
+            ..
+        } if requested.is_some() => {
             let commit = requested.unwrap_or_default().to_owned();
-            Ok(queue_integration_cut(
+            Ok(queue_collapse_release_wait(
                 application,
                 project.landing.project.id,
                 tag,
                 commit,
+                local_needs_run,
+                message,
             ))
         }
-        Err(_) => {
-            crate::rosen_landing::request_integration(
-                application,
-                project.landing.project.id,
-                None,
-            );
-            Err(
-                "No commit has a green integration build yet. Started an integration build now — try Cut release again once it finishes."
-                    .into(),
-            )
+        ReleaseGateCheck::Waiting {
+            local_needs_run,
+            message,
+            ..
+        } => {
+            if local_needs_run {
+                crate::rosen_landing::request_integration(
+                    application,
+                    project.landing.project.id,
+                    None,
+                );
+            }
+            Err(message)
         }
+    }
+}
+
+fn queue_collapse_release_wait(
+    application: &AppHandle,
+    project: u32,
+    tag: String,
+    commit: String,
+    local_needs_run: bool,
+    reason: String,
+) -> ReleaseCut {
+    if local_needs_run {
+        crate::rosen_landing::request_integration(application, project, Some(commit.clone()));
+    }
+    crate::project_health::queue_pending_release(application, project, tag.clone(), commit.clone());
+    let note = format!(
+        "Queued release {tag} for {}: {reason}. It will start automatically once every required platform is green.",
+        short_commit(&commit)
+    );
+    ReleaseCut {
+        tag,
+        commit,
+        green: String::new(),
+        waiting_for_integration: true,
+        note,
     }
 }
 

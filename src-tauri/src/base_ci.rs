@@ -7,13 +7,15 @@
 //! the project shows. `velocity-core` decides and `velocity-github` talks to GitHub.
 
 use std::collections::{BTreeMap, HashSet};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 use velocity_core::base_ci::{
-    self, BaseCi, BaseCiState, CommitOrder, Failure, OpenRepair, RepairThreadState, ResolvedJob,
-    SupersededRepair,
+    self, BaseCi, BaseCiSource, BaseCiState, CommitOrder, Failure, OpenRepair, RepairThreadState,
+    ResolvedJob, RosenBaseSnapshot, SupersededRepair,
 };
+use velocity_core::collapse::IssueHost;
 use velocity_core::project_health::short_commit;
 use velocity_core::thread_view_model::RosenChangeStage;
 use velocity_github::base_ci::{BaseCiWatch, FailedLog};
@@ -23,7 +25,9 @@ use velocity_rosen::post_land::{self, CommitAncestry};
 use velocity_store::ci_repairs::CiRepair;
 use velocity_store::{ThreadItem, ThreadState, VersionControl};
 use velocity_threads::LaunchPlan;
-use velocity_threads::ci_repairs::{CiFailure, pending_ci_repairs, prepare_ci_repair};
+use velocity_threads::ci_repairs::{
+    CiFailure, RosenCiFailure, pending_ci_repairs, prepare_ci_repair, prepare_rosen_ci_repair,
+};
 
 use crate::layout::MainLayout;
 use crate::state::ManagedStateStore;
@@ -36,13 +40,19 @@ const FIRST_LOOK: Duration = Duration::from_secs(90);
 const LOOK_INTERVAL: Duration = Duration::from_secs(3 * 60);
 const SOURCE: &str = "base ci";
 
-/// A Rosen project whose base is mirrored to GitHub.
+/// How base CI is observed for one Rosen project (#507, #591).
+enum SubjectMode {
+    /// GitHub-hosted project: watch GitHub Actions runs and commit statuses on the mirror.
+    GitHub { repository: String, branch: String },
+    /// Collapse or GitHub-free project: watch Rosen's per-platform post-land failures.
+    Rosen,
+}
+
+/// A Rosen project watched for base CI failures.
 struct Subject {
     project: u32,
     name: String,
-    /// The mirror's `owner/name`.
-    repository: String,
-    branch: String,
+    mode: SubjectMode,
 }
 
 struct BaseCiWake(std::sync::mpsc::Sender<()>);
@@ -74,8 +84,11 @@ pub fn initialize(application: &AppHandle) {
                 if let Some(failure) = &failure
                     && last_failures.get(&subject.project) != Some(failure)
                 {
-                    let message =
-                        format!("{}: GitHub CI was not followed: {failure}", subject.name);
+                    let label = match subject.mode {
+                        SubjectMode::GitHub { .. } => "GitHub CI",
+                        SubjectMode::Rosen => "Rosen post-land CI",
+                    };
+                    let message = format!("{}: {label} was not followed: {failure}", subject.name);
                     crate::diagnostics::record(SOURCE, &message);
                 }
                 match failure {
@@ -100,14 +113,23 @@ fn subjects(application: &AppHandle) -> Vec<Subject> {
         .projects
         .iter()
         .filter(|project| project.version_control == VersionControl::Rosen)
-        .filter_map(|project| {
-            let branch = project.default_branch.trim();
-            Some(Subject {
+        .map(|project| {
+            let mode = if project.effective_issue_host() == IssueHost::Collapse {
+                SubjectMode::Rosen
+            } else if let Some(repository) = project.github_remote.clone() {
+                let branch = project.default_branch.trim();
+                SubjectMode::GitHub {
+                    repository,
+                    branch: if branch.is_empty() { "master" } else { branch }.to_owned(),
+                }
+            } else {
+                SubjectMode::Rosen
+            };
+            Subject {
                 project: project.id,
                 name: project.name.clone(),
-                repository: project.github_remote.clone()?,
-                branch: if branch.is_empty() { "master" } else { branch }.to_owned(),
-            })
+                mode,
+            }
         })
         .collect()
 }
@@ -118,10 +140,23 @@ fn look(
     subject: &Subject,
     run_logs: &mut BTreeMap<u64, FailedLog>,
 ) -> Result<(), String> {
-    let client = BaseCiWatch::new(&subject.repository).map_err(|error| error.to_string())?;
-    let snapshot = client
-        .runs(&subject.branch)
-        .map_err(|error| error.to_string())?;
+    match &subject.mode {
+        SubjectMode::GitHub { repository, branch } => {
+            look_github(application, subject, repository, branch, run_logs)
+        }
+        SubjectMode::Rosen => look_rosen(application, subject),
+    }
+}
+
+fn look_github(
+    application: &AppHandle,
+    subject: &Subject,
+    repository: &str,
+    branch: &str,
+    run_logs: &mut BTreeMap<u64, FailedLog>,
+) -> Result<(), String> {
+    let client = BaseCiWatch::new(repository).map_err(|error| error.to_string())?;
+    let snapshot = client.runs(branch).map_err(|error| error.to_string())?;
     let mut verdict = base_ci::evaluate_jobs(&snapshot.runs, &snapshot.run_jobs);
     let open = open_repairs(application, subject.project, &verdict.active_failures)?;
     populate_signatures(
@@ -142,10 +177,35 @@ fn look(
         result = result.and(start_repair(
             application,
             subject,
+            repository,
+            branch,
             &client,
             failure,
             run_logs.get(&failure.run),
         ));
+    }
+    result.and(resume_pending(application, subject))
+}
+
+/// Observes Rosen per-platform post-land failures and checkpoints on Collapse or GitHub-free
+/// projects without calling GitHub Actions (#591).
+fn look_rosen(application: &AppHandle, subject: &Subject) -> Result<(), String> {
+    if crate::rosen::paused(application) {
+        return Ok(());
+    }
+    let server = crate::rosen::observation_server(application, subject.project)?;
+    let snapshot = tauri::async_runtime::block_on(post_land::base_ci_snapshot(&server))
+        .map_err(|error| error.to_string())?;
+    let (verdict, view) = base_ci::evaluate_rosen_post_land(&snapshot);
+    let open = open_repairs(application, subject.project, &verdict.active_failures)?;
+    let plan = base_ci::plan_for_verdict(&open, &verdict);
+    publish(application, subject, view)?;
+    close(application, subject, &plan.closed)?;
+    close_resolved(application, subject, &plan.resolved)?;
+    close_superseded(application, subject, &plan.superseded)?;
+    let mut result = Ok(());
+    for failure in &plan.start {
+        result = result.and(start_rosen_repair(application, subject, &snapshot, failure));
     }
     result.and(resume_pending(application, subject))
 }
@@ -421,6 +481,7 @@ fn publish(application: &AppHandle, subject: &Subject, view: BaseCi) -> Result<(
         .project(subject.project)
         .and_then(|item| item.base_ci.as_ref())
         .is_some_and(|ci| ci.state == BaseCiState::Failed);
+    let source = view.source;
     let recovered = was_failing && view.state == BaseCiState::Green;
     let changed = store
         .save_base_ci(subject.project, Some(view))
@@ -429,8 +490,12 @@ fn publish(application: &AppHandle, subject: &Subject, view: BaseCi) -> Result<(
         let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;
         store.refresh_layout(&mut layout);
         if recovered {
+            let label = match source {
+                BaseCiSource::GitHub => "GitHub CI is",
+                BaseCiSource::Rosen => "Rosen post-land checks are",
+            };
             layout.show_toast(
-                format!("{}: GitHub CI is green again on the base", subject.name),
+                format!("{}: {label} green again on the base", subject.name),
                 None,
             );
         }
@@ -541,6 +606,8 @@ fn close_superseded(
 fn start_repair(
     application: &AppHandle,
     subject: &Subject,
+    repository: &str,
+    branch: &str,
     client: &BaseCiWatch,
     failure: &Failure,
     cached_log: Option<&FailedLog>,
@@ -559,8 +626,8 @@ fn start_repair(
         }
     };
     let report = CiFailure {
-        repository: &subject.repository,
-        branch: &subject.branch,
+        repository,
+        branch,
         failure,
         log: &log.text,
         saved_log: log.saved.as_deref(),
@@ -590,6 +657,66 @@ fn start_repair(
     let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;
     layout.show_toast(message, None);
     crate::layout::publish(application, &layout.snapshot(), None)
+}
+
+/// Saves and launches a fix-forward thread for a Rosen per-platform post-land failure (#591).
+fn start_rosen_repair(
+    application: &AppHandle,
+    subject: &Subject,
+    snapshot: &RosenBaseSnapshot,
+    failure: &Failure,
+) -> Result<(), String> {
+    let source = snapshot
+        .failures
+        .iter()
+        .find(|entry| entry.session == failure.run);
+    let change = source.map_or("", |entry| entry.change.as_str());
+    let platform = source
+        .and_then(|entry| entry.platform_display.as_deref())
+        .or_else(|| failure.jobs.first().and_then(|job| job.runner.as_deref()))
+        .unwrap_or("base");
+    let check_kind = source.map_or("test", |entry| entry.kind.as_str());
+    let output = source.map_or("", |entry| entry.output.as_str());
+    let saved_log = save_rosen_failure_log(failure.run, output);
+    let report = RosenCiFailure {
+        project: &subject.name,
+        failure,
+        change,
+        platform,
+        check_kind,
+        output,
+        saved_log: saved_log.as_deref(),
+    };
+    let planned = {
+        let mut store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        prepare_rosen_ci_repair(&mut store, subject.project, &report)?
+    };
+    let Some((plan, thread)) = planned else {
+        return Ok(());
+    };
+    let message = format!(
+        "{}: Rosen post-land {check_kind} failed on {platform} · started a fix-forward thread",
+        subject.name,
+    );
+    crate::diagnostics::record(SOURCE, &message);
+    launch(application, plan, thread)?;
+    let mut layout = lock(application.state::<MainLayout>().inner(), "layout")?;
+    layout.show_toast(message, None);
+    crate::layout::publish(application, &layout.snapshot(), None)
+}
+
+fn save_rosen_failure_log(session: u64, output: &str) -> Option<PathBuf> {
+    if output.trim().is_empty() {
+        return None;
+    }
+    let dir = std::env::temp_dir().join(format!("velocity-base-ci-rosen-{session}"));
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("failed-steps.log");
+    std::fs::write(&path, output).ok()?;
+    Some(path)
 }
 
 /// Starts the repairs that were saved and never started: Velocity stopped before the

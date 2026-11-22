@@ -520,8 +520,12 @@ impl IssueClient {
     }
 
     /// Publishes a pass on the exact mirrored base tested by Velocity.
+    /// On Collapse, Rosen's own post-land checkpoints replace GitHub commit statuses (#591).
     pub fn publish_integration_success(&self, commit: &str) -> Result<bool, GitHubCommandError> {
         validate_commit_sha(commit)?;
+        if matches!(self.backend, IssueBackend::Collapse(_)) {
+            return Ok(true);
+        }
         if crate::commit_cache::is_known_green(self.repository(), commit) {
             return Ok(true);
         }

@@ -666,10 +666,13 @@ export type AircTabView = {
 export type AircTone = "Neutral" | "Claim" | "Info" | "Positive" | "Warning" | "Danger" | "Muted";
 
 /**
- *  The CI state of a project's base on its GitHub mirror, kept with the project so it
- *  shows at startup before the next read.
+ *  The CI state of a project's base on its GitHub mirror or Rosen per-platform post-land
+ *  checks, kept with the project so it shows at startup before the next read (#507, #591).
  */
 export type BaseCi = BaseCi_Serialize | BaseCi_Deserialize;
+
+/**  Which CI system produced a project's base CI state (#591). */
+export type BaseCiSource = "GitHub" | "Rosen";
 
 /**  What the project shows for its base's CI. */
 export type BaseCiState = 
@@ -683,10 +686,11 @@ export type BaseCiState =
 "Failed";
 
 /**
- *  The CI state of a project's base on its GitHub mirror, kept with the project so it
- *  shows at startup before the next read.
+ *  The CI state of a project's base on its GitHub mirror or Rosen per-platform post-land
+ *  checks, kept with the project so it shows at startup before the next read (#507, #591).
  */
 export type BaseCi_Deserialize = {
+	source?: BaseCiSource,
 	state?: BaseCiState,
 	/**  The base commit of the newest finished run. */
 	commit?: string | null,
@@ -697,10 +701,11 @@ export type BaseCi_Deserialize = {
 };
 
 /**
- *  The CI state of a project's base on its GitHub mirror, kept with the project so it
- *  shows at startup before the next read.
+ *  The CI state of a project's base on its GitHub mirror or Rosen per-platform post-land
+ *  checks, kept with the project so it shows at startup before the next read (#507, #591).
  */
 export type BaseCi_Serialize = {
+	source: BaseCiSource,
 	state: BaseCiState,
 	/**  The base commit of the newest finished run. */
 	commit: string | null,

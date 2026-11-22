@@ -4,18 +4,22 @@
 
 use rosen_client::protocol::{ErrorCode, ReadAnswer, ReadRequest};
 use rosen_client::{Client, Endpoint, Error as ClientError};
-use rosen_core::project_config::CONFIG_PATH;
+use rosen_core::project_config::{CONFIG_PATH, CheckSets};
 use toml_edit::{DocumentMut, Item};
 
 use crate::RosenError;
 
-/// What the configuration in force says about dispatching workflows.
+/// What the configuration in force says about dispatching workflows and Rosen check sets (#508, #591).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkflowPolicy {
     /// `[ci] dispatchable`: workflow file names under `.github/workflows`.
     pub dispatchable: Vec<String>,
     /// `[mirror] remote`, the GitHub repository whose workflows these are.
     pub mirror: Option<String>,
+    /// `collapse` root configured in the base's `rosen.toml`, when present (#591).
+    pub collapse: Option<String>,
+    /// `[checks]` configured in the base's `rosen.toml` (#591).
+    pub checks: CheckSets,
     /// Why Rosen refused the base's own `rosen.toml`, when an older file is in force.
     pub refused: Option<String>,
 }
@@ -33,6 +37,8 @@ pub async fn workflow_policy(endpoint: &str) -> Result<WorkflowPolicy, RosenErro
     Ok(WorkflowPolicy {
         dispatchable,
         mirror: record.config.mirror.remote,
+        collapse: record.config.collapse,
+        checks: record.config.checks,
         refused: record.error,
     })
 }

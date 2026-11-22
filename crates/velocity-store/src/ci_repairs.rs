@@ -260,6 +260,7 @@ mod tests {
         let first = store.add_ci_repair(1, &failure, thread("one"), "prompt")?;
         assert!(first.is_some());
         let failing = BaseCi {
+            source: velocity_core::base_ci::BaseCiSource::GitHub,
             state: BaseCiState::Failed,
             commit: Some(failure.commit.clone()),
             failing: vec!["Build · test (macos-latest)".into()],

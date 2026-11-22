@@ -275,6 +275,117 @@ impl PostLandTables {
     }
 }
 
+/// Reads Rosen's post-land verdict for each candidate commit using the live Rosen server's
+/// per-platform `post_land_status` and `post_land_failures` so required platforms (such as
+/// macOS) gate pin bumps (#591). Falls back to reading `metadata.sqlite` when the server is
+/// unavailable or lacks `post_land_status`.
+pub async fn post_land_states_verified(
+    server: &ProjectServer,
+    commits: &[String],
+) -> Result<BTreeMap<String, PostLandState>, RosenError> {
+    if commits.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let client = match crate::connection::requests(server.endpoint()).await {
+        Ok(client) => client,
+        Err(_) => return post_land_states(server, commits),
+    };
+    let status = match client.post_land_status().await {
+        Ok(status) => status,
+        Err(_) => return post_land_states(server, commits),
+    };
+    let failures = client.post_land_failures(None).await.unwrap_or_default();
+    let mut states = BTreeMap::new();
+    for commit in commits {
+        let key = commit.to_ascii_lowercase();
+        if failures
+            .iter()
+            .any(|failure| failure.commit.to_string().eq_ignore_ascii_case(&key))
+            || status.sessions.iter().any(|session| {
+                !session.flaky && session.failing.to_string().eq_ignore_ascii_case(&key)
+            })
+        {
+            states.insert(key, PostLandState::Failed);
+            continue;
+        }
+        if commit_green_across_platforms(&client, &status, &key).await? {
+            let at = commit_green_at(server, &key)
+                .ok()
+                .flatten()
+                .map(format_utc_seconds)
+                .or_else(|| {
+                    status
+                        .last_green
+                        .as_ref()
+                        .and_then(|cp| cp.at)
+                        .and_then(|ms| u64::try_from(ms / 1000).ok())
+                        .map(format_utc_seconds)
+                });
+            states.insert(key, PostLandState::Green { at });
+        }
+    }
+    Ok(states)
+}
+
+async fn commit_green_across_platforms(
+    client: &rosen_client::Client,
+    status: &rosen_client::protocol::PostLandStatus,
+    commit: &str,
+) -> Result<bool, RosenError> {
+    let required: Vec<&rosen_client::protocol::PlatformStatus> = status
+        .platforms
+        .iter()
+        .filter(|platform| platform.required_test || platform.required_build)
+        .collect();
+    if required.is_empty() {
+        let Some(green) = status.last_green.as_ref() else {
+            return Ok(false);
+        };
+        return commit_is_ancestor(client, commit, &green.commit.to_string()).await;
+    }
+    for platform in required {
+        if platform.required_test {
+            let Some(green) = platform.last_green.as_ref() else {
+                return Ok(false);
+            };
+            if !commit_is_ancestor(client, commit, &green.commit.to_string()).await? {
+                return Ok(false);
+            }
+        }
+        if platform.required_build {
+            let Some(built) = platform
+                .last_built
+                .as_ref()
+                .or(platform.last_green.as_ref())
+            else {
+                return Ok(false);
+            };
+            if !commit_is_ancestor(client, commit, &built.commit.to_string()).await? {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+async fn commit_is_ancestor(
+    client: &rosen_client::Client,
+    commit: &str,
+    checkpoint: &str,
+) -> Result<bool, RosenError> {
+    if commit.eq_ignore_ascii_case(checkpoint) {
+        return Ok(true);
+    }
+    let Ok(identifier) = crate::policy::object(commit) else {
+        return Ok(false);
+    };
+    match client.merge_base(commit, checkpoint).await {
+        Ok(answer) => Ok(answer.merge_base == Some(identifier)),
+        Err(rosen_client::Error::Server(_)) => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Reads Rosen's post-land verdict (`Green` or `Failed`) for each candidate commit in
 /// `commits` from this project's local `metadata.sqlite` (#580). Commits absent from the
 /// ledger or still awaiting verification are omitted so callers may fall back to Collapse
@@ -612,17 +723,39 @@ fn ledger(server: &ProjectServer) -> Result<Connection, RosenError> {
     Ok(connection)
 }
 
+fn green_seq_for_host_or_ref(
+    connection: &Connection,
+    reference: &str,
+    platform: Option<&str>,
+) -> Result<i64, RosenError> {
+    if let Some(platform) = platform
+        && table_exists(connection, "post_land_platform_green")?
+    {
+        return Ok(connection
+            .query_row(
+                "SELECT seq FROM post_land_platform_green
+                 WHERE ref_name=?1 AND platform=?2 AND kind='test'",
+                params![reference, platform],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0));
+    }
+    green_seq_for_ref(connection, reference)
+}
+
 /// The test offer Rosen's public RPC defers while a merge-mode build is pending.
 /// The server still validates the resulting job and owns bisection and delivery.
 pub(crate) async fn merge_test_job(
     server: &ProjectServer,
     client: &rosen_client::Client,
 ) -> Result<Option<rosen_client::protocol::PostLandJob>, RosenError> {
+    let host_target = configured_host_target(client).await?;
     let connection = ledger(server)?;
     let Some(reference) = base_ref_name(&connection)? else {
         return Ok(None);
     };
-    let green_seq = green_seq_for_ref(&connection, &reference)?;
+    let green_seq = green_seq_for_host_or_ref(&connection, &reference, host_target.as_deref())?;
     let failed_seq = last_non_reverting_failed_seq(&connection, &reference)?;
     let floor = green_seq.max(failed_seq);
     let commit: Option<String> = connection
@@ -643,11 +776,12 @@ pub(crate) async fn tip_test_job(
     server: &ProjectServer,
     client: &rosen_client::Client,
 ) -> Result<Option<rosen_client::protocol::PostLandJob>, RosenError> {
+    let host_target = configured_host_target(client).await?;
     let connection = ledger(server)?;
     let Some(reference) = base_ref_name(&connection)? else {
         return Ok(None);
     };
-    let floor = green_seq_for_ref(&connection, &reference)?;
+    let floor = green_seq_for_host_or_ref(&connection, &reference, host_target.as_deref())?;
     let commit: Option<String> = connection
         .query_row(
             "SELECT commit_id FROM base_history
@@ -658,6 +792,21 @@ pub(crate) async fn tip_test_job(
         )
         .optional()?;
     build_test_job(client, commit).await
+}
+
+async fn configured_host_target(
+    client: &rosen_client::Client,
+) -> Result<Option<String>, RosenError> {
+    let config = client.project_config(None).await?.config;
+    if config.checks.post_land.platforms.is_empty() {
+        return Ok(None);
+    }
+    let host = rosen_core::Platform::host();
+    Ok(config
+        .checks
+        .post_land
+        .matching_target(&host)
+        .map(|target| target.as_str().to_owned()))
 }
 
 fn last_non_reverting_failed_seq(

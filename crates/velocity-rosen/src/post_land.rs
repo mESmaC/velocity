@@ -62,7 +62,14 @@ pub enum Bisection {
 /// The batch to test now; `None` when every landed commit is covered.
 pub async fn next_batch(server: &ProjectServer) -> Result<Option<Batch>, RosenError> {
     let client = crate::connection::requests(server.endpoint()).await?;
-    let mut work = client.post_land_next().await?;
+    let host = rosen_core::Platform::host();
+    let mut work = match client.post_land_next_for(host.as_str()).await {
+        Ok(work) => work,
+        Err(rosen_client::Error::Server(error)) if error.code == ErrorCode::UnknownRequest => {
+            client.post_land_next().await?
+        }
+        Err(error) => return Err(error.into()),
+    };
     if work
         .job
         .as_ref()
@@ -97,7 +104,15 @@ pub async fn next_build_batch(server: &ProjectServer) -> Result<Option<Batch>, R
     // Merge mode can route post_land_next to builds even on a before-land project.
     // Its build worker must advance that prefix so the test worker can receive tests.
     let merge = client.project_config(None).await?.config.recheck == RecheckMode::Merge;
-    Ok(batch(&client, client.post_land_build_next().await?)
+    let host = rosen_core::Platform::host();
+    let work = match client.post_land_build_next_for(host.as_str()).await {
+        Ok(work) => work,
+        Err(rosen_client::Error::Server(error)) if error.code == ErrorCode::UnknownRequest => {
+            client.post_land_build_next().await?
+        }
+        Err(error) => return Err(error.into()),
+    };
+    Ok(batch(&client, work)
         .await?
         .filter(|batch| !batch.after_land && (merge || batch.priority == CheckPriority::Landing)))
 }
@@ -752,4 +767,165 @@ impl BaseSnapshot {
             .await?;
         Ok(())
     }
+}
+
+/// Reads Rosen's per-platform post-land checkpoints and confirmed failures for the
+/// GitHub-free base CI watcher (#591).
+pub async fn base_ci_snapshot(
+    server: &ProjectServer,
+) -> Result<velocity_core::base_ci::RosenBaseSnapshot, RosenError> {
+    use velocity_core::base_ci::{
+        RosenBaseSnapshot, RosenPlatformCheckpoint, RosenPostLandFailure,
+    };
+
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let status = match client.post_land_status().await {
+        Ok(status) => status,
+        Err(rosen_client::Error::Server(error)) if error.code == ErrorCode::UnknownRequest => {
+            return Ok(RosenBaseSnapshot::default());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let raw_failures = match client.post_land_failures(None).await {
+        Ok(failures) => failures,
+        Err(rosen_client::Error::Server(error)) if error.code == ErrorCode::UnknownRequest => {
+            Vec::new()
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let platforms: Vec<RosenPlatformCheckpoint> = status
+        .platforms
+        .iter()
+        .map(|entry| RosenPlatformCheckpoint {
+            platform: entry.platform.clone(),
+            display_name: rosen_core::Platform::display_label(&entry.platform),
+            required_build: entry.required_build,
+            required_test: entry.required_test,
+            last_built: entry.last_built.as_ref().map(|cp| cp.commit.to_string()),
+            last_green: entry.last_green.as_ref().map(|cp| cp.commit.to_string()),
+            checker_connected: !entry.checkers.is_empty(),
+        })
+        .collect();
+    let host = rosen_core::Platform::host();
+    let mut failures = Vec::new();
+    for entry in raw_failures {
+        if owned_by_build_repairs(&entry, &host) {
+            continue;
+        }
+        let commit = entry.commit.to_string();
+        let checkpoint = checkpoint_for_failure(&status, &entry);
+        let covered_by_green = match checkpoint {
+            Some(green) => is_ancestor(&client, &commit, &green).await?,
+            None => false,
+        };
+        let platform_display = entry
+            .platform
+            .as_deref()
+            .map(rosen_core::Platform::display_label);
+        failures.push(RosenPostLandFailure {
+            session: u64::try_from(entry.session).unwrap_or(0),
+            change: entry.change,
+            commit,
+            kind: entry.kind.as_str().to_owned(),
+            platform: entry.platform,
+            platform_display,
+            output: entry.output,
+            covered_by_green,
+            reverted: entry.revert.is_some(),
+        });
+    }
+    Ok(RosenBaseSnapshot {
+        base: status.base.map(|commit| commit.to_string()),
+        last_green: status.last_green.map(|cp| cp.commit.to_string()),
+        platforms,
+        failures,
+        bisecting: !status.sessions.is_empty(),
+    })
+}
+
+fn owned_by_build_repairs(
+    failure: &rosen_client::protocol::PostLandFailure,
+    host: &rosen_core::Platform,
+) -> bool {
+    let local_platform = failure.platform.as_deref().is_none_or(|raw| {
+        rosen_core::Platform::parse(raw).is_ok_and(|target| host.matches(&target))
+    });
+    if !local_platform {
+        return false;
+    }
+    let is_integration = failure.kind == CheckKind::Test
+        && failure.revert.is_none()
+        && failure.output.starts_with(integration::FAILURE_HEADING);
+    is_integration || (failure.kind == CheckKind::Build && failure.requires_revert)
+}
+
+fn checkpoint_for_failure(
+    status: &rosen_client::protocol::PostLandStatus,
+    failure: &rosen_client::protocol::PostLandFailure,
+) -> Option<String> {
+    if let Some(platform) = failure.platform.as_deref()
+        && let Some(entry) = status
+            .platforms
+            .iter()
+            .find(|candidate| candidate.platform.eq_ignore_ascii_case(platform))
+    {
+        return match failure.kind {
+            CheckKind::Test => entry.last_green.as_ref().map(|cp| cp.commit.to_string()),
+            CheckKind::Build => entry
+                .last_built
+                .as_ref()
+                .or(entry.last_green.as_ref())
+                .map(|cp| cp.commit.to_string()),
+        };
+    }
+    match failure.kind {
+        CheckKind::Test => status.last_green.as_ref().map(|cp| cp.commit.to_string()),
+        CheckKind::Build => status
+            .last_built
+            .as_ref()
+            .or(status.last_green.as_ref())
+            .map(|cp| cp.commit.to_string()),
+    }
+}
+
+/// Reads a UTF-8 file from the project's Rosen base (or a specific commit) (#591).
+pub async fn base_file_text(
+    server: &ProjectServer,
+    at: Option<&str>,
+    path: &str,
+) -> Result<Option<String>, RosenError> {
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let request = rosen_client::protocol::ReadRequest {
+        at: at.map(str::to_owned),
+        path: path.to_owned(),
+    };
+    match client.read_file(request).await {
+        Ok(ReadAnswer::File { data, .. }) => Ok(Some(String::from_utf8_lossy(&data).into_owned())),
+        Ok(ReadAnswer::Directory { .. }) => Ok(None),
+        Err(rosen_client::Error::Server(error)) if error.code == ErrorCode::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Lists recent commits on this project's Rosen base, newest first (#591).
+pub async fn recent_base_commits(
+    server: &ProjectServer,
+    limit: u32,
+) -> Result<Vec<velocity_core::rosen_pin::RosenCommit>, RosenError> {
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let log = client
+        .log(LogRequest {
+            at: None,
+            paths: Vec::new(),
+            limit: Some(limit),
+        })
+        .await?;
+    Ok(log
+        .entries
+        .into_iter()
+        .map(|entry| velocity_core::rosen_pin::RosenCommit {
+            commit: entry.commit.to_string(),
+            message: entry.summary,
+        })
+        .collect())
 }

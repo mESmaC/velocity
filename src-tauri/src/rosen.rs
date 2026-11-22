@@ -577,8 +577,10 @@ async fn take_workspace_once(
     crate::rosen_issue::record_source(application, key, &server, &agent, &workspace.change).await?;
     watch_as(application, &server, &agent, &workspace.root).await?;
     crate::rosen_events::follow(application, key.0);
+    let mut environment = velocity_rosen::agent_environment(&server, &agent, &workspace.change);
+    append_issue_host_env(application, key.0, &mut environment);
     Ok(ThreadWorkspace {
-        environment: velocity_rosen::agent_environment(&server, &agent, &workspace.change),
+        environment,
         change: workspace.change,
         root: workspace.root,
         setup,
@@ -897,6 +899,7 @@ pub(crate) fn prepare_resume(
     agent
         .env
         .extend(velocity_rosen::agent_environment(&server, &name, change));
+    append_issue_host_env(application, project, &mut agent.env);
     setup
         .shared_servers
         .extend(mcp_server_for_role(root, &agent.env, thread.role));
@@ -918,6 +921,31 @@ pub(crate) fn prepare_resume(
         report(record_work_sources(&handle, key, &root, &change).await);
     });
     Some(Ok(()))
+}
+
+/// Passes the project's effective issue host (`collapse` or `github`) into the agent's
+/// environment so `workflow_run` uses Rosen check sets on Collapse projects (#591).
+fn append_issue_host_env(
+    application: &AppHandle,
+    project: u32,
+    environment: &mut Vec<(String, String)>,
+) {
+    let host = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .ok()
+    .and_then(|store| {
+        store
+            .project(project)
+            .map(|item| match item.effective_issue_host() {
+                velocity_core::collapse::IssueHost::Collapse => "collapse",
+                velocity_core::collapse::IssueHost::GitHub => "github",
+            })
+    });
+    if let Some(host) = host {
+        environment.push((String::from("VELOCITY_ISSUE_HOST"), host.to_owned()));
+    }
 }
 
 /// Abandons the change of a thread deleted while its workspace was being made.

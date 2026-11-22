@@ -27,6 +27,17 @@ files, queue a type-check for the crate you change, and name the finished change
 rosen commit -m. Velocity lands it, and the workflow's next green run on the base closes this \
 failure. Keep the repair limited to this failure; do not take other work.";
 
+const ROSEN_INSTRUCTIONS: &str = "Make this Rosen post-land check pass on the base again and \
+touch nothing else. This is a confirmed per-platform failure on the landed base: fix it forward \
+in your Rosen workspace. The check ran on a platform that may differ from this machine's OS, so \
+work from the output and make the code correct on that platform. Check first that the base still \
+has the fault: when another change already fixed it, say so and end your turn. Never weaken, skip \
+or delete the failing test or lint. If the repair needs a spec decision, find its heading with \
+graph_find and read it with graph_read (source: true). Claim the files, queue a type-check for the \
+crate you change, and name the finished change with rosen commit -m. Velocity lands it, and the \
+platform's next green post-land pass closes this failure. Keep the repair limited to this failure; \
+do not take other work.";
+
 /// A CI failure with what the prompt needs beyond the jobs.
 pub struct CiFailure<'a> {
     /// The mirror's `owner/name` and the base branch on it.
@@ -37,6 +48,90 @@ pub struct CiFailure<'a> {
     pub log: &'a str,
     /// Where the whole of that log was saved.
     pub saved_log: Option<&'a Path>,
+}
+
+/// A Rosen per-platform post-land failure for GitHub-free base CI repairs (#591).
+pub struct RosenCiFailure<'a> {
+    pub project: &'a str,
+    pub failure: &'a Failure,
+    pub change: &'a str,
+    pub platform: &'a str,
+    pub check_kind: &'a str,
+    pub output: &'a str,
+    pub saved_log: Option<&'a Path>,
+}
+
+/// Saves a repair for a Rosen per-platform post-land failure and plans its thread (#591).
+pub fn prepare_rosen_ci_repair(
+    store: &mut StateStore,
+    project: u32,
+    report: &RosenCiFailure<'_>,
+) -> Result<Option<(LaunchPlan, u32)>, String> {
+    let current = store.project(project).ok_or("Unknown project")?;
+    if !current.spec_locked {
+        return Err("Lock the spec before starting a CI repair".into());
+    }
+    let failure = report.failure;
+    let preferences = store.worktree_preferences(current);
+    let prompt = rosen_ci_repair_prompt(report);
+    let title = preview(
+        &format!(
+            "Fix CI: {} · post-land {}",
+            report.platform, report.check_kind
+        ),
+        80,
+    );
+    let mut plan = plan_named_launch(
+        current,
+        &preferences,
+        &store.settings(),
+        &prompt,
+        &title,
+        &repair_slug(failure),
+    )
+    .map_err(|error| error.to_string())?;
+    plan.title.request = None;
+    plan.thread.role = velocity_core::tool_policy::ThreadRole::FollowUp;
+    let thread = store
+        .add_ci_repair(project, failure, plan.thread.clone(), &prompt)
+        .map_err(|error| error.to_string())?;
+    Ok(thread.map(|thread| (plan, thread)))
+}
+
+/// Builds the opening prompt for a Rosen per-platform post-land repair thread, naming the
+/// platform, the culprit change/commit, and the failure output (#591).
+pub fn rosen_ci_repair_prompt(report: &RosenCiFailure<'_>) -> String {
+    let header = format!(
+        "Rosen post-land check failed on the base.\n\
+         Project: {}\n\
+         Platform: {}\n\
+         Check: post-land {}\n\
+         Culprit change: {}\n\
+         Culprit commit: {}\n",
+        preview(report.project, 100),
+        preview(report.platform, 80),
+        preview(report.check_kind, 40),
+        preview(report.change, 128),
+        preview(&report.failure.commit, 64),
+    );
+    let mut footer = format!(
+        "Full failure record: `rosen review failures --change {} --json`\n",
+        preview(report.change, 128),
+    );
+    if let Some(saved) = report.saved_log {
+        footer.push_str(&format!("Saved output log: {}\n", saved.display()));
+    }
+    let heading = "Failing check output:\n";
+    let fixed = header.len() + heading.len() + footer.len() + ROSEN_INSTRUCTIONS.len() + 6;
+    let budget = SHORT_PROMPT_BYTES.saturating_sub(fixed);
+    let excerpt = if report.output.trim().is_empty() {
+        "(Rosen recorded no output for this failure.)".to_owned()
+    } else if report.output.len() <= budget {
+        report.output.to_owned()
+    } else {
+        failure_excerpt(report.output, budget)
+    };
+    format!("{header}\n{heading}{excerpt}\n\n{footer}\n{ROSEN_INSTRUCTIONS}")
 }
 
 /// Saves a repair for each of the failure's jobs that has none and plans its thread.
@@ -256,5 +351,41 @@ test (macos-latest)\tRun tests\t2026-11-21T20:44:35.0000000Z ##[error]The operat
         assert!(prompt.contains(
             "Test still running when the job stopped: collapse_link::collapse_link_and_unlink_round_trip_with_live_server"
         ));
+    }
+
+    // Risk (#591): a macOS-only Rosen post-land failure repair brief must name the platform,
+    // the culprit change/commit, and the failing output without referring to GitHub Actions.
+    #[test]
+    fn rosen_per_platform_repair_brief_names_platform_culprit_and_output() {
+        let failure = Failure {
+            workflow: base_ci::ROSEN_BASE_WORKFLOW.into(),
+            run: 42,
+            commit: "520dcfc000000000000000000000000000000000".into(),
+            url: String::new(),
+            detail: "Culprit change: chg-macos".into(),
+            jobs: vec![FailedJob {
+                id: 42,
+                job: "macOS · test".into(),
+                step: Some("post-land test".into()),
+                runner: Some("macOS".into()),
+                signature: None,
+                timed_out: false,
+                hung_test: None,
+            }],
+        };
+        let prompt = rosen_ci_repair_prompt(&RosenCiFailure {
+            project: "rosen",
+            failure: &failure,
+            change: "chg-macos",
+            platform: "macOS",
+            check_kind: "test",
+            output: "test kqueue_watcher::sees_rename ... FAILED\n",
+            saved_log: None,
+        });
+        assert!(prompt.contains("Platform: macOS"));
+        assert!(prompt.contains("Culprit change: chg-macos"));
+        assert!(prompt.contains("Culprit commit: 520dcfc000000000000000000000000000000000"));
+        assert!(prompt.contains("kqueue_watcher::sees_rename ... FAILED"));
+        assert!(!prompt.contains("GitHub"));
     }
 }

@@ -13,7 +13,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use velocity_core::base_ci::{
-    BaseCiState, CommitOrder, OpenRepair, RepairThreadState, format_ci_repair_action,
+    BaseCiSource, BaseCiState, CommitOrder, OpenRepair, RepairThreadState,
+    format_ci_repair_action_for_source,
 };
 use velocity_core::collapse::{
     COLLAPSE_FORWARDING_SIGNAL, ForwarderState, collapse_forwarding_needs_attention,
@@ -1423,20 +1424,28 @@ async fn check_base_red(
             .as_ref()
             .filter(|repair| repair.thread_state != RepairThreadState::Deleted)
             .map(|repair| repair.thread);
-        let action =
-            format_ci_repair_action(open.as_ref(), ci.commit.as_deref(), project.spec_locked);
+        let action = format_ci_repair_action_for_source(
+            open.as_ref(),
+            ci.commit.as_deref(),
+            project.spec_locked,
+            ci.source,
+        );
         let commit = ci
             .commit
             .as_deref()
             .map(|id| format!(" at {}", short_commit(id)))
             .unwrap_or_default();
         let detail = (!ci.failing.is_empty()).then(|| ci.failing.join(" · "));
+        let label = match ci.source {
+            BaseCiSource::GitHub => "GitHub CI",
+            BaseCiSource::Rosen => "Rosen post-land",
+        };
         items.push(
             ProjectHealthItem::new(
                 "base-red:ci",
                 HealthSignalKind::BaseRed,
                 HealthSeverity::Error,
-                format!("GitHub CI red on base{commit}"),
+                format!("{label} red on base{commit}"),
                 action,
                 now_ms,
             )
@@ -2087,6 +2096,9 @@ async fn read_release_health(
             return Some(fetched);
         }
     }
+    if project.effective_issue_host() == velocity_core::collapse::IssueHost::Collapse {
+        return None;
+    }
     let repository = repository?;
     let directory = Path::new(&project.repository_path).to_path_buf();
     let repo = repository.to_owned();
@@ -2144,12 +2156,21 @@ async fn check_pending_release(
     let pending = with_tracker(application, project.id, |tracker| {
         tracker.pending_release.clone()
     })?;
-    let green = if project.collapse_repository.is_some() {
-        velocity_rosen::release::release_commit(server, Some(&pending.commit))
-            .await
-            .ok()
-            .map(|release| release.green)
-    } else if let Some(repository) = repository {
+    if project.collapse_repository.is_some()
+        || project.effective_issue_host() == velocity_core::collapse::IssueHost::Collapse
+    {
+        return check_pending_collapse_release(
+            application,
+            project,
+            repository,
+            server,
+            &pending,
+            now,
+            now_ms,
+        )
+        .await;
+    }
+    let green = if let Some(repository) = repository {
         publish_and_find_green(project, repository, server, &pending.commit).await
     } else {
         None
@@ -2180,6 +2201,81 @@ async fn check_pending_release(
         action,
         now_ms,
     ))
+}
+
+async fn check_pending_collapse_release(
+    application: &AppHandle,
+    project: &ProjectItem,
+    repository: Option<&str>,
+    server: &ProjectServer,
+    pending: &PendingRelease,
+    now: u64,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    use velocity_rosen::release::{ReleaseGateCheck, check_release_gate};
+    match check_release_gate(server, Some(&pending.commit)).await {
+        Ok(ReleaseGateCheck::Ready(release)) => {
+            dispatch_pending_release(
+                application,
+                project,
+                repository,
+                pending,
+                &release.green,
+                now,
+                now_ms,
+            )
+            .await
+        }
+        Ok(ReleaseGateCheck::Waiting {
+            platforms,
+            local_needs_run,
+            message,
+            ..
+        }) => {
+            let (action, severity) = if local_needs_run {
+                let (local_action, local_severity) =
+                    start_or_explain_release_integration(application, project.id, &pending.commit);
+                let action = if platforms.is_empty() {
+                    local_action
+                } else {
+                    format!("{message} · {local_action}")
+                };
+                (action, local_severity)
+            } else {
+                let missing_checker = platforms.iter().any(|platform| !platform.checker_connected);
+                let severity = if missing_checker {
+                    HealthSeverity::Warning
+                } else {
+                    HealthSeverity::Info
+                };
+                (message, severity)
+            };
+            Some(ProjectHealthItem::new(
+                "release-gate-pending",
+                HealthSignalKind::ReleaseGateRefused,
+                severity,
+                format!(
+                    "Release {} waits for Rosen post-land green on {}",
+                    pending.tag,
+                    short_commit(&pending.commit)
+                ),
+                action,
+                now_ms,
+            ))
+        }
+        Err(error) => Some(ProjectHealthItem::new(
+            "release-gate-pending",
+            HealthSignalKind::ReleaseGateRefused,
+            HealthSeverity::Warning,
+            format!(
+                "Release {} waits for Rosen post-land green on {}",
+                pending.tag,
+                short_commit(&pending.commit)
+            ),
+            error.to_string(),
+            now_ms,
+        )),
+    }
 }
 
 async fn dispatch_pending_release(

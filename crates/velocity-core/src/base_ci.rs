@@ -37,11 +37,22 @@ pub enum BaseCiState {
     Failed,
 }
 
-/// The CI state of a project's base on its GitHub mirror, kept with the project so it
-/// shows at startup before the next read.
+/// Which CI system produced a project's base CI state (#591).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub enum BaseCiSource {
+    #[default]
+    GitHub,
+    Rosen,
+}
+
+/// The CI state of a project's base on its GitHub mirror or Rosen per-platform post-land
+/// checks, kept with the project so it shows at startup before the next read (#507, #591).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 pub struct BaseCi {
+    #[serde(default)]
+    pub source: BaseCiSource,
     #[serde(default)]
     pub state: BaseCiState,
     /// The base commit of the newest finished run.
@@ -1023,18 +1034,33 @@ fn repair_covers_job(repair: &OpenRepair, failure: &Failure, job: &FailedJob) ->
     true
 }
 
-/// Formats the project health action line for a red GitHub CI base, naming the covered
-/// commit and whether the latest failure is at or newer than the repair's land (#558).
+/// Formats the project health action line for a red base CI check, naming the covered
+/// commit and whether the latest failure is at or newer than the repair's land (#558, #591).
 pub fn format_ci_repair_action(
     repair: Option<&OpenRepair>,
     failing_commit: Option<&str>,
     spec_locked: bool,
 ) -> String {
+    format_ci_repair_action_for_source(repair, failing_commit, spec_locked, BaseCiSource::GitHub)
+}
+
+/// Formats the project health action line for either GitHub CI or Rosen post-land checks (#591).
+pub fn format_ci_repair_action_for_source(
+    repair: Option<&OpenRepair>,
+    failing_commit: Option<&str>,
+    spec_locked: bool,
+    source: BaseCiSource,
+) -> String {
     let Some(repair) = repair else {
         return if !spec_locked {
             "Cannot start fix-forward thread: project spec is not locked".into()
         } else {
-            "Queued fix-forward thread on next GitHub CI check".into()
+            match source {
+                BaseCiSource::GitHub => "Queued fix-forward thread on next GitHub CI check".into(),
+                BaseCiSource::Rosen => {
+                    "Queued fix-forward thread on next Rosen post-land check".into()
+                }
+            }
         };
     };
     let covered = short_sha(&repair.commit);
@@ -1128,6 +1154,7 @@ pub fn view(verdict: &Verdict, failures: &[Failure]) -> BaseCi {
         BaseCiState::Green
     };
     BaseCi {
+        source: BaseCiSource::GitHub,
         state,
         commit: verdict.commit.clone(),
         failing,
@@ -1159,8 +1186,240 @@ pub fn view_for_verdict(verdict: &JobVerdict) -> BaseCi {
         BaseCiState::Green
     };
     BaseCi {
+        source: BaseCiSource::GitHub,
         state,
         commit: verdict.commit.clone(),
+        failing,
+        running: verdict.running,
+    }
+}
+
+/// Synthetic workflow name under which Rosen per-platform post-land repairs are tracked (#591).
+pub const ROSEN_BASE_WORKFLOW: &str = "Rosen post-land";
+
+/// One configured platform's post-land checkpoints for base CI evaluation (#591).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RosenPlatformCheckpoint {
+    pub platform: String,
+    pub display_name: String,
+    pub required_build: bool,
+    pub required_test: bool,
+    pub last_built: Option<String>,
+    pub last_green: Option<String>,
+    pub checker_connected: bool,
+}
+
+/// One confirmed Rosen post-land failure evaluated by the base CI watcher (#591).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RosenPostLandFailure {
+    pub session: u64,
+    pub change: String,
+    pub commit: String,
+    /// `"build"` or `"test"`.
+    pub kind: String,
+    /// Configured platform key (e.g. `"macos"`), or `None` for any-platform checks.
+    pub platform: Option<String>,
+    /// Human-readable platform name (e.g. `"macOS"`), or `None`.
+    pub platform_display: Option<String>,
+    pub output: String,
+    /// True once that platform's (or the base's) green/built checkpoint covers `commit`.
+    pub covered_by_green: bool,
+    pub reverted: bool,
+}
+
+/// Read-only snapshot of Rosen per-platform post-land state for pure evaluation (#591).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RosenBaseSnapshot {
+    pub base: Option<String>,
+    pub last_green: Option<String>,
+    pub platforms: Vec<RosenPlatformCheckpoint>,
+    pub failures: Vec<RosenPostLandFailure>,
+    pub bisecting: bool,
+}
+
+/// Stable job key for a Rosen per-platform failure (e.g. `"macOS · test"` or `"post-land test"`).
+pub fn rosen_failure_job_name(platform_display: Option<&str>, kind: &str) -> String {
+    match platform_display
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        Some(platform) => format!("{platform} · {kind}"),
+        None => format!("post-land {kind}"),
+    }
+}
+
+/// Evaluates Rosen per-platform post-land failures and checkpoints into a [`JobVerdict`]
+/// and a [`BaseCi`] view without consulting GitHub Actions (#591).
+pub fn evaluate_rosen_post_land(snapshot: &RosenBaseSnapshot) -> (JobVerdict, BaseCi) {
+    let mut latest_by_job: BTreeMap<String, &RosenPostLandFailure> = BTreeMap::new();
+    for entry in &snapshot.failures {
+        if entry.reverted || entry.covered_by_green {
+            continue;
+        }
+        let job = rosen_failure_job_name(entry.platform_display.as_deref(), &entry.kind);
+        let slot = latest_by_job.entry(job).or_insert(entry);
+        if entry.session >= slot.session {
+            *slot = entry;
+        }
+    }
+    let mut verdict = JobVerdict {
+        running: rosen_checks_running(snapshot),
+        ..JobVerdict::default()
+    };
+    let mut active: Vec<(&str, &RosenPostLandFailure)> = latest_by_job
+        .iter()
+        .map(|(job, entry)| (job.as_str(), *entry))
+        .collect();
+    active.sort_by_key(|(_, entry)| std::cmp::Reverse(entry.session));
+    for (job_name, entry) in active {
+        verdict
+            .active_failures
+            .push(rosen_failure_to_ci(job_name, entry));
+    }
+    record_rosen_resolved_jobs(snapshot, &latest_by_job, &mut verdict);
+    let view = build_rosen_base_view(snapshot, &verdict);
+    verdict.commit = view.commit.clone();
+    (verdict, view)
+}
+
+fn rosen_failure_to_ci(job_name: &str, entry: &RosenPostLandFailure) -> Failure {
+    Failure {
+        workflow: ROSEN_BASE_WORKFLOW.to_owned(),
+        run: entry.session,
+        commit: entry.commit.clone(),
+        url: String::new(),
+        detail: format!("Culprit change: {}", entry.change),
+        jobs: vec![FailedJob {
+            id: entry.session,
+            job: job_name.to_owned(),
+            step: Some(format!("post-land {}", entry.kind)),
+            runner: entry.platform_display.clone(),
+            signature: error_signature(&entry.output),
+            timed_out: false,
+            hung_test: hung_test(&entry.output),
+        }],
+    }
+}
+
+fn record_rosen_resolved_jobs(
+    snapshot: &RosenBaseSnapshot,
+    active_jobs: &BTreeMap<String, &RosenPostLandFailure>,
+    verdict: &mut JobVerdict,
+) {
+    for platform in &snapshot.platforms {
+        if let Some(green) = &platform.last_green {
+            let job = rosen_failure_job_name(Some(&platform.display_name), "test");
+            if !active_jobs.contains_key(&job) {
+                verdict.resolved_jobs.push(ResolvedJob {
+                    workflow: ROSEN_BASE_WORKFLOW.to_owned(),
+                    job,
+                    commit: green.clone(),
+                    run: 0,
+                });
+            }
+        }
+        if let Some(built) = platform
+            .last_built
+            .as_ref()
+            .or(platform.last_green.as_ref())
+        {
+            let job = rosen_failure_job_name(Some(&platform.display_name), "build");
+            if !active_jobs.contains_key(&job) {
+                verdict.resolved_jobs.push(ResolvedJob {
+                    workflow: ROSEN_BASE_WORKFLOW.to_owned(),
+                    job,
+                    commit: built.clone(),
+                    run: 0,
+                });
+            }
+        }
+    }
+    if active_jobs.is_empty()
+        && rosen_all_required_green(snapshot)
+        && let Some(commit) = snapshot.last_green.clone()
+    {
+        verdict.passed.push(ROSEN_BASE_WORKFLOW.to_owned());
+        verdict.passed_workflows.push(PassedWorkflow {
+            workflow: ROSEN_BASE_WORKFLOW.to_owned(),
+            commit,
+            run: 0,
+        });
+    }
+}
+
+fn rosen_all_required_green(snapshot: &RosenBaseSnapshot) -> bool {
+    if snapshot.platforms.is_empty() {
+        return snapshot.last_green.is_some();
+    }
+    snapshot.platforms.iter().all(|platform| {
+        let test_ok = !platform.required_test || platform.last_green.is_some();
+        let build_ok = !platform.required_build
+            || platform.last_built.is_some()
+            || platform.last_green.is_some();
+        test_ok && build_ok
+    })
+}
+
+fn rosen_checks_running(snapshot: &RosenBaseSnapshot) -> bool {
+    if snapshot.bisecting {
+        return true;
+    }
+    let Some(base) = snapshot.base.as_deref() else {
+        return false;
+    };
+    if snapshot.platforms.is_empty() {
+        return snapshot
+            .last_green
+            .as_deref()
+            .is_none_or(|green| !green.eq_ignore_ascii_case(base));
+    }
+    snapshot.platforms.iter().any(|platform| {
+        let test_behind = platform.required_test
+            && platform
+                .last_green
+                .as_deref()
+                .is_none_or(|green| !green.eq_ignore_ascii_case(base));
+        let build_behind = platform.required_build
+            && platform
+                .last_built
+                .as_deref()
+                .or(platform.last_green.as_deref())
+                .is_none_or(|built| !built.eq_ignore_ascii_case(base));
+        test_behind || build_behind
+    })
+}
+
+fn build_rosen_base_view(snapshot: &RosenBaseSnapshot, verdict: &JobVerdict) -> BaseCi {
+    let failing: Vec<String> = verdict
+        .active_failures
+        .iter()
+        .flat_map(|failure| {
+            failure
+                .jobs
+                .iter()
+                .map(|job| job_label(&failure.workflow, &job.job))
+        })
+        .collect();
+    let all_green = rosen_all_required_green(snapshot);
+    let state = if !failing.is_empty() {
+        BaseCiState::Failed
+    } else if verdict.running {
+        BaseCiState::Running
+    } else if all_green && snapshot.last_green.is_some() {
+        BaseCiState::Green
+    } else {
+        BaseCiState::NotRun
+    };
+    let commit = verdict
+        .active_failures
+        .first()
+        .map(|failure| failure.commit.clone())
+        .or_else(|| snapshot.last_green.clone())
+        .or_else(|| snapshot.base.clone());
+    BaseCi {
+        source: BaseCiSource::Rosen,
+        state,
+        commit,
         failing,
         running: verdict.running,
     }
@@ -2298,5 +2557,103 @@ test collapse_link::collapse_link_and_unlink_round_trip_with_live_server has bee
             job_state(Some("completed"), Some("skipped"), false),
             JobState::Undecided
         );
+    }
+
+    // Risk (#591): on a GitHub-free project, a macOS-only Rosen post-land failure must
+    // produce a failing base CI verdict naming macOS and start a repair thread, then close
+    // the repair once macOS turns green without consulting GitHub Actions.
+    #[test]
+    fn rosen_per_platform_post_land_failure_starts_and_closes_repair() {
+        let culprit = "1111111111111111111111111111111111111111";
+        let green = "2222222222222222222222222222222222222222";
+        let failing_snapshot = RosenBaseSnapshot {
+            base: Some(culprit.into()),
+            last_green: None,
+            platforms: vec![
+                RosenPlatformCheckpoint {
+                    platform: "windows".into(),
+                    display_name: "Windows".into(),
+                    required_build: false,
+                    required_test: true,
+                    last_built: None,
+                    last_green: Some(culprit.into()),
+                    checker_connected: true,
+                },
+                RosenPlatformCheckpoint {
+                    platform: "macos".into(),
+                    display_name: "macOS".into(),
+                    required_build: false,
+                    required_test: true,
+                    last_built: None,
+                    last_green: None,
+                    checker_connected: true,
+                },
+            ],
+            failures: vec![RosenPostLandFailure {
+                session: 42,
+                change: "chg-macos-1".into(),
+                commit: culprit.into(),
+                kind: "test".into(),
+                platform: Some("macos".into()),
+                platform_display: Some("macOS".into()),
+                output: "test unix_socket::binds_socket ... FAILED\n".into(),
+                covered_by_green: false,
+                reverted: false,
+            }],
+            bisecting: false,
+        };
+        let (verdict, view) = evaluate_rosen_post_land(&failing_snapshot);
+        assert_eq!(view.source, BaseCiSource::Rosen);
+        assert_eq!(view.state, BaseCiState::Failed);
+        assert_eq!(view.failing, vec!["Rosen post-land · macOS · test"]);
+        let plan = plan_for_verdict(&[], &verdict);
+        assert_eq!(plan.start.len(), 1);
+        assert_eq!(plan.start[0].run, 42);
+        assert_eq!(plan.start[0].jobs[0].job, "macOS · test");
+        assert_eq!(plan.start[0].jobs[0].runner.as_deref(), Some("macOS"));
+
+        let open = [OpenRepair {
+            workflow: ROSEN_BASE_WORKFLOW.into(),
+            job: "macOS · test".into(),
+            commit: culprit.into(),
+            run: 42,
+            thread: 7,
+            ..OpenRepair::default()
+        }];
+        let green_snapshot = RosenBaseSnapshot {
+            base: Some(green.into()),
+            last_green: Some(green.into()),
+            platforms: vec![
+                RosenPlatformCheckpoint {
+                    platform: "windows".into(),
+                    display_name: "Windows".into(),
+                    required_build: false,
+                    required_test: true,
+                    last_built: None,
+                    last_green: Some(green.into()),
+                    checker_connected: true,
+                },
+                RosenPlatformCheckpoint {
+                    platform: "macos".into(),
+                    display_name: "macOS".into(),
+                    required_build: false,
+                    required_test: true,
+                    last_built: None,
+                    last_green: Some(green.into()),
+                    checker_connected: true,
+                },
+            ],
+            failures: vec![RosenPostLandFailure {
+                covered_by_green: true,
+                ..failing_snapshot.failures[0].clone()
+            }],
+            bisecting: false,
+        };
+        let (green_verdict, green_view) = evaluate_rosen_post_land(&green_snapshot);
+        assert_eq!(green_view.source, BaseCiSource::Rosen);
+        assert_eq!(green_view.state, BaseCiState::Green);
+        let green_plan = plan_for_verdict(&open, &green_verdict);
+        assert!(green_plan.start.is_empty());
+        assert_eq!(green_plan.closed, vec![ROSEN_BASE_WORKFLOW]);
     }
 }

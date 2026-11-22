@@ -298,6 +298,7 @@ fn is_wait_step(verb: &str, argument: &str) -> bool {
         || normalized.contains("build-queue.ps1")
         || normalized.contains("scripts/check.ps1")
         || argument.starts_with(velocity_core::workflow_dispatch::RUN_TITLE)
+        || argument.starts_with(velocity_core::workflow_dispatch::ROSEN_CHECK_TITLE)
         || verb.contains("queue_run")
         || argument.contains("queue_run")
         || verb.contains("workflow_run")
@@ -314,6 +315,7 @@ fn is_wait_step(verb: &str, argument: &str) -> bool {
 fn format_step_wait(verb: &str, argument: &str) -> String {
     if argument.starts_with("rosen run")
         || argument.starts_with(velocity_core::workflow_dispatch::RUN_TITLE)
+        || argument.starts_with(velocity_core::workflow_dispatch::ROSEN_CHECK_TITLE)
         || verb.is_empty()
     {
         argument.to_owned()

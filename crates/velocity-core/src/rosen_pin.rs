@@ -260,6 +260,28 @@ pub fn pin_verdict(post_land: &PostLandState, github: CiState) -> PinVerdict {
     PinVerdict::Pending
 }
 
+/// Evaluates one Rosen commit from Rosen's per-platform post-land verdict alone, without
+/// reading GitHub Actions (#591).
+pub fn pin_verdict_rosen_only(post_land: &PostLandState) -> PinVerdict {
+    match post_land {
+        PostLandState::Failed => PinVerdict::Blocked,
+        PostLandState::Green { at } => {
+            PinVerdict::Green(GreenSource::RosenPostLand { at: at.clone() })
+        }
+        PostLandState::Unknown => PinVerdict::Pending,
+    }
+}
+
+/// One configured platform's post-land checkpoints for pin and release gating (#591).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlatformPostLand {
+    pub platform: String,
+    pub required_build: bool,
+    pub required_test: bool,
+    pub last_built: Option<String>,
+    pub last_green: Option<String>,
+}
+
 /// Merges post-land verdicts from two readers (such as the local Rosen server and Collapse),
 /// keeping any `Failed` verdict above `Green` (#580).
 pub fn merge_post_land_states(
@@ -300,6 +322,16 @@ impl PostLandSnapshot {
     /// just above the pin). Rosen's `green` checkpoint covers itself and every older commit
     /// on the branch, except commits with a recorded failure or revert.
     pub fn states_for(&self, ahead: &[RosenCommit]) -> BTreeMap<String, PostLandState> {
+        self.states_for_platforms(ahead, &[])
+    }
+
+    /// Evaluates Rosen's post-land verdict for every commit in `ahead`, requiring every
+    /// configured required platform in `platforms` to cover the commit (#591).
+    pub fn states_for_platforms(
+        &self,
+        ahead: &[RosenCommit],
+        platforms: &[PlatformPostLand],
+    ) -> BTreeMap<String, PostLandState> {
         let green_index = self
             .green_commit
             .as_deref()
@@ -307,25 +339,26 @@ impl PostLandSnapshot {
         let event_green_index = ahead
             .iter()
             .position(|commit| self.event_time(&commit.commit).is_some());
-        let covering_index = match (green_index, event_green_index) {
+        let mut covering_index = match (green_index, event_green_index) {
             (Some(left), Some(right)) => Some(left.min(right)),
             (left, right) => left.or(right),
         };
+        if let Some(required_index) = required_platforms_covering_index(ahead, platforms) {
+            covering_index = match (covering_index, required_index) {
+                (Some(overall), Some(platform_floor)) => Some(overall.max(platform_floor)),
+                (None, Some(platform_floor)) => Some(platform_floor),
+                (_, None) => None,
+            };
+        }
         let covering_time = self.covering_green_time(ahead, green_index, covering_index);
         let mut states = BTreeMap::new();
         for (index, commit) in ahead.iter().enumerate() {
             let key = commit.commit.to_ascii_lowercase();
             if self.is_failed(&key) {
                 states.insert(key, PostLandState::Failed);
-            } else if let Some(time) = self.event_time(&key) {
-                states.insert(key, PostLandState::Green { at: Some(time) });
             } else if covering_index.is_some_and(|green| index >= green) {
-                states.insert(
-                    key,
-                    PostLandState::Green {
-                        at: covering_time.clone(),
-                    },
-                );
+                let at = self.event_time(&key).or_else(|| covering_time.clone());
+                states.insert(key, PostLandState::Green { at });
             }
         }
         states
@@ -363,6 +396,51 @@ impl PostLandSnapshot {
             .iter()
             .any(|failed| commits_match(commit, failed))
     }
+}
+
+fn required_platforms_covering_index(
+    ahead: &[RosenCommit],
+    platforms: &[PlatformPostLand],
+) -> Option<Option<usize>> {
+    let required: Vec<&PlatformPostLand> = platforms
+        .iter()
+        .filter(|platform| platform.required_test || platform.required_build)
+        .collect();
+    if required.is_empty() {
+        return None;
+    }
+    let mut oldest_index: usize = 0;
+    for platform in required {
+        if platform.required_test {
+            let Some(pos) = platform
+                .last_green
+                .as_deref()
+                .and_then(|checkpoint| commit_position(ahead, checkpoint))
+            else {
+                return Some(None);
+            };
+            oldest_index = oldest_index.max(pos);
+        }
+        if platform.required_build {
+            let built_pos = platform
+                .last_built
+                .as_deref()
+                .and_then(|checkpoint| commit_position(ahead, checkpoint));
+            let green_pos = platform
+                .last_green
+                .as_deref()
+                .and_then(|checkpoint| commit_position(ahead, checkpoint));
+            let best = match (built_pos, green_pos) {
+                (Some(left), Some(right)) => Some(left.min(right)),
+                (left, right) => left.or(right),
+            };
+            let Some(pos) = best else {
+                return Some(None);
+            };
+            oldest_index = oldest_index.max(pos);
+        }
+    }
+    Some(Some(oldest_index))
 }
 
 fn commit_position(commits: &[RosenCommit], target: &str) -> Option<usize> {
@@ -997,5 +1075,69 @@ mod tests {
         assert_eq!(primary.get(&c2), Some(&PostLandState::Failed));
         assert_eq!(format_utc_seconds(0), "1970-01-01T00:00:00Z");
         assert_eq!(format_utc_seconds(1_795_290_000), "2026-11-21T19:40:00Z");
+    }
+
+    // Risk (#591): when per-platform post-land checks require macOS alongside Windows,
+    // a commit green on Windows alone must NOT be treated as green for the pin tracker until
+    // macOS also covers it.
+    #[test]
+    fn post_land_snapshot_requires_every_required_platform_green() {
+        let c2 = "2".repeat(40);
+        let c1 = "1".repeat(40);
+        let ahead = [
+            RosenCommit {
+                commit: c2.clone(),
+                message: "newer".into(),
+            },
+            RosenCommit {
+                commit: c1.clone(),
+                message: "older".into(),
+            },
+        ];
+        let snapshot = PostLandSnapshot {
+            green_commit: Some(c2.clone()),
+            green_at: Some("2026-11-21T19:36:17Z".into()),
+            green_events: BTreeMap::new(),
+            failed_commits: BTreeSet::new(),
+        };
+        let missing_macos = [
+            PlatformPostLand {
+                platform: "windows".into(),
+                required_build: false,
+                required_test: true,
+                last_built: None,
+                last_green: Some(c2.clone()),
+            },
+            PlatformPostLand {
+                platform: "macos".into(),
+                required_build: false,
+                required_test: true,
+                last_built: None,
+                last_green: None,
+            },
+        ];
+        let states = snapshot.states_for_platforms(&ahead, &missing_macos);
+        assert!(states.is_empty());
+        assert_eq!(
+            pin_verdict_rosen_only(&PostLandState::Unknown),
+            PinVerdict::Pending
+        );
+
+        let macos_at_c1 = [
+            PlatformPostLand {
+                last_green: Some(c2.clone()),
+                ..missing_macos[0].clone()
+            },
+            PlatformPostLand {
+                last_green: Some(c1.clone()),
+                ..missing_macos[1].clone()
+            },
+        ];
+        let partial = snapshot.states_for_platforms(&ahead, &macos_at_c1);
+        assert!(!partial.contains_key(&c2));
+        assert!(matches!(
+            partial.get(&c1),
+            Some(PostLandState::Green { .. })
+        ));
     }
 }

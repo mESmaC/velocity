@@ -19,7 +19,18 @@ use crate::{CollapseError, MCP_URL};
 const READ_TIMEOUT: Duration = Duration::from_secs(20);
 const SHORT_COMMIT: usize = 7;
 
-/// Post-land verification state Collapse reports for one repository (Collapse C12, #580).
+/// One configured platform's post-land checkpoints reported by Collapse (#591).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlatformPostLand {
+    pub platform: String,
+    pub required_build: bool,
+    pub required_test: bool,
+    pub last_built: Option<String>,
+    pub last_green: Option<String>,
+    pub checker_connected: bool,
+}
+
+/// Post-land verification state Collapse reports for one repository (Collapse C12, #580, #591).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RepositoryPostLand {
     /// Newest commit covered by Rosen's `green` post-land checkpoint, if any.
@@ -30,6 +41,49 @@ pub struct RepositoryPostLand {
     pub green_events: BTreeMap<String, String>,
     /// Commits with a recorded post-land failure, active bisection failure or revert.
     pub failed_commits: BTreeSet<String>,
+    /// Per-platform post-land checkpoints and checker status when configured (#591).
+    pub platforms: Vec<PlatformPostLand>,
+}
+
+impl RepositoryPostLand {
+    /// True when every required platform has recorded a green checkpoint (and build
+    /// checkpoint where required). Returns `true` when no per-platform checkpoints are
+    /// configured.
+    pub fn all_required_platforms_have_green(&self) -> bool {
+        self.platforms.iter().all(|platform| {
+            let test_ok = !platform.required_test || platform.last_green.is_some();
+            let build_ok = !platform.required_build
+                || platform.last_built.is_some()
+                || platform.last_green.is_some();
+            test_ok && build_ok
+        })
+    }
+
+    /// True when `commit` is not blocked by any required platform lacking a checkpoint
+    /// or lagging behind an explicit per-platform list when `commit` is the exact target.
+    pub fn required_platforms_cover_commit(&self, commit: &str) -> bool {
+        if self.platforms.is_empty() {
+            return true;
+        }
+        if !self.all_required_platforms_have_green() {
+            return false;
+        }
+        // When every required platform has a checkpoint, Rosen's aggregate `green_commit`
+        // only advances to the minimum across required platforms; verify it is present too.
+        self.green_commit
+            .as_deref()
+            .is_some_and(|green| green.eq_ignore_ascii_case(commit))
+            || self
+                .platforms
+                .iter()
+                .filter(|platform| platform.required_test)
+                .all(|platform| {
+                    platform
+                        .last_green
+                        .as_deref()
+                        .is_some_and(|green| green.eq_ignore_ascii_case(commit))
+                })
+    }
 }
 
 /// Reads Rosen's post-land checkpoint and recorded failures for `owner/name` from Collapse.
@@ -252,9 +306,61 @@ pub fn parse_post_land_value(value: &Value) -> RepositoryPostLand {
         return state;
     };
     read_green_checkpoint(map, &mut state);
+    read_platforms(map, &mut state);
     read_failures(map, &mut state);
     read_events(map, &mut state);
     state
+}
+
+fn read_platforms(map: &Map<String, Value>, state: &mut RepositoryPostLand) {
+    let Some(items) = map.get("platforms").and_then(Value::as_array) else {
+        return;
+    };
+    for item in items {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let Some(platform) = obj
+            .get("platform")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        else {
+            continue;
+        };
+        let (last_built, _) = obj
+            .get("last_built")
+            .map(parse_checkpoint)
+            .unwrap_or((None, None));
+        let (last_green, _) = obj
+            .get("last_green")
+            .map(parse_checkpoint)
+            .unwrap_or((None, None));
+        let required_build = obj
+            .get("required_build")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let required_test = obj
+            .get("required_test")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let checker_connected = obj
+            .get("checker_connected")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| {
+                obj.get("checkers")
+                    .and_then(Value::as_array)
+                    .is_some_and(|list| !list.is_empty())
+            });
+        state.platforms.push(PlatformPostLand {
+            platform: platform.to_owned(),
+            required_build,
+            required_test,
+            last_built,
+            last_green,
+            checker_connected,
+        });
+    }
 }
 
 fn read_green_checkpoint(map: &Map<String, Value>, state: &mut RepositoryPostLand) {
@@ -537,6 +643,28 @@ mod tests {
             tool_arguments(&tool.properties, "mESmaC", "rosen"),
             json!({ "owner": "mESmaC", "name": "rosen" })
         );
+
+        let with_platforms = json!({
+            "last_green": { "commit": green },
+            "platforms": [
+                {
+                    "platform": "windows",
+                    "required_test": true,
+                    "last_green": { "commit": green },
+                    "checker_connected": true
+                },
+                {
+                    "platform": "macos",
+                    "required_test": true,
+                    "last_green": null,
+                    "checker_connected": false
+                }
+            ]
+        });
+        let parsed_platforms = parse_post_land_value(&with_platforms);
+        assert_eq!(parsed_platforms.platforms.len(), 2);
+        assert!(!parsed_platforms.all_required_platforms_have_green());
+        assert!(!parsed_platforms.required_platforms_cover_commit(&green));
         Ok(())
     }
 }

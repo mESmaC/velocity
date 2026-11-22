@@ -735,6 +735,11 @@ impl CollapseIssueTransport {
             return Ok(None);
         };
         let lower = commit.to_ascii_lowercase();
+        if post_land.failed_commits.contains(&lower)
+            || !post_land.required_platforms_cover_commit(&lower)
+        {
+            return Ok(None);
+        }
         if let Some(at) = post_land.green_events.get(&lower) {
             return Ok(Some(IntegrationCoverage {
                 commit: lower,

@@ -212,6 +212,8 @@ async fn consume(
     ) {
         // The independent repair worker reads durable evidence to start or close repairs (#567).
         crate::rosen_landing::wake(application);
+        // Wake base CI immediately so per-platform Rosen post-land failures start repairs (#591).
+        crate::base_ci::wake(application);
     }
     if event.kind == velocity_rosen::ProjectEventKind::DeployDue {
         crate::rosen_deploy::on_deploy_due(application, project, event);

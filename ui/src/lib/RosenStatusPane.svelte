@@ -54,12 +54,13 @@
   }
 
   function ciLine(ci: BaseCi) {
+    const label = ci.source === 'Rosen' ? 'Rosen CI' : 'GitHub CI';
     const at = ci.commit ? ` at ${ci.commit.slice(0, 10)}` : '';
     if (ci.state === 'Failed')
-      return `GitHub CI failing${at}${ci.running ? ' · new run in progress' : ''}`;
-    if (ci.state === 'Running') return 'GitHub CI running';
-    if (ci.state === 'Green') return `GitHub CI green${at}`;
-    return 'GitHub CI has not run';
+      return `${label} failing${at}${ci.running ? ' · new run in progress' : ''}`;
+    if (ci.state === 'Running') return `${label} running`;
+    if (ci.state === 'Green') return `${label} green${at}`;
+    return `${label} has not run`;
   }
 
   const sections = [

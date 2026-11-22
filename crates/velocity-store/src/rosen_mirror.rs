@@ -356,6 +356,7 @@ mod tests {
         store.save_base_ci(
             1,
             Some(BaseCi {
+                source: velocity_core::base_ci::BaseCiSource::GitHub,
                 state: BaseCiState::Green,
                 commit: Some("a".repeat(40)),
                 failing: Vec::new(),
