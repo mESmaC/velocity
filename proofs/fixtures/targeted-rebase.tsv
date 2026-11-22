@@ -22,3 +22,19 @@ post_land	true	false	false	false	true	1
 post_land	true	false	true	false	false	1
 post_land	true	true	false	false	true	1
 post_land	true	true	true	false	false	1
+landing_request	false	false	false	false	false
+landing_request	false	false	false	true	false
+landing_request	false	false	true	false	false
+landing_request	false	false	true	true	false
+landing_request	false	true	false	false	false
+landing_request	false	true	false	true	false
+landing_request	false	true	true	false	false
+landing_request	false	true	true	true	true
+landing_request	true	false	false	false	false
+landing_request	true	false	false	true	false
+landing_request	true	false	true	false	false
+landing_request	true	false	true	true	false
+landing_request	true	true	false	false	false
+landing_request	true	true	false	true	false
+landing_request	true	true	true	false	true
+landing_request	true	true	true	true	true

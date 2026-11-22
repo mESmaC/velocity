@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
-use velocity_core::{duty::DutyEventKind, rosen_checker};
+use velocity_core::{duty::DutyEventKind, landing::landing_request, rosen_checker};
 use velocity_rosen::landing::{self, LandOutcome, LandRefusal};
 use velocity_rosen::{ProjectServer, checker};
 use velocity_store::duty::LandingProject;
@@ -176,25 +176,24 @@ impl RosenLanding {
         let (runner, host) = (self.clone(), host.clone());
         tokio::spawn(async move {
             let server = ProjectServer::new(&runner.app_data, id);
-            if let Ok(base_after_land) = velocity_rosen::post_land::after_land(&server).await {
-                for thread in project
-                    .project
-                    .threads
-                    .iter()
-                    .filter(|thread| named(thread))
-                {
-                    let Some(change) = &thread.rosen_change else {
-                        continue;
-                    };
-                    // On a before-land base, only a rosen.toml-only switch to after-land
-                    // gets a land request; unrelated changes keep Rosen's before-land gate (#524).
-                    let land_allowed = base_after_land
-                        || matches!(
-                            velocity_rosen::post_land::switches_to_after_land(&server, change)
-                                .await,
-                            Ok(true)
-                        );
-                    if land_allowed {
+            if let Ok(after_land) = velocity_rosen::post_land::after_land(&server).await {
+                for thread in &project.project.threads {
+                    let candidate = thread.rosen_change.as_deref();
+                    let named = named(thread);
+                    // A before-land base only admits a named change that switches its policy.
+                    let policy_switch =
+                        if let Some(change) = candidate.filter(|_| named && !after_land) {
+                            matches!(
+                                velocity_rosen::post_land::switches_to_after_land(&server, change)
+                                    .await,
+                                Ok(true)
+                            )
+                        } else {
+                            false
+                        };
+                    if let Some(change) =
+                        landing_request(after_land, policy_switch, named, candidate)
+                    {
                         runner.land(&host, &server, &project, thread, change).await;
                     }
                 }

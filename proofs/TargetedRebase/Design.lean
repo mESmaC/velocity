@@ -56,6 +56,15 @@ def postLandPasses (afterLand buildPrefixRequired : Bool) : Nat :=
 def EnoughPostLandChecks (afterLand buildPrefixRequired : Bool) (passes : Nat) : Prop :=
   1 ≤ passes ∧ (afterLand = false → buildPrefixRequired = true → 2 ≤ passes)
 
+-- One thread in a runner pass after a successful F7 base-policy read.
+-- The native migration check supplies evidence for the rosen.toml-only exception.
+-- A selected candidate still goes through the native checks and Rosen's merge policy.
+def selectsLand (afterLand named hasChange policySwitch : Bool) : Bool :=
+  (afterLand || policySwitch) && named && hasChange
+
+def Eligible (afterLand named hasChange policySwitch : Bool) : Prop :=
+  named = true ∧ hasChange = true ∧ (afterLand = true ∨ policySwitch = true)
+
 def Spec (live : Finset Nat) (overlap : Nat → Bool) (sameHead sameBase touch : Bool) : Prop :=
   (∀ agent, agent ∈ selected live overlap ↔ agent ∈ live ∧ overlap agent = true) ∧
   EnoughChecks sameHead sameBase touch (checks sameHead sameBase touch) ∧
@@ -74,11 +83,14 @@ def Spec (live : Finset Nat) (overlap : Nat → Bool) (sameHead sameBase touch :
     (postLandSeparateBuild afterLand buildPrefixRequired = true ↔
       afterLand = false ∧ buildPrefixRequired = true) ∧
     (postLandPrependPreLand afterLand hasFullSuite = true ↔
-      afterLand = true ∧ hasFullSuite = false))
+      afterLand = true ∧ hasFullSuite = false)) ∧
+  (∀ afterLand named hasChange policySwitch,
+    selectsLand afterLand named hasChange policySwitch = true ↔
+      Eligible afterLand named hasChange policySwitch)
 
 theorem correct (live : Finset Nat) (overlap : Nat → Bool) (sameHead sameBase touch : Bool) :
     Spec live overlap sameHead sameBase touch := by
-  refine ⟨?_, ?_, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩
   · intro agent; simp [selected]
   · cases sameHead <;> cases sameBase <;> cases touch <;> simp [EnoughChecks, checks]
   · intro preflightCurrent touchesBindings bindingsVerified
@@ -87,6 +99,9 @@ theorem correct (live : Finset Nat) (overlap : Nat → Bool) (sameHead sameBase 
   · intro afterLand buildPrefixRequired hasFullSuite
     cases afterLand <;> cases buildPrefixRequired <;> cases hasFullSuite <;>
       simp [EnoughPostLandChecks, postLandPasses, postLandSeparateBuild, postLandPrependPreLand]
+  · intro afterLand named hasChange policySwitch
+    cases afterLand <;> cases named <;> cases hasChange <;> cases policySwitch <;>
+      simp [selectsLand, Eligible]
 
 -- Cost counts branch updates and check passes. Discovery/network costs are external.
 def cost (agents : Finset Nat) (passes : Nat) : Nat := agents.card + passes
@@ -97,23 +112,33 @@ def rosenCheckCost (preflightCurrent touchesBindings bindingsVerified
   preLandPasses preflightCurrent touchesBindings bindingsVerified +
   postLandPasses afterLand buildPrefixRequired
 
+-- Count submissions to the native landing path per thread per runner pass.
+def submissionCost (afterLand named hasChange policySwitch : Bool) : Nat :=
+  if selectsLand afterLand named hasChange policySwitch then 1 else 0
+
 theorem cost_bound (live : Finset Nat) (overlap : Nat → Bool) (sameHead sameBase touch : Bool) :
     cost (selected live overlap) (checks sameHead sameBase touch) ≤ live.card + 2 ∧
     (∀ preflightCurrent touchesBindings bindingsVerified afterLand buildPrefixRequired,
       preLandPasses preflightCurrent touchesBindings bindingsVerified ≤ 1 ∧
       postLandPasses afterLand buildPrefixRequired ≤ (if afterLand then 1 else 2) ∧
       rosenCheckCost preflightCurrent touchesBindings bindingsVerified afterLand buildPrefixRequired ≤
-        (if afterLand then 2 else 3)) := by
-  constructor
+        (if afterLand then 2 else 3)) ∧
+    (∀ afterLand named hasChange policySwitch,
+      submissionCost afterLand named hasChange policySwitch ≤ 1) := by
+  refine ⟨?_, ?_, ?_⟩
   · have bound : (selected live overlap).card ≤ live.card := Finset.card_le_card (Finset.filter_subset _ _)
     cases sameHead <;> cases sameBase <;> cases touch <;> simp_all [cost, checks] <;> omega
   · intro preflightCurrent touchesBindings bindingsVerified afterLand buildPrefixRequired
     cases preflightCurrent <;> cases touchesBindings <;> cases bindingsVerified <;>
       cases afterLand <;> cases buildPrefixRequired <;>
       simp [rosenCheckCost, preLandPasses, preLandPlan, postLandPasses, postLandSeparateBuild]
+  · intro afterLand named hasChange policySwitch
+    unfold submissionCost
+    split <;> omega
 
 -- Alternatives may add updates/checks but must cover affected agents, stale code,
 -- required pre-land bindings checks, and required post-land build/test passes.
+-- An alternative submission strategy must submit every eligible candidate.
 theorem optimal (live : Finset Nat) (overlap : Nat → Bool)
     (sameHead sameBase touch : Bool) (alternative : Finset Nat) (passes : Nat)
     (covers : ∀ agent ∈ live, overlap agent = true → agent ∈ alternative)
@@ -124,8 +149,11 @@ theorem optimal (live : Finset Nat) (overlap : Nat → Bool)
       EnoughPreLandChecks preflightCurrent touchesBindings bindingsVerified altPreLand →
       EnoughPostLandChecks afterLand buildPrefixRequired altPostLand →
       rosenCheckCost preflightCurrent touchesBindings bindingsVerified afterLand buildPrefixRequired ≤
-        altPreLand + altPostLand) := by
-  constructor
+        altPreLand + altPostLand) ∧
+    (∀ afterLand named hasChange policySwitch (alternativeSubmissions : Nat),
+      (Eligible afterLand named hasChange policySwitch → 1 ≤ alternativeSubmissions) →
+      submissionCost afterLand named hasChange policySwitch ≤ alternativeSubmissions) := by
+  refine ⟨?_, ?_, ?_⟩
   · have subset : selected live overlap ⊆ alternative := by
       intro agent member
       have parts := Finset.mem_filter.mp member
@@ -138,6 +166,9 @@ theorem optimal (live : Finset Nat) (overlap : Nat → Bool)
       cases afterLand <;> cases buildPrefixRequired <;>
       simp_all [rosenCheckCost, EnoughPreLandChecks, EnoughPostLandChecks,
         preLandPasses, preLandPlan, postLandPasses, postLandSeparateBuild] <;> omega
+  · intro afterLand named hasChange policySwitch alternativeSubmissions coversEligible
+    cases afterLand <;> cases named <;> cases hasChange <;> cases policySwitch <;>
+      simp_all [Eligible, submissionCost, selectsLand]
 
 #print axioms correct
 #print axioms cost_bound
@@ -165,6 +196,12 @@ def postLandFixtures : String := String.join ([false, true].flatMap fun afterLan
     let passes := postLandPasses afterLand buildPrefixRequired
     s!"post_land\t{afterLand}\t{buildPrefixRequired}\t{hasFullSuite}\t{sep}\t{prepend}\t{passes}\n")
 
-def fixtures : String := rebaseFixtures ++ preLandFixtures ++ postLandFixtures
+def landingRequestFixtures : String := String.join ([false, true].flatMap fun afterLand =>
+  [false, true].flatMap fun named => [false, true].flatMap fun hasChange =>
+    [false, true].map fun policySwitch =>
+      let request := selectsLand afterLand named hasChange policySwitch
+      s!"landing_request\t{afterLand}\t{named}\t{hasChange}\t{policySwitch}\t{request}\n")
+
+def fixtures : String := rebaseFixtures ++ preLandFixtures ++ postLandFixtures ++ landingRequestFixtures
 #eval IO.FS.writeFile "fixtures/targeted-rebase.tsv" fixtures
 end TargetedRebase

@@ -90,6 +90,20 @@ pub fn needs_rebase(claimed: bool, edited_overlap: bool, contested: bool) -> boo
     contested && (claimed || edited_overlap)
 }
 
+/// Selects a named change under after-land policy or for a switch to that policy.
+pub fn landing_request(
+    after_land: bool,
+    policy_switch: bool,
+    named: bool,
+    change: Option<&str>,
+) -> Option<&str> {
+    if (after_land || policy_switch) && named {
+        change
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{PostLandCheckPlan, PreLandCheckPlan};
@@ -103,11 +117,26 @@ mod tests {
         }
     }
 
+    fn check_landing_request(fields: &[&str]) -> Result<(), std::str::ParseBoolError> {
+        let after_land = fields[1].parse()?;
+        let named = fields[2].parse()?;
+        let candidate = fields[3].parse::<bool>()?.then_some("named-change");
+        let policy_switch = fields[4].parse()?;
+        let expected = fields[5].parse::<bool>()?.then_some("named-change");
+        assert_eq!(
+            super::landing_request(after_land, policy_switch, named, candidate),
+            expected,
+        );
+        Ok(())
+    }
+
     // Risk (#629): omitting a rebase or skipping a required Rosen pre-land/post-land check
     // risks landing stale snapshots, stale bindings, or unverified commits.
+    // Missing an eligible land request can also strand named work.
     #[test]
     fn lean_landing_fixtures() -> Result<(), Box<dyn std::error::Error>> {
-        let (mut rebase_rows, mut pre_land_rows, mut post_land_rows) = (0usize, 0usize, 0usize);
+        let (mut rebase_rows, mut pre_land_rows, mut post_land_rows, mut request_rows) =
+            (0, 0, 0, 0);
         for line in include_str!("../../../proofs/fixtures/targeted-rebase.tsv").lines() {
             let fields: Vec<_> = line.split('\t').collect();
             match fields.first().copied() {
@@ -148,12 +177,19 @@ mod tests {
                     );
                     assert_eq!(plan.passes(), fields[6].parse::<u32>()?);
                 }
+                Some("landing_request") => {
+                    request_rows += 1;
+                    check_landing_request(&fields)?;
+                }
                 other => {
                     return Err(format!("unexpected targeted-rebase fixture row: {other:?}").into());
                 }
             }
         }
-        assert_eq!((rebase_rows, pre_land_rows, post_land_rows), (8, 8, 8));
+        assert_eq!(
+            (rebase_rows, pre_land_rows, post_land_rows, request_rows),
+            (8, 8, 8, 16)
+        );
         Ok(())
     }
 }
