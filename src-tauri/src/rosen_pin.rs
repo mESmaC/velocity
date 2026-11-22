@@ -12,6 +12,7 @@ use tauri::{AppHandle, Manager};
 use velocity_collapse::releases::{
     self as collapse_releases, CollapseRelease, CreateReleaseRequest, ROSEN_REPOSITORY,
 };
+use velocity_collapse::{CREATED_RELEASE_TOKEN_LOG, ReleaseTokenSession};
 use velocity_core::rosen_pin::{
     PlatformPostLand, PostLandSnapshot, PostLandState, RosenCommit, RosenPin,
     merge_post_land_states, short_commit,
@@ -221,9 +222,9 @@ fn publish_collapse_rosen_release(
     let (collapse_repo, local_repo_path) = resolve_rosen_collapse_target(application, pin);
     let (owner, name) = velocity_core::collapse::parse_repository(&collapse_repo)
         .ok_or_else(|| format!("Invalid Collapse Rosen repository {collapse_repo}"))?;
-    let token = velocity_collapse::resolve_release_token().map_err(|error| error.to_string())?;
+    let read_token = release_read_token().map_err(|error| error.to_string())?;
     let existing = tauri::async_runtime::block_on(collapse_releases::get_release_by_tag(
-        token.as_deref(),
+        read_token.as_deref(),
         &owner,
         &name,
         tag,
@@ -235,9 +236,11 @@ fn publish_collapse_rosen_release(
             published: false,
         });
     }
-    let token = token.ok_or(
-        "No Collapse release token is available; save one in Settings → Collapse → Release credentials",
-    )?;
+    let resolved = tauri::async_runtime::block_on(velocity_collapse::ensure_release_token())
+        .map_err(|error| error.to_string())?;
+    if resolved.created_from_session {
+        record_created_release_token();
+    }
     let git_url = format!("{}/{}/{}.git", collapse_releases::API_HOST, owner, name);
     let source_url = match host {
         IssueHost::Collapse => git_url.clone(),
@@ -254,8 +257,9 @@ fn publish_collapse_rosen_release(
             &pin.revision,
             &out_dir,
         ))?;
+    let mut session = ReleaseTokenSession::new(resolved.record);
     let publish = tauri::async_runtime::block_on(upload_rosen_pin_release(
-        &token,
+        &mut session,
         &owner,
         &name,
         &git_url,
@@ -272,6 +276,17 @@ fn publish_collapse_rosen_release(
     })
 }
 
+fn release_read_token() -> Result<Option<String>, velocity_collapse::CollapseError> {
+    if let Some(credentials) = velocity_collapse::load_credentials()? {
+        return Ok(Some(credentials.mcp_token));
+    }
+    velocity_collapse::load_release_token()
+}
+
+fn record_created_release_token() {
+    crate::diagnostics::record("rosen pin", CREATED_RELEASE_TOKEN_LOG);
+}
+
 fn has_all_rosen_assets(release: &CollapseRelease) -> bool {
     ROSEN_REQUIRED_ASSETS
         .iter()
@@ -280,7 +295,7 @@ fn has_all_rosen_assets(release: &CollapseRelease) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 async fn upload_rosen_pin_release(
-    token: &str,
+    session: &mut ReleaseTokenSession,
     owner: &str,
     name: &str,
     mirror_url: &str,
@@ -305,21 +320,31 @@ async fn upload_rosen_pin_release(
         "Prebuilt Windows Rosen binaries built from source at `{}` for Velocity ({}).",
         pin.revision, VELOCITY_REPOSITORY
     );
-    let release = collapse_releases::ensure_release(
-        token,
-        owner,
-        name,
-        &CreateReleaseRequest {
-            tag,
-            name: &title,
-            notes: &notes,
-            prerelease: true,
-            draft: false,
-            rolling: false,
-        },
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    let request = CreateReleaseRequest {
+        tag,
+        name: &title,
+        notes: &notes,
+        prerelease: true,
+        draft: false,
+        rolling: false,
+    };
+    let release = session
+        .run(record_created_release_token, |token| {
+            let body = request.clone();
+            async move { collapse_releases::ensure_release(&token, owner, name, &body).await }
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    upload_rosen_pin_assets(session, owner, name, &release, built).await
+}
+
+async fn upload_rosen_pin_assets(
+    session: &mut ReleaseTokenSession,
+    owner: &str,
+    name: &str,
+    release: &CollapseRelease,
+    built: &velocity_threads::local_release::BuiltRosenPinAssets,
+) -> Result<(), String> {
     let files: [(&std::path::Path, &str); 4] = [
         (&built.rosen_exe, "application/octet-stream"),
         (&built.rosen_server_exe, "application/octet-stream"),
@@ -331,13 +356,21 @@ async fn upload_rosen_pin_release(
             .file_name()
             .and_then(|value| value.to_str())
             .ok_or_else(|| format!("Invalid Rosen asset path {}", path.display()))?;
-        let bytes = std::fs::read(path)
-            .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
-        collapse_releases::upload_or_replace_asset(
-            token, owner, name, &release, file_name, mime, bytes,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+        session
+            .run(record_created_release_token, |token| async move {
+                let bytes = std::fs::read(path).map_err(|error| {
+                    velocity_collapse::CollapseError::Api(format!(
+                        "Could not read {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                collapse_releases::upload_or_replace_asset(
+                    &token, owner, name, release, file_name, mime, bytes,
+                )
+                .await
+            })
+            .await
+            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }

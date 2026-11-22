@@ -170,15 +170,16 @@ function Resolve-CollapseReleaseToken {
     if ($env:COLLAPSE_RELEASE_TOKEN) { return $env:COLLAPSE_RELEASE_TOKEN.Trim() }
     if ($env:COLLAPSE_TOKEN) { return $env:COLLAPSE_TOKEN.Trim() }
     $stored = Read-WindowsCredential 'velocity:collapse.sh:releases'
-    if ($stored) { return $stored.Trim() }
-    $account = Read-WindowsCredential 'velocity:collapse.sh'
-    if ($account) {
+    if ($stored) {
         try {
-            $parsed = $account | ConvertFrom-Json -ErrorAction Stop
-            if ($parsed.access_token) { return ([string]$parsed.access_token).Trim() }
-        } catch {}
+            $parsed = $stored | ConvertFrom-Json -ErrorAction Stop
+            if ($parsed.token) { return ([string]$parsed.token).Trim() }
+        } catch {
+            # Legacy plain token text stored directly in Windows Credential Manager.
+        }
+        return $stored.Trim()
     }
-    throw "No Collapse release token found in COLLAPSE_RELEASE_TOKEN or Windows Credential Manager ('velocity:collapse.sh:releases' / 'velocity:collapse.sh')."
+    throw "No Collapse release token found in COLLAPSE_RELEASE_TOKEN or Windows Credential Manager ('velocity:collapse.sh:releases')."
 }
 
 function Get-RosenBinaries {

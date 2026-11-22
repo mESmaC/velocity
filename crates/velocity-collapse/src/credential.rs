@@ -45,6 +45,10 @@ pub struct CollapseCredentials {
     pub mcp_token: String,
     /// The provisioning token for creating repositories and minting push tokens (#427).
     pub access_token: String,
+    /// Normalized machine name sent during sign-in (`Velocity on <machine>`), used when
+    /// minting `velocity-releases-<machine>` tokens (#607).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
 }
 
 // Tokens never reach a log through `{:?}`.
@@ -53,6 +57,46 @@ impl std::fmt::Debug for CollapseCredentials {
         formatter
             .debug_struct("CollapseCredentials")
             .field("account", &self.account)
+            .field("machine", &self.machine)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How the saved Collapse release token in Windows Credential Manager was created (#607).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseTokenSource {
+    /// Pasted manually in Settings → Collapse → Release credentials.
+    Pasted,
+    /// Minted automatically from the signed-in Collapse desktop session (C1).
+    SignIn,
+}
+
+fn default_release_token_source() -> ReleaseTokenSource {
+    ReleaseTokenSource::Pasted
+}
+
+/// The Collapse release token and its provenance stored under `velocity:collapse.sh:releases`
+/// (#593, #607).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredReleaseToken {
+    /// The personal access token secret (`clp_pat_...`).
+    pub token: String,
+    /// Whether the owner pasted this token or Velocity created it from sign-in.
+    #[serde(default = "default_release_token_source")]
+    pub source: ReleaseTokenSource,
+    /// RFC 3339 UTC timestamp returned by Collapse when created from sign-in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+}
+
+// Token value never reaches a log through `{:?}`.
+impl std::fmt::Debug for StoredReleaseToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StoredReleaseToken")
+            .field("source", &self.source)
+            .field("created_at", &self.created_at)
             .finish_non_exhaustive()
     }
 }
@@ -131,25 +175,60 @@ pub fn forget_credentials() -> Result<(), CollapseError> {
     Ok(())
 }
 
-/// Saves a Collapse personal access token with the `releases` scope in Windows Credential
-/// Manager under `velocity:collapse.sh:releases` (#593).
+/// Saves a manually pasted Collapse personal access token with the `releases` scope in
+/// Windows Credential Manager under `velocity:collapse.sh:releases` (#593, #607).
 #[cfg(windows)]
 pub fn save_release_token(token: &str) -> Result<(), CollapseError> {
-    let trimmed = token.trim();
-    if trimmed.is_empty() {
-        return Err(CollapseError::Credential(
-            "Collapse release token cannot be empty".into(),
-        ));
-    }
-    release_token_entry()?
-        .set_secret(trimmed.as_bytes())
-        .map_err(|error| CollapseError::Credential(error.to_string()))
+    let record = StoredReleaseToken {
+        token: token.to_owned(),
+        source: ReleaseTokenSource::Pasted,
+        created_at: None,
+    };
+    save_release_token_record(&record).map(|_| ())
 }
 
-/// Loads the optional Collapse releases token from Windows Credential Manager (#593).
+/// Saves a Collapse `releases`-scoped token minted from the signed-in desktop session in
+/// Windows Credential Manager under `velocity:collapse.sh:releases` (#607).
+#[cfg(windows)]
+pub fn save_sign_in_release_token(
+    token: &str,
+    created_at: Option<&str>,
+) -> Result<StoredReleaseToken, CollapseError> {
+    let record = StoredReleaseToken {
+        token: token.to_owned(),
+        source: ReleaseTokenSource::SignIn,
+        created_at: created_at.and_then(trim_non_empty),
+    };
+    save_release_token_record(&record)
+}
+
+#[cfg(windows)]
+fn save_release_token_record(
+    record: &StoredReleaseToken,
+) -> Result<StoredReleaseToken, CollapseError> {
+    let (normalized, secret) = serialize_release_token_record(record)?;
+    release_token_entry()?
+        .set_secret(&secret)
+        .map_err(|error| CollapseError::Credential(error.to_string()))?;
+    Ok(normalized)
+}
+
+/// Loads the saved Collapse releases token and its provenance from Windows Credential
+/// Manager (#593, #607). Accepts both JSON metadata written by Velocity and legacy plain
+/// token text (treated as a pasted token).
+#[cfg(windows)]
+pub fn load_release_token_record() -> Result<Option<StoredReleaseToken>, CollapseError> {
+    match release_token_entry()?.get_secret() {
+        Ok(secret) => parse_release_token_secret(&secret),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(CollapseError::Credential(error.to_string())),
+    }
+}
+
+/// Loads the optional Collapse releases token value from Windows Credential Manager (#593).
 #[cfg(windows)]
 pub fn load_release_token() -> Result<Option<String>, CollapseError> {
-    read_text_secret(&release_token_entry()?)
+    Ok(load_release_token_record()?.map(|record| record.token))
 }
 
 /// Removes the saved Collapse releases token from Windows Credential Manager (#593).
@@ -164,6 +243,19 @@ pub fn save_release_token(_token: &str) -> Result<(), CollapseError> {
 }
 
 #[cfg(not(windows))]
+pub fn save_sign_in_release_token(
+    _token: &str,
+    _created_at: Option<&str>,
+) -> Result<StoredReleaseToken, CollapseError> {
+    Err(CollapseError::Unsupported)
+}
+
+#[cfg(not(windows))]
+pub fn load_release_token_record() -> Result<Option<StoredReleaseToken>, CollapseError> {
+    Ok(None)
+}
+
+#[cfg(not(windows))]
 pub fn load_release_token() -> Result<Option<String>, CollapseError> {
     Ok(None)
 }
@@ -173,14 +265,53 @@ pub fn forget_release_token() -> Result<(), CollapseError> {
     Ok(())
 }
 
-/// Resolves the bearer token used to publish Collapse releases (#593): prefers a dedicated
-/// personal access token with `releases` scope (`velocity:collapse.sh:releases`) and falls
-/// back to the connected Collapse account's desktop `access_token`.
+/// Returns any saved Collapse release token in Windows Credential Manager (#593, #607).
+/// Desktop `access_token` credentials are refused on release routes; callers that create
+/// a token from the signed-in session should use `ensure_release_token`.
 pub fn resolve_release_token() -> Result<Option<String>, CollapseError> {
-    if let Some(token) = load_release_token()? {
-        return Ok(Some(token));
+    load_release_token()
+}
+
+fn serialize_release_token_record(
+    record: &StoredReleaseToken,
+) -> Result<(StoredReleaseToken, Vec<u8>), CollapseError> {
+    let Some(token) = trim_non_empty(&record.token) else {
+        return Err(CollapseError::Credential(
+            "Collapse release token cannot be empty".into(),
+        ));
+    };
+    let normalized = StoredReleaseToken {
+        token,
+        source: record.source,
+        created_at: record.created_at.as_deref().and_then(trim_non_empty),
+    };
+    let secret = serde_json::to_vec(&normalized)
+        .map_err(|error| CollapseError::Credential(error.to_string()))?;
+    Ok((normalized, secret))
+}
+
+fn parse_release_token_secret(secret: &[u8]) -> Result<Option<StoredReleaseToken>, CollapseError> {
+    if let Ok(parsed) = serde_json::from_slice::<StoredReleaseToken>(secret) {
+        return Ok(
+            trim_non_empty(&parsed.token).map(|token| StoredReleaseToken {
+                token,
+                source: parsed.source,
+                created_at: parsed.created_at.as_deref().and_then(trim_non_empty),
+            }),
+        );
     }
-    Ok(load_credentials()?.map(|credentials| credentials.access_token))
+    let raw = String::from_utf8(secret.to_vec())
+        .map_err(|_| CollapseError::Credential("stored credential is not valid UTF-8".into()))?;
+    Ok(trim_non_empty(&raw).map(|token| StoredReleaseToken {
+        token,
+        source: ReleaseTokenSource::Pasted,
+        created_at: None,
+    }))
+}
+
+fn trim_non_empty(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 /// Saves a Collapse personal access token with the `issues` scope in Windows Credential
@@ -371,5 +502,47 @@ fn delete_entry(entry: &keyring::Entry) -> Result<(), CollapseError> {
     match entry.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(CollapseError::Credential(error.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Risk: persisted credential payloads in Windows Credential Manager must survive save/load
+    // and keep pre-#607 plain-text release tokens and legacy CollapseCredentials readable.
+    #[test]
+    fn release_token_record_round_trips_and_reads_legacy_plain_text()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let sign_in = StoredReleaseToken {
+            token: "  clp_pat_sign_in_secret  ".into(),
+            source: ReleaseTokenSource::SignIn,
+            created_at: Some(" 2026-11-22T04:00:00Z ".into()),
+        };
+        let (normalized, encoded) = serialize_release_token_record(&sign_in)?;
+        assert_eq!(normalized.token, "clp_pat_sign_in_secret");
+        assert_eq!(
+            normalized.created_at.as_deref(),
+            Some("2026-11-22T04:00:00Z")
+        );
+        let decoded = parse_release_token_secret(&encoded)?;
+        assert_eq!(decoded, Some(normalized));
+
+        let legacy = parse_release_token_secret(b"  clp_pat_legacy_pasted \n")?;
+        assert_eq!(
+            legacy,
+            Some(StoredReleaseToken {
+                token: "clp_pat_legacy_pasted".into(),
+                source: ReleaseTokenSource::Pasted,
+                created_at: None,
+            })
+        );
+
+        let legacy_credentials: CollapseCredentials = serde_json::from_str(
+            r#"{"account":"mESmaC","mcp_token":"clp_pat_a","access_token":"clp_desktop_b"}"#,
+        )?;
+        assert_eq!(legacy_credentials.machine, None);
+        assert!(!format!("{sign_in:?}").contains("clp_pat_sign_in_secret"));
+        Ok(())
     }
 }

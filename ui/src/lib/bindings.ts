@@ -173,12 +173,12 @@ export const commands = {
 	 *  `clear_collapse_release_token` (§3.1): removes the Collapse release token from Windows
 	 *  Credential Manager (#593).
 	 */
-	clearCollapseReleaseToken: () => __TAURI_INVOKE<ReleaseCredentialsStatus>("clear_collapse_release_token"),
+	clearCollapseReleaseToken: () => __TAURI_INVOKE<ReleaseCredentialsStatus_Serialize>("clear_collapse_release_token"),
 	/**
 	 *  `clear_updater_signing_key` (§3.1): removes the Tauri updater signing key from Windows
 	 *  Credential Manager (#593).
 	 */
-	clearUpdaterSigningKey: () => __TAURI_INVOKE<ReleaseCredentialsStatus>("clear_updater_signing_key"),
+	clearUpdaterSigningKey: () => __TAURI_INVOKE<ReleaseCredentialsStatus_Serialize>("clear_updater_signing_key"),
 	/**
 	 *  `cut_release` (§3.1): without `commit`, releases the newest green landed commit; with
 	 *  an unverified commit, starts an integration build and queues the release. Projects
@@ -191,17 +191,23 @@ export const commands = {
 	 *  `get_release_credentials_status` (§3.1): reports whether the Tauri updater signing key
 	 *  and optional Collapse release token are saved in Windows Credential Manager (#593).
 	 */
-	getReleaseCredentialsStatus: () => __TAURI_INVOKE<ReleaseCredentialsStatus>("get_release_credentials_status"),
+	getReleaseCredentialsStatus: () => __TAURI_INVOKE<ReleaseCredentialsStatus_Serialize>("get_release_credentials_status"),
+	/**
+	 *  `replace_collapse_release_token` (§3.1): mints a fresh Collapse `releases`-scoped token
+	 *  from the signed-in Collapse session (revoking any previous machine token on Collapse),
+	 *  saves it in Windows Credential Manager, and returns the updated credential status (#607).
+	 */
+	replaceCollapseReleaseToken: () => __TAURI_INVOKE<ReleaseCredentialsStatus_Serialize>("replace_collapse_release_token"),
 	/**
 	 *  `set_collapse_release_token` (§3.1): saves or replaces a Collapse personal access token
 	 *  with `releases` scope in Windows Credential Manager (`velocity:collapse.sh:releases`) (#593).
 	 */
-	setCollapseReleaseToken: (token: string) => __TAURI_INVOKE<ReleaseCredentialsStatus>("set_collapse_release_token", { token }),
+	setCollapseReleaseToken: (token: string) => __TAURI_INVOKE<ReleaseCredentialsStatus_Serialize>("set_collapse_release_token", { token }),
 	/**
 	 *  `set_updater_signing_key` (§3.1): saves or replaces the Tauri updater signing key and
 	 *  optional password in Windows Credential Manager (`velocity:updater-signing-key`) (#593).
 	 */
-	setUpdaterSigningKey: (privateKey: string, password: string | null) => __TAURI_INVOKE<ReleaseCredentialsStatus>("set_updater_signing_key", { privateKey, password }),
+	setUpdaterSigningKey: (privateKey: string, password: string | null) => __TAURI_INVOKE<ReleaseCredentialsStatus_Serialize>("set_updater_signing_key", { privateKey, password }),
 	getProofsSettings: (projectIdentifier: number) => __TAURI_INVOKE<ProofsSettingsView_Serialize>("get_proofs_settings", { projectIdentifier }),
 	/**
 	 *  Sets `provider`'s ACP agent command from its card: the program and its arguments as one
@@ -1153,6 +1159,9 @@ export type CollapseMirrorHealth_Serialize = {
 
 /**  Action kinds Rosen's Collapse relay can run for a project (Rosen R14, #576). */
 export type CollapseRelayKind = "approve" | "land" | "mark" | "config" | "revoke";
+
+/**  How the saved Collapse release token in Windows Credential Manager was provided (#607). */
+export type CollapseReleaseTokenSource = "pasted" | "sign_in";
 
 /**  One repository from the signed-in Collapse account's dashboard (#575). */
 export type CollapseRepository = CollapseRepository_Serialize | CollapseRepository_Deserialize;
@@ -5062,12 +5071,32 @@ export type RailSlice_Serialize = {
 };
 
 /**
- *  Presence of local release credentials in Windows Credential Manager (#593).
+ *  Presence of local release credentials in Windows Credential Manager (#593, #607).
  *  Never exposes any secret bytes or tokens to the window.
  */
-export type ReleaseCredentialsStatus = {
+export type ReleaseCredentialsStatus = ReleaseCredentialsStatus_Serialize | ReleaseCredentialsStatus_Deserialize;
+
+/**
+ *  Presence of local release credentials in Windows Credential Manager (#593, #607).
+ *  Never exposes any secret bytes or tokens to the window.
+ */
+export type ReleaseCredentialsStatus_Deserialize = {
 	updater_key_stored: boolean,
 	collapse_release_token_stored: boolean,
+	collapse_release_token_source?: CollapseReleaseTokenSource | null,
+	collapse_release_token_created_at?: string | null,
+	collapse_connected: boolean,
+};
+
+/**
+ *  Presence of local release credentials in Windows Credential Manager (#593, #607).
+ *  Never exposes any secret bytes or tokens to the window.
+ */
+export type ReleaseCredentialsStatus_Serialize = {
+	updater_key_stored: boolean,
+	collapse_release_token_stored: boolean,
+	collapse_release_token_source: CollapseReleaseTokenSource | null,
+	collapse_release_token_created_at: string | null,
 	collapse_connected: boolean,
 };
 

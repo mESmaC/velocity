@@ -1,8 +1,12 @@
-import { commands, type ReleaseCredentialsStatus } from '../bindings';
+import {
+  commands,
+  type CollapseReleaseTokenSource,
+  type ReleaseCredentialsStatus_Serialize as ReleaseCredentialsStatus,
+} from '../bindings';
 
-export type { ReleaseCredentialsStatus };
+export type { CollapseReleaseTokenSource, ReleaseCredentialsStatus };
 
-// Cut release (#431, #593). For projects mirrored to Collapse, Rust builds and signs
+// Cut release (#431, #593, #607). For projects mirrored to Collapse, Rust builds and signs
 // locally with Windows Credential Manager's updater key and publishes to Collapse
 // (including rolling updater/latest.json). GitHub-only projects dispatch release.yml.
 export const releaseCommands = {
@@ -14,5 +18,6 @@ export const releaseCommands = {
   clearUpdaterSigningKey: () => commands.clearUpdaterSigningKey(),
   setCollapseReleaseToken: (token: string) =>
     commands.setCollapseReleaseToken(token),
+  replaceCollapseReleaseToken: () => commands.replaceCollapseReleaseToken(),
   clearCollapseReleaseToken: () => commands.clearCollapseReleaseToken(),
 };

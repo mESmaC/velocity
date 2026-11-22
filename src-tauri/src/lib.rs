@@ -151,6 +151,7 @@ fn bindings() -> Builder<tauri::Wry> {
         release::clear_updater_signing_key,
         release::cut_release,
         release::get_release_credentials_status,
+        release::replace_collapse_release_token,
         release::set_collapse_release_token,
         release::set_updater_signing_key,
         proofs_settings::get_proofs_settings,

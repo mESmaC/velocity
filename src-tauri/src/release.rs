@@ -15,9 +15,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
-use velocity_collapse::UpdaterSigningKey;
 use velocity_collapse::releases::{
     self as collapse_releases, CollapseRelease, CreateReleaseRequest, UPDATER_TAG,
+};
+use velocity_collapse::{
+    CREATED_RELEASE_TOKEN_LOG, ReleaseTokenSession, ReleaseTokenSource, StoredReleaseToken,
+    UpdaterSigningKey,
 };
 use velocity_core::project_health::short_commit;
 use velocity_core::release::{build_updater_manifest, is_prerelease_tag, version_from_release_tag};
@@ -65,12 +68,22 @@ pub struct ReleaseCut {
     pub note: String,
 }
 
-/// Presence of local release credentials in Windows Credential Manager (#593).
+/// How the saved Collapse release token in Windows Credential Manager was provided (#607).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum CollapseReleaseTokenSource {
+    Pasted,
+    SignIn,
+}
+
+/// Presence of local release credentials in Windows Credential Manager (#593, #607).
 /// Never exposes any secret bytes or tokens to the window.
 #[derive(Clone, Debug, Serialize, specta::Type)]
 pub struct ReleaseCredentialsStatus {
     pub updater_key_stored: bool,
     pub collapse_release_token_stored: bool,
+    pub collapse_release_token_source: Option<CollapseReleaseTokenSource>,
+    pub collapse_release_token_created_at: Option<String>,
     pub collapse_connected: bool,
 }
 
@@ -150,6 +163,21 @@ pub async fn set_collapse_release_token(token: String) -> Result<ReleaseCredenti
     .map_err(|error| error.to_string())?
 }
 
+/// `replace_collapse_release_token` (§3.1): mints a fresh Collapse `releases`-scoped token
+/// from the signed-in Collapse session (revoking any previous machine token on Collapse),
+/// saves it in Windows Credential Manager, and returns the updated credential status (#607).
+#[tauri::command]
+#[specta::specta]
+pub async fn replace_collapse_release_token() -> Result<ReleaseCredentialsStatus, String> {
+    velocity_collapse::create_and_save_release_token()
+        .await
+        .map_err(|error| error.to_string())?;
+    crate::diagnostics::record(RELEASE_LOG_SOURCE, CREATED_RELEASE_TOKEN_LOG);
+    tauri::async_runtime::spawn_blocking(read_credentials_status)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 /// `clear_collapse_release_token` (§3.1): removes the Collapse release token from Windows
 /// Credential Manager (#593).
 #[tauri::command]
@@ -167,15 +195,22 @@ fn read_credentials_status() -> Result<ReleaseCredentialsStatus, String> {
     let updater_key_stored = velocity_collapse::load_updater_signing_key()
         .map_err(|error| error.to_string())?
         .is_some();
-    let collapse_release_token_stored = velocity_collapse::load_release_token()
-        .map_err(|error| error.to_string())?
-        .is_some();
+    let release_token =
+        velocity_collapse::load_release_token_record().map_err(|error| error.to_string())?;
+    let collapse_release_token_stored = release_token.is_some();
+    let collapse_release_token_source = release_token.as_ref().map(|record| match record.source {
+        ReleaseTokenSource::Pasted => CollapseReleaseTokenSource::Pasted,
+        ReleaseTokenSource::SignIn => CollapseReleaseTokenSource::SignIn,
+    });
+    let collapse_release_token_created_at = release_token.and_then(|record| record.created_at);
     let collapse_connected = velocity_collapse::load_credentials()
         .map_err(|error| error.to_string())?
         .is_some();
     Ok(ReleaseCredentialsStatus {
         updater_key_stored,
         collapse_release_token_stored,
+        collapse_release_token_source,
+        collapse_release_token_created_at,
         collapse_connected,
     })
 }
@@ -357,7 +392,7 @@ async fn start_collapse_release_job(
         .ok_or_else(|| format!("{tag} is not a v<semver> release tag"))?;
     let (owner, name) = velocity_core::collapse::parse_repository(collapse_repo)
         .ok_or_else(|| format!("Invalid Collapse repository {collapse_repo}"))?;
-    let (signing_key, token) = load_collapse_release_secrets().await?;
+    let (signing_key, release_token) = load_collapse_release_secrets().await?;
     let app_data = application
         .path()
         .app_data_dir()
@@ -386,7 +421,7 @@ async fn start_collapse_release_job(
             commit: commit_copy.clone(),
             build_graph_indexer,
             signing_key,
-            token,
+            release_token,
         })
         .await;
         match outcome {
@@ -416,22 +451,29 @@ async fn start_collapse_release_job(
     })
 }
 
-async fn load_collapse_release_secrets() -> Result<(UpdaterSigningKey, String), String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let signing_key = velocity_collapse::load_updater_signing_key()
+async fn load_collapse_release_secrets() -> Result<(UpdaterSigningKey, StoredReleaseToken), String>
+{
+    let signing_key = tauri::async_runtime::spawn_blocking(|| {
+        velocity_collapse::load_updater_signing_key()
             .map_err(|error| error.to_string())?
-            .ok_or(
-                "No Tauri updater signing key is saved in Windows Credential Manager (target `velocity:updater-signing-key`). Add it in Settings → Collapse → Release credentials.",
-            )?;
-        let token = velocity_collapse::resolve_release_token()
-            .map_err(|error| error.to_string())?
-            .ok_or(
-                "No Collapse release token is available. Connect Collapse or save a personal access token with `releases` scope in Settings → Collapse → Release credentials.",
-            )?;
-        Ok((signing_key, token))
+            .ok_or_else(|| {
+                "No Tauri updater signing key is saved in Windows Credential Manager (target `velocity:updater-signing-key`). Add it in Settings → Collapse → Release credentials."
+                    .to_owned()
+            })
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())??;
+    let resolved = velocity_collapse::ensure_release_token()
+        .await
+        .map_err(|error| error.to_string())?;
+    if resolved.created_from_session {
+        record_created_release_token();
+    }
+    Ok((signing_key, resolved.record))
+}
+
+fn record_created_release_token() {
+    crate::diagnostics::record(RELEASE_LOG_SOURCE, CREATED_RELEASE_TOKEN_LOG);
 }
 
 struct CollapseReleaseJob {
@@ -445,7 +487,7 @@ struct CollapseReleaseJob {
     commit: String,
     build_graph_indexer: bool,
     signing_key: UpdaterSigningKey,
-    token: String,
+    release_token: StoredReleaseToken,
 }
 
 async fn run_collapse_release(job: CollapseReleaseJob) -> Result<String, String> {
@@ -492,40 +534,81 @@ async fn publish_built_release_to_collapse(
         Some(job.directory.clone()),
     )
     .await?;
+    let mut session = ReleaseTokenSession::new(job.release_token.clone());
     let title = format!("Velocity {}", job.version);
-    let release = collapse_releases::ensure_release(
-        &job.token,
+    let prerelease = is_prerelease_tag(&job.tag);
+    let release = ensure_release_with_session(
+        &mut session,
         &job.owner,
         &job.name,
-        &CreateReleaseRequest {
+        CreateReleaseRequest {
             tag: &job.tag,
             name: &title,
             notes: &built.notes,
-            prerelease: is_prerelease_tag(&job.tag),
+            prerelease,
             draft: false,
             rolling: false,
         },
     )
-    .await
-    .map_err(|error| error.to_string())?;
-    upload_signed_release_files(&job.token, &job.owner, &job.name, &release, built).await?;
+    .await?;
+    upload_signed_release_files(&mut session, &job.owner, &job.name, &release, built).await?;
     let manifest_bytes = build_manifest_bytes(job, built)?;
-    collapse_releases::upload_or_replace_asset(
-        &job.token,
+    upload_manifest_with_session(
+        &mut session,
         &job.owner,
         &job.name,
         &release,
-        "latest.json",
-        "application/json",
-        manifest_bytes.clone(),
+        &manifest_bytes,
     )
-    .await
-    .map_err(|error| error.to_string())?;
-    update_rolling_updater_release(job, &mirror_url, manifest_bytes).await
+    .await?;
+    update_rolling_updater_release(&mut session, job, &mirror_url, manifest_bytes).await
+}
+
+async fn ensure_release_with_session(
+    session: &mut ReleaseTokenSession,
+    owner: &str,
+    name: &str,
+    request: CreateReleaseRequest<'_>,
+) -> Result<CollapseRelease, String> {
+    session
+        .run(record_created_release_token, |token| {
+            let body = request.clone();
+            async move { collapse_releases::ensure_release(&token, owner, name, &body).await }
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn upload_manifest_with_session(
+    session: &mut ReleaseTokenSession,
+    owner: &str,
+    name: &str,
+    release: &CollapseRelease,
+    manifest_bytes: &[u8],
+) -> Result<(), String> {
+    session
+        .run(record_created_release_token, |token| {
+            let bytes = manifest_bytes.to_vec();
+            async move {
+                collapse_releases::upload_or_replace_asset(
+                    &token,
+                    owner,
+                    name,
+                    release,
+                    "latest.json",
+                    "application/json",
+                    bytes,
+                )
+                .await
+            }
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 async fn upload_signed_release_files(
-    token: &str,
+    session: &mut ReleaseTokenSession,
     owner: &str,
     name: &str,
     release: &CollapseRelease,
@@ -553,13 +636,21 @@ async fn upload_signed_release_files(
             .file_name()
             .and_then(|value| value.to_str())
             .ok_or_else(|| format!("Invalid asset path {}", path.display()))?;
-        let bytes = std::fs::read(path)
-            .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
-        collapse_releases::upload_or_replace_asset(
-            token, owner, name, release, file_name, mime, bytes,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+        session
+            .run(record_created_release_token, |token| async move {
+                let bytes = std::fs::read(path).map_err(|error| {
+                    velocity_collapse::CollapseError::Api(format!(
+                        "Could not read {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                collapse_releases::upload_or_replace_asset(
+                    &token, owner, name, release, file_name, mime, bytes,
+                )
+                .await
+            })
+            .await
+            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -594,6 +685,7 @@ fn build_manifest_bytes(
 }
 
 async fn update_rolling_updater_release(
+    session: &mut ReleaseTokenSession,
     job: &CollapseReleaseJob,
     mirror_url: &str,
     manifest_bytes: Vec<u8>,
@@ -606,11 +698,11 @@ async fn update_rolling_updater_release(
         Some(job.directory.clone()),
     )
     .await?;
-    let updater = collapse_releases::ensure_release(
-        &job.token,
+    let updater = ensure_release_with_session(
+        session,
         &job.owner,
         &job.name,
-        &CreateReleaseRequest {
+        CreateReleaseRequest {
             tag: UPDATER_TAG,
             name: "Update manifest",
             notes: "Holds latest.json, which installed copies of Velocity read to find updates. Not a download.",
@@ -619,20 +711,8 @@ async fn update_rolling_updater_release(
             rolling: true,
         },
     )
-    .await
-    .map_err(|error| error.to_string())?;
-    collapse_releases::upload_or_replace_asset(
-        &job.token,
-        &job.owner,
-        &job.name,
-        &updater,
-        "latest.json",
-        "application/json",
-        manifest_bytes,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    Ok(())
+    .await?;
+    upload_manifest_with_session(session, &job.owner, &job.name, &updater, &manifest_bytes).await
 }
 
 async fn ensure_collapse_tag(

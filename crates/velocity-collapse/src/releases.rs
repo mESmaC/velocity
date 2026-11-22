@@ -403,8 +403,8 @@ async fn release_success(response: Response, action: &str) -> Result<Response, C
     let body = response.text().await.unwrap_or_default();
     let detail = extract_error_message(&body);
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-        return Err(CollapseError::Api(format!(
-            "Collapse refused to {action} ({status}{detail}). Save a Collapse personal access token with the `releases` scope (https://collapse.sh/settings/tokens) in Settings."
+        return Err(CollapseError::ReleaseUnauthorized(format!(
+            "Collapse refused to {action} ({status}{detail}). Save a Collapse personal access token with the `releases` scope (https://collapse.sh/settings/tokens) in Settings → Collapse → Release credentials."
         )));
     }
     Err(CollapseError::Api(format!(
@@ -412,7 +412,7 @@ async fn release_success(response: Response, action: &str) -> Result<Response, C
     )))
 }
 
-fn extract_error_message(body: &str) -> String {
+pub(crate) fn extract_error_message(body: &str) -> String {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(body)
         && let Some(message) = value.get("error").and_then(serde_json::Value::as_str)
         && !message.trim().is_empty()

@@ -16,15 +16,17 @@ pub mod issue_import;
 pub mod issues;
 pub mod post_land;
 pub mod provision;
+pub mod release_token;
 pub mod releases;
 mod url_text;
 
-pub use connect::connect;
+pub use connect::{connect, current_machine_name};
 pub use credential::{
-    CollapseCredentials, UpdaterSigningKey, forget_credentials, forget_issues_token,
-    forget_release_token, forget_updater_signing_key, load_credentials, load_issues_token,
-    load_release_token, load_updater_signing_key, resolve_issues_token, resolve_release_token,
-    save_issues_token, save_release_token, save_updater_signing_key,
+    CollapseCredentials, ReleaseTokenSource, StoredReleaseToken, UpdaterSigningKey,
+    forget_credentials, forget_issues_token, forget_release_token, forget_updater_signing_key,
+    load_credentials, load_issues_token, load_release_token, load_release_token_record,
+    load_updater_signing_key, resolve_issues_token, resolve_release_token, save_issues_token,
+    save_release_token, save_sign_in_release_token, save_updater_signing_key,
 };
 pub use deploy_credential::{
     DeploySecretValue, deploy_credentials_supported, forget_deploy_secret, has_deploy_secret,
@@ -46,6 +48,10 @@ pub use provision::{
     DeletedPendingRepository, MirrorRequest, ProvisionDisposition, ProvisionedMirror,
     check_push_token, ensure_mirror, prepare_existing_mirror, provision_mirror,
     purge_and_create_mirror, repository_exists, restore_mirror, share_push_token,
+};
+pub use release_token::{
+    CREATED_RELEASE_TOKEN_LOG, ReleaseTokenSession, ResolvedReleaseToken,
+    create_and_save_release_token, ensure_release_token, mint_release_token, release_token_name,
 };
 
 /// Collapse's read-only MCP endpoint (Collapse C9), streamable HTTP with a bearer token.
@@ -73,7 +79,16 @@ pub enum CollapseError {
     #[error("{0}")]
     DeletedPending(Box<DeletedPendingRepository>),
     #[error("{0}")]
+    ReleaseUnauthorized(String),
+    #[error("{0}")]
     Api(String),
     #[error("{0}")]
     Git(String),
+}
+
+impl CollapseError {
+    /// True when Collapse's releases API refused the bearer token with HTTP 401 or 403.
+    pub fn is_release_unauthorized(&self) -> bool {
+        matches!(self, Self::ReleaseUnauthorized(_))
+    }
 }

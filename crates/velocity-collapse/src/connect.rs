@@ -72,7 +72,7 @@ struct SignInRequest {
 impl SignInRequest {
     fn new(machine: &str, redirect_uri: String) -> Self {
         Self {
-            machine: machine_name(machine),
+            machine: normalize_machine_name(machine),
             redirect_uri,
             // 32 random hex characters: inside Collapse's 22–128 unreserved characters.
             state: uuid::Uuid::new_v4().simple().to_string(),
@@ -100,8 +100,18 @@ impl SignInRequest {
     }
 }
 
+/// Normalized machine name for this host (`COMPUTERNAME` or `HOSTNAME`), matching what
+/// Collapse records as `Velocity on <machine>` during desktop sign-in (#607).
+pub fn current_machine_name() -> String {
+    let raw = ["COMPUTERNAME", "HOSTNAME"]
+        .into_iter()
+        .find_map(|variable| std::env::var(variable).ok())
+        .unwrap_or_default();
+    normalize_machine_name(&raw)
+}
+
 /// A printable name of at most 88 bytes with no surrounding whitespace, as Collapse requires.
-fn machine_name(machine: &str) -> String {
+pub(crate) fn normalize_machine_name(machine: &str) -> String {
     let printable: String = machine.chars().filter(|item| !item.is_control()).collect();
     let mut name = printable.trim().to_owned();
     while name.len() > MAX_MACHINE_BYTES {
@@ -247,5 +257,6 @@ async fn exchange(
         account: reply.account.trim().to_owned(),
         mcp_token: reply.mcp_token,
         access_token: reply.access_token,
+        machine: Some(request.machine.clone()),
     })
 }

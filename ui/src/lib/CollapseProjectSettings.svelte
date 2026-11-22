@@ -191,6 +191,28 @@
       : 'Not sent yet';
   }
 
+  function formatReleaseTokenDate(iso: string | null | undefined): string {
+    if (!iso) return '';
+    const parsed = new Date(iso);
+    if (Number.isNaN(parsed.getTime())) return iso;
+    return parsed.toLocaleDateString(undefined, { dateStyle: 'medium' });
+  }
+
+  function releaseTokenStatusLabel(creds: ReleaseCredentialsStatus): string {
+    if (!creds.collapse_release_token_stored) {
+      return creds.collapse_connected
+        ? 'From sign-in · created automatically on next release'
+        : 'Not set';
+    }
+    if (creds.collapse_release_token_source === 'sign_in') {
+      const created = formatReleaseTokenDate(
+        creds.collapse_release_token_created_at,
+      );
+      return created ? `From sign-in · created ${created}` : 'From sign-in';
+    }
+    return 'Pasted · stored in Windows Credential Manager';
+  }
+
   function pushTokenLabel(status: PushTokenStatus): string {
     switch (status.kind) {
       case 'not_configured':
@@ -432,6 +454,21 @@
         await releaseCommands.setCollapseReleaseToken(releaseTokenInput);
       releaseTokenInput = '';
       notice = 'Saved Collapse release token in Windows Credential Manager.';
+    } catch (reason) {
+      actionError = formatError(reason);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function replaceReleaseToken() {
+    if (busy) return;
+    busy = true;
+    actionError = '';
+    notice = '';
+    try {
+      releaseCreds = await releaseCommands.replaceCollapseReleaseToken();
+      notice = 'Created a Collapse release token from the signed-in session.';
     } catch (reason) {
       actionError = formatError(reason);
     } finally {
@@ -981,12 +1018,23 @@
               class:collapse-status-ok={releaseCreds.collapse_release_token_stored}
               class:hint={!releaseCreds.collapse_release_token_stored}
             >
-              {releaseCreds.collapse_release_token_stored
-                ? 'Stored in Windows Credential Manager'
-                : releaseCreds.collapse_connected
-                  ? 'Optional · using connected Collapse account'
-                  : 'Not set'}
+              {releaseTokenStatusLabel(releaseCreds)}
             </span>
+            {#if releaseCreds.collapse_release_token_source === 'sign_in'}
+              <button
+                type="button"
+                class="worktree-button mini"
+                disabled={busy || !releaseCreds.collapse_connected}
+                onclick={() => void replaceReleaseToken()}>Replace</button
+              >
+            {:else if !releaseCreds.collapse_release_token_stored && releaseCreds.collapse_connected}
+              <button
+                type="button"
+                class="worktree-button mini"
+                disabled={busy}
+                onclick={() => void replaceReleaseToken()}>Create</button
+              >
+            {/if}
             {#if releaseCreds.collapse_release_token_stored}
               <button
                 type="button"
@@ -1006,7 +1054,7 @@
             <input
               type="password"
               aria-label="Collapse release token"
-              placeholder="Collapse PAT with releases scope"
+              placeholder="Paste Collapse PAT with releases scope (overrides sign-in)"
               bind:value={releaseTokenInput}
               disabled={busy}
               autocomplete="off"
