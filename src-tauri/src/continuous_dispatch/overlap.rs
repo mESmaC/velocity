@@ -17,10 +17,14 @@ use velocity_store::{
 use velocity_threads::continuous_dispatch::{
     TextBlockerContext, actionable_in_projects_with_blockers,
 };
-use velocity_threads::overlap_paths::{is_reference, widely_shared};
+use velocity_threads::overlap_paths::{explicit_file_paths, is_reference, widely_shared};
 
 use super::{Reader, dispatch_claims, text_blockers, unix_seconds};
-use crate::{graph_access::issue_paths, state::ManagedStateStore, threads::lock};
+use crate::{
+    graph_access::{issue_files, issue_paths},
+    state::ManagedStateStore,
+    threads::lock,
+};
 
 pub(super) fn refresh(
     application: &AppHandle,
@@ -127,8 +131,13 @@ struct CachedIssuePaths {
     issues: BTreeMap<u32, (u64, BTreeSet<String>)>,
 }
 
-/// Cached graph-resolved paths per `(project, issue, base_commit, content_hash)` (#555).
+/// Cached graph-predicted paths per `(project, issue, base_commit, content_hash)` for
+/// landed-change reviews (#555, #649).
 static ISSUE_PATHS_CACHE: Mutex<BTreeMap<u32, CachedIssuePaths>> = Mutex::new(BTreeMap::new());
+
+/// Cached concrete file references per `(project, issue, base_commit, content_hash)` for
+/// live overlap holds (#555, #649).
+static ISSUE_FILES_CACHE: Mutex<BTreeMap<u32, CachedIssuePaths>> = Mutex::new(BTreeMap::new());
 
 /// Drops the cached base commit for `project` when Rosen's base moves on land or revert (#555).
 pub(crate) fn invalidate_base_commit(project: u32) {
@@ -160,11 +169,12 @@ struct IssueCacheUpdate<'a> {
 }
 
 fn store_cached_issue_paths(
+    cache: &Mutex<BTreeMap<u32, CachedIssuePaths>>,
     update: IssueCacheUpdate<'_>,
     resolved: Vec<BTreeSet<String>>,
     results: &mut [Option<BTreeSet<String>>],
 ) {
-    if let Ok(mut cache) = lock(&ISSUE_PATHS_CACHE, "issue overlap path cache") {
+    if let Ok(mut cache) = lock(cache, "issue overlap path cache") {
         let entry = cache
             .entry(update.project)
             .or_insert_with(|| CachedIssuePaths {
@@ -409,10 +419,10 @@ impl<'a> OverlapContext<'a> {
         Ok(())
     }
 
-    /// The paths each issue of the ready backlog names that can hold it. The whole
-    /// backlog is read, not only the issues that can be held, because a path's share of
-    /// it decides whether the path counts. Only a hold needs the paths, so nothing is
-    /// read without a blocker.
+    /// The concrete code files each issue of the ready backlog names that can hold it
+    /// (#649). The whole backlog is read, not only the issues that can be held, because a
+    /// path's share of it decides whether the path counts. Only a hold needs the paths, so
+    /// nothing is read without a blocker.
     fn named_paths(
         &mut self,
         backlog: &[&GitHubIssue],
@@ -421,7 +431,7 @@ impl<'a> OverlapContext<'a> {
         if blockers.is_empty() {
             return BTreeMap::new();
         }
-        let named = self.cached_issue_paths(backlog, true);
+        let named = self.cached_issue_files(backlog);
         self.shared = widely_shared(&named);
         backlog
             .iter()
@@ -430,19 +440,40 @@ impl<'a> OverlapContext<'a> {
             .collect()
     }
 
-    /// Resolves `issues` against the graph service, reusing cached results for each
-    /// `(issue, base_commit)` whose title and body are unchanged (#555).
-    fn cached_issue_paths(
+    /// Resolves concrete file references named by `issues`, reusing cached results per
+    /// `(issue, base_commit)` without inferring files from symbol names (#649).
+    fn cached_issue_files(&self, issues: &[&GitHubIssue]) -> Vec<BTreeSet<String>> {
+        self.cached_paths(&ISSUE_FILES_CACHE, issues, true, |descriptions| {
+            let mut resolved = issue_files(self.data, self.project, descriptions);
+            for (paths, &(title, body)) in resolved.iter_mut().zip(descriptions) {
+                paths.extend(explicit_file_paths(title));
+                paths.extend(explicit_file_paths(body));
+            }
+            resolved
+        })
+    }
+
+    /// Resolves `issues` against the graph service with symbol-based prediction for
+    /// landed-change review checks, reusing cached results per `(issue, base_commit)` (#555).
+    fn cached_issue_paths(&self, issues: &[&GitHubIssue]) -> Vec<BTreeSet<String>> {
+        self.cached_paths(&ISSUE_PATHS_CACHE, issues, false, |descriptions| {
+            issue_paths(self.data, self.project, descriptions)
+        })
+    }
+
+    fn cached_paths(
         &self,
+        cache: &Mutex<BTreeMap<u32, CachedIssuePaths>>,
         issues: &[&GitHubIssue],
         prune_to_backlog: bool,
+        resolve: impl FnOnce(&[(&str, &str)]) -> Vec<BTreeSet<String>>,
     ) -> Vec<BTreeSet<String>> {
         if issues.is_empty() {
             return Vec::new();
         }
         let Some(base_commit) = self.base_commit() else {
             let descriptions: Vec<_> = issues.iter().map(|issue| issue_text(issue)).collect();
-            return issue_paths(self.data, self.project, &descriptions);
+            return resolve(&descriptions);
         };
         let hashes: Vec<u64> = issues
             .iter()
@@ -450,7 +481,7 @@ impl<'a> OverlapContext<'a> {
             .collect();
         let mut results: Vec<Option<BTreeSet<String>>> = vec![None; issues.len()];
         let mut misses = Vec::new();
-        if let Ok(cache) = lock(&ISSUE_PATHS_CACHE, "issue overlap path cache")
+        if let Ok(cache) = lock(cache, "issue overlap path cache")
             && let Some(project_cache) = cache.get(&self.project.id)
             && project_cache.base_commit == base_commit
         {
@@ -471,8 +502,9 @@ impl<'a> OverlapContext<'a> {
                 .iter()
                 .map(|&index| issue_text(issues[index]))
                 .collect();
-            let resolved = issue_paths(self.data, self.project, &descriptions);
+            let resolved = resolve(&descriptions);
             store_cached_issue_paths(
+                cache,
                 IssueCacheUpdate {
                     project: self.project.id,
                     base_commit,
@@ -692,7 +724,7 @@ impl<'a> OverlapContext<'a> {
         commit: &str,
     ) -> Result<Option<Vec<String>>, String> {
         let source = self.client.get(source).map_err(|error| error.to_string())?;
-        let named = self.cached_issue_paths(&[issue, &source], false);
+        let named = self.cached_issue_paths(&[issue, &source]);
         let mut paths = named.into_iter().map(|paths| self.holding(paths));
         let wanted = problem(issue, paths.next().unwrap_or_default());
         if wanted.matches(&problem(&source, paths.next().unwrap_or_default())) {

@@ -364,19 +364,13 @@ impl Graph {
 
     fn mentioned_file(&self, mention: &str) -> Option<&str> {
         let normalized = mention.replace('\\', "/");
-        let path = normalized.trim_start_matches("./");
-        let mut path = path;
-        while let Some((prefix, suffix)) = path.rsplit_once(':') {
-            if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
-                break;
-            }
-            path = prefix;
-        }
+        let path = strip_line_anchor(normalized.trim_start_matches("./"));
         if let Some((path, _)) = self.by_path.get_key_value(path) {
             return Some(path);
         }
         let leaf = path.rsplit('/').next()?;
         let lower_path = path.to_lowercase();
+        let absolute = is_absolute_path(&lower_path);
         let mut matches = self.named(leaf).iter().filter_map(|&index| {
             let record = &self.records[index];
             if record.kind != RecordKind::File {
@@ -387,14 +381,76 @@ impl Graph {
                 || known
                     .strip_suffix(&lower_path)
                     .is_some_and(|prefix| prefix.ends_with('/'))
-                || lower_path
-                    .strip_suffix(&known)
-                    .is_some_and(|prefix| prefix.ends_with('/')))
+                || (absolute
+                    && lower_path
+                        .strip_suffix(&known)
+                        .is_some_and(|prefix| prefix.ends_with('/'))))
             .then_some(record.path.as_str())
         });
         let path = matches.next()?;
         matches.next().is_none().then_some(path)
     }
+
+    /// Resolve concrete file references in `text` to repository-relative paths (#649).
+    /// Unlike [`Self::mentioned_paths`], this never infers files from symbol names or
+    /// graph addresses.
+    pub fn mentioned_files(&self, text: &str) -> BTreeSet<String> {
+        let quoted = text.split('`').skip(1).step_by(2);
+        let tokens = text.split(|character: char| {
+            !(character.is_alphanumeric() || "_./\\:-#".contains(character))
+        });
+        quoted
+            .chain(tokens)
+            .filter_map(|mention| self.concrete_file(mention))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn concrete_file(&self, mention: &str) -> Option<&str> {
+        let mention = mention.trim().trim_end_matches(['.', ':', '#']);
+        if mention.is_empty()
+            || mention.contains("://")
+            || (!mention.contains('.') && !mention.contains(['/', '\\']))
+        {
+            return None;
+        }
+        self.mentioned_file(mention)
+    }
+}
+
+fn strip_line_anchor(path: &str) -> &str {
+    let path = path
+        .rsplit_once('#')
+        .and_then(|(prefix, fragment)| {
+            let digits = fragment
+                .strip_prefix('L')
+                .or_else(|| fragment.strip_prefix('l'))?;
+            let valid = !digits.is_empty()
+                && digits.split('-').all(|part| {
+                    let part = part
+                        .strip_prefix('L')
+                        .or_else(|| part.strip_prefix('l'))
+                        .unwrap_or(part);
+                    !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+                });
+            valid.then_some(prefix)
+        })
+        .unwrap_or(path);
+    let mut path = path;
+    while let Some((prefix, suffix)) = path.rsplit_once(':') {
+        if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+            break;
+        }
+        path = prefix;
+    }
+    path
+}
+
+fn is_absolute_path(path: &str) -> bool {
+    path.starts_with('/')
+        || path.as_bytes().get(0..3).is_some_and(|prefix| {
+            prefix[0].is_ascii_alphabetic() && prefix[1] == b':' && prefix[2] == b'/'
+        })
 }
 
 fn relocation_keys(record: &Record) -> Vec<(RecordKind, String, String)> {
@@ -413,4 +469,60 @@ fn relocation_keys(record: &Record) -> Vec<(RecordKind, String, String)> {
         ));
     }
     keys
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::extract::Definition;
+
+    fn file_input(path: &str, symbol: Option<&str>) -> FileInput {
+        let mut parse = FileParse::default();
+        if let Some(name) = symbol {
+            let source = format!("pub struct {name};");
+            parse.definitions.push(Definition::at(
+                &source,
+                0,
+                source.len(),
+                name.into(),
+                SymbolKind::Class,
+            ));
+        }
+        FileInput {
+            path: path.into(),
+            hash: format!("hash-{path}"),
+            language: Some(Language::Rust),
+            parse: Arc::new(parse),
+        }
+    }
+
+    // Regression for #649: ordinary capitalized title words matching a unique symbol must
+    // not produce a concrete file reference for live overlap holds, while `mentioned_paths`
+    // retains symbol prediction for landed-change reviews.
+    #[test]
+    fn mentioned_files_ignores_symbol_words_and_resolves_concrete_references() {
+        let files = vec![
+            file_input("server/internal/query/filters.rs", Some("Explore")),
+            file_input("explore.tsx", None),
+            file_input("crates/a/src/mod.rs", None),
+            file_input("crates/b/src/mod.rs", None),
+        ];
+        let graph = Graph::build(&files, Vec::new(), &HashMap::new());
+        let title = "Explore: add public repository cards to web/routes/explore.tsx";
+
+        assert!(graph.mentioned_files(title).is_empty());
+        assert_eq!(
+            graph.mentioned_paths(title),
+            BTreeSet::from(["server/internal/query/filters.rs".to_owned()])
+        );
+        assert!(graph.mentioned_files("See `Explore` and mod.rs").is_empty());
+        assert_eq!(
+            graph.mentioned_files("Fix filters.rs:42 and query/filters.rs#L10-L20"),
+            BTreeSet::from(["server/internal/query/filters.rs".to_owned()])
+        );
+        assert_eq!(
+            graph.mentioned_files(r"Z:\work\repo\server\internal\query\filters.rs:9"),
+            BTreeSet::from(["server/internal/query/filters.rs".to_owned()])
+        );
+    }
 }

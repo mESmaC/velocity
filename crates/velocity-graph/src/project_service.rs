@@ -47,6 +47,7 @@ pub(crate) enum Action {
     },
     WarmBase,
     Mentions(Vec<(String, String)>),
+    FileMentions(Vec<(String, String)>),
     ChangeSignatureWarnings {
         change: String,
     },
@@ -499,6 +500,21 @@ impl ProjectGraph {
                     ..Reply::plain(String::new())
                 }
             }
+            Action::FileMentions(texts) => {
+                let graph = &tools.index().graph;
+                let mentions = texts
+                    .into_iter()
+                    .map(|(title, body)| {
+                        let mut paths = graph.mentioned_files(&title);
+                        paths.extend(graph.mentioned_files(&body));
+                        paths
+                    })
+                    .collect();
+                Reply {
+                    mentions,
+                    ..Reply::plain(String::new())
+                }
+            }
             Action::ChangeSignatureWarnings { change } => {
                 let signature_warnings = tools
                     .index()
@@ -532,7 +548,10 @@ impl ProjectGraph {
     }
 
     fn select(&mut self, cache: &Path, request: &Request) -> Result<(&mut Tools, bool), Error> {
-        let mentions = matches!(request.action, Action::Mentions(_));
+        let mentions = matches!(
+            request.action,
+            Action::Mentions(_) | Action::FileMentions(_)
+        );
         let signature_query = matches!(
             request.action,
             Action::ChangeSignatureWarnings { .. } | Action::DispatchSignatureWarnings { .. }
@@ -769,6 +788,31 @@ pub fn mentioned_paths(
     endpoint: Option<Endpoint>,
     texts: &[(&str, &str)],
 ) -> Vec<BTreeSet<String>> {
+    request_mentions(executable, app_data, project, root, endpoint, texts, false)
+}
+
+/// Resolve concrete file references against the project graph worker without
+/// symbol-based path inference (#649).
+pub fn mentioned_files(
+    executable: &Path,
+    app_data: &Path,
+    project: &str,
+    root: &Path,
+    endpoint: Option<Endpoint>,
+    texts: &[(&str, &str)],
+) -> Vec<BTreeSet<String>> {
+    request_mentions(executable, app_data, project, root, endpoint, texts, true)
+}
+
+fn request_mentions(
+    executable: &Path,
+    app_data: &Path,
+    project: &str,
+    root: &Path,
+    endpoint: Option<Endpoint>,
+    texts: &[(&str, &str)],
+    files_only: bool,
+) -> Vec<BTreeSet<String>> {
     let project = Project::new(
         crate::usage::folder(app_data, project),
         executable.into(),
@@ -789,12 +833,15 @@ pub fn mentioned_paths(
             .max(1);
         let (batch, rest) = remaining.split_at(length);
         if length > 1 || mention_size(first) <= FRAME_LIMIT as usize - 1024 {
-            let action = Action::Mentions(
-                batch
-                    .iter()
-                    .map(|&(title, body)| (title.to_owned(), body.to_owned()))
-                    .collect(),
-            );
+            let items: Vec<_> = batch
+                .iter()
+                .map(|&(title, body)| (title.to_owned(), body.to_owned()))
+                .collect();
+            let action = if files_only {
+                Action::FileMentions(items)
+            } else {
+                Action::Mentions(items)
+            };
             let Ok(reply) = project.request(root, Vec::new(), action, QUERY_TIMEOUT) else {
                 break;
             };

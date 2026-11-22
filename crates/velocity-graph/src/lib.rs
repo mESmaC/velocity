@@ -42,8 +42,8 @@ pub use mcp::{
     serve_stdio, server_arguments, task_context, warm, warm_stdio, workspace_map,
 };
 pub use project_service::{
-    PROJECT_SWITCH, change_signature_warnings, dispatch_signature_warnings, mentioned_paths,
-    serve_project, warm_project,
+    PROJECT_SWITCH, change_signature_warnings, dispatch_signature_warnings, mentioned_files,
+    mentioned_paths, serve_project, warm_project,
 };
 pub use search::is_conversational_prompt;
 pub use signature_impact::{

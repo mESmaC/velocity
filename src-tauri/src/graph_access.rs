@@ -58,6 +58,27 @@ pub(crate) fn issue_paths(
     )
 }
 
+/// Resolves concrete file references named in issue text without symbol-based prediction (#649).
+pub(crate) fn issue_files(
+    data: &Path,
+    project: &ProjectItem,
+    texts: &[(&str, &str)],
+) -> Vec<BTreeSet<String>> {
+    let Ok(executable) = std::env::current_exe() else {
+        return vec![BTreeSet::new(); texts.len()];
+    };
+    let endpoint = (project.version_control == VersionControl::Rosen)
+        .then(|| ProjectServer::new(data, project.id).endpoint().clone());
+    velocity_graph::mentioned_files(
+        &executable,
+        data,
+        &project.id.to_string(),
+        Path::new(&project.repository_path),
+        endpoint,
+        texts,
+    )
+}
+
 /// Checks whether open or recently landed Rosen changes alter public signatures, IPC commands,
 /// or IPC event types touched by the work item described in `texts` (#542).
 pub(crate) fn issue_signature_warnings(
