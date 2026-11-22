@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { DeletedCollapseRepository } from './ipc';
+  import { collapseCommands, type DeletedCollapseRepository } from './ipc';
 
   let {
     deleted,
@@ -86,6 +86,10 @@
         target="_blank"
         rel="noopener noreferrer"
         class="worktree-button mini collapse-deleted-link"
+        onclick={(event) => {
+          event.preventDefault();
+          void collapseCommands.openPage(settingsUrl);
+        }}
       >
         Repository settings ↗
       </a>

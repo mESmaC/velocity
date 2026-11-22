@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use reqwest::{Client, Method, RequestBuilder, Response, StatusCode};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::CollapseError;
 use crate::credential::CollapseCredentials;
@@ -181,48 +182,6 @@ struct RepositoryReply {
     mirror_url: String,
 }
 
-#[derive(Default, Deserialize)]
-struct DeletedPendingReply {
-    #[serde(default)]
-    code: Option<String>,
-    #[serde(default)]
-    error: Option<String>,
-    #[serde(default)]
-    reason: Option<String>,
-    #[serde(default)]
-    state: Option<String>,
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    deleted_pending: Option<bool>,
-    #[serde(default)]
-    owner: Option<String>,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    delete_after: Option<String>,
-    #[serde(default)]
-    purge_after: Option<String>,
-    #[serde(default)]
-    purge_at: Option<String>,
-    #[serde(default)]
-    held_until: Option<String>,
-    #[serde(default)]
-    deadline: Option<String>,
-    #[serde(default)]
-    deleted_at: Option<String>,
-    #[serde(default)]
-    can_purge: Option<bool>,
-    #[serde(default)]
-    purge_supported: Option<bool>,
-    #[serde(default)]
-    purge_url: Option<String>,
-    #[serde(default)]
-    settings_url: Option<String>,
-    #[serde(default)]
-    actions: Vec<String>,
-}
-
 // Deliberately no `Debug`: the secret must never reach a log.
 #[derive(Deserialize)]
 struct MintedToken {
@@ -290,11 +249,15 @@ pub async fn provision_mirror(
     check_git_version().await?;
     let client = build_client()?;
     let owner = request.owner.unwrap_or(&credentials.account);
-    let (mut mirror, from_create_conflict) = if owner.eq_ignore_ascii_case(&credentials.account) {
-        create_repository(&client, credentials, owner, request).await?
-    } else {
-        (existing(owner, request.name), false)
-    };
+    let allow_non_owner_fallback = !owner.eq_ignore_ascii_case(&credentials.account);
+    let (mut mirror, from_create_conflict) = create_repository(
+        &client,
+        credentials,
+        owner,
+        request,
+        allow_non_owner_fallback,
+    )
+    .await?;
     finalize_mirror(&client, credentials, &mut mirror, from_create_conflict).await?;
     Ok(mirror)
 }
@@ -336,10 +299,15 @@ pub async fn restore_mirror(
     let status = response.status();
     if matches!(
         status,
-        StatusCode::FORBIDDEN | StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+        StatusCode::FORBIDDEN | StatusCode::METHOD_NOT_ALLOWED
     ) {
         return Err(CollapseError::Api(format!(
-            "Collapse did not accept desktop restore for {owner}/{name} ({status}); restore it from https://collapse.sh/{owner}/{name}/settings and re-run"
+            "Collapse does not accept desktop restore for {owner}/{name} yet ({status}); restore it from https://collapse.sh/{owner}/{name}/settings and re-run"
+        )));
+    }
+    if status == StatusCode::NOT_FOUND {
+        return Err(CollapseError::Api(format!(
+            "Collapse could not restore {owner}/{name} (404 Not Found — past its restoration deadline, already purged, or desktop restore is unavailable); check https://collapse.sh/{owner}/{name}/settings and re-run"
         )));
     }
     let _ = success(response, "restore the repository").await?;
@@ -364,9 +332,8 @@ pub async fn purge_and_create_mirror(
     check_git_version().await?;
     let client = build_client()?;
     let owner = request.owner.unwrap_or(&credentials.account);
-    purge_repository(&client, credentials, owner, request.name).await?;
     let (mut mirror, from_create_conflict) =
-        create_repository(&client, credentials, owner, request).await?;
+        purge_then_create(&client, credentials, owner, request).await?;
     if mirror.created {
         mirror.disposition = ProvisionDisposition::PurgedAndCreated;
     }
@@ -415,39 +382,112 @@ fn existing(owner: &str, name: &str) -> ProvisionedMirror {
     }
 }
 
+enum PurgeOutcome {
+    Purged,
+    AlreadyAbsent,
+    BadConfirmation,
+}
+
+async fn purge_then_create(
+    client: &Client,
+    credentials: &CollapseCredentials,
+    owner: &str,
+    request: &MirrorRequest<'_>,
+) -> Result<(ProvisionedMirror, bool), CollapseError> {
+    match purge_repository(client, credentials, owner, request.name).await? {
+        PurgeOutcome::Purged => create_repository(client, credentials, owner, request, false).await,
+        PurgeOutcome::AlreadyAbsent => {
+            match create_repository(client, credentials, owner, request, false).await {
+                Err(CollapseError::DeletedPending(_)) => Err(desktop_purge_unavailable(
+                    owner,
+                    request.name,
+                    StatusCode::NOT_FOUND,
+                )),
+                other => other,
+            }
+        }
+        PurgeOutcome::BadConfirmation => {
+            retry_purge_with_canonical_casing(client, credentials, owner, request).await
+        }
+    }
+}
+
+/// Collapse checks `full_name == target.owner + "/" + target.name` case-sensitively.
+/// Probes via create to learn Collapse's canonical casing when a lowercased project slug
+/// mismatched a mixed-case deleted repository name (#610).
+async fn retry_purge_with_canonical_casing(
+    client: &Client,
+    credentials: &CollapseCredentials,
+    owner: &str,
+    request: &MirrorRequest<'_>,
+) -> Result<(ProvisionedMirror, bool), CollapseError> {
+    match create_repository(client, credentials, owner, request, false).await {
+        Ok(created) => Ok(created),
+        Err(CollapseError::DeletedPending(deleted))
+            if deleted.owner != owner || deleted.name != request.name =>
+        {
+            let canonical = MirrorRequest {
+                owner: Some(&deleted.owner),
+                name: &deleted.name,
+                default_branch: request.default_branch,
+                description: request.description,
+            };
+            match purge_repository(client, credentials, &deleted.owner, &deleted.name).await? {
+                PurgeOutcome::Purged | PurgeOutcome::AlreadyAbsent => {
+                    create_repository(client, credentials, &deleted.owner, &canonical, false).await
+                }
+                PurgeOutcome::BadConfirmation => {
+                    Err(purge_confirmation_rejected(&deleted.owner, &deleted.name))
+                }
+            }
+        }
+        Err(CollapseError::DeletedPending(_)) => {
+            Err(purge_confirmation_rejected(owner, request.name))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn purge_confirmation_rejected(owner: &str, name: &str) -> CollapseError {
+    CollapseError::Api(format!(
+        "Collapse rejected the purge confirmation for {owner}/{name}; purge or restore it from https://collapse.sh/{owner}/{name}/settings and re-run"
+    ))
+}
+
+fn desktop_purge_unavailable(owner: &str, name: &str, status: StatusCode) -> CollapseError {
+    CollapseError::Api(format!(
+        "Collapse does not accept desktop purge for {owner}/{name} yet ({status}); purge or restore it from https://collapse.sh/{owner}/{name}/settings and re-run"
+    ))
+}
+
 async fn purge_repository(
     client: &Client,
     credentials: &CollapseCredentials,
     owner: &str,
     name: &str,
-) -> Result<(), CollapseError> {
+) -> Result<PurgeOutcome, CollapseError> {
     let path = format!("/api/repositories/{}/{}/purge", encode(owner), encode(name));
     let full_name = format!("{owner}/{name}");
-    let mut response = authorized(client, Method::POST, &path, &credentials.access_token)
+    let response = authorized(client, Method::POST, &path, &credentials.access_token)
         .json(&serde_json::json!({ "full_name": full_name }))
         .send()
         .await
         .map_err(failed)?;
-    // Collapse's strict JSON decoder rejects unknown fields: if purge takes an empty body
-    // instead of `{ "full_name": ... }`, retry once with `{}` before surfacing 400.
-    if response.status() == StatusCode::BAD_REQUEST {
-        response = authorized(client, Method::POST, &path, &credentials.access_token)
-            .json(&serde_json::json!({}))
-            .send()
-            .await
-            .map_err(failed)?;
-    }
     let status = response.status();
+    if status == StatusCode::BAD_REQUEST {
+        return Ok(PurgeOutcome::BadConfirmation);
+    }
+    if status == StatusCode::NOT_FOUND {
+        return Ok(PurgeOutcome::AlreadyAbsent);
+    }
     if matches!(
         status,
-        StatusCode::FORBIDDEN | StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+        StatusCode::FORBIDDEN | StatusCode::METHOD_NOT_ALLOWED
     ) {
-        return Err(CollapseError::Api(format!(
-            "Collapse does not support immediate purge for {owner}/{name} yet ({status}); restore it or manage it on https://collapse.sh/{owner}/{name}/settings"
-        )));
+        return Err(desktop_purge_unavailable(owner, name, status));
     }
     let _ = success(response, "purge the deleted repository").await?;
-    Ok(())
+    Ok(PurgeOutcome::Purged)
 }
 
 async fn create_repository(
@@ -455,6 +495,7 @@ async fn create_repository(
     credentials: &CollapseCredentials,
     owner: &str,
     request: &MirrorRequest<'_>,
+    allow_non_owner_fallback: bool,
 ) -> Result<(ProvisionedMirror, bool), CollapseError> {
     let body = CreateRepository {
         owner,
@@ -473,14 +514,21 @@ async fn create_repository(
     .send()
     .await
     .map_err(failed)?;
+    let status = response.status();
     // A 409 either reports a deleted repository pending purge (collapse.sh#217) or means
     // the account already owns a live repository under this name, which the ready check reads.
-    if response.status() == StatusCode::CONFLICT {
+    if status == StatusCode::CONFLICT {
         let text = response.text().await.unwrap_or_default();
         if let Some(deleted) = parse_deleted_pending(&text, owner, request.name) {
             return Err(CollapseError::DeletedPending(Box::new(deleted)));
         }
         return Ok((existing(owner, request.name), true));
+    }
+    // For non-account namespaces (such as an organization the user does not own), Collapse
+    // refuses creation with 400/403; fall back to checking whether an existing repo is readable.
+    if allow_non_owner_fallback && matches!(status, StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN)
+    {
+        return Ok((existing(owner, request.name), false));
     }
     let reply: RepositoryReply = success(response, "create the repository")
         .await?
@@ -577,70 +625,71 @@ async fn wait_until_ready(
     }
 }
 
+/// Parses Collapse's `409` `deleted_pending` payload (collapse.sh#217):
+/// `{ "error": "deleted_pending", "owner", "name", "delete_after": <unix_ms>, "restore", "purge" }`.
+/// Uses untyped JSON lookup so numeric millisecond timestamps and RFC 3339 strings both parse
+/// without failing deserialization on unexpected field types.
 fn parse_deleted_pending(
     body: &str,
     fallback_owner: &str,
     fallback_name: &str,
 ) -> Option<DeletedPendingRepository> {
-    let reply = serde_json::from_str::<DeletedPendingReply>(body).ok()?;
-    let delete_after = first_non_empty([
-        reply.delete_after.as_deref(),
-        reply.purge_after.as_deref(),
-        reply.purge_at.as_deref(),
-        reply.held_until.as_deref(),
-        reply.deadline.as_deref(),
-    ]);
-    let deleted_at = reply.deleted_at.as_deref().and_then(non_empty);
-    let marker = reply.deleted_pending == Some(true)
-        || [
-            reply.code.as_deref(),
-            reply.error.as_deref(),
-            reply.reason.as_deref(),
-            reply.state.as_deref(),
-            reply.status.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        .any(has_deleted_pending_marker)
+    let value = serde_json::from_str::<Value>(body).ok()?;
+    let object = value.as_object()?;
+    let delete_after = first_timestamp(
+        object,
+        &[
+            "delete_after",
+            "purge_after",
+            "purge_at",
+            "held_until",
+            "deadline",
+        ],
+    );
+    let deleted_at = first_timestamp(object, &["deleted_at"]);
+    let marker = object.get("deleted_pending").and_then(Value::as_bool) == Some(true)
+        || ["code", "error", "reason", "state", "status"]
+            .into_iter()
+            .filter_map(|key| object.get(key).and_then(Value::as_str))
+            .any(has_deleted_pending_marker)
         || delete_after.is_some()
         || deleted_at.is_some();
     if !marker {
         return None;
     }
-    let owner = reply
-        .owner
-        .as_deref()
-        .and_then(non_empty)
-        .unwrap_or_else(|| fallback_owner.to_owned());
-    let name = reply
-        .name
-        .as_deref()
-        .and_then(non_empty)
-        .unwrap_or_else(|| fallback_name.to_owned());
-    let purge_available = reply
-        .can_purge
-        .or(reply.purge_supported)
-        .unwrap_or_else(|| {
-            if reply.purge_url.as_deref().and_then(non_empty).is_some() {
-                true
-            } else if !reply.actions.is_empty() {
-                reply
-                    .actions
-                    .iter()
-                    .any(|action| action.eq_ignore_ascii_case("purge"))
-            } else {
-                true
-            }
-        });
+    let owner = string_field(object, "owner").unwrap_or_else(|| fallback_owner.to_owned());
+    let name = string_field(object, "name").unwrap_or_else(|| fallback_name.to_owned());
     Some(DeletedPendingRepository {
         owner,
         name,
         delete_after,
         deleted_at,
         confirmed: true,
-        purge_available,
-        settings_url: reply.settings_url.as_deref().and_then(non_empty),
+        purge_available: detect_purge_available(object),
+        settings_url: string_field(object, "settings_url"),
     })
+}
+
+fn detect_purge_available(object: &Map<String, Value>) -> bool {
+    if let Some(explicit) = object
+        .get("can_purge")
+        .or_else(|| object.get("purge_supported"))
+        .and_then(Value::as_bool)
+    {
+        return explicit;
+    }
+    if string_field(object, "purge").is_some() || string_field(object, "purge_url").is_some() {
+        return true;
+    }
+    if let Some(actions) = object.get("actions").and_then(Value::as_array)
+        && !actions.is_empty()
+    {
+        return actions
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|action| action.eq_ignore_ascii_case("purge"));
+    }
+    true
 }
 
 fn has_deleted_pending_marker(text: &str) -> bool {
@@ -648,13 +697,63 @@ fn has_deleted_pending_marker(text: &str) -> bool {
     lower.contains("deleted_pending") || lower.contains("pending_purge")
 }
 
-fn non_empty(text: &str) -> Option<String> {
-    let trimmed = text.trim();
+fn string_field(object: &Map<String, Value>, key: &str) -> Option<String> {
+    let trimmed = object.get(key)?.as_str()?.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
-fn first_non_empty<const N: usize>(candidates: [Option<&str>; N]) -> Option<String> {
-    candidates.into_iter().flatten().find_map(non_empty)
+fn first_timestamp(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .filter_map(|key| object.get(*key))
+        .find_map(parse_timestamp)
+}
+
+fn parse_timestamp(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if trimmed.bytes().all(|byte| byte.is_ascii_digit())
+                && let Ok(raw) = trimmed.parse::<u64>()
+            {
+                return Some(format_unix_timestamp(raw));
+            }
+            Some(trimmed.to_owned())
+        }
+        Value::Number(number) => number.as_u64().map(format_unix_timestamp),
+        _ => None,
+    }
+}
+
+fn format_unix_timestamp(raw: u64) -> String {
+    let seconds = if raw >= 10_000_000_000 {
+        raw / 1_000
+    } else {
+        raw
+    };
+    let days = (seconds / 86_400) as i64;
+    let remaining = seconds % 86_400;
+    let hour = remaining / 3_600;
+    let minute = (remaining % 3_600) / 60;
+    let second = remaining % 60;
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year_base = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_part = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_part + 2) / 5 + 1;
+    let month = if month_part < 10 {
+        month_part + 3
+    } else {
+        month_part - 9
+    };
+    let year = if month <= 2 { year_base + 1 } else { year_base };
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
 async fn mint_push_token(
@@ -727,4 +826,68 @@ fn error_from_status(status: StatusCode, body: &str, action: &str) -> CollapseEr
 
 pub(crate) fn failed(error: reqwest::Error) -> CollapseError {
     CollapseError::Api(error.without_url().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DeletedPendingRepository, parse_deleted_pending};
+
+    /// Risk (#610, collapse.sh#217): Collapse returns `delete_after` as a Unix-millisecond
+    /// integer alongside `restore` and `purge` paths; typing `delete_after` as a JSON string
+    /// caused deserialization to fail silently and drop the deadline, purge action and casing.
+    #[test]
+    fn parses_collapse_deleted_pending_unix_millis_reply() {
+        let body = r#"{
+            "error": "deleted_pending",
+            "owner": "mESmaC",
+            "name": "Rosen",
+            "delete_after": 1795290000000,
+            "restore": "/api/repositories/mESmaC/Rosen/restore",
+            "purge": "/api/repositories/mESmaC/Rosen/purge"
+        }"#;
+        let parsed = parse_deleted_pending(body, "mesmac", "rosen");
+        assert_eq!(
+            parsed,
+            Some(DeletedPendingRepository {
+                owner: "mESmaC".into(),
+                name: "Rosen".into(),
+                delete_after: Some("2026-11-21T19:40:00Z".into()),
+                deleted_at: None,
+                confirmed: true,
+                purge_available: true,
+                settings_url: None,
+            })
+        );
+        if let Some(repo) = parsed {
+            assert_eq!(
+                repo.to_string(),
+                "mESmaC/Rosen was deleted on Collapse and is held until 2026-11-21T19:40:00Z"
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_live_conflict_and_accepts_rfc3339_deadline() {
+        assert_eq!(
+            parse_deleted_pending(r#"{"error":"Conflict"}"#, "mESmaC", "rosen"),
+            None
+        );
+        let parsed = parse_deleted_pending(
+            r#"{"error":"deleted_pending","delete_after":"2026-11-29T12:00:00Z","can_purge":false}"#,
+            "mESmaC",
+            "rosen",
+        );
+        assert_eq!(
+            parsed,
+            Some(DeletedPendingRepository {
+                owner: "mESmaC".into(),
+                name: "rosen".into(),
+                delete_after: Some("2026-11-29T12:00:00Z".into()),
+                deleted_at: None,
+                confirmed: true,
+                purge_available: false,
+                settings_url: None,
+            })
+        );
+    }
 }
