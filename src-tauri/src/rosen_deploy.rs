@@ -169,9 +169,9 @@ async fn execute_due(application: &AppHandle, project: u32, due: DeployDue) {
         }
     };
     announce_running(application, project, &due);
-    let command = due.command.clone();
+    let step_due = due.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        run_deploy_command(&folder, &command, &secrets)
+        run_deploy_command(&folder, &step_due, &secrets)
     })
     .await
     .map_err(|error| error.to_string())

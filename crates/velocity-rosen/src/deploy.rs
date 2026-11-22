@@ -25,6 +25,13 @@ use crate::{ProjectServer, RosenError};
 
 pub use rosen_client::protocol::DeployStatus as RosenDeployStatus;
 
+/// Environment variable carrying the Git commit SHA materialized in the deploy checkout (#603).
+pub const DEPLOY_COMMIT_ENV: &str = "ROSEN_DEPLOY_COMMIT";
+/// Environment variable carrying the `[deploy.<step>]` name being executed (#603).
+pub const DEPLOY_STEP_ENV: &str = "ROSEN_DEPLOY_STEP";
+/// Environment variable carrying the previous green commit SHA when present (#603).
+pub const DEPLOY_FROM_ENV: &str = "ROSEN_DEPLOY_FROM";
+
 const DEPLOY_COMMAND_LIMIT: Duration = Duration::from_secs(30 * 60);
 const DEPLOY_SILENCE_LIMIT: Duration = Duration::from_secs(10 * 60);
 const POLL: Duration = Duration::from_millis(250);
@@ -279,21 +286,22 @@ pub fn latest_deploys_per_step(server: &ProjectServer) -> Result<Vec<DeployRunRe
 }
 
 /// Runs one deploy command in `folder` under a background run-queue turn, passing
+/// `ROSEN_DEPLOY_COMMIT`, `ROSEN_DEPLOY_STEP`, optional `ROSEN_DEPLOY_FROM`, and
 /// ONLY `secrets` in addition to non-credential inherited environment variables.
 /// Captures output in memory and redacts all secret values before returning.
 pub fn run_deploy_command(
     folder: &Path,
-    command: &str,
+    due: &DeployDue,
     secrets: &[(String, String)],
 ) -> Result<DeployCommandOutcome, RosenError> {
-    let note = format!("deploy in {}", folder.display());
+    let note = format!("deploy {} in {}", due.step, folder.display());
     let turn = RunQueue::machine()
         .and_then(|queue| queue.turn(RunClass::Verify, &note))
         .ok();
     while crate::memory::is_low() {
         std::thread::sleep(POLL);
     }
-    let mut shell = build_deploy_shell(folder, command, turn.is_some(), secrets);
+    let mut shell = build_deploy_shell(folder, due, turn.is_some(), secrets);
     let mut child = shell.spawn().map_err(|source| RosenError::Io {
         action: "run deploy command in",
         path: folder.to_path_buf(),
@@ -319,8 +327,12 @@ pub fn run_deploy_command(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .to_output();
-    let mut output = redact_secret_pairs(&raw_output, secrets);
-    Ok(match outcome {
+    let output = redact_secret_pairs(&raw_output, secrets);
+    Ok(finalize_deploy_outcome(outcome, output))
+}
+
+fn finalize_deploy_outcome(outcome: WaitResult, mut output: String) -> DeployCommandOutcome {
+    match outcome {
         WaitResult::Exited(0) => DeployCommandOutcome::Passed { output },
         WaitResult::Exited(code) => DeployCommandOutcome::Failed {
             exit_code: Some(code),
@@ -340,16 +352,16 @@ pub fn run_deploy_command(
                 output,
             }
         }
-    })
+    }
 }
 
 fn build_deploy_shell(
     folder: &Path,
-    command: &str,
+    due: &DeployDue,
     held_turn: bool,
     secrets: &[(String, String)],
 ) -> std::process::Command {
-    let mut shell = checker::shell(command, Priority::Background);
+    let mut shell = checker::shell(&due.command, Priority::Background);
     for (key, _) in std::env::vars_os() {
         if let Some(name) = key.to_str()
             && is_denied_name(name)
@@ -362,6 +374,15 @@ fn build_deploy_shell(
     }
     for (name, value) in secrets {
         shell.env(name, value);
+    }
+    // Set deploy metadata after secrets so deploy-checkout commands always see the
+    // exact Rosen commit/step/from regardless of inherited env or secret names (#603).
+    shell.env(DEPLOY_COMMIT_ENV, &due.commit);
+    shell.env(DEPLOY_STEP_ENV, &due.step);
+    if let Some(from) = due.from.as_deref().filter(|value| !value.is_empty()) {
+        shell.env(DEPLOY_FROM_ENV, from);
+    } else {
+        shell.env_remove(DEPLOY_FROM_ENV);
     }
     shell
         .current_dir(folder)
