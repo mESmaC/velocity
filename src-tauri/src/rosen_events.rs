@@ -351,6 +351,9 @@ async fn consume(
                 );
                 if let Some(outcome) = resolved_outcome {
                     let _ = record_overlap_resolution(&handle, project, &change, outcome);
+                    if let Ok(Some(thread)) = result {
+                        report(release_finished_claim(&handle, (project, thread)));
+                    }
                 }
                 result
             })
@@ -941,10 +944,8 @@ async fn follow_up_once(
         follow_up,
         RosenFollowUp::FinishLanded | RosenFollowUp::FinishAbandoned
     ) {
-        if matches!(follow_up, RosenFollowUp::FinishLanded) {
-            tick_spec_section_on_land(application, key).await;
-        }
-        return match finish_work(application, key).await {
+        let landed = matches!(follow_up, RosenFollowUp::FinishLanded);
+        return match finish_work(application, key, landed).await {
             Ok(true) => FollowUpStep::Finished,
             Ok(false) => FollowUpStep::Waiting("waiting for workspace setup to finish".into()),
             Err(error) => FollowUpStep::Failed(error),
@@ -1163,12 +1164,12 @@ pub(crate) fn record_landed(
     // Keep the cursor unchanged so the event follower still takes the land. Checkpointing
     // closes the gap before the follower catches up, but only for the lifecycle generation
     // captured with this named work. A newer event or fixing state must win a delayed reply.
-    let refresh = {
+    let (thread, refresh) = {
         let mut store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
         )?;
-        store
+        let thread = store
             .checkpoint_rosen_land_with_evidence(
                 project,
                 change,
@@ -1180,13 +1181,18 @@ pub(crate) fn record_landed(
                 },
             )
             .map_err(|error| error.to_string())?;
-        store.layout_refresh()
+        (thread, store.layout_refresh())
     };
     publish_progress(application, refresh)?;
     crate::rosen_mirror::note_land(application, project);
     crate::collapse_mirror::note_land(application, project);
     let handle = application.clone();
-    tauri::async_runtime::spawn(async move { run_follow_ups(&handle, project).await });
+    tauri::async_runtime::spawn(async move {
+        if let Some(thread) = thread {
+            release_finished_claim_async(&handle, (project, thread)).await;
+        }
+        run_follow_ups(&handle, project).await;
+    });
     Ok(())
 }
 
@@ -1263,19 +1269,62 @@ pub(crate) fn publish_progress(
     crate::layout::apply_refresh_and_publish(application, refresh)
 }
 
+/// Releases a landed or abandoned thread's AIRC claim before async follow-up locks,
+/// spec ticks, or watcher teardown run (#656). Skips threads still starting (#514)
+/// or already reopened by a revert.
+fn release_finished_claim(application: &AppHandle, key: ThreadKey) -> Result<(), String> {
+    if crate::threads::is_starting(application, key)? {
+        return Ok(());
+    }
+    let finished = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .project(key.0)
+    .and_then(|project| project.threads.iter().find(|thread| thread.id == key.1))
+    .is_some_and(|thread| {
+        matches!(
+            thread.state,
+            velocity_store::ThreadState::Merged | velocity_store::ThreadState::Done
+        )
+    });
+    if !finished {
+        return Ok(());
+    }
+    crate::airc_claims::release(application, key)
+}
+
+async fn release_finished_claim_async(application: &AppHandle, key: ThreadKey) {
+    let handle = application.clone();
+    let released =
+        tauri::async_runtime::spawn_blocking(move || release_finished_claim(&handle, key))
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|result| result);
+    report(released);
+}
+
 /// Stop the finished item's session and watcher before its worker takes new work.
 /// A repeated follow-up is safe after a crash or a cleanup failure.
 ///
 /// A thread still creating its workspace or starting its agent is left alone (#514):
 /// `false` keeps the follow-up for the next pass, and the launch itself runs it again
 /// once the workspace is there. Nothing is stopped or released until then.
-async fn finish_work(application: &AppHandle, key: ThreadKey) -> Result<bool, String> {
+async fn finish_work(
+    application: &AppHandle,
+    key: ThreadKey,
+    landed: bool,
+) -> Result<bool, String> {
     let handle = application.clone();
-    let stopped = tauri::async_runtime::spawn_blocking(move || {
+    let stopped = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
         if crate::threads::is_starting(&handle, key)? {
             return Ok(false);
         }
-        crate::threads::stop_follow_through(&handle, key)
+        let stopped = crate::threads::stop_follow_through(&handle, key)?;
+        if stopped {
+            crate::airc_claims::release(&handle, key)?;
+        }
+        Ok(stopped)
     })
     .await
     .map_err(|error| error.to_string())??;
@@ -1285,7 +1334,9 @@ async fn finish_work(application: &AppHandle, key: ThreadKey) -> Result<bool, St
     if let Some(root) = workspace(application, key).await? {
         crate::rosen::stop_watch(application, &root).await;
     }
-    crate::airc_claims::release(application, key)?;
+    if landed {
+        tick_spec_section_on_land(application, key).await;
+    }
     crate::goal_swarm::run_keep_going(application, key.0, key.1).await?;
     Ok(true)
 }

@@ -1796,6 +1796,19 @@ pub fn issue_number_from_piece(piece: &str) -> Option<u32> {
         .and_then(|value| value.parse::<u32>().ok())
 }
 
+/// Whether a thread's own land, abandon or empty-dispatch cleanup is still pending
+/// and responsible for releasing its AIRC claim (#656).
+fn has_pending_finish_cleanup(project: &ProjectItem, thread: &velocity_store::ThreadItem) -> bool {
+    project.continuous_dispatch.cleanup.contains(&thread.id)
+        || thread.rosen_follow_ups.iter().any(|follow_up| {
+            matches!(
+                follow_up,
+                velocity_store::rosen::RosenFollowUp::FinishLanded
+                    | velocity_store::rosen::RosenFollowUp::FinishAbandoned
+            )
+        })
+}
+
 /// Whether a local AIRC member identity belongs to a live thread, interview or scout on
 /// this machine (#566). Foreign machine-scoped members and system names return `true`.
 pub fn is_live_local_member(project: &ProjectItem, member: &str, live: &LiveLocalMembers) -> bool {
@@ -1829,7 +1842,8 @@ pub fn is_live_local_member(project: &ProjectItem, member: &str, live: &LiveLoca
     match thread {
         Some(thread) => {
             !thread.supervision.released
-                && !matches!(thread.state, ThreadState::Merged | ThreadState::Done)
+                && (!matches!(thread.state, ThreadState::Merged | ThreadState::Done)
+                    || has_pending_finish_cleanup(project, thread))
         }
         None => velocity_core::thread_titles::thread_id_from_member(member)
             .is_some_and(|id| live.live_threads.contains(&id)),
@@ -1967,6 +1981,74 @@ mod tests {
             stale_claim_reason("scout-1-1"),
             "stale AIRC claim by scout-1-1, released"
         );
+    }
+
+    // Risk (#656): landed, abandoned, or empty-dispatch threads whose own finish follow-up
+    // or cleanup has not finished yet must not be flagged and reaped as stale AIRC claims,
+    // while finished threads without pending cleanup must still be reaped.
+    #[test]
+    fn pending_finish_cleanup_threads_are_not_flagged_as_stale_claims() {
+        let mut project = ProjectItem::new(1, "velocity".into(), "Z:/repo".into());
+
+        let mut landing = ThreadItem::new(10, "Landing".into());
+        landing.state = ThreadState::Merged;
+        landing
+            .rosen_follow_ups
+            .push(velocity_store::rosen::RosenFollowUp::FinishLanded);
+
+        let mut abandoning = ThreadItem::new(11, "Abandoning".into());
+        abandoning.state = ThreadState::Done;
+        abandoning
+            .rosen_follow_ups
+            .push(velocity_store::rosen::RosenFollowUp::FinishAbandoned);
+
+        let mut cleaning = ThreadItem::new(12, "Cleaning".into());
+        cleaning.state = ThreadState::Done;
+        project.continuous_dispatch.cleanup.push(12);
+
+        let mut stale_merged = ThreadItem::new(13, "StaleMerged".into());
+        stale_merged.state = ThreadState::Merged;
+
+        let mut released_landing = ThreadItem::new(14, "Released".into());
+        released_landing.state = ThreadState::Merged;
+        released_landing.supervision.released = true;
+        released_landing
+            .rosen_follow_ups
+            .push(velocity_store::rosen::RosenFollowUp::FinishLanded);
+
+        project.threads.extend([
+            landing,
+            abandoning,
+            cleaning,
+            stale_merged,
+            released_landing,
+        ]);
+
+        let live = LiveLocalMembers::default();
+        let claims = vec![
+            sample_claim("thread-10", "issue-627-10", "issue:627", true),
+            sample_claim("thread-11", "issue-628-11", "issue:628", true),
+            sample_claim("thread-12", "issue-629-12", "issue:629", true),
+            sample_claim("thread-13", "issue-630-13", "issue:630", true),
+            sample_claim("thread-14", "issue-631-14", "issue:631", true),
+        ];
+        let filtered = filter_live_claims(&project, &claims, &live);
+
+        let dead_members: Vec<&str> = filtered
+            .dead_local
+            .iter()
+            .map(|claim| claim.member.as_str())
+            .collect();
+        assert_eq!(dead_members, vec!["thread-13", "thread-14"]);
+        assert!(filtered.active.contains("issue:627"));
+        assert!(filtered.active.contains("issue:628"));
+        assert!(filtered.active.contains("issue:629"));
+        assert!(!filtered.active.contains("issue:630"));
+        assert!(!filtered.active.contains("issue:631"));
+
+        // Once FinishLanded finishes, a remaining claim on that merged thread is stale.
+        project.threads[0].rosen_follow_ups.clear();
+        assert!(!is_live_local_member(&project, "thread-10", &live));
     }
 
     // Risk (#602): a persisted completed Rosen work item must not hide a reopened open

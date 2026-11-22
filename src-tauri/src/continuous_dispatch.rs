@@ -1708,6 +1708,9 @@ fn finish_no_change_thread(
     )?
     .finish_empty_dispatch_with_nick(key.0, thread.id, nick)
     .map_err(|error| error.to_string())?;
+    // Release the AIRC claim now rather than waiting for the next pass's cleanup (#656).
+    // `cleanup_empty_threads` retries the release if this call fails.
+    report(crate::airc_claims::release(application, key));
     crate::threads::refresh(application, key, false)?;
     Ok(())
 }
