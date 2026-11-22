@@ -706,7 +706,12 @@ fn write_real_stub(directory: &Path, files: &RealStubFiles<'_>) -> std::io::Resu
          if \"%1\"==\"api\" goto do_api\r\n\
          exit /b 1\r\n\
          :do_repo\r\n\
+         echo %* | findstr /I /C:\"owner/sibling\" > nul\r\n\
+         if not errorlevel 1 goto do_repo_sibling\r\n\
          echo {{\"nameWithOwner\":\"owner/repo\",\"defaultBranchRef\":{{\"name\":\"main\"}}}}\r\n\
+         exit /b 0\r\n\
+         :do_repo_sibling\r\n\
+         echo {{\"nameWithOwner\":\"owner/sibling\",\"defaultBranchRef\":{{\"name\":\"main\"}}}}\r\n\
          exit /b 0\r\n\
          :do_api\r\n\
          findstr \"^\" > \"{stdin}\"\r\n\
@@ -714,7 +719,7 @@ fn write_real_stub(directory: &Path, files: &RealStubFiles<'_>) -> std::io::Resu
          if not errorlevel 1 goto do_create_issue\r\n\
          findstr /C:\"addBlockedBy\" \"{stdin}\" > nul\r\n\
          if not errorlevel 1 goto do_add_blocked_by\r\n\
-         findstr /C:\"labels(first:100\" \"{stdin}\" > nul\r\n\
+         findstr /C:\"labels(first:100,after:\" \"{stdin}\" > nul\r\n\
          if not errorlevel 1 goto do_labels\r\n\
          findstr /C:\"issueDependenciesSummary\" \"{stdin}\" > nul\r\n\
          if not errorlevel 1 goto do_sibling_open\r\n\
@@ -784,7 +789,11 @@ fn write_real_stub(directory: &Path, files: &RealStubFiles<'_>) -> std::io::Resu
          echo \"PATH=$PATH\" >> \"{log}\"\n\
          if [ \"$1\" = \"auth\" ]; then exit 1; fi\n\
          if [ \"$1\" = \"repo\" ]; then\n\
-           echo '{{\"nameWithOwner\":\"owner/repo\",\"defaultBranchRef\":{{\"name\":\"main\"}}}}'\n\
+           if printf '%s\\n' \"$*\" | grep -iq \"owner/sibling\"; then\n\
+             echo '{{\"nameWithOwner\":\"owner/sibling\",\"defaultBranchRef\":{{\"name\":\"main\"}}}}'\n\
+           else\n\
+             echo '{{\"nameWithOwner\":\"owner/repo\",\"defaultBranchRef\":{{\"name\":\"main\"}}}}'\n\
+           fi\n\
            exit 0\n\
          fi\n\
          if [ \"$1\" = \"api\" ]; then\n\
@@ -799,7 +808,7 @@ fn write_real_stub(directory: &Path, files: &RealStubFiles<'_>) -> std::io::Resu
              cat \"{add_blocked_by}\"\n\
              exit 0\n\
            fi\n\
-           if grep -q \"labels(first:100\" \"{stdin}\"; then\n\
+           if grep -q \"labels(first:100,after:\" \"{stdin}\"; then\n\
              cat \"{labels}\"\n\
              exit 0\n\
            fi\n\
