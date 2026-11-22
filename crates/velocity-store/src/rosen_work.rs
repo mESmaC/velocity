@@ -491,23 +491,11 @@ pub(crate) fn apply(
     if progress == RosenProgress::ChangesRequested {
         return;
     }
-    let at = thread_start_timestamp();
     if progress == RosenProgress::Abandoned {
-        project.rosen_work_items.retain(|item| {
-            if item.change.as_deref() != Some(change) || item.status.completed() {
-                return true;
-            }
-            if let WorkKey::Issue { repository, number } = &item.key {
-                // Empty dispatch already retired its projection and keeps its no-change hold.
-                project.continuous_dispatch.attempts.retain(|attempt| {
-                    attempt.number != *number
-                        || !attempt.repository.eq_ignore_ascii_case(repository)
-                });
-            }
-            false
-        });
+        abandon_change(project, change);
         return;
     }
+    let at = thread_start_timestamp();
     for item in &mut project.rosen_work_items {
         if item.change.as_deref() != Some(change) {
             continue;
@@ -531,17 +519,8 @@ pub(crate) fn apply(
             RosenProgress::Reverted if item.status != WorkStatus::Reopened => WorkStatus::Reopened,
             _ => item.status,
         };
-        let new_land = progress == RosenProgress::Landed
-            && (status != item.status
-                || replaced_land
-                || (item.landed_commit.is_none() && evidence.commit.is_some()));
-        if new_land {
-            if replaced_land {
-                item.landed_at = None;
-                item.green_at = None;
-            }
-            item.landed_at.get_or_insert_with(|| at.clone());
-            item.landed_commit = evidence.commit.map(str::to_owned);
+        if progress == RosenProgress::Landed {
+            record_land_evidence(item, status, replaced_land, evidence.commit, &at);
         }
         if status == item.status && !replaced_land {
             continue;
@@ -556,8 +535,50 @@ pub(crate) fn apply(
                 &at,
                 evidence.revert_reason,
             );
+        } else if status == WorkStatus::Landed
+            && item.thread_identifier.is_none()
+            && let WorkKey::Task { identifier } = &item.key
+            && let Some(task) = project.tasks.iter_mut().find(|task| task.id == *identifier)
+            && task.assigned_thread_id.is_none()
+            && task.state == TaskState::Todo
+        {
+            task.state = TaskState::Done;
         }
     }
+}
+
+fn abandon_change(project: &mut ProjectItem, change: &str) {
+    project.rosen_work_items.retain(|item| {
+        if item.change.as_deref() != Some(change) || item.status.completed() {
+            return true;
+        }
+        if let WorkKey::Issue { repository, number } = &item.key {
+            // Empty dispatch already retired its projection and keeps its no-change hold.
+            project.continuous_dispatch.attempts.retain(|attempt| {
+                attempt.number != *number || !attempt.repository.eq_ignore_ascii_case(repository)
+            });
+        }
+        false
+    });
+}
+
+fn record_land_evidence(
+    item: &mut WorkItem,
+    status: WorkStatus,
+    replaced_land: bool,
+    commit: Option<&str>,
+    at: &str,
+) {
+    if status == item.status && !replaced_land && (item.landed_commit.is_some() || commit.is_none())
+    {
+        return;
+    }
+    if replaced_land {
+        item.landed_at = None;
+        item.green_at = None;
+    }
+    item.landed_at.get_or_insert_with(|| at.to_owned());
+    item.landed_commit = commit.map(str::to_owned);
 }
 
 fn reopen(
@@ -581,6 +602,7 @@ fn reopen(
         }
         WorkKey::Task { identifier } if item.thread_identifier.is_none() => {
             if let Some(task) = tasks.iter_mut().find(|task| task.id == *identifier)
+                && task.assigned_thread_id.is_none()
                 && task.state == TaskState::Done
             {
                 task.state = TaskState::Todo;
@@ -919,6 +941,103 @@ mod tests {
         );
         std::fs::remove_dir_all(directory)?;
         Ok(())
+    }
+
+    // Risk (#636): landing a task, deleting its finished thread, reverting, and relanding
+    // the detached change must put the unclaimed task back in Done and reject Goal Swarm
+    // claims across save and reload, while retaining ownership of a task claimed after revert.
+    #[test]
+    fn detached_task_reland_restores_done_and_preserves_reclaimed_ownership()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, mut store) = fixture()?;
+        event(
+            &mut store,
+            1,
+            "original",
+            RosenProgress::Landed,
+            Some("first"),
+        )?;
+        store.remove_thread(1, 4)?;
+        event(&mut store, 2, "original", RosenProgress::Reverted, None)?;
+
+        let task_1_piece = task_piece(1, "Task 1");
+        let task_2_piece = task_piece(2, "Task 2");
+        let replacement = add_work_thread(&mut store, "Replacement")?;
+        store.claim_goal_piece(1, replacement, &task_2_piece, "vel/task-2".into())?;
+
+        event(
+            &mut store,
+            3,
+            "original",
+            RosenProgress::Landed,
+            Some("second"),
+        )?;
+
+        let mut reloaded = StateStore::load_or_default(&directory)?;
+        let project = &reloaded.state.projects[0];
+        let task_1 = project
+            .tasks
+            .iter()
+            .find(|task| task.id == 1)
+            .ok_or("task 1")?;
+        let task_2 = project
+            .tasks
+            .iter()
+            .find(|task| task.id == 2)
+            .ok_or("task 2")?;
+        assert_eq!(task_1.state, TaskState::Done);
+        assert!(task_1.assigned_thread_id.is_none());
+        assert!(!crate::continuous_dispatch::available_task(project, task_1));
+        let work_1 = project
+            .rosen_work_item(&WorkKey::Task { identifier: 1 })
+            .ok_or("work 1")?;
+        assert_eq!(work_1.status, WorkStatus::Landed);
+        assert_eq!(work_1.landed_commit.as_deref(), Some("second"));
+        assert!(work_1.thread_identifier.is_none());
+        assert_eq!(task_2.state, TaskState::Now);
+        assert_eq!(task_2.assigned_thread_id, Some(replacement));
+        let work_2 = project
+            .rosen_work_item(&WorkKey::Task { identifier: 2 })
+            .ok_or("work 2")?;
+        assert_eq!(work_2.status, WorkStatus::Claimed);
+        assert_eq!(work_2.thread_identifier, Some(replacement));
+
+        let claimant = add_work_thread(&mut reloaded, "Claimant")?;
+        assert!(matches!(
+            reloaded.claim_goal_piece(1, claimant, &task_1_piece, "vel/task-1".into()),
+            Err(ThreadError::TaskUnavailable(1))
+        ));
+
+        // Even if a pre-fix snapshot left task 1 Todo beside a Landed WorkItem, claim rejects it.
+        let mut stale = reloaded.state.clone();
+        stale.projects[0].tasks[0].state = TaskState::Todo;
+        reloaded.store_snapshot(stale)?;
+        let mut stale_reloaded = StateStore::load_or_default(&directory)?;
+        assert!(matches!(
+            stale_reloaded.claim_goal_piece(1, claimant, &task_1_piece, "vel/task-1".into()),
+            Err(ThreadError::TaskUnavailable(1))
+        ));
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    fn task_piece(identifier: u32, title: &str) -> velocity_core::work_pool::WorkPiece {
+        velocity_core::work_pool::WorkPiece::new(
+            WorkKey::Task { identifier },
+            title.into(),
+            "Task List".into(),
+            None,
+        )
+    }
+
+    fn add_work_thread(store: &mut StateStore, title: &str) -> Result<u32, ThreadError> {
+        let thread = crate::threads::NewThread::new(
+            title.into(),
+            "vel/work".into(),
+            r"C:\project\work".into(),
+            &store.settings(),
+        );
+        store.add_thread(1, thread)
     }
 
     fn fixture() -> Result<(PathBuf, StateStore), Box<dyn std::error::Error>> {

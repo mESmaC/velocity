@@ -248,6 +248,15 @@ fn task_pieces(project: &ProjectItem) -> Vec<WorkPiece> {
             if !matches!(task.state, TaskState::Todo | TaskState::Now) {
                 return None;
             }
+            let key = WorkKey::Task {
+                identifier: task.id,
+            };
+            if project
+                .rosen_work_item(&key)
+                .is_some_and(|item| item.status.completed())
+            {
+                return None;
+            }
             let owner = task
                 .assigned_thread_id
                 .and_then(|identifier| {
@@ -261,9 +270,7 @@ fn task_pieces(project: &ProjectItem) -> Vec<WorkPiece> {
                 return None;
             }
             Some(WorkPiece::new(
-                WorkKey::Task {
-                    identifier: task.id,
-                },
+                key,
                 task.text.clone(),
                 "Task List".into(),
                 owner,
@@ -310,4 +317,160 @@ fn available_spec_pieces(project: &ProjectItem, spec: &ProjectSpec) -> Vec<WorkP
             Some(piece)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use velocity_core::work_pool::{WorkKey, WorkPiece, WorkSources, WorkStatus};
+    use velocity_store::rosen::RosenProgress;
+    use velocity_store::rosen_work::WorkEvidence;
+    use velocity_store::threads::{NewThread, ThreadError};
+    use velocity_store::{PersistedState, ProjectItem, StateStore, TaskState, VersionControl};
+
+    use super::read_selected_work_pool;
+
+    // Risk (#636): after landing a task, deleting its thread, reverting, and relanding the
+    // detached change, the Work pool and Goal Swarm claim check must both reject the
+    // unclaimed task across save and reload while preserving an independently claimed task.
+    #[test]
+    fn detached_task_reland_excludes_task_from_work_pool_across_reload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, mut store, task_1, task_2) = seed_detached_tasks()?;
+        let sources = WorkSources {
+            tasks: true,
+            issues: false,
+            sections: false,
+        };
+        let reopened = read_selected_work_pool(store.project(1).ok_or("project")?, sources)?;
+        assert_eq!(reopened.available_tasks, 2);
+
+        let replacement = add_thread(&mut store, "Replacement")?;
+        store.claim_goal_piece(1, replacement, &task_2, "vel/task-2".into())?;
+        store.save_rosen_work_progress(
+            1,
+            3,
+            "original",
+            (RosenProgress::Landed, ""),
+            WorkEvidence {
+                commit: Some("second"),
+                revert_reason: None,
+            },
+        )?;
+
+        let mut reloaded = StateStore::load_or_default(&directory)?;
+        let project = reloaded.project(1).ok_or("reloaded project")?;
+        assert_eq!(
+            project
+                .tasks
+                .iter()
+                .find(|task| task.id == 1)
+                .map(|t| t.state),
+            Some(TaskState::Done)
+        );
+        let pool = read_selected_work_pool(project, sources)?;
+        assert_eq!(pool.available_tasks, 0);
+        assert!(!pool.pieces.iter().any(|piece| piece.key == task_1.key));
+        assert!(pool.pieces.iter().any(|piece| {
+            piece.key == task_2.key && piece.thread_identifier == Some(replacement)
+        }));
+
+        let claimant = add_thread(&mut reloaded, "Claimant")?;
+        assert!(matches!(
+            reloaded.claim_goal_piece(1, claimant, &task_1, "vel/task-1".into()),
+            Err(ThreadError::TaskUnavailable(1))
+        ));
+
+        // Legacy snapshots with a Todo task beside a Landed WorkItem stay out of the pool.
+        let mut stale = reloaded.project(1).ok_or("project")?.clone();
+        stale.tasks[0].state = TaskState::Todo;
+        let stale_pool = read_selected_work_pool(&stale, sources)?;
+        assert_eq!(stale_pool.available_tasks, 0);
+        assert!(
+            !stale_pool
+                .pieces
+                .iter()
+                .any(|piece| piece.key == task_1.key)
+        );
+        assert_eq!(
+            stale.rosen_work_item(&task_1.key).map(|item| item.status),
+            Some(WorkStatus::Landed)
+        );
+
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    fn seed_detached_tasks()
+    -> Result<(PathBuf, StateStore, WorkPiece, WorkPiece), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-work-pool-636-{unique}"));
+        std::fs::create_dir_all(&directory)?;
+        let mut state = PersistedState::default();
+        let mut project = ProjectItem::new(1, "Demo".into(), directory.display().to_string());
+        project.version_control = VersionControl::Rosen;
+        project.spec_locked = true;
+        state.projects.push(project);
+        std::fs::write(directory.join("state.json"), serde_json::to_vec(&state)?)?;
+
+        let mut store = StateStore::load_or_default(&directory)?;
+        let first = store.add_task(1, "First task".into())?;
+        let second = store.add_task(1, "Second task".into())?;
+        let task_1 = WorkPiece::new(
+            WorkKey::Task {
+                identifier: first.id,
+            },
+            first.text,
+            "Task List".into(),
+            None,
+        );
+        let task_2 = WorkPiece::new(
+            WorkKey::Task {
+                identifier: second.id,
+            },
+            second.text,
+            "Task List".into(),
+            None,
+        );
+        let owner = add_thread(&mut store, "Original")?;
+        store.claim_goal_piece(1, owner, &task_1, "vel/task-1".into())?;
+        store.claim_goal_piece(1, owner, &task_2, "vel/task-2".into())?;
+        store.update_rosen_work_thread(1, owner, |thread| {
+            thread.rosen_change = Some("original".into());
+        })?;
+        store.save_rosen_work_progress(
+            1,
+            1,
+            "original",
+            (RosenProgress::Landed, ""),
+            WorkEvidence {
+                commit: Some("first"),
+                revert_reason: None,
+            },
+        )?;
+        store.remove_thread(1, owner)?;
+        store.save_rosen_work_progress(
+            1,
+            2,
+            "original",
+            (RosenProgress::Reverted, "check failed"),
+            WorkEvidence {
+                commit: Some("first"),
+                revert_reason: Some("check failed"),
+            },
+        )?;
+        Ok((directory, store, task_1, task_2))
+    }
+
+    fn add_thread(store: &mut StateStore, title: &str) -> Result<u32, ThreadError> {
+        let thread = NewThread::new(
+            title.into(),
+            "vel/work".into(),
+            r"C:\project\work".into(),
+            &store.settings(),
+        );
+        store.add_thread(1, thread)
+    }
 }

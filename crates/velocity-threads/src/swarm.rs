@@ -103,11 +103,16 @@ fn member_work(
 ) -> Result<MemberWork, DispatchError> {
     let work = match item {
         SwarmItem::Task(identifier) => {
+            let completed = project
+                .rosen_work_item(&velocity_core::work_pool::WorkKey::Task { identifier })
+                .is_some_and(|item| item.status.completed());
             let task = project
                 .tasks
                 .iter()
                 .find(|task| task.id == identifier)
-                .filter(|task| task.state == TaskState::Todo && task.assigned_thread_id.is_none())
+                .filter(|task| {
+                    !completed && task.state == TaskState::Todo && task.assigned_thread_id.is_none()
+                })
                 .ok_or_else(|| {
                     DispatchError::Invalid(format!("Task {identifier} is no longer open"))
                 })?;

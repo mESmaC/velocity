@@ -593,12 +593,15 @@ fn bind_piece_owner(
 ) -> Result<(), ThreadError> {
     match &piece.key {
         WorkKey::Task { identifier } => {
+            let completed = project
+                .rosen_work_item(&piece.key)
+                .is_some_and(|item| item.status.completed());
             let task = project
                 .tasks
                 .iter_mut()
                 .find(|entry| entry.id == *identifier)
                 .ok_or(ThreadError::UnknownTask(*identifier))?;
-            if task.state != TaskState::Todo || task.assigned_thread_id.is_some() {
+            if completed || task.state != TaskState::Todo || task.assigned_thread_id.is_some() {
                 return Err(ThreadError::TaskUnavailable(*identifier));
             }
             task.state = TaskState::Now;

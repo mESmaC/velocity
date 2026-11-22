@@ -376,12 +376,15 @@ pub(crate) fn claim_task(
     task: u32,
     thread: u32,
 ) -> Result<(), ThreadError> {
+    let completed = project
+        .rosen_work_item(&velocity_core::work_pool::WorkKey::Task { identifier: task })
+        .is_some_and(|item| item.status.completed());
     let entry = project
         .tasks
         .iter_mut()
         .find(|entry| entry.id == task)
         .ok_or(ThreadError::UnknownTask(task))?;
-    if entry.state != TaskState::Todo || entry.assigned_thread_id.is_some() {
+    if completed || entry.state != TaskState::Todo || entry.assigned_thread_id.is_some() {
         return Err(ThreadError::TaskUnavailable(task));
     }
     entry.state = TaskState::Now;
