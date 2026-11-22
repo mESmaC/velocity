@@ -19,6 +19,7 @@ pub mod goal_swarm;
 pub mod goal_swarm_choice;
 pub mod goal_swarm_view;
 pub mod graph_indexer_pin;
+pub mod improvement_scout;
 pub mod interview_view;
 #[cfg(feature = "bindings")]
 pub mod ipc_number;

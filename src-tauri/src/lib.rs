@@ -29,6 +29,7 @@ pub mod graph_access;
 mod graph_indexer_pin;
 mod handoff;
 pub mod headless;
+mod improvement_scout;
 mod interview;
 mod issue_panel;
 pub mod layout;
@@ -457,6 +458,7 @@ pub fn run() -> anyhow::Result<()> {
             base_ci::initialize(application.handle());
             project_health::initialize(application.handle());
             sweeps::initialize(application.handle())?;
+            improvement_scout::initialize(application.handle())?;
             airc_claims::initialize(application.handle());
             airc_delivery::initialize(application.handle());
             airc_modal::initialize(application.handle());

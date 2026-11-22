@@ -183,6 +183,9 @@ fn focus_guide(area: ScoutFocusArea) -> &'static str {
         }
         ScoutFocusArea::DeadCode => "code nothing calls and features nothing reaches.",
         ScoutFocusArea::Ux => "the window disagreeing with the reference UI and SPEC.md §5.",
+        ScoutFocusArea::DevelopmentSpeed => {
+            "slowdowns, idle slots, friction and wasted work across Velocity, Rosen and Collapse; prefer removing a step, a wait or a manual check over adding a feature."
+        }
     }
 }
 

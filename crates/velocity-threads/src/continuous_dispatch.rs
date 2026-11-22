@@ -1142,9 +1142,17 @@ pub fn ordered_issues_in_projects(
             .as_ref()
             .map_or(u32::MAX, |milestone| milestone.number)
     };
+    // Dispatch starts ready `self-improvement` issues ahead of other ready issues (#622).
+    let self_improvement = |issue: &GitHubIssue| {
+        has_label(
+            &issue.labels,
+            velocity_core::improvement_scout::SELF_IMPROVEMENT_LABEL,
+        )
+    };
     ready.sort_by(|(left, left_unblocks), (right, right_unblocks)| {
-        right_unblocks
-            .cmp(left_unblocks)
+        self_improvement(right)
+            .cmp(&self_improvement(left))
+            .then_with(|| right_unblocks.cmp(left_unblocks))
             .then_with(|| milestone(left).cmp(&milestone(right)))
             .then_with(|| left.created_at.cmp(&right.created_at))
             .then_with(|| left.number.cmp(&right.number))
@@ -2152,5 +2160,43 @@ Also mentions `#902` in code and mESmaC/rosen#903 in another repo.\n"
         );
         std::fs::remove_dir_all(directory)?;
         Ok(())
+    }
+
+    // Risk (#622): dispatch must start ready `self-improvement` issues ahead of other ready
+    // issues so fleet-speed fixes land before lower-leverage work.
+    #[test]
+    fn self_improvement_issues_dispatch_ahead_of_other_ready_issues() {
+        let mut project = ProjectItem::new(1, "velocity".into(), r"C:\velocity".into());
+        project.version_control = VersionControl::Rosen;
+        project.spec_locked = true;
+        let repo = "mESmaC/velocity";
+
+        let mut regular_blocker = sample_issue(10);
+        regular_blocker.created_at = "2026-11-20T00:00:00Z".into();
+
+        let mut self_improvement = sample_issue(20);
+        self_improvement.created_at = "2026-11-22T12:00:00Z".into();
+        self_improvement.labels.push("self-improvement".into());
+
+        let mut earlier_self_improvement = sample_issue(19);
+        earlier_self_improvement.created_at = "2026-11-22T10:00:00Z".into();
+        earlier_self_improvement
+            .labels
+            .push("self-improvement".into());
+
+        let mut unblocks = BTreeMap::new();
+        unblocks.insert(10, 5);
+        unblocks.insert(20, 1);
+
+        let ordered = ordered_issues(
+            &project,
+            repo,
+            &[regular_blocker, earlier_self_improvement, self_improvement],
+            &HashSet::new(),
+            &unblocks,
+        );
+        let numbers: Vec<u32> = ordered.into_iter().map(|(issue, _)| issue.number).collect();
+        // Self-improvement issues come first (ordered by unblocks, then age), then regular work.
+        assert_eq!(numbers, vec![20, 19, 10]);
     }
 }

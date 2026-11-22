@@ -23,6 +23,7 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 8. **Implementation first.** Agents build working functionality before anything else.
    Proof agents verify proof-list features in Lean after landing (F17).
    Scouts and the review swarm write adversarial tests, and a building agent adds a targeted test only for a critical contract.
+9. **The fleet improves its own tools.** Velocity, Rosen and Collapse are continuously improved by the fleet itself, judged by how fast and cheaply changes land (#622).
 
 - Velocity shows a notice offering the setting `review = "after-land"` when a project's configuration still specifies `before-land` (F7).
 - A failing or rejected Rosen mirror stays visible on its project until the next successful push; F5 specifies the project header, Settings, retry time and rejection notice (#402).

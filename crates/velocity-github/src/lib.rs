@@ -14,6 +14,7 @@ mod gh_command;
 pub mod github_issue_sync;
 pub mod graph_indexer_pin;
 mod http_transport;
+pub mod improvement_scout;
 mod issue_cache;
 mod issue_dependencies;
 mod issue_holds;
@@ -47,6 +48,7 @@ pub use agent_issues::{
 pub use command::{GH_PROGRAM_ENV, app_gh_program, resolve_gh_program};
 pub use dependency_graph::DependencyGraph;
 pub use gh_command::GitHubCommandError;
+pub use improvement_scout::ImprovementIssueDraft;
 pub use issue_cache::OPEN_ISSUES_REFRESH;
 pub use issue_holds::UpstreamStatus;
 pub use issue_panel::{

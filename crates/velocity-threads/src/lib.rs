@@ -16,6 +16,7 @@ pub mod dispatch;
 pub mod follow_through;
 pub mod goal_selection;
 pub mod goal_swarm;
+pub mod improvement_scout;
 pub mod issue_activity;
 pub mod landing_runner;
 pub mod launch;
@@ -48,6 +49,10 @@ pub mod workspace_retry;
 pub use deletion::{Deletion, PendingDeletions};
 pub use dispatch::{DispatchError, IssueDispatchPlan, plan_issue_dispatch};
 pub use follow_through::DeliveryStatus;
+pub use improvement_scout::{
+    IMPROVEMENT_SCOUT_SWITCH, ImprovementFleetSnapshot, ImprovementScoutServer, ImprovementScouts,
+    TargetRepositoryConfig,
+};
 pub use launch::{
     LaunchError, LaunchPlan, QuestionPlan, agent_launch, agent_launch_for_account, plan_launch,
     plan_launch_with_preferences, plan_question_launch, project_workspace_root,

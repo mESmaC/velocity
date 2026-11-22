@@ -36,6 +36,7 @@
     ['security', 'Security'],
     ['dead_code', 'Dead code'],
     ['ux', 'UX'],
+    ['development_speed', 'Development speed'],
   ];
 
   const efforts: [EffortLevel, string][] = [

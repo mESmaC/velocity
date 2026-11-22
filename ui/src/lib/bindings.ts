@@ -5158,7 +5158,7 @@ export type SaveDiagnostics = {
 
 export type ScoutCadence = "once" | "every_thirty_minutes" | "after_every_land";
 
-export type ScoutFocusArea = "bugs" | "stress" | "proof_gaps" | "spec_drift" | "performance" | "security" | "dead_code" | "ux";
+export type ScoutFocusArea = "bugs" | "stress" | "proof_gaps" | "spec_drift" | "performance" | "security" | "dead_code" | "ux" | "development_speed";
 
 export type ScoutRuleSettings = {
 	focus_areas: ScoutFocusArea[],

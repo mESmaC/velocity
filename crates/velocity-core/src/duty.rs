@@ -33,6 +33,7 @@ pub enum ScoutFocusArea {
     Security,
     DeadCode,
     Ux,
+    DevelopmentSpeed,
 }
 
 impl ScoutFocusArea {
@@ -46,6 +47,7 @@ impl ScoutFocusArea {
             Self::Security => "Security",
             Self::DeadCode => "Dead code",
             Self::Ux => "UX",
+            Self::DevelopmentSpeed => "Development speed",
         }
     }
 
@@ -59,6 +61,7 @@ impl ScoutFocusArea {
             Self::Security => "security",
             Self::DeadCode => "dead code",
             Self::Ux => "UX",
+            Self::DevelopmentSpeed => "development speed",
         }
     }
 }
