@@ -42,6 +42,17 @@ pub struct Events {
     pub owner: bool,
 }
 
+impl Events {
+    /// Reset per-tab CDP session state without discarding unread diagnostics or takeover state.
+    pub fn set_session(&mut self, session: Option<String>) {
+        self.session = session;
+        self.frame = None;
+        self.document = 0;
+        self.network.clear();
+        self.activity = None;
+    }
+}
+
 pub struct Cdp {
     requests: mpsc::Sender<Request>,
     events: Arc<Mutex<Events>>,

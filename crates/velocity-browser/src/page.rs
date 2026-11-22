@@ -60,11 +60,14 @@ impl Page {
         if self.active.as_deref() == Some(id) {
             return self.watch(cdp, self.watching).await;
         }
-        let previous = cdp.events(|events| events.session.take());
+        // Keep the previous session bound during detach so diagnostics already queued on the
+        // DevTools socket for that tab are captured before clearing per-tab session state.
+        let previous = cdp.events(|events| events.session.clone());
         if let Some(session) = previous {
             let _ = cdp
                 .browser("Target.detachFromTarget", json!({"sessionId":session}))
                 .await;
+            cdp.events(|events| events.set_session(None));
         }
         self.active = None;
         self.casting = false;
@@ -77,14 +80,7 @@ impl Page {
             )
             .await?;
         let session = required(&result, "sessionId")?.to_owned();
-        cdp.events(|events| {
-            let owner = events.owner;
-            *events = crate::cdp::Events {
-                session: Some(session),
-                owner,
-                ..Default::default()
-            };
-        });
+        cdp.events(|events| events.set_session(Some(session)));
         self.active = Some(id.to_owned());
         cdp.page("Page.enable", json!({})).await?;
         cdp.page("DOM.enable", json!({})).await?;
@@ -305,4 +301,296 @@ pub async fn capture(cdp: &Cdp, max_width: f64, max_height: f64, quality: u32) -
         width,
         height,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use futures_util::{SinkExt, StreamExt};
+    use serde_json::{Value, json};
+    use tokio::net::TcpListener;
+    use tokio::sync::mpsc;
+    use tokio_tungstenite::accept_async;
+    use tokio_tungstenite::tungstenite::Message;
+
+    use super::*;
+    use crate::tools::{self, Output};
+
+    type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
+
+    struct MockCdp {
+        cdp: Cdp,
+        push: mpsc::UnboundedSender<Value>,
+        server: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for MockCdp {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
+    }
+
+    impl MockCdp {
+        fn send(&self, event: Value) -> TestResult {
+            self.push.send(event)?;
+            Ok(())
+        }
+
+        async fn flush(&self) -> TestResult {
+            self.cdp.browser("Browser.getVersion", json!({})).await?;
+            Ok(())
+        }
+    }
+
+    async fn start_mock_cdp() -> std::result::Result<MockCdp, Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (push, mut outbound) = mpsc::unbounded_channel::<Value>();
+        let server = tokio::spawn(async move {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let Ok(mut socket) = accept_async(stream).await else {
+                return;
+            };
+            let mut next_tab = 2_u32;
+            loop {
+                tokio::select! {
+                    biased;
+                    Some(event) = outbound.recv() => {
+                        if socket.send(Message::text(event.to_string())).await.is_err() {
+                            break;
+                        }
+                    }
+                    incoming = socket.next() => {
+                        let Some(Ok(Message::Text(text))) = incoming else { break };
+                        let Ok(request) = serde_json::from_str::<Value>(&text) else { break };
+                        let reply = mock_reply(&request, &mut next_tab);
+                        if socket.send(Message::text(reply.to_string())).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        let cdp = Cdp::connect(format!("ws://{address}")).await?;
+        Ok(MockCdp { cdp, push, server })
+    }
+
+    fn mock_reply(request: &Value, next_tab: &mut u32) -> Value {
+        let id = request["id"].as_u64().unwrap_or_default();
+        let result = match request["method"].as_str().unwrap_or_default() {
+            "Target.attachToTarget" => {
+                let target = request["params"]["targetId"].as_str().unwrap_or_default();
+                json!({ "sessionId": format!("session-{target}") })
+            }
+            "Target.createTarget" => {
+                let target = format!("tab-{}", *next_tab);
+                *next_tab += 1;
+                json!({ "targetId": target })
+            }
+            "Target.getTargets" => json!({
+                "targetInfos": [
+                    { "targetId": "tab-a", "type": "page", "title": "Tab A", "url": "http://localhost:3000/a" },
+                    { "targetId": "tab-b", "type": "page", "title": "Tab B", "url": "http://localhost:3000/b" },
+                ]
+            }),
+            _ => json!({}),
+        };
+        json!({ "id": id, "result": result })
+    }
+
+    fn text_output(output: Output) -> std::result::Result<String, Box<dyn std::error::Error>> {
+        match output {
+            Output::Text(text) => Ok(text),
+            Output::Image { .. } => Err("expected text output".into()),
+        }
+    }
+
+    async fn drain(
+        page: &mut Page,
+        cdp: &Cdp,
+        tool: &str,
+    ) -> std::result::Result<Vec<String>, Box<dyn std::error::Error>> {
+        let output = tools::call(page, cdp, Path::new("."), tool, &json!({})).await?;
+        Ok(serde_json::from_str(&text_output(output)?)?)
+    }
+
+    fn console_event(session: &str, kind: &str, message: &str) -> Value {
+        json!({
+            "method": "Runtime.consoleAPICalled",
+            "sessionId": session,
+            "params": { "type": kind, "args": [{ "type": "string", "value": message }] },
+        })
+    }
+
+    fn http_failure_event(session: &str, status: u64, url: &str) -> Value {
+        json!({
+            "method": "Network.responseReceived",
+            "sessionId": session,
+            "params": { "response": { "status": status, "url": url } },
+        })
+    }
+
+    // Risk (#635): switching tabs must not discard unread console or network failure diagnostics
+    // before their MCP drains read them once, while still clearing detached per-tab network state.
+    #[tokio::test]
+    async fn switch_preserves_unread_diagnostics_until_drained() -> TestResult {
+        let mock = start_mock_cdp().await?;
+        let mut page = Page::default();
+        page.switch(&mock.cdp, "tab-a").await?;
+
+        mock.send(json!({
+            "method": "Network.requestWillBeSent",
+            "sessionId": "session-tab-a",
+            "params": { "requestId": "req-1", "request": { "url": "http://localhost:3000/slow" } },
+        }))?;
+        mock.send(console_event("session-tab-a", "warn", "from tab a"))?;
+        mock.send(http_failure_event(
+            "session-tab-a",
+            500,
+            "http://localhost:3000/fail?token=secret",
+        ))?;
+        mock.flush().await?;
+        assert!(!network_idle(&mock.cdp));
+
+        tools::call(
+            &mut page,
+            &mock.cdp,
+            Path::new("."),
+            "tabs",
+            &json!({ "action": "switch", "tab": "tab-b" }),
+        )
+        .await?;
+        assert!(network_idle(&mock.cdp));
+
+        assert_eq!(
+            drain(&mut page, &mock.cdp, "console").await?,
+            vec!["warn: from tab a"]
+        );
+        assert_eq!(
+            drain(&mut page, &mock.cdp, "network_errors").await?,
+            vec!["HTTP 500 http://localhost:3000/fail"]
+        );
+        assert!(drain(&mut page, &mock.cdp, "console").await?.is_empty());
+        assert!(
+            drain(&mut page, &mock.cdp, "network_errors")
+                .await?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    // Risk (#635): opening a new tab switches CDP sessions and must preserve unread diagnostics
+    // from the previous tab until drained once.
+    #[tokio::test]
+    async fn open_preserves_unread_diagnostics_until_drained() -> TestResult {
+        let mock = start_mock_cdp().await?;
+        let mut page = Page::default();
+        page.switch(&mock.cdp, "tab-b").await?;
+
+        mock.send(json!({
+            "method": "Runtime.exceptionThrown",
+            "sessionId": "session-tab-b",
+            "params": {},
+        }))?;
+        mock.send(json!({
+            "method": "Network.requestWillBeSent",
+            "sessionId": "session-tab-b",
+            "params": { "requestId": "req-2", "request": { "url": "http://localhost:3000/down" } },
+        }))?;
+        mock.send(json!({
+            "method": "Network.loadingFailed",
+            "sessionId": "session-tab-b",
+            "params": { "requestId": "req-2", "errorText": "net::ERR_FAILED", "canceled": false },
+        }))?;
+        tools::call(
+            &mut page,
+            &mock.cdp,
+            Path::new("."),
+            "open",
+            &json!({ "url": "http://localhost:3000/c" }),
+        )
+        .await?;
+
+        assert_eq!(
+            drain(&mut page, &mock.cdp, "console").await?,
+            vec!["Uncaught JavaScript exception"]
+        );
+        assert_eq!(
+            drain(&mut page, &mock.cdp, "network_errors").await?,
+            vec!["net::ERR_FAILED http://localhost:3000/down"]
+        );
+        assert!(drain(&mut page, &mock.cdp, "console").await?.is_empty());
+        assert!(
+            drain(&mut page, &mock.cdp, "network_errors")
+                .await?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    // Risk (#635): preserving diagnostics across tab switches must still suppress owner
+    // takeover diagnostics and enforce bounded log and output sizes.
+    #[tokio::test]
+    async fn switch_preserves_takeover_suppression_and_bounds() -> TestResult {
+        let mock = start_mock_cdp().await?;
+        let mut page = Page::default();
+        page.switch(&mock.cdp, "tab-a").await?;
+
+        mock.cdp.events(|events| events.owner = true);
+        page.switch(&mock.cdp, "tab-b").await?;
+        assert!(mock.cdp.events(|events| events.owner));
+
+        mock.send(console_event("session-tab-b", "log", "owner secret"))?;
+        mock.send(http_failure_event(
+            "session-tab-b",
+            502,
+            "http://localhost:3000/owner",
+        ))?;
+        mock.flush().await?;
+        assert!(drain(&mut page, &mock.cdp, "console").await?.is_empty());
+        assert!(
+            drain(&mut page, &mock.cdp, "network_errors")
+                .await?
+                .is_empty()
+        );
+
+        mock.cdp.events(|events| events.owner = false);
+        for index in 0..40 {
+            mock.send(console_event(
+                "session-tab-b",
+                "log",
+                &format!("entry-{index}"),
+            ))?;
+        }
+        mock.flush().await?;
+        page.switch(&mock.cdp, "tab-a").await?;
+
+        let lines = drain(&mut page, &mock.cdp, "console").await?;
+        assert_eq!(lines.len(), 32);
+        assert_eq!(lines.first().map(String::as_str), Some("log: entry-8"));
+        assert_eq!(lines.last().map(String::as_str), Some("log: entry-39"));
+
+        let long_url = format!("http://localhost:3000/{}", "x".repeat(400));
+        for _ in 0..32 {
+            mock.send(http_failure_event("session-tab-a", 500, &long_url))?;
+        }
+        mock.flush().await?;
+        page.switch(&mock.cdp, "tab-b").await?;
+        let text = text_output(
+            tools::call(
+                &mut page,
+                &mock.cdp,
+                Path::new("."),
+                "network_errors",
+                &json!({}),
+            )
+            .await?,
+        )?;
+        assert!(text.len() <= TEXT_LIMIT + "\n[truncated]".len());
+        assert!(text.ends_with("\n[truncated]"));
+        Ok(())
+    }
 }
