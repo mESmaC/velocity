@@ -62,6 +62,7 @@ sensitive = [
     "crates/velocity-git/src/merged_worktree.rs",
     "crates/velocity-airc/src/claims.rs",
 ]
+collapse = "https://api.collapse.sh/mESmaC/velocity"
 
 # Build units are left to discovery: each package of the Cargo workspace is a
 # unit, read from the manifests at the base. `ui/`, `proofs/` and `scripts/`
@@ -96,4 +97,4 @@ commands = [
 # The base is pushed here after each land. The server's git credential
 # helper holds the credentials.
 [mirror]
-remote = "https://github.com/mESmaC/velocity.git"
+remote = "https://api.collapse.sh/mESmaC/velocity.git"
