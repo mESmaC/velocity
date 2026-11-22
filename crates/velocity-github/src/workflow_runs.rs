@@ -33,6 +33,9 @@ pub(crate) struct WorkflowClient {
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct WorkflowRun {
     pub id: u64,
+    /// GitHub's immutable workflow ID, which distinguishes distinct workflows sharing a name (#653).
+    #[serde(default)]
+    pub workflow_id: Option<u64>,
     pub name: Option<String>,
     #[serde(default)]
     pub run_number: u64,

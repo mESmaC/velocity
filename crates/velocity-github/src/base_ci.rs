@@ -122,7 +122,7 @@ impl BaseCiWatch {
         let inputs: Vec<RunCandidateInput<'_>> = runs
             .iter()
             .map(|run| RunCandidateInput {
-                workflow: &run.workflow,
+                workflow: run.identity(),
                 run: run.run,
                 state: run.state,
                 cancelled: cancelled_ids.contains(&run.run),
@@ -179,7 +179,7 @@ impl BaseCiWatch {
             };
             let has_newer = runs
                 .iter()
-                .any(|other| other.workflow == run.workflow && other.run > run.run);
+                .any(|other| other.identity() == run.identity() && other.run > run.run);
             let jobs = self.inspect_run_jobs(
                 run.run,
                 &run.commit,
@@ -222,6 +222,7 @@ impl BaseCiWatch {
             .into_iter()
             .filter(|status| status.context != base_ci::INTEGRATION_CONTEXT)
             .map(|status| BaseRun {
+                workflow_key: status.context.clone(),
                 workflow: status.context,
                 run: 0,
                 commit: combined.sha.clone(),
@@ -459,13 +460,12 @@ fn elapsed_seconds(started: Option<&str>, finished: Option<&str>) -> Option<u64>
 
 fn base_run(run: WorkflowRun) -> BaseRun {
     let state = base_ci::run_state(run.status.as_deref(), run.conclusion.as_deref());
-    let workflow = run
-        .name
-        .filter(|name| !name.trim().is_empty())
-        .or(run.path)
-        .unwrap_or_else(|| "workflow".into());
+    let display = base_ci::actions_workflow_name(run.name.as_deref(), run.path.as_deref());
+    let workflow_key =
+        base_ci::actions_workflow_key(run.workflow_id, run.path.as_deref(), &display);
     BaseRun {
-        workflow,
+        workflow_key,
+        workflow: display,
         run: run.id,
         commit: run.head_sha,
         url: run.html_url,
@@ -604,7 +604,8 @@ mod tests {
 
     use velocity_core::base_ci::{self, RunState};
 
-    use super::{ApiCheckRun, CheckRunsResponse};
+    use super::{ApiCheckRun, CheckRunsResponse, base_run};
+    use crate::workflow_runs::WorkflowRun;
 
     // Risk (#652): the check-runs transport decoder must deserialize minimal GitHub App
     // check-run payloads (without optional URL or output fields) and pass them through to
@@ -650,6 +651,56 @@ mod tests {
         assert_eq!(runs[0].state, RunState::Failed);
         assert_eq!(runs[0].commit, commit);
         assert_eq!(runs[0].url, commit_page);
+        Ok(())
+    }
+
+    // Risk (#653): two distinct GitHub Actions workflow files can share the display name `CI`.
+    // `base_run` must assign independent stable identities from `workflow_id` (falling back to
+    // workflow `path`) while preserving the display name for the UI and repair prompt.
+    #[test]
+    fn same_name_workflows_decode_with_distinct_identities_and_preserved_display_names()
+    -> Result<(), serde_json::Error> {
+        let payload = r#"[
+            {
+                "id": 101,
+                "workflow_id": 11,
+                "name": "CI",
+                "path": ".github/workflows/macos.yml",
+                "status": "completed",
+                "conclusion": "failure",
+                "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "html_url": "https://github.com/mESmaC/velocity/actions/runs/101"
+            },
+            {
+                "id": 102,
+                "workflow_id": 12,
+                "name": "CI",
+                "path": ".github/workflows/docs.yml",
+                "status": "completed",
+                "conclusion": "success",
+                "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "html_url": "https://github.com/mESmaC/velocity/actions/runs/102"
+            },
+            {
+                "id": 103,
+                "name": "CI",
+                "path": ".github/workflows/lint.yml",
+                "status": "completed",
+                "conclusion": "failure",
+                "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+                "html_url": "https://github.com/mESmaC/velocity/actions/runs/103"
+            }
+        ]"#;
+        let decoded: Vec<WorkflowRun> = serde_json::from_str(payload)?;
+        let runs: Vec<_> = decoded.into_iter().map(base_run).collect();
+        assert_eq!(runs[0].workflow, "CI");
+        assert_eq!(runs[0].workflow_key, "workflow:11");
+        assert_eq!(runs[1].workflow, "CI");
+        assert_eq!(runs[1].workflow_key, "workflow:12");
+        assert_eq!(runs[2].workflow, "CI");
+        assert_eq!(runs[2].workflow_key, "path:.github/workflows/lint.yml");
+        assert_ne!(runs[0].identity(), runs[1].identity());
+        assert_ne!(runs[0].identity(), runs[2].identity());
         Ok(())
     }
 }

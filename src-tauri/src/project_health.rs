@@ -2593,6 +2593,7 @@ async fn selected_ci_repair(
         _ => CommitOrder::Unknown,
     };
     Some(OpenRepair {
+        workflow_key: repair.workflow_key.clone().unwrap_or_default(),
         workflow: repair.workflow.clone(),
         job: repair.job.clone(),
         commit: repair.commit.clone(),

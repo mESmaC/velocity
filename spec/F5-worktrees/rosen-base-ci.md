@@ -11,6 +11,7 @@ It needs no thread, agent session or window.
 Ninety seconds after start and every three minutes, Velocity reads the newest 50 workflow runs on the project's base branch in its GitHub repository, and the commit statuses and check runs on that branch's tip (#652).
 A run counts when GitHub started it for a base commit: its event is `push` or `schedule`.
 A dispatched run reports to whoever asked for it (#508), and a pull request's run is not on the base.
+Each Actions workflow is keyed by its GitHub `workflow_id` (falling back to its workflow file `path`, then display name) while keeping its display name for the UI and repair prompts, so distinct workflows that share a display name stay independent (#653).
 A commit status counts as a workflow named for its context, except `velocity/integration`, which is Velocity's own integration build.
 A standalone GitHub App check run on that commit counts as a workflow keyed by its app and check name, keeping the newest check run when more than one shares that key (#652).
 Check runs published by GitHub Actions itself are skipped here because `/actions/runs` already tracks them and excludes dispatched or pull-request runs (#652).

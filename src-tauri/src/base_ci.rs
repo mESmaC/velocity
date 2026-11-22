@@ -255,18 +255,7 @@ fn open_repairs(
             newly_landed.push((repair.thread, commit.clone()));
         }
         let thread_state = repair_thread_state(thread.as_ref(), landed_commit.as_deref(), live);
-        let matching_failure = failures
-            .iter()
-            .find(|failure| {
-                failure.workflow == repair.workflow
-                    && failure.jobs.iter().any(|job| job.job == repair.job)
-            })
-            .or_else(|| {
-                failures
-                    .iter()
-                    .filter(|failure| failure.workflow == repair.workflow)
-                    .max_by_key(|failure| failure.run)
-            });
+        let matching_failure = matching_repair_failure(&repair, failures);
         let commit_order =
             match (landed_commit.as_deref(), matching_failure) {
                 (Some(landed), Some(failure)) => tauri::async_runtime::block_on(
@@ -275,6 +264,7 @@ fn open_repairs(
                 _ => CommitOrder::Unknown,
             };
         open.push(OpenRepair {
+            workflow_key: repair.workflow_key.unwrap_or_default(),
             workflow: repair.workflow,
             job: repair.job,
             commit: repair.commit,
@@ -288,6 +278,28 @@ fn open_repairs(
     }
     record_newly_landed(application, project, &newly_landed)?;
     Ok(open)
+}
+
+fn matching_repair_failure<'a>(repair: &CiRepair, failures: &'a [Failure]) -> Option<&'a Failure> {
+    let matches_workflow = |failure: &&Failure| {
+        base_ci::workflow_matches_repair(
+            repair.workflow_key.as_deref().unwrap_or(""),
+            &repair.workflow,
+            failure.identity(),
+            &failure.workflow,
+        )
+    };
+    failures
+        .iter()
+        .find(|failure| {
+            matches_workflow(failure) && failure.jobs.iter().any(|job| job.job == repair.job)
+        })
+        .or_else(|| {
+            failures
+                .iter()
+                .filter(matches_workflow)
+                .max_by_key(|failure| failure.run)
+        })
 }
 
 fn repair_snapshots(
@@ -476,7 +488,14 @@ fn needs_log(open: &[OpenRepair], failure: &Failure) -> bool {
     failure.jobs.iter().any(|job| {
         let matching: Vec<&OpenRepair> = open
             .iter()
-            .filter(|repair| repair.workflow == failure.workflow && repair.job == job.job)
+            .filter(|repair| {
+                base_ci::workflow_matches_repair(
+                    &repair.workflow_key,
+                    &repair.workflow,
+                    failure.identity(),
+                    &failure.workflow,
+                ) && repair.job == job.job
+            })
             .collect();
         if matching.is_empty() {
             return true;
@@ -534,10 +553,16 @@ fn close(application: &AppHandle, subject: &Subject, workflows: &[String]) -> Re
     .close_ci_repairs(subject.project, workflows)
     .map_err(|error| error.to_string())?;
     if !closed.is_empty() {
+        let mut names: Vec<&str> = Vec::new();
+        for repair in &closed {
+            if !names.contains(&repair.workflow.as_str()) {
+                names.push(&repair.workflow);
+            }
+        }
         let message = format!(
             "{}: {} passed on the base · closed {} CI repair(s)",
             subject.name,
-            workflows.join(", "),
+            names.join(", "),
             closed.len()
         );
         crate::diagnostics::record(SOURCE, &message);
@@ -561,9 +586,14 @@ fn close_resolved(
     .map_err(|error| error.to_string())?;
     for repair in &closed {
         let job = base_ci::job_label(&repair.workflow, &repair.job);
-        let passer = resolved
-            .iter()
-            .find(|item| item.workflow == repair.workflow && item.job == repair.job);
+        let passer = resolved.iter().find(|item| {
+            base_ci::workflow_matches_repair(
+                repair.workflow_key.as_deref().unwrap_or(""),
+                &repair.workflow,
+                item.identity(),
+                &item.workflow,
+            ) && item.job == repair.job
+        });
         let detail = match passer {
             Some(item) if !item.commit.trim().is_empty() => format!(
                 "passed on {} (superseded thread #{} covering {})",

@@ -320,6 +320,7 @@ mod tests {
     #[test]
     fn timed_out_repair_brief_names_the_hung_test() {
         let failure = Failure {
+            workflow_key: "workflow:11".into(),
             workflow: "CI".into(),
             run: 99,
             commit: "520dcfc000000000000000000000000000000000".into(),
@@ -347,6 +348,9 @@ test (macos-latest)\tRun tests\t2026-11-21T20:44:35.0000000Z ##[error]The operat
             log,
             saved_log: None,
         });
+        assert_eq!(repair_title(&failure), "Fix CI: CI · test (macos-latest)");
+        assert!(prompt.contains("Workflow: CI\n"));
+        assert!(!prompt.contains("workflow:11"));
         assert!(prompt.contains("Failed job: test (macos-latest) (timed out)"));
         assert!(prompt.contains(
             "Test still running when the job stopped: collapse_link::collapse_link_and_unlink_round_trip_with_live_server"
@@ -358,6 +362,7 @@ test (macos-latest)\tRun tests\t2026-11-21T20:44:35.0000000Z ##[error]The operat
     #[test]
     fn rosen_per_platform_repair_brief_names_platform_culprit_and_output() {
         let failure = Failure {
+            workflow_key: base_ci::ROSEN_BASE_WORKFLOW.into(),
             workflow: base_ci::ROSEN_BASE_WORKFLOW.into(),
             run: 42,
             commit: "520dcfc000000000000000000000000000000000".into(),

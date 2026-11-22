@@ -3,14 +3,21 @@
 //! until a green run of that workflow, even when its thread is deleted.
 
 use serde::{Deserialize, Serialize};
-use velocity_core::base_ci::{BaseCi, Failure, ResolvedJob, SupersededRepair, signatures_differ};
+use velocity_core::base_ci::{
+    BaseCi, Failure, ResolvedJob, SupersededRepair, effective_workflow_key, signatures_differ,
+    workflow_matches_repair,
+};
 
 use crate::threads::{NewThread, ThreadError, insert_thread};
 use crate::{StateStore, StoreError};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CiRepair {
-    /// The workflow's name, or a commit status's context.
+    /// Stable workflow identity key used for grouping and repair matching (#653).
+    /// Absent on repairs persisted before #653, which fall back to `workflow`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_key: Option<String>,
+    /// The workflow's display name, a commit status's context, or `<app> · <check>`.
     #[serde(default)]
     pub workflow: String,
     #[serde(default)]
@@ -28,6 +35,13 @@ pub struct CiRepair {
     /// Normalized error signature from the failing job's log, when available (#558).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+}
+
+impl CiRepair {
+    /// Stable workflow identity key, falling back to `workflow` for pre-#653 repairs (#653).
+    pub fn effective_workflow_key(&self) -> &str {
+        effective_workflow_key(self.workflow_key.as_deref().unwrap_or(""), &self.workflow)
+    }
 }
 
 impl StateStore {
@@ -49,8 +63,12 @@ impl StateStore {
             .iter()
             .filter(|job| {
                 !current.ci_repairs.iter().any(|repair| {
-                    repair.workflow == failure.workflow
-                        && repair.job == job.job
+                    workflow_matches_repair(
+                        repair.workflow_key.as_deref().unwrap_or(""),
+                        &repair.workflow,
+                        failure.identity(),
+                        &failure.workflow,
+                    ) && repair.job == job.job
                         && !signatures_differ(repair.signature.as_deref(), job.signature.as_deref())
                 })
             })
@@ -78,6 +96,7 @@ impl StateStore {
         current
             .ci_repairs
             .extend(uncovered.into_iter().map(|job| CiRepair {
+                workflow_key: Some(failure.identity().to_owned()),
                 workflow: failure.workflow.clone(),
                 job: job.job.clone(),
                 commit: failure.commit.clone(),
@@ -135,8 +154,12 @@ impl StateStore {
             .into_iter()
             .partition(|repair| {
                 superseded.iter().any(|item| {
-                    item.workflow == repair.workflow
-                        && item.job == repair.job
+                    workflow_matches_repair(
+                        repair.workflow_key.as_deref().unwrap_or(""),
+                        &repair.workflow,
+                        item.identity(),
+                        &item.workflow,
+                    ) && item.job == repair.job
                         && item.thread == repair.thread
                 })
             });
@@ -166,8 +189,12 @@ impl StateStore {
             .into_iter()
             .partition(|repair| {
                 resolved.iter().any(|item| {
-                    item.workflow == repair.workflow
-                        && item.job == repair.job
+                    workflow_matches_repair(
+                        repair.workflow_key.as_deref().unwrap_or(""),
+                        &repair.workflow,
+                        item.identity(),
+                        &item.workflow,
+                    ) && item.job == repair.job
                         && (item.run == 0 || repair.run == 0 || item.run >= repair.run)
                 })
             });
@@ -192,7 +219,11 @@ impl StateStore {
         };
         let (closed, open): (Vec<_>, Vec<_>) = std::mem::take(&mut current.ci_repairs)
             .into_iter()
-            .partition(|repair| workflows.contains(&repair.workflow));
+            .partition(|repair| {
+                workflows
+                    .iter()
+                    .any(|workflow| workflow == repair.effective_workflow_key())
+            });
         if closed.is_empty() {
             return Ok(closed);
         }
@@ -241,6 +272,7 @@ mod tests {
             ..FailedJob::default()
         };
         let mut failure = Failure {
+            workflow_key: "Build".into(),
             workflow: "Build".into(),
             run: 7,
             commit: "a".repeat(40),
@@ -317,6 +349,7 @@ mod tests {
             )
         };
         let failure = Failure {
+            workflow_key: "Build and lint".into(),
             workflow: "Build and lint".into(),
             run: 10,
             commit: "40c32e0".repeat(6)[..40].to_owned(),
@@ -346,6 +379,7 @@ mod tests {
         );
 
         let superseded = [SupersededRepair {
+            workflow_key: saved.effective_workflow_key().to_owned(),
             workflow: saved.workflow.clone(),
             job: saved.job.clone(),
             thread: saved.thread,
@@ -396,6 +430,7 @@ mod tests {
             &settings,
         );
         let failure = Failure {
+            workflow_key: "CI".into(),
             workflow: "CI".into(),
             run: 100,
             commit: "a4d9b88".repeat(6)[..40].to_owned(),
@@ -419,6 +454,7 @@ mod tests {
                 .is_some()
         );
         let resolved = [ResolvedJob {
+            workflow_key: "CI".into(),
             workflow: "CI".into(),
             job: "macOS (build, clippy, test)".into(),
             commit: "33426bb".repeat(6)[..40].to_owned(),
@@ -434,6 +470,98 @@ mod tests {
             store.state.projects[0].ci_repairs[0].job,
             "Windows (build, clippy, test)"
         );
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#653): two distinct workflows both named `CI` must persist separate repair
+    // records keyed by stable workflow identity across save and reload, so closing or
+    // resolving one workflow never clears the other workflow's repair.
+    #[test]
+    fn same_name_workflows_persist_and_close_independently_across_reload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use velocity_core::base_ci::ResolvedJob;
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-ci-workflow-id-{unique}"));
+        let mut store = StateStore::load_or_default(&directory)?;
+        store.state.projects = vec![ProjectItem::new(1, "One".into(), r"C:\project one".into())];
+        store.store_snapshot(store.state.clone())?;
+        let settings = store.settings();
+        let make_thread = |slug: &str| {
+            NewThread::new(
+                "Fix CI: CI · test".into(),
+                format!("vel/{slug}"),
+                format!(r"C:\worktrees\{slug}"),
+                &settings,
+            )
+        };
+        let macos = Failure {
+            workflow_key: "workflow:11".into(),
+            workflow: "CI".into(),
+            run: 101,
+            commit: "a".repeat(40),
+            url: "https://github.com/owner/one/actions/runs/101".into(),
+            detail: String::new(),
+            jobs: vec![FailedJob {
+                job: "test".into(),
+                ..FailedJob::default()
+            }],
+        };
+        let docs = Failure {
+            workflow_key: "workflow:12".into(),
+            workflow: "CI".into(),
+            run: 102,
+            commit: "b".repeat(40),
+            url: "https://github.com/owner/one/actions/runs/102".into(),
+            detail: String::new(),
+            jobs: vec![FailedJob {
+                job: "test".into(),
+                ..FailedJob::default()
+            }],
+        };
+        let first = store.add_ci_repair(1, &macos, make_thread("macos"), "prompt")?;
+        let second = store.add_ci_repair(1, &docs, make_thread("docs"), "prompt")?;
+        assert!(first.is_some() && second.is_some() && first != second);
+
+        let mut store = StateStore::load_or_default(&directory)?;
+        assert_eq!(store.state.projects[0].ci_repairs.len(), 2);
+        assert_eq!(
+            store.state.projects[0].ci_repairs[0]
+                .workflow_key
+                .as_deref(),
+            Some("workflow:11")
+        );
+        assert_eq!(store.state.projects[0].ci_repairs[0].workflow, "CI");
+
+        // Resolving or closing docs (`workflow:12`) leaves macOS (`workflow:11`) open.
+        let resolved_docs = [ResolvedJob {
+            workflow_key: "workflow:12".into(),
+            workflow: "CI".into(),
+            job: "test".into(),
+            commit: "c".repeat(40),
+            run: 103,
+        }];
+        let closed = store.close_resolved_ci_repairs(1, &resolved_docs)?;
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].workflow_key.as_deref(), Some("workflow:12"));
+        assert!(
+            store
+                .close_ci_repairs(1, &["workflow:12".into()])?
+                .is_empty()
+        );
+
+        let mut store = StateStore::load_or_default(&directory)?;
+        assert_eq!(store.state.projects[0].ci_repairs.len(), 1);
+        assert_eq!(
+            store.state.projects[0].ci_repairs[0]
+                .workflow_key
+                .as_deref(),
+            Some("workflow:11")
+        );
+        assert_eq!(store.close_ci_repairs(1, &["workflow:11".into()])?.len(), 1);
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

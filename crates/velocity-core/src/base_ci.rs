@@ -314,7 +314,10 @@ pub fn cancelled_candidates(runs: &[RunCandidateInput<'_>]) -> Vec<CancelledCand
 /// One workflow run on the base branch, or one commit status or check run on its tip.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BaseRun {
-    /// The workflow's name, the status's context, or `<app> · <check>` for a check run.
+    /// Stable workflow identity used for grouping and repair matching (#653).
+    /// Empty falls back to `workflow` (e.g. commit statuses, check runs, or legacy fixtures).
+    pub workflow_key: String,
+    /// The workflow's display name, the status's context, or `<app> · <check>` for a check run.
     pub workflow: String,
     /// GitHub's run ID, which grows with each new run. A status or standalone check run has 0.
     pub run: u64,
@@ -323,6 +326,71 @@ pub struct BaseRun {
     pub state: RunState,
     /// What a status or check run says about itself. An Actions run's jobs and log say it instead.
     pub detail: String,
+}
+
+impl BaseRun {
+    /// Stable workflow identity key, falling back to the display name when unset (#653).
+    pub fn identity(&self) -> &str {
+        effective_workflow_key(&self.workflow_key, &self.workflow)
+    }
+}
+
+/// Returns the trimmed `workflow_key` when non-empty, or falls back to `workflow` (#653).
+pub fn effective_workflow_key<'a>(workflow_key: &'a str, workflow: &'a str) -> &'a str {
+    let trimmed = workflow_key.trim();
+    if trimmed.is_empty() {
+        workflow
+    } else {
+        trimmed
+    }
+}
+
+/// Human-readable display name for a GitHub Actions workflow run (#653).
+pub fn actions_workflow_name(name: Option<&str>, path: Option<&str>) -> String {
+    name.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| path.map(str::trim).filter(|value| !value.is_empty()))
+        .unwrap_or("workflow")
+        .to_owned()
+}
+
+/// Stable workflow identity key for a GitHub Actions workflow run (#653).
+///
+/// Prefers GitHub's immutable `workflow_id`, then the workflow file `path`, and only falls
+/// back to the display name when neither is present so distinct workflows sharing a name
+/// stay independent.
+pub fn actions_workflow_key(
+    workflow_id: Option<u64>,
+    path: Option<&str>,
+    display_name: &str,
+) -> String {
+    if let Some(id) = workflow_id.filter(|id| *id > 0) {
+        return format!("workflow:{id}");
+    }
+    if let Some(path) = path.map(str::trim).filter(|value| !value.is_empty()) {
+        return format!("path:{path}");
+    }
+    display_name.to_owned()
+}
+
+/// Whether a persisted or open repair matches a workflow identified by `(candidate_key, candidate_workflow)` (#653).
+///
+/// Repairs carrying a non-empty `repair_key` match strictly on the stable identity key so
+/// distinct workflows sharing a display name never collide. Legacy repairs persisted before
+/// #653 (empty `repair_key`) fall back to matching the display name.
+pub fn workflow_matches_repair(
+    repair_key: &str,
+    repair_workflow: &str,
+    candidate_key: &str,
+    candidate_workflow: &str,
+) -> bool {
+    let repair_key = repair_key.trim();
+    let candidate_key = effective_workflow_key(candidate_key, candidate_workflow);
+    if !repair_key.is_empty() {
+        repair_key == candidate_key
+    } else {
+        repair_workflow == candidate_key || repair_workflow == candidate_workflow
+    }
 }
 
 /// One GitHub check run on the base branch's tip commit (#652).
@@ -478,6 +546,7 @@ pub fn check_runs_to_base_runs(
                 .unwrap_or(commit_page)
                 .to_owned();
             BaseRun {
+                workflow_key: workflow.clone(),
                 workflow,
                 run: 0,
                 commit,
@@ -511,6 +580,9 @@ pub struct FailedJob {
 /// A workflow whose newest finished run failed, with the jobs that failed in it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
+    /// Stable workflow identity used for repair matching (#653).
+    pub workflow_key: String,
+    /// Human-readable workflow display name shown in UI, thread titles, and prompts.
     pub workflow: String,
     pub run: u64,
     pub commit: String,
@@ -519,10 +591,17 @@ pub struct Failure {
     pub jobs: Vec<FailedJob>,
 }
 
+impl Failure {
+    /// Stable workflow identity key, falling back to the display name when unset (#653).
+    pub fn identity(&self) -> &str {
+        effective_workflow_key(&self.workflow_key, &self.workflow)
+    }
+}
+
 /// What the newest finished runs say, before any failed job is read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Verdict {
-    /// Workflows whose newest finished run passed.
+    /// Stable identities of workflows whose newest finished run passed.
     pub passed: Vec<String>,
     /// The newest finished run of each workflow that failed.
     pub failed: Vec<BaseRun>,
@@ -538,7 +617,7 @@ pub fn verdict(runs: &[BaseRun]) -> Verdict {
     let mut newest: BTreeMap<&str, &BaseRun> = BTreeMap::new();
     let decided = |run: &&BaseRun| matches!(run.state, RunState::Passed | RunState::Failed);
     for run in runs.iter().filter(decided) {
-        let known = newest.entry(run.workflow.as_str()).or_insert(run);
+        let known = newest.entry(run.identity()).or_insert(run);
         if run.run > known.run {
             *known = run;
         }
@@ -546,7 +625,7 @@ pub fn verdict(runs: &[BaseRun]) -> Verdict {
     let running = runs.iter().any(|run| {
         run.state == RunState::Running
             && newest
-                .get(run.workflow.as_str())
+                .get(run.identity())
                 .is_none_or(|finished| run.run >= finished.run)
     });
     let commit = newest
@@ -557,7 +636,10 @@ pub fn verdict(runs: &[BaseRun]) -> Verdict {
         .into_values()
         .partition(|run| run.state == RunState::Passed);
     Verdict {
-        passed: passed.into_iter().map(|run| run.workflow.clone()).collect(),
+        passed: passed
+            .into_iter()
+            .map(|run| run.identity().to_owned())
+            .collect(),
         failed: failed.into_iter().cloned().collect(),
         running,
         commit,
@@ -577,6 +659,7 @@ pub fn failure(run: &BaseRun, mut jobs: Vec<FailedJob>) -> Failure {
         });
     }
     Failure {
+        workflow_key: run.identity().to_owned(),
         workflow: run.workflow.clone(),
         run: run.run,
         commit: run.commit.clone(),
@@ -617,6 +700,8 @@ pub enum CommitOrder {
 /// An open repair evaluated by [`plan`] against the latest base CI runs (#558).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OpenRepair {
+    /// Stable workflow identity key (#653). Empty on legacy repairs persisted before #653.
+    pub workflow_key: String,
     pub workflow: String,
     pub job: String,
     /// Base commit the repair was opened for.
@@ -633,10 +718,19 @@ pub struct OpenRepair {
     pub commit_order: CommitOrder,
 }
 
+impl OpenRepair {
+    /// Stable workflow identity key, falling back to the display name for legacy repairs (#653).
+    pub fn identity(&self) -> &str {
+        effective_workflow_key(&self.workflow_key, &self.workflow)
+    }
+}
+
 /// An open repair superseded by a failure at or after its land, or a new failure after
 /// its thread ended (#558).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SupersededRepair {
+    /// Stable workflow identity key (#653).
+    pub workflow_key: String,
     pub workflow: String,
     pub job: String,
     pub thread: u32,
@@ -644,21 +738,46 @@ pub struct SupersededRepair {
     pub landed_commit: Option<String>,
 }
 
+impl SupersededRepair {
+    /// Stable workflow identity key, falling back to the display name when unset (#653).
+    pub fn identity(&self) -> &str {
+        effective_workflow_key(&self.workflow_key, &self.workflow)
+    }
+}
+
 /// A job whose newest finished outcome is a pass (#587).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedJob {
+    /// Stable workflow identity key (#653).
+    pub workflow_key: String,
     pub workflow: String,
     pub job: String,
     pub commit: String,
     pub run: u64,
 }
 
+impl ResolvedJob {
+    /// Stable workflow identity key, falling back to the display name when unset (#653).
+    pub fn identity(&self) -> &str {
+        effective_workflow_key(&self.workflow_key, &self.workflow)
+    }
+}
+
 /// A workflow's newest completed passing run (#587).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PassedWorkflow {
+    /// Stable workflow identity key (#653).
+    pub workflow_key: String,
     pub workflow: String,
     pub commit: String,
     pub run: u64,
+}
+
+impl PassedWorkflow {
+    /// Stable workflow identity key, falling back to the display name when unset (#653).
+    pub fn identity(&self) -> &str {
+        effective_workflow_key(&self.workflow_key, &self.workflow)
+    }
 }
 
 /// Per-job evaluation across finished and in-progress runs of every workflow (#587).
@@ -689,10 +808,7 @@ pub struct JobVerdict {
 pub fn runs_to_inspect(runs: &[BaseRun], max_running_per_workflow: usize) -> Vec<u64> {
     let mut by_workflow: BTreeMap<&str, Vec<&BaseRun>> = BTreeMap::new();
     for run in runs.iter().filter(|run| run.run != 0) {
-        by_workflow
-            .entry(run.workflow.as_str())
-            .or_default()
-            .push(run);
+        by_workflow.entry(run.identity()).or_default().push(run);
     }
     let mut selected = Vec::new();
     for mut workflow_runs in by_workflow.into_values() {
@@ -724,21 +840,18 @@ pub fn runs_to_inspect(runs: &[BaseRun], max_running_per_workflow: usize) -> Vec
 pub fn evaluate_jobs(runs: &[BaseRun], run_jobs: &BTreeMap<u64, Vec<RunJob>>) -> JobVerdict {
     let mut by_workflow: BTreeMap<&str, Vec<&BaseRun>> = BTreeMap::new();
     for run in runs {
-        by_workflow
-            .entry(run.workflow.as_str())
-            .or_default()
-            .push(run);
+        by_workflow.entry(run.identity()).or_default().push(run);
     }
     let mut verdict = JobVerdict::default();
-    for (workflow, workflow_runs) in by_workflow {
-        evaluate_workflow(workflow, workflow_runs, run_jobs, &mut verdict);
+    for (workflow_key, workflow_runs) in by_workflow {
+        evaluate_workflow(workflow_key, workflow_runs, run_jobs, &mut verdict);
     }
     verdict.commit = newest_verdict_commit(&verdict);
     verdict
 }
 
 fn evaluate_workflow(
-    workflow: &str,
+    workflow_key: &str,
     mut runs: Vec<&BaseRun>,
     run_jobs: &BTreeMap<u64, Vec<RunJob>>,
     verdict: &mut JobVerdict,
@@ -770,21 +883,22 @@ fn evaluate_workflow(
         .copied()
         .filter(|run| newest_decided.is_none_or(|decided| run.run >= decided.run))
         .collect();
-    let has_failure = record_workflow_jobs(workflow, &relevant, run_jobs, verdict);
+    let has_failure = record_workflow_jobs(workflow_key, &relevant, run_jobs, verdict);
     if let Some(passed_run) = newest_passed {
         verdict.passed_workflows.push(PassedWorkflow {
-            workflow: workflow.to_owned(),
+            workflow_key: workflow_key.to_owned(),
+            workflow: passed_run.workflow.clone(),
             commit: passed_run.commit.clone(),
             run: passed_run.run,
         });
         if !has_failure && newest_decided.is_some_and(|decided| decided.run == passed_run.run) {
-            verdict.passed.push(workflow.to_owned());
+            verdict.passed.push(workflow_key.to_owned());
         }
     }
 }
 
 fn record_workflow_jobs(
-    workflow: &str,
+    workflow_key: &str,
     relevant: &[&BaseRun],
     run_jobs: &BTreeMap<u64, Vec<RunJob>>,
     verdict: &mut JobVerdict,
@@ -793,8 +907,13 @@ fn record_workflow_jobs(
     let mut waiting_by_run: BTreeMap<u64, (&BaseRun, Vec<FailedJob>)> = BTreeMap::new();
     for job_name in candidate_job_names(relevant, run_jobs) {
         match decide_job(&job_name, relevant, run_jobs) {
-            JobDecision::Passed { commit, run } => verdict.resolved_jobs.push(ResolvedJob {
-                workflow: workflow.to_owned(),
+            JobDecision::Passed {
+                workflow,
+                commit,
+                run,
+            } => verdict.resolved_jobs.push(ResolvedJob {
+                workflow_key: workflow_key.to_owned(),
+                workflow,
                 job: job_name,
                 commit,
                 run,
@@ -825,8 +944,9 @@ fn record_workflow_jobs(
 fn evaluate_status(status: &BaseRun, verdict: &mut JobVerdict) {
     match status.state {
         RunState::Passed => {
-            verdict.passed.push(status.workflow.clone());
+            verdict.passed.push(status.identity().to_owned());
             verdict.passed_workflows.push(PassedWorkflow {
+                workflow_key: status.identity().to_owned(),
                 workflow: status.workflow.clone(),
                 commit: status.commit.clone(),
                 run: 0,
@@ -871,6 +991,7 @@ enum JobInRun {
 
 enum JobDecision<'a> {
     Passed {
+        workflow: String,
         commit: String,
         run: u64,
     },
@@ -892,6 +1013,7 @@ fn decide_job<'a>(
         match job_outcome_in_run(job_name, run, run_jobs) {
             JobInRun::Passed => {
                 return JobDecision::Passed {
+                    workflow: run.workflow.clone(),
                     commit: run.commit.clone(),
                     run: run.run,
                 };
@@ -1025,14 +1147,9 @@ pub fn plan(open: &[OpenRepair], passed: &[String], failures: &[Failure]) -> Pla
 }
 
 /// Plans repair closures, individual resolved-job closures, reopens and new threads from a
-/// per-job [`JobVerdict`] (#558, #587).
+/// per-job [`JobVerdict`] (#558, #587, #653).
 pub fn plan_for_verdict(open: &[OpenRepair], verdict: &JobVerdict) -> Plan {
-    let closed: Vec<String> = verdict
-        .passed
-        .iter()
-        .filter(|workflow| open.iter().any(|repair| repair.workflow == **workflow))
-        .cloned()
-        .collect();
+    let closed = collect_closed_workflows(open, verdict);
     let resolved = collect_resolved_repairs(open, verdict, &closed);
     let mut superseded = Vec::new();
     for repair in open {
@@ -1043,6 +1160,7 @@ pub fn plan_for_verdict(open: &[OpenRepair], verdict: &JobVerdict) -> Plan {
         }
         if repair_is_superseded_by_failures(repair, &verdict.active_failures) {
             superseded.push(SupersededRepair {
+                workflow_key: repair.identity().to_owned(),
                 workflow: repair.workflow.clone(),
                 job: repair.job.clone(),
                 thread: repair.thread,
@@ -1079,6 +1197,52 @@ pub fn plan_for_verdict(open: &[OpenRepair], verdict: &JobVerdict) -> Plan {
     }
 }
 
+fn collect_closed_workflows(open: &[OpenRepair], verdict: &JobVerdict) -> Vec<String> {
+    let mut closed = Vec::new();
+    for passed_key in &verdict.passed {
+        let passed_display = verdict
+            .passed_workflows
+            .iter()
+            .find(|item| item.identity() == passed_key)
+            .map_or(passed_key.as_str(), |item| item.workflow.as_str());
+        for repair in open {
+            let matches = if !repair.workflow_key.trim().is_empty() {
+                repair.identity() == passed_key
+            } else {
+                !display_workflow_is_failing(&repair.workflow, verdict)
+                    && (repair.workflow == *passed_key || repair.workflow == passed_display)
+            };
+            if matches {
+                let key = repair.identity().to_owned();
+                if !closed.contains(&key) {
+                    closed.push(key);
+                }
+            }
+        }
+    }
+    closed
+}
+
+fn display_workflow_is_failing(workflow: &str, verdict: &JobVerdict) -> bool {
+    verdict
+        .active_failures
+        .iter()
+        .chain(&verdict.waiting_failures)
+        .any(|failure| failure.workflow == workflow)
+}
+
+fn legacy_repair_blocked_by_display_failure(repair: &OpenRepair, verdict: &JobVerdict) -> bool {
+    repair.workflow_key.trim().is_empty()
+        && verdict
+            .active_failures
+            .iter()
+            .chain(&verdict.waiting_failures)
+            .any(|failure| {
+                failure.workflow == repair.workflow
+                    && failure.jobs.iter().any(|job| job.job == repair.job)
+            })
+}
+
 fn collect_resolved_repairs(
     open: &[OpenRepair],
     verdict: &JobVerdict,
@@ -1086,15 +1250,21 @@ fn collect_resolved_repairs(
 ) -> Vec<ResolvedJob> {
     let mut resolved: Vec<ResolvedJob> = Vec::new();
     for repair in open {
-        if closed.contains(&repair.workflow) {
+        if closed.iter().any(|key| key == repair.identity())
+            || legacy_repair_blocked_by_display_failure(repair, verdict)
+        {
             continue;
         }
         let candidate = verdict
             .resolved_jobs
             .iter()
             .find(|item| {
-                item.workflow == repair.workflow
-                    && item.job == repair.job
+                workflow_matches_repair(
+                    &repair.workflow_key,
+                    &repair.workflow,
+                    item.identity(),
+                    &item.workflow,
+                ) && item.job == repair.job
                     && (item.run == 0 || repair.run == 0 || item.run >= repair.run)
             })
             .cloned()
@@ -1104,7 +1274,7 @@ fn collect_resolved_repairs(
         };
         if !resolved
             .iter()
-            .any(|existing| existing.workflow == item.workflow && existing.job == item.job)
+            .any(|existing| existing.identity() == item.identity() && existing.job == item.job)
         {
             resolved.push(item);
         }
@@ -1114,19 +1284,24 @@ fn collect_resolved_repairs(
 
 fn resolved_by_passed_workflow(repair: &OpenRepair, verdict: &JobVerdict) -> Option<ResolvedJob> {
     let passed = verdict.passed_workflows.iter().find(|workflow| {
-        workflow.workflow == repair.workflow
-            && (workflow.run == 0 || repair.run == 0 || workflow.run >= repair.run)
+        workflow_matches_repair(
+            &repair.workflow_key,
+            &repair.workflow,
+            workflow.identity(),
+            &workflow.workflow,
+        ) && (workflow.run == 0 || repair.run == 0 || workflow.run >= repair.run)
     })?;
     let failed_after = verdict
         .active_failures
         .iter()
         .chain(&verdict.waiting_failures)
         .any(|failure| {
-            failure.workflow == repair.workflow
+            failure.identity() == passed.identity()
                 && failure.run > passed.run
                 && failure.jobs.iter().any(|job| job.job == repair.job)
         });
     (!failed_after).then(|| ResolvedJob {
+        workflow_key: passed.identity().to_owned(),
         workflow: passed.workflow.clone(),
         job: repair.job.clone(),
         commit: passed.commit.clone(),
@@ -1135,32 +1310,53 @@ fn resolved_by_passed_workflow(repair: &OpenRepair, verdict: &JobVerdict) -> Opt
 }
 
 fn repair_is_closed(repair: &OpenRepair, closed: &[String], resolved: &[ResolvedJob]) -> bool {
-    closed.contains(&repair.workflow)
+    closed.iter().any(|key| key == repair.identity())
         || resolved.iter().any(|item| {
-            item.workflow == repair.workflow
-                && item.job == repair.job
+            workflow_matches_repair(
+                &repair.workflow_key,
+                &repair.workflow,
+                item.identity(),
+                &item.workflow,
+            ) && item.job == repair.job
                 && (item.run == 0 || repair.run == 0 || item.run >= repair.run)
         })
 }
 
 fn repair_is_waiting(repair: &OpenRepair, waiting_failures: &[Failure]) -> bool {
     waiting_failures.iter().any(|failure| {
-        failure.workflow == repair.workflow && failure.jobs.iter().any(|job| job.job == repair.job)
+        workflow_matches_repair(
+            &repair.workflow_key,
+            &repair.workflow,
+            failure.identity(),
+            &failure.workflow,
+        ) && failure.jobs.iter().any(|job| job.job == repair.job)
     })
 }
 
 fn repair_is_superseded_by_failures(repair: &OpenRepair, active_failures: &[Failure]) -> bool {
     if let Some((failure, job)) = active_failures.iter().find_map(|failure| {
-        (failure.workflow == repair.workflow)
-            .then(|| failure.jobs.iter().find(|job| job.job == repair.job))
-            .flatten()
-            .map(|job| (failure, job))
+        workflow_matches_repair(
+            &repair.workflow_key,
+            &repair.workflow,
+            failure.identity(),
+            &failure.workflow,
+        )
+        .then(|| failure.jobs.iter().find(|job| job.job == repair.job))
+        .flatten()
+        .map(|job| (failure, job))
     }) {
         return is_repair_superseded(repair, failure, job);
     }
     active_failures
         .iter()
-        .filter(|failure| failure.workflow == repair.workflow)
+        .filter(|failure| {
+            workflow_matches_repair(
+                &repair.workflow_key,
+                &repair.workflow,
+                failure.identity(),
+                &failure.workflow,
+            )
+        })
         .max_by_key(|failure| failure.run)
         .is_some_and(|failure| {
             repair.thread_state == RepairThreadState::Landed
@@ -1208,7 +1404,13 @@ fn is_repair_superseded(repair: &OpenRepair, failure: &Failure, job: &FailedJob)
 }
 
 fn repair_covers_job(repair: &OpenRepair, failure: &Failure, job: &FailedJob) -> bool {
-    if repair.workflow != failure.workflow || repair.job != job.job {
+    if !workflow_matches_repair(
+        &repair.workflow_key,
+        &repair.workflow,
+        failure.identity(),
+        &failure.workflow,
+    ) || repair.job != job.job
+    {
         return false;
     }
     if is_repair_superseded(repair, failure, job) {
@@ -1473,6 +1675,7 @@ pub fn evaluate_rosen_post_land(snapshot: &RosenBaseSnapshot) -> (JobVerdict, Ba
 
 fn rosen_failure_to_ci(job_name: &str, entry: &RosenPostLandFailure) -> Failure {
     Failure {
+        workflow_key: ROSEN_BASE_WORKFLOW.to_owned(),
         workflow: ROSEN_BASE_WORKFLOW.to_owned(),
         run: entry.session,
         commit: entry.commit.clone(),
@@ -1500,6 +1703,7 @@ fn record_rosen_resolved_jobs(
             let job = rosen_failure_job_name(Some(&platform.display_name), "test");
             if !active_jobs.contains_key(&job) {
                 verdict.resolved_jobs.push(ResolvedJob {
+                    workflow_key: ROSEN_BASE_WORKFLOW.to_owned(),
                     workflow: ROSEN_BASE_WORKFLOW.to_owned(),
                     job,
                     commit: green.clone(),
@@ -1515,6 +1719,7 @@ fn record_rosen_resolved_jobs(
             let job = rosen_failure_job_name(Some(&platform.display_name), "build");
             if !active_jobs.contains_key(&job) {
                 verdict.resolved_jobs.push(ResolvedJob {
+                    workflow_key: ROSEN_BASE_WORKFLOW.to_owned(),
                     workflow: ROSEN_BASE_WORKFLOW.to_owned(),
                     job,
                     commit: built.clone(),
@@ -1529,6 +1734,7 @@ fn record_rosen_resolved_jobs(
     {
         verdict.passed.push(ROSEN_BASE_WORKFLOW.to_owned());
         verdict.passed_workflows.push(PassedWorkflow {
+            workflow_key: ROSEN_BASE_WORKFLOW.to_owned(),
             workflow: ROSEN_BASE_WORKFLOW.to_owned(),
             commit,
             run: 0,
@@ -2142,6 +2348,7 @@ mod tests {
 
     fn run(workflow: &str, run: u64, state: RunState) -> BaseRun {
         BaseRun {
+            workflow_key: workflow.into(),
             workflow: workflow.into(),
             run,
             commit: format!("{run:040}"),
@@ -2248,6 +2455,7 @@ mod tests {
     fn landed_repair_reopens_when_failure_is_at_or_after_its_land() {
         let landed_commit = format!("{:040}", 20);
         let original = OpenRepair {
+            workflow_key: "Build and lint".into(),
             workflow: "Build and lint".into(),
             job: "clippy".into(),
             commit: format!("{:040}", 10),
@@ -2570,6 +2778,7 @@ test collapse_link::collapse_link_and_unlink_round_trip_with_live_server has bee
             ..run("CI", 101, RunState::Running)
         };
         let open_macos = OpenRepair {
+            workflow_key: "CI".into(),
             workflow: "CI".into(),
             job: macos.into(),
             commit: "6351d7bd81110000000000000000000000000000".into(),
@@ -2615,6 +2824,7 @@ test collapse_link::collapse_link_and_unlink_round_trip_with_live_server has bee
         assert_eq!(
             resolved_plan.resolved,
             vec![ResolvedJob {
+                workflow_key: "CI".into(),
                 workflow: "CI".into(),
                 job: macos.into(),
                 commit: run_b.commit.clone(),
@@ -3039,5 +3249,102 @@ test collapse_link::collapse_link_and_unlink_round_trip_with_live_server has bee
         assert_eq!(actions_plan.start[0].run, 77);
         assert_eq!(actions_plan.start[0].jobs.len(), 1);
         assert_eq!(actions_plan.start[0].jobs[0].job, "macOS tests");
+    }
+
+    // Risk (#653): two distinct GitHub Actions workflow files can both be named `CI`. A
+    // newer green docs workflow must neither hide a red macOS workflow on the first poll
+    // nor close/resolve the macOS repair on a later poll, while both keep display name `CI`.
+    #[test]
+    fn same_name_workflows_stay_independent_in_verdict_and_repairs() {
+        let macos_key = actions_workflow_key(Some(11), Some(".github/workflows/macos.yml"), "CI");
+        let docs_key = actions_workflow_key(Some(12), Some(".github/workflows/docs.yml"), "CI");
+        assert_eq!(macos_key, "workflow:11");
+        assert_eq!(docs_key, "workflow:12");
+
+        let failed_macos = BaseRun {
+            workflow_key: macos_key.clone(),
+            ..run("CI", 101, RunState::Failed)
+        };
+        let passed_docs = BaseRun {
+            workflow_key: docs_key.clone(),
+            ..run("CI", 102, RunState::Passed)
+        };
+
+        // 1. Classic verdict and runs_to_inspect keep both workflows independent.
+        let combined = [failed_macos.clone(), passed_docs.clone()];
+        let summary = verdict(&combined);
+        assert_eq!(summary.failed, vec![failed_macos.clone()]);
+        assert_eq!(summary.passed, vec![docs_key.clone()]);
+        assert_eq!(runs_to_inspect(&combined, 5), vec![101]);
+
+        // 2. Per-job verdict preserves the red macOS failure and display name `CI`.
+        let mut jobs = BTreeMap::new();
+        jobs.insert(101, vec![RunJob::Failed(failed_job("test"))]);
+        jobs.insert(102, vec![RunJob::Passed("test".into())]);
+        let job_verdict = evaluate_jobs(&combined, &jobs);
+        assert_eq!(job_verdict.active_failures.len(), 1);
+        assert_eq!(job_verdict.active_failures[0].workflow_key, macos_key);
+        assert_eq!(job_verdict.active_failures[0].workflow, "CI");
+        assert_eq!(job_verdict.active_failures[0].run, 101);
+        assert_eq!(job_verdict.passed, vec![docs_key.clone()]);
+        let ci_view = view_for_verdict(&job_verdict);
+        assert_eq!(ci_view.state, BaseCiState::Failed);
+        assert_eq!(ci_view.failing, vec!["CI · test"]);
+
+        // 3. First poll starts a repair; second poll with the green docs workflow (even with
+        // an identically named `test` job) neither closes nor resolves the macOS repair.
+        let first_plan = plan_for_verdict(&[], &job_verdict);
+        assert_eq!(first_plan.start.len(), 1);
+        assert_eq!(first_plan.start[0].workflow_key, macos_key);
+        assert_eq!(first_plan.start[0].workflow, "CI");
+
+        let open_macos = [OpenRepair {
+            workflow_key: macos_key.clone(),
+            workflow: "CI".into(),
+            job: "test".into(),
+            commit: failed_macos.commit.clone(),
+            run: 101,
+            thread: 7,
+            thread_state: RepairThreadState::Active,
+            ..OpenRepair::default()
+        }];
+        let second_plan = plan_for_verdict(&open_macos, &job_verdict);
+        assert!(second_plan.closed.is_empty());
+        assert!(second_plan.resolved.is_empty());
+        assert!(second_plan.start.is_empty());
+
+        // 4. Only a green run of workflow 11 closes the macOS repair (even if renamed).
+        let passed_macos = BaseRun {
+            workflow_key: macos_key.clone(),
+            ..run("macOS CI", 103, RunState::Passed)
+        };
+        let green_verdict = evaluate_jobs(&[failed_macos, passed_docs, passed_macos], &jobs);
+        let green_plan = plan_for_verdict(&open_macos, &green_verdict);
+        assert_eq!(green_plan.closed, vec![macos_key.clone()]);
+        assert_eq!(view_for_verdict(&green_verdict).state, BaseCiState::Green);
+
+        // 5. Cancelled timeout candidate selection also keeps workflows separate.
+        let candidates = cancelled_candidates(&[
+            RunCandidateInput {
+                workflow: &macos_key,
+                run: 101,
+                state: RunState::Undecided,
+                cancelled: true,
+            },
+            RunCandidateInput {
+                workflow: &docs_key,
+                run: 102,
+                state: RunState::Passed,
+                cancelled: false,
+            },
+        ]);
+        assert_eq!(
+            candidates,
+            vec![CancelledCandidate {
+                workflow: macos_key,
+                run: 101,
+                has_newer_workflow_run: false,
+            }]
+        );
     }
 }
