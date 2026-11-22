@@ -47,6 +47,17 @@ pub const fn supports_lazy_tools(provider: Option<Provider>) -> bool {
 }
 
 fn trim_codex_context(launch: &mut AgentLaunch) {
+    merge_codex_config(
+        launch,
+        json!({
+            "skills": { "include_instructions": false },
+            "features": { "apps": false },
+        }),
+        false,
+    );
+}
+
+fn merge_codex_config(launch: &mut AgentLaunch, overrides: Value, replace_invalid: bool) {
     // codex-acp merges CODEX_CONFIG into new and resumed sessions. Keep any settings
     // supplied by the caller and leave the account's own configuration on disk.
     const CONFIG: &str = "CODEX_CONFIG";
@@ -55,17 +66,53 @@ fn trim_codex_context(launch: &mut AgentLaunch) {
         None | Some("") => json!({}),
         Some(text) => match serde_json::from_str::<Value>(text) {
             Ok(value) if value.is_object() => value,
+            _ if replace_invalid => json!({}),
             _ => return,
         },
     };
-    merge_config(
-        &mut config,
-        json!({
-            "skills": { "include_instructions": false },
-            "features": { "apps": false },
-        }),
-    );
+    merge_config(&mut config, overrides);
     launch.set_env(CONFIG, &config.to_string());
+}
+
+/// Session mode ids that enforce read-only execution for providers with native modes (#687).
+pub fn read_only_modes(provider: Option<Provider>) -> &'static [&'static str] {
+    match provider {
+        Some(Provider::Anthropic) => &["default"],
+        Some(Provider::Codex) => &["read-only"],
+        Some(Provider::Antigravity) => &["default"],
+        Some(Provider::KimiCode | Provider::Custom(_)) | None => &[],
+    }
+}
+
+/// Enforces provider-native read-only launch settings for question threads (#687).
+/// Clears bypass modes, switches Codex to `read-only` sandbox/mode, and removes
+/// auto-approve CLI flags so native write/shell tools cannot bypass ACP permission checks.
+pub fn apply_read_only(launch: &mut AgentLaunch, bypass_modes: &mut Vec<String>) {
+    bypass_modes.clear();
+    match launch.concurrency_provider.or(launch.own_config) {
+        Some(Provider::Codex) => {
+            launch.set_env("INITIAL_AGENT_MODE", "read-only");
+            merge_codex_config(
+                launch,
+                json!({
+                    "sandbox_mode": "read-only",
+                    "approval_policy": "on-request",
+                }),
+                true,
+            );
+        }
+        Some(Provider::Antigravity | Provider::Anthropic) => {
+            launch
+                .args
+                .retain(|argument| argument != "--dangerously-skip-permissions");
+        }
+        Some(Provider::KimiCode) => {
+            launch
+                .args
+                .retain(|argument| !matches!(argument.as_str(), "--yolo" | "-y"));
+        }
+        Some(Provider::Custom(_)) | None => {}
+    }
 }
 
 const CODEX_PATH: &str = "CODEX_PATH";

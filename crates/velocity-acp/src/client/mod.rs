@@ -86,7 +86,8 @@ pub use queued_run_tool::{
 };
 pub use queued_runs::{QueuedRunPersistence, QueuedRunStore, enable_queued_runs};
 pub use session::{
-    SessionResume, SessionSetup, StartedSession, answer_permission, session_servers,
+    SessionResume, SessionSetup, StartedSession, answer_permission, answer_read_only_permission,
+    session_servers,
 };
 pub use session_card::SessionCard;
 pub use shared::{SharedServer, install_shared_servers, install_skill_prompt_resolver};
@@ -498,6 +499,9 @@ async fn run_admitted_session(
     events: UnboundedSender<AgentEvent>,
 ) -> Result<(), ClientError> {
     let mut setup = setup;
+    if setup.read_only {
+        crate::providers::apply_read_only(&mut launch, &mut setup.bypass_modes);
+    }
     let effective_provider = launch.concurrency_provider.or(launch.own_config);
     setup.lazy_tools = crate::providers::supports_lazy_tools(effective_provider);
     // Meter availability must never prevent starting an agent.

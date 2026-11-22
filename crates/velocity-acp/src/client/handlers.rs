@@ -14,7 +14,9 @@ use agent_client_protocol::{
     Agent, Client, HandleDispatchFrom, JsonRpcResponse, on_receive_notification, on_receive_request,
 };
 
-use super::{AgentEvent, ClientError, Shared, answer_permission, files};
+use super::{
+    AgentEvent, ClientError, Shared, answer_permission, answer_read_only_permission, files,
+};
 
 pub fn register(
     builder: Builder<Client>,
@@ -46,7 +48,12 @@ fn with_session_handlers(
         .on_receive_request(
             async move |request: RequestPermissionRequest, responder, _connection| {
                 permissions.note_prompt_accepted();
-                responder.respond(answer_permission(&request))
+                let response = if permissions.read_only {
+                    answer_read_only_permission(&request)
+                } else {
+                    answer_permission(&request)
+                };
+                responder.respond(response)
             },
             on_receive_request!(),
         )
@@ -121,6 +128,15 @@ fn with_terminal_handlers(
         .on_receive_request(
             async move |request: CreateTerminalRequest, responder, _connection| {
                 creator.note_prompt_accepted();
+                if creator.read_only {
+                    return respond(
+                        responder,
+                        Err(ClientError::ReadOnly(
+                            "This is a read-only question thread; terminal commands are not permitted."
+                                .into(),
+                        )),
+                    );
+                }
                 respond(responder, creator.terminals.create(request))
             },
             on_receive_request!(),

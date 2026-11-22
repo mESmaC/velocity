@@ -155,7 +155,8 @@ pub fn plan_question_launch(
     );
     thread.role = velocity_core::tool_policy::ThreadRole::Question;
     settings.ensure_new_work(thread.provider)?;
-    let (agent, bypass_modes) = agent_launch(settings, thread.provider)?;
+    let (mut agent, mut bypass_modes) = agent_launch(settings, thread.provider)?;
+    velocity_acp::providers::apply_read_only(&mut agent, &mut bypass_modes);
     Ok(QuestionPlan {
         project: project.id,
         prompt: prompt.to_owned(),

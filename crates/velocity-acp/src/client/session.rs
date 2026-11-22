@@ -12,7 +12,7 @@ use agent_client_protocol::v1::schema::{
     PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigOption, SessionId,
     SessionModeId, SessionModeState, SessionNotification, SessionUpdate, SetSessionModeRequest,
-    SubagentCapabilities,
+    SubagentCapabilities, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::{Agent, Error, ErrorCode};
 use velocity_graph::token_usage::Role;
@@ -176,7 +176,14 @@ impl SessionSetup {
         }
         let mut disallowed = vec!["mcp__computer-use"];
         if self.read_only {
-            disallowed.extend(["Edit", "Write", "NotebookEdit"]);
+            disallowed.extend([
+                "Bash",
+                "Edit",
+                "MultiEdit",
+                "Write",
+                "NotebookEdit",
+                "KillShell",
+            ]);
         }
         let agents_path = self.worktree.join("AGENTS.md");
         let instructions = match tokio::fs::read_to_string(&agents_path).await {
@@ -236,7 +243,7 @@ pub(super) async fn start_session(
     shared: &Shared,
 ) -> Result<SessionId, agent_client_protocol::Error> {
     let initialized = connection
-        .send_request(initialize_request())
+        .send_request(initialize_request_with_write(!shared.read_only))
         .block_task()
         .await?;
     let servers = supported_servers(
@@ -393,6 +400,62 @@ async fn configure(
     }
 }
 
+#[derive(Clone, Copy)]
+enum ModePolicy {
+    Bypass,
+    ReadOnly,
+}
+
+impl ModePolicy {
+    fn strict(self, shared: &Shared, target_modes: &[&str]) -> bool {
+        match self {
+            Self::Bypass => has_provider_bypass(shared),
+            Self::ReadOnly => !target_modes.is_empty(),
+        }
+    }
+
+    fn missing_reason(self) -> &'static str {
+        match self {
+            Self::Bypass => "the agent offers no recognized bypass mode",
+            Self::ReadOnly => "the agent offers no recognized read-only mode",
+        }
+    }
+
+    fn unchanged_reason(self) -> &'static str {
+        match self {
+            Self::Bypass => "the mode change did not enable bypass",
+            Self::ReadOnly => "the mode change did not enable read-only mode",
+        }
+    }
+
+    fn error(self, shared: &Shared, mode: &str, reason: impl std::fmt::Display) -> Error {
+        let requirement = match self {
+            Self::Bypass => "Velocity requires unrestricted access",
+            Self::ReadOnly => "Read-only question threads require read-only access",
+        };
+        let message = format!("The agent reported mode `{mode}`. {requirement} ({reason}).");
+        shared.emit(AgentEvent::Log(message.clone()));
+        Error::new(ErrorCode::INTERNAL_ERROR, message)
+    }
+}
+
+fn session_mode_targets<'a>(
+    setup: &'a SessionSetup,
+    shared: &Shared,
+) -> (ModePolicy, Vec<&'a str>) {
+    if setup.read_only {
+        (
+            ModePolicy::ReadOnly,
+            crate::providers::read_only_modes(shared.provider).to_vec(),
+        )
+    } else {
+        (
+            ModePolicy::Bypass,
+            setup.bypass_modes.iter().map(String::as_str).collect(),
+        )
+    }
+}
+
 async fn select_bypass_mode(
     connection: &ConnectionTo<Agent>,
     session_id: &SessionId,
@@ -401,28 +464,24 @@ async fn select_bypass_mode(
     shared: &Shared,
     options: &mut Vec<SessionConfigOption>,
 ) -> Result<(), agent_client_protocol::Error> {
-    let bypass_ids = &setup.bypass_modes;
-    if bypass_ids.is_empty() {
+    let (policy, targets) = session_mode_targets(setup, shared);
+    if targets.is_empty() {
         return Ok(());
     }
     if let Some((id, mode)) = config::mode_option(options) {
         let current = mode.current_value.0.as_ref();
-        if is_bypass(bypass_ids, current) {
+        if is_target_mode(&targets, current) {
             return Ok(());
         }
         let Some((value, _)) = config::select_values(&mode.options)
             .into_iter()
-            .find(|(value, _)| is_bypass(bypass_ids, value))
+            .find(|(value, _)| is_target_mode(&targets, value))
         else {
-            if !has_provider_bypass(shared) {
-                return select_legacy_bypass(connection, session_id, modes, bypass_ids, shared)
+            if !policy.strict(shared, &targets) {
+                return select_legacy_mode(connection, session_id, modes, &targets, policy, shared)
                     .await;
             }
-            return Err(restricted_mode(
-                shared,
-                current,
-                "the agent offers no recognized bypass mode",
-            ));
+            return Err(policy.error(shared, current, policy.missing_reason()));
         };
         // Unlike session/set_mode, this response reports the effective mode even if
         // the agent accepted the request without changing its configuration.
@@ -433,48 +492,41 @@ async fn select_bypass_mode(
             ConfigValue::Select(value),
         )
         .await
-        .map_err(|error| restricted_mode(shared, current, error))?;
+        .map_err(|error| policy.error(shared, current, error))?;
         let Some((_, effective)) = config::mode_option(&updated) else {
-            return Err(restricted_mode(
-                shared,
-                current,
-                "the agent did not confirm the mode change",
-            ));
+            return Err(policy.error(shared, current, "the agent did not confirm the mode change"));
         };
-        if !is_bypass(bypass_ids, &effective.current_value.0) {
-            return Err(restricted_mode(
+        if !is_target_mode(&targets, &effective.current_value.0) {
+            return Err(policy.error(
                 shared,
                 &effective.current_value.0,
-                "the mode change did not enable bypass",
+                policy.unchanged_reason(),
             ));
         }
         *options = updated;
         return Ok(());
     }
-    select_legacy_bypass(connection, session_id, modes, bypass_ids, shared).await
+    select_legacy_mode(connection, session_id, modes, &targets, policy, shared).await
 }
 
-async fn select_legacy_bypass(
+async fn select_legacy_mode(
     connection: &ConnectionTo<Agent>,
     session_id: &SessionId,
     modes: Option<&SessionModeState>,
-    bypass_ids: &[String],
+    target_modes: &[&str],
+    policy: ModePolicy,
     shared: &Shared,
 ) -> Result<(), Error> {
     let Some(modes) = modes else { return Ok(()) };
     let current = modes.current_mode_id.0.as_ref();
-    if is_bypass(bypass_ids, current) {
+    if is_target_mode(target_modes, current) {
         return Ok(());
     }
-    let Some(mode) = bypass_mode(modes, bypass_ids) else {
-        if !has_provider_bypass(shared) {
+    let Some(mode) = matching_mode(modes, target_modes) else {
+        if !policy.strict(shared, target_modes) {
             return Ok(());
         }
-        return Err(restricted_mode(
-            shared,
-            current,
-            "the agent offers no recognized bypass mode",
-        ));
+        return Err(policy.error(shared, current, policy.missing_reason()));
     };
     *shared
         .mode_selection
@@ -493,21 +545,16 @@ async fn select_legacy_bypass(
         .unwrap_or_else(PoisonError::into_inner)
         .take()
         .and_then(|selection| selection.reported);
-    result
-        .map_err(|error| restricted_mode(shared, reported.as_deref().unwrap_or(current), error))?;
+    result.map_err(|error| policy.error(shared, reported.as_deref().unwrap_or(current), error))?;
     match reported {
-        Some(mode) if !is_bypass(bypass_ids, &mode) => Err(restricted_mode(
-            shared,
-            &mode,
-            "the mode change did not enable bypass",
-        )),
-        // The legacy response has no mode field. Codex must confirm a change from a
-        // restricted mode since an empty success can leave its sandbox and reviewer active.
-        None if shared.provider == Some(Provider::Codex) => Err(restricted_mode(
-            shared,
-            current,
-            "the agent did not confirm the mode change",
-        )),
+        Some(mode) if !is_target_mode(target_modes, &mode) => {
+            Err(policy.error(shared, &mode, policy.unchanged_reason()))
+        }
+        // The legacy response has no mode field. Codex must confirm a change since an
+        // empty success can leave the previous sandbox or full-access mode active.
+        None if shared.provider == Some(Provider::Codex) => {
+            Err(policy.error(shared, current, "the agent did not confirm the mode change"))
+        }
         _ => Ok(()),
     }
 }
@@ -538,8 +585,8 @@ pub(super) fn record_mode(shared: &Shared, notification: &SessionNotification) {
     }
 }
 
-fn is_bypass(bypass_ids: &[String], mode: &str) -> bool {
-    bypass_ids.iter().any(|id| id == mode)
+fn is_target_mode(target_modes: &[&str], mode: &str) -> bool {
+    target_modes.contains(&mode)
 }
 
 fn has_provider_bypass(shared: &Shared) -> bool {
@@ -547,14 +594,6 @@ fn has_provider_bypass(shared: &Shared) -> bool {
     shared
         .provider
         .is_some_and(|provider| !matches!(provider, Provider::Custom(_)))
-}
-
-fn restricted_mode(shared: &Shared, mode: &str, reason: impl std::fmt::Display) -> Error {
-    let message = format!(
-        "The agent reported mode `{mode}`. Velocity requires unrestricted access ({reason})."
-    );
-    shared.emit(AgentEvent::Log(message.clone()));
-    Error::new(ErrorCode::INTERNAL_ERROR, message)
 }
 
 pub(super) fn initialize_request() -> InitializeRequest {
@@ -569,7 +608,7 @@ fn initialize_request_with_write(allow_write: bool) -> InitializeRequest {
         .client_capabilities(
             ClientCapabilities::new()
                 .fs(files)
-                .terminal(true)
+                .terminal(allow_write)
                 // Terminal sign-in methods are run by Velocity (F15 Sign in).
                 .auth(AuthCapabilities::new().terminal(true)),
         )
@@ -690,13 +729,13 @@ pub(super) fn server_name(server: &McpServer) -> Option<&str> {
     }
 }
 
-/// The mode `session/set_mode` selects: the agent's bypass mode, unless it is already on.
-fn bypass_mode(state: &SessionModeState, bypass_ids: &[String]) -> Option<SessionModeId> {
+/// The mode `session/set_mode` selects: the first matching target mode, unless active.
+fn matching_mode(state: &SessionModeState, target_modes: &[&str]) -> Option<SessionModeId> {
     let kinds: Vec<SessionModeKind> = state
         .available_modes
         .iter()
         .map(|mode| {
-            if is_bypass(bypass_ids, &mode.id.0) {
+            if is_target_mode(target_modes, &mode.id.0) {
                 SessionModeKind::Bypass
             } else {
                 SessionModeKind::Other
@@ -729,6 +768,111 @@ pub fn answer_permission(request: &RequestPermissionRequest) -> RequestPermissio
         None => RequestPermissionOutcome::Cancelled,
     };
     RequestPermissionResponse::new(outcome)
+}
+
+/// Answers `session/request_permission` on read-only question threads (#687): allows
+/// repository reads, search/fetch/think and Velocity's read-only MCP tools, and rejects
+/// file writes, shell execution, mode switches and unrecognized tools.
+pub fn answer_read_only_permission(
+    request: &RequestPermissionRequest,
+) -> RequestPermissionResponse {
+    let kinds: Vec<PermissionKind> = request
+        .options
+        .iter()
+        .map(|option| permission_kind(option.kind))
+        .collect();
+    let allowed = is_read_only_tool_call(&request.tool_call);
+    let chosen = choose_read_only_permission(&kinds, allowed);
+    let outcome = match chosen.and_then(|index| request.options.get(index)) {
+        Some(option) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+            option.option_id.clone(),
+        )),
+        None => RequestPermissionOutcome::Cancelled,
+    };
+    RequestPermissionResponse::new(outcome)
+}
+
+fn choose_read_only_permission(options: &[PermissionKind], allowed: bool) -> Option<usize> {
+    let (preferred, fallback) = if allowed {
+        (PermissionKind::AllowOnce, PermissionKind::AllowAlways)
+    } else {
+        (PermissionKind::RejectOnce, PermissionKind::RejectAlways)
+    };
+    options
+        .iter()
+        .position(|kind| *kind == preferred)
+        .or_else(|| options.iter().position(|kind| *kind == fallback))
+}
+
+fn is_read_only_tool_call(tool_call: &ToolCallUpdate) -> bool {
+    match tool_call.fields.kind {
+        Some(ToolKind::Read | ToolKind::Search | ToolKind::Think | ToolKind::Fetch) => true,
+        Some(
+            ToolKind::Edit
+            | ToolKind::Delete
+            | ToolKind::Move
+            | ToolKind::Execute
+            | ToolKind::SwitchMode,
+        ) => false,
+        None | Some(ToolKind::Other) | Some(_) => {
+            read_only_tool_name(tool_call).is_some_and(is_allowed_read_only_tool)
+        }
+    }
+}
+
+fn read_only_tool_name(tool_call: &ToolCallUpdate) -> Option<&str> {
+    tool_call
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("claudeCode"))
+        .and_then(|claude| claude.get("toolName"))
+        .and_then(serde_json::Value::as_str)
+        .or(tool_call.fields.title.as_deref())
+}
+
+fn is_allowed_read_only_tool(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase();
+    if let Some((server, tool)) = split_mcp_tool_name(&normalized) {
+        return matches!(
+            server,
+            "airc" | "velocity-graph" | "velocity_graph" | "rosen" | "collapse"
+        ) && is_tool_identifier(tool);
+    }
+    matches!(
+        normalized.as_str(),
+        "read"
+            | "read_file"
+            | "read_text_file"
+            | "view_file"
+            | "view_file_outline"
+            | "view_code_item"
+            | "glob"
+            | "grep"
+            | "grep_search"
+            | "find_by_name"
+            | "list_dir"
+            | "ls"
+            | "web_search"
+            | "web_fetch"
+            | "websearch"
+            | "webfetch"
+            | "todo_read"
+            | "todoread"
+    )
+}
+
+fn split_mcp_tool_name(name: &str) -> Option<(&str, &str)> {
+    if let Some(rest) = name.strip_prefix("mcp__") {
+        return rest.split_once("__");
+    }
+    name.split_once('/').or_else(|| name.split_once(':'))
+}
+
+fn is_tool_identifier(tool: &str) -> bool {
+    !tool.is_empty()
+        && tool
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
 fn permission_kind(kind: PermissionOptionKind) -> PermissionKind {
@@ -844,5 +988,174 @@ mod tests {
                 .is_none()
         );
         Ok(())
+    }
+
+    #[test]
+    fn read_only_initialize_omits_write_and_terminal_capabilities() {
+        // Risk (#687): read-only question threads must retain repository reads while
+        // omitting both fs.writeTextFile and unrestricted ACP terminal capabilities.
+        let read_only = initialize_request_with_write(false);
+        assert!(read_only.client_capabilities.fs.read_text_file);
+        assert!(!read_only.client_capabilities.fs.write_text_file);
+        assert!(!read_only.client_capabilities.terminal);
+        assert!(read_only.client_capabilities.auth.terminal);
+
+        let writable = initialize_request_with_write(true);
+        assert!(writable.client_capabilities.fs.read_text_file);
+        assert!(writable.client_capabilities.fs.write_text_file);
+        assert!(writable.client_capabilities.terminal);
+    }
+
+    #[tokio::test]
+    async fn claude_read_only_disallows_shell_and_file_write_tools() -> std::io::Result<()> {
+        // Risk (#687): Claude Code's native Bash and edit/write tools must be disallowed on
+        // read-only question sessions so the agent cannot mutate the project repository.
+        let dir = TempWorktree::new()?;
+        let mut setup = SessionSetup::new(dir.0.clone(), Vec::new());
+        setup.read_only = true;
+        setup.load_claude_project_instructions().await?;
+        let meta = setup
+            .session_metadata
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("missing Claude session metadata"))?;
+        let disallowed = meta["claudeCode"]["options"]["disallowedTools"]
+            .as_array()
+            .ok_or_else(|| std::io::Error::other("missing disallowedTools array"))?;
+        for tool in [
+            "Bash",
+            "Edit",
+            "MultiEdit",
+            "Write",
+            "NotebookEdit",
+            "KillShell",
+        ] {
+            assert!(
+                disallowed.iter().any(|entry| entry == tool),
+                "expected `{tool}` in read-only disallowedTools"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn read_only_permissions_allow_reads_and_reject_writes_or_commands() {
+        // Risk (#687): read-only question sessions must approve repository reads and
+        // Velocity's role-filtered MCP tools while rejecting native writes, shell execution,
+        // mode switches, and unknown tools.
+        use agent_client_protocol::v1::schema::{
+            PermissionOption, ToolCallId, ToolCallUpdateFields,
+        };
+
+        let options = || {
+            vec![
+                PermissionOption::new("allow-once", "Allow once", PermissionOptionKind::AllowOnce),
+                PermissionOption::new(
+                    "allow-always",
+                    "Allow always",
+                    PermissionOptionKind::AllowAlways,
+                ),
+                PermissionOption::new(
+                    "reject-once",
+                    "Reject once",
+                    PermissionOptionKind::RejectOnce,
+                ),
+            ]
+        };
+        let make_request = |kind: Option<ToolKind>, title: Option<&str>| {
+            let mut fields = ToolCallUpdateFields::new();
+            if let Some(kind) = kind {
+                fields = fields.kind(kind);
+            }
+            if let Some(title) = title {
+                fields = fields.title(title.to_owned());
+            }
+            RequestPermissionRequest::new(
+                SessionId::new("session-1"),
+                ToolCallUpdate::new(ToolCallId::new("call-1"), fields),
+                options(),
+            )
+        };
+        let selected_id = |response: RequestPermissionResponse| match response.outcome {
+            RequestPermissionOutcome::Selected(selected) => Some(selected.option_id.0.to_string()),
+            _ => None,
+        };
+
+        assert_eq!(
+            selected_id(answer_read_only_permission(&make_request(
+                Some(ToolKind::Read),
+                Some("Read src/lib.rs"),
+            ))),
+            Some("allow-once".to_owned())
+        );
+        assert_eq!(
+            selected_id(answer_read_only_permission(&make_request(
+                Some(ToolKind::Search),
+                Some("Grep"),
+            ))),
+            Some("allow-once".to_owned())
+        );
+        assert_eq!(
+            selected_id(answer_read_only_permission(&make_request(
+                Some(ToolKind::Other),
+                Some("mcp__velocity-graph__graph_find"),
+            ))),
+            Some("allow-once".to_owned())
+        );
+        assert_eq!(
+            selected_id(answer_read_only_permission(&make_request(
+                Some(ToolKind::Execute),
+                Some("Bash"),
+            ))),
+            Some("reject-once".to_owned())
+        );
+        assert_eq!(
+            selected_id(answer_read_only_permission(&make_request(
+                Some(ToolKind::Edit),
+                Some("Edit"),
+            ))),
+            Some("reject-once".to_owned())
+        );
+        assert_eq!(
+            selected_id(answer_read_only_permission(&make_request(
+                Some(ToolKind::SwitchMode),
+                Some("Switch mode"),
+            ))),
+            Some("reject-once".to_owned())
+        );
+        assert_eq!(
+            selected_id(answer_read_only_permission(&make_request(
+                Some(ToolKind::Other),
+                Some("mcp__custom__delete_everything"),
+            ))),
+            Some("reject-once".to_owned())
+        );
+    }
+
+    #[test]
+    fn provider_read_only_launch_enforces_codex_and_antigravity_restrictions() {
+        // Risk (#687): Codex question threads must not start in `agent-full-access`, and
+        // Antigravity question threads must not pass `--dangerously-skip-permissions`.
+        let mut codex = crate::provider_agent(Provider::Codex)
+            .unwrap_or_else(|| unreachable!("Codex is built-in"));
+        crate::providers::apply_read_only(&mut codex.launch, &mut codex.bypass_modes);
+        assert!(codex.bypass_modes.is_empty());
+        assert_eq!(
+            codex.launch.env_value("INITIAL_AGENT_MODE"),
+            Some("read-only")
+        );
+        let config_raw = codex.launch.env_value("CODEX_CONFIG").unwrap_or_default();
+        assert!(config_raw.contains(r#""sandbox_mode":"read-only""#));
+        assert!(config_raw.contains(r#""approval_policy":"on-request""#));
+
+        let mut agy = crate::provider_agent(Provider::Antigravity)
+            .unwrap_or_else(|| unreachable!("Antigravity is built-in"));
+        crate::providers::apply_read_only(&mut agy.launch, &mut agy.bypass_modes);
+        assert!(agy.bypass_modes.is_empty());
+        assert!(
+            !agy.launch
+                .args
+                .iter()
+                .any(|arg| arg == "--dangerously-skip-permissions")
+        );
     }
 }
