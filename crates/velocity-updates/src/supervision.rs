@@ -73,6 +73,16 @@ impl Channel {
 /// MCP entry points must be dispatched before this, so an MCP server never opens a window.
 /// `false` means this is the supervised child, which should start the application.
 pub fn supervise() -> io::Result<bool> {
+    supervise_with_local_rollback(None, None)
+}
+
+/// Runs the supervisor like [`supervise`], additionally rolling back to the previous local
+/// build and marking the new commit as failed when a freshly restarted local build exits
+/// unexpectedly during startup or its health window (#609).
+pub fn supervise_with_local_rollback(
+    app_data: Option<&Path>,
+    running_commit: Option<&str>,
+) -> io::Result<bool> {
     if child_target()?.is_some() {
         return Ok(false);
     }
@@ -104,6 +114,13 @@ pub fn supervise() -> io::Result<bool> {
             Ok(exit) => (exit.unexpected_reason(), exit.clean_exit_without_intent()),
             Err(error) => (format!("Could not run Velocity: {error}"), false),
         };
+        if !cfg!(debug_assertions)
+            && let Some(dir) = app_data
+            && maybe_rollback_pending_restart(&executable, dir, running_commit, &reason)
+        {
+            let _ = remove_file_if_present(&notice_path);
+            return Ok(true);
+        }
         first_attempt = false;
         if started.elapsed() >= STABLE_RUN {
             failures = 0;
@@ -132,6 +149,75 @@ pub fn supervise() -> io::Result<bool> {
         }
         std::thread::sleep(delay);
     }
+}
+
+fn maybe_rollback_pending_restart(
+    executable: &Path,
+    app_data: &Path,
+    running_commit: Option<&str>,
+    reason: &str,
+) -> bool {
+    match rollback_pending_restart_with(
+        executable,
+        app_data,
+        running_commit,
+        reason,
+        super::portable::relaunch_replaced,
+    ) {
+        Ok(rolled_back) => rolled_back,
+        Err(error) => {
+            report(&format!(
+                "Could not roll back failed local-build restart: {error}"
+            ));
+            false
+        }
+    }
+}
+
+fn rollback_pending_restart_with<F>(
+    executable: &Path,
+    app_data: &Path,
+    running_commit: Option<&str>,
+    reason: &str,
+    relaunch_fn: F,
+) -> Result<bool, String>
+where
+    F: FnOnce(&Path, &Path) -> io::Result<()>,
+{
+    let builds = super::local_build::LocalBuilds::new(app_data);
+    let Some(pending) = builds.pending_restart() else {
+        return Ok(false);
+    };
+    if !pending.matches_running(running_commit)
+        || pending.is_stale(super::local_build::unix_seconds())
+    {
+        return Ok(false);
+    }
+    let bytes = builds
+        .read_rollback_executable(&pending)
+        .map_err(|error| error.to_string())?;
+    let failure = super::local_build::FailedBuild {
+        commit: pending.commit.clone(),
+        reason: format!("Restarted build failed during startup: {reason}"),
+    };
+    builds
+        .mark_build_failed(&failure)
+        .map_err(|error| error.to_string())?;
+    builds.clear_pending_restart();
+    let _ = super::process_tree::stop_before_swap(executable, Duration::from_secs(5));
+    let previous =
+        super::portable::replace_running(executable, &bytes).map_err(|error| error.to_string())?;
+    if let Err(error) = relaunch_fn(executable, &previous) {
+        let _ = super::portable::restore_previous(executable, &previous);
+        return Err(format!(
+            "Could not launch rolled-back previous executable: {error}"
+        ));
+    }
+    report(&format!(
+        "Rolled back failed local build {} to previous build: {reason}",
+        super::local_build::short_commit(&pending.commit)
+    ));
+    Ok(true)
 }
 
 fn run_child(
@@ -865,6 +951,61 @@ mod tests {
         assert!(!exit.socket_intent);
         assert!(exit.marker_intent);
         assert!(!marker_path.exists());
+        Ok(())
+    }
+
+    // Risk (#609): if a newly restarted local build crashes during startup, the supervisor
+    // must restore the previous build's executable, mark the new commit failed in
+    // failed.json, clear pending-restart.json, and relaunch the previous build.
+    #[test]
+    fn startup_crash_rolls_back_pending_local_build_and_marks_commit_failed()
+    -> Result<(), Box<dyn Error>> {
+        let scratch = std::env::temp_dir().join(format!(
+            "velocity-supervision-rollback-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch)?;
+        let app_data = scratch.join("app-data");
+        let executable = scratch.join("velocity-app.exe");
+        std::fs::write(&executable, b"previous-good-binary")?;
+
+        let builds = super::super::local_build::LocalBuilds::new(&app_data);
+        let bad_commit = "786d72e".to_owned() + &"a".repeat(33);
+        let version = super::super::local_build::local_version("0.1.0-beta.22", &bad_commit);
+        let folder = builds.prepare(&bad_commit)?;
+        std::fs::write(
+            folder.join(format!("Velocity_{version}_x64-portable.exe")),
+            b"crashing-new-binary",
+        )?;
+        let _ = builds.finish(&bad_commit, &version)?;
+        let _ = builds.arm_pending_restart(&bad_commit, Some("b9169e5"), Some(&executable))?;
+        // Simulate the swap into the crashing new build.
+        std::fs::write(&executable, b"crashing-new-binary")?;
+
+        let mut relaunched = false;
+        let rolled_back = rollback_pending_restart_with(
+            &executable,
+            &app_data,
+            Some(&bad_commit),
+            "Unexpected exit (exit code: 101)",
+            |exe, _prev| {
+                assert_eq!(std::fs::read(exe)?, b"previous-good-binary");
+                relaunched = true;
+                Ok(())
+            },
+        )
+        .map_err(io::Error::other)?;
+        assert!(rolled_back);
+        assert!(relaunched);
+        assert_eq!(std::fs::read(&executable)?, b"previous-good-binary");
+        assert!(builds.pending_restart().is_none());
+        assert!(builds.list().is_empty());
+        let failure = builds.failure().ok_or("failed.json was not recorded")?;
+        assert_eq!(failure.commit, bad_commit);
+        assert!(failure.reason.contains("exit code: 101"));
+
+        let _ = std::fs::remove_dir_all(&scratch);
         Ok(())
     }
 }

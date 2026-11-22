@@ -220,6 +220,12 @@ impl ManagedDeployRunner {
             .get(&(step.to_owned(), commit.to_owned()))
             .cloned()
     }
+
+    fn has_active_work(&self) -> bool {
+        self.lock_projects().values().any(|queue| {
+            queue.worker_active || queue.running.is_some() || !queue.pending.is_empty()
+        })
+    }
 }
 
 fn prune_older_step_retries(queue: &mut ProjectDeployQueue, step: &str, commit: &str) {
@@ -265,6 +271,13 @@ fn unix_millis() -> u64 {
 
 pub fn initialize(application: &AppHandle) {
     application.manage(ManagedDeployRunner::default());
+}
+
+/// Whether any project currently has a deploy step running or queued (#609).
+pub(crate) fn is_busy(application: &AppHandle) -> bool {
+    application
+        .try_state::<ManagedDeployRunner>()
+        .is_some_and(|runner| runner.has_active_work())
 }
 
 /// Handles a live `deploy_due` event from Rosen's event stream (#594, #606).

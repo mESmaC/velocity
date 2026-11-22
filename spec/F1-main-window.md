@@ -42,7 +42,10 @@ There are two views of the same work, switched from the title bar or with `B`:
     Both wait while a build is running.
   - In Velocity's own project, a `blocked_by` issue whose land touched agent tooling (MCP servers, tool policy, AIRC tools, graph tools or MCP registration) counts as satisfied only once the running copy contains that land (#601).
     Until then the issue shows "waiting for restart into `<commit>`" and is not dispatched, and the title bar shows "N issues waiting for restart" next to **Restart into `<commit>`**.
-    With **Auto-restart into local builds** enabled (default on, Settings → Agents), Velocity restarts into the newest local build by itself when it contains every tooling land a waiting issue needs, or when no agent turn has been running for 2 minutes.
+    With **Auto-restart into local builds** enabled (default on, Settings → Agents), Velocity restarts into the newest local build by itself when it contains every tooling land a waiting issue needs, or at the first idle check with no agent turn, land, landing check, deploy step or local build in progress (#601, #609).
+    While any turn, land, deploy or local build is in progress, idle auto-restart holds off and re-checks once a minute, logging `[local build] Auto-restarting into <commit> (idle)` when it restarts (#609).
+    Before restarting forward into a local build, Velocity records a rollback guard (keeping the previous kept build or a copy of the running executable) and verifies startup and renderer heartbeats for 3 minutes (#609).
+    If the restarted copy crashes during startup or fails its startup or heartbeat checks within those 3 minutes, Velocity restarts into the previous build and marks the new commit as failed, shown like any failed build and skipped until a newer green commit lands (#609).
     Every `RestartFailed`, `Refuse` and `ConfirmRestart` outcome is logged with its reason under `[local build]`, and a failed auto-restart is retried after the next local build or after 10 minutes (#605).
   - A failed build shows "Build of `<commit>` failed" with the reason in its tooltip.
     That commit is not built again; the next green commit is.

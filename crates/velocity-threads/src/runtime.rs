@@ -774,6 +774,17 @@ impl ThreadRuntimes {
         !self.is_at_step_boundary(key)
     }
 
+    /// Whether any thread currently has a turn, setup, workspace update, stop, or queued
+    /// prompt in progress (#609).
+    pub fn has_any_turn_in_progress(&self) -> bool {
+        !self.stopping.is_empty()
+            || !self.workspace_updates.is_empty()
+            || self
+                .threads
+                .keys()
+                .any(|&key| !self.is_at_step_boundary(key))
+    }
+
     /// Reserve the boundary before asynchronous I/O, so a new prompt cannot start an
     /// editing tool while Rosen is writing files. No running turn is interrupted.
     pub fn begin_workspace_update(&mut self, key: ThreadKey) -> bool {

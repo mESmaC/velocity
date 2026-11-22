@@ -35,6 +35,14 @@ pub fn is_verifying(application: &AppHandle, project: u32) -> bool {
         .is_some_and(|runner| runner.is_verifying(project))
 }
 
+/// Whether any project currently has a land, bindings check, or post-land verification
+/// check in progress (#609).
+pub fn is_busy(application: &AppHandle) -> bool {
+    application
+        .try_state::<RosenLanding>()
+        .is_some_and(|runner| runner.has_active_work())
+}
+
 /// Requests an immediate integration build for `project` (bypassing the batch wait),
 /// optionally targeting `commit` so the release gate can pass (#521).
 pub fn request_integration(application: &AppHandle, project: u32, commit: Option<String>) {

@@ -73,6 +73,15 @@ struct Verify<Host> {
 }
 
 impl RosenLanding {
+    /// Whether any project currently has a land, bindings check, or post-land verification
+    /// check in progress (#609).
+    pub fn has_active_work(&self) -> bool {
+        let state = self.lock();
+        !state.landing_projects.is_empty()
+            || !state.checking_bindings.is_empty()
+            || !state.verifying_projects.is_empty()
+    }
+
     /// Verification and integration run off the tick so dispatch can keep going.
     pub(super) fn verify_landed<Host: LandingHost>(
         &self,

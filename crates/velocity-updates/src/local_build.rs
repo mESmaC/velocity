@@ -11,6 +11,64 @@ use serde::{Deserialize, Serialize};
 
 /// How long auto-restart waits before retrying a commit whose restart failed (#605).
 pub const AUTO_RESTART_RETRY_DELAY: Duration = Duration::from_secs(10 * 60);
+/// How long a restarted local build must pass startup and renderer heartbeat checks before
+/// its rollback guard is cleared (#609).
+pub const POST_RESTART_HEALTH_WINDOW: Duration = Duration::from_secs(3 * 60);
+/// Maximum wall-clock age for a persisted `pending-restart.json` record before it is treated
+/// as stale (for example after an ordinary manual shutdown) (#609).
+pub const PENDING_RESTART_MAX_AGE_SECS: u64 = 10 * 60;
+
+/// Live work that holds off an idle auto-restart into a newer local build (#609).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IdleBlockers {
+    /// An agent turn, setup, startup recovery, or duty agent is mid-flight.
+    pub turn_in_progress: bool,
+    /// A Rosen land, bindings check, or post-land verification check is running.
+    pub land_in_progress: bool,
+    /// A Rosen deploy step is running or queued.
+    pub deploy_in_progress: bool,
+}
+
+impl IdleBlockers {
+    pub fn is_idle(self) -> bool {
+        !self.turn_in_progress && !self.land_in_progress && !self.deploy_in_progress
+    }
+}
+
+/// Persisted before restarting into a newer local build so startup or heartbeat failure
+/// within [`POST_RESTART_HEALTH_WINDOW`] rolls back to the previous build and marks the
+/// new commit as failed (#609).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingRestart {
+    /// The new commit Velocity restarted into.
+    pub commit: String,
+    /// The commit Velocity was running before the restart, when known.
+    #[serde(default)]
+    pub previous_commit: Option<String>,
+    /// Fallback executable filename under `local-builds/` when the previous copy is not
+    /// itself a kept local build (for example a published release).
+    #[serde(default)]
+    pub rollback_file: Option<String>,
+    /// Expected size in bytes of `rollback_file`, verified before restoring it.
+    #[serde(default)]
+    pub rollback_bytes: u64,
+    /// Seconds since the Unix epoch when the restart was initiated.
+    #[serde(default)]
+    pub started_at: u64,
+}
+
+impl PendingRestart {
+    /// `true` when `running_commit` identifies the commit this restart targeted.
+    pub fn matches_running(&self, running_commit: Option<&str>) -> bool {
+        running_commit.is_some_and(|running| commits_match(&self.commit, running))
+    }
+
+    /// `true` when the record is older than [`PENDING_RESTART_MAX_AGE_SECS`].
+    pub fn is_stale(&self, now_unix_secs: u64) -> bool {
+        self.started_at > 0
+            && now_unix_secs.saturating_sub(self.started_at) > PENDING_RESTART_MAX_AGE_SECS
+    }
+}
 
 /// The last failed auto-restart attempt, held so Velocity retries after
 /// [`AUTO_RESTART_RETRY_DELAY`] or after a newer local build instead of skipping forever (#605).
@@ -41,6 +99,8 @@ const FOLDER: &str = "local-builds";
 const RECORD: &str = "build.json";
 const FAILURE: &str = "failed.json";
 const SETTINGS: &str = "settings.json";
+const PENDING_RESTART: &str = "pending-restart.json";
+const ROLLBACK_EXECUTABLE: &str = "rollback.exe";
 /// What `scripts/release-local.ps1` names the executable it copies to its output folder.
 const EXECUTABLE_SUFFIX: &str = "-portable.exe";
 /// The newest build and the one before it, which is the rollback.
@@ -152,6 +212,15 @@ fn normalize_commit(text: &str) -> Option<String> {
     (valid_len && is_commit(&trimmed)).then_some(trimmed)
 }
 
+fn commits_match(left: &str, right: &str) -> bool {
+    if left.len() < SHORT_COMMIT || right.len() < SHORT_COMMIT {
+        return false;
+    }
+    let left = left.to_ascii_lowercase();
+    let right = right.to_ascii_lowercase();
+    left == right || left.starts_with(&right) || right.starts_with(&left)
+}
+
 /// How a candidate local-build commit relates to the running build's commit (#551).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CommitRelation {
@@ -193,11 +262,12 @@ fn default_auto_restart() -> bool {
     true
 }
 
-/// Saved local-build preferences (`local-builds/settings.json`) (#601).
+/// Saved local-build preferences (`local-builds/settings.json`) (#601, #609).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalBuildSettings {
     /// Restart into the newest local build automatically when waiting issues need its
-    /// agent tooling, or when no agent turn has been running for 2 minutes.
+    /// agent tooling, or when Velocity is idle with no turn, land, deploy or local build
+    /// in progress.
     #[serde(default = "default_auto_restart")]
     pub auto_restart: bool,
 }
@@ -303,10 +373,115 @@ impl LocalBuilds {
 
     pub fn record_failure(&self, failure: &FailedBuild) -> Result<(), LocalBuildError> {
         let path = self.folder.join(FAILURE);
+        let next = self.folder.join("failed.json.next");
         std::fs::create_dir_all(&self.folder).map_err(io_error("create", &self.folder))?;
         let text = serde_json::to_string_pretty(failure)
             .map_err(|error| io_error("write", &path)(error.into()))?;
-        std::fs::write(&path, text).map_err(io_error("write", &path))
+        std::fs::write(&next, text).map_err(io_error("write", &next))?;
+        std::fs::rename(&next, &path).map_err(io_error("write", &path))
+    }
+
+    /// Marks `failure.commit` as failed and removes its kept local-build folder (if any) so
+    /// Velocity neither rebuilds nor auto-restarts into it again (#609).
+    pub fn mark_build_failed(&self, failure: &FailedBuild) -> Result<(), LocalBuildError> {
+        self.record_failure(failure)?;
+        let folder = self.folder_of(&failure.commit);
+        let _ = std::fs::remove_dir_all(&folder);
+        Ok(())
+    }
+
+    pub fn pending_restart(&self) -> Option<PendingRestart> {
+        read_json(&self.folder.join(PENDING_RESTART))
+    }
+
+    /// Records the pending local-build restart guard before swapping executables (#609).
+    /// When `previous_commit` is not already a verified kept local build, copies
+    /// `current_executable` to `local-builds/rollback.exe` so rollback still works from a
+    /// published release.
+    pub fn arm_pending_restart(
+        &self,
+        commit: &str,
+        previous_commit: Option<&str>,
+        current_executable: Option<&Path>,
+    ) -> Result<PendingRestart, LocalBuildError> {
+        std::fs::create_dir_all(&self.folder).map_err(io_error("create", &self.folder))?;
+        let has_kept_previous = previous_commit.is_some_and(|prev| {
+            self.list().iter().any(|build| {
+                commits_match(&build.commit, prev) && !commits_match(&build.commit, commit)
+            })
+        });
+        let (rollback_file, rollback_bytes) = if has_kept_previous {
+            let _ = std::fs::remove_file(self.folder.join(ROLLBACK_EXECUTABLE));
+            (None, 0)
+        } else if let Some(executable) = current_executable {
+            let dest = self.folder.join(ROLLBACK_EXECUTABLE);
+            let next = self.folder.join("rollback.exe.next");
+            let bytes = std::fs::copy(executable, &next).map_err(io_error("copy", &next))?;
+            std::fs::rename(&next, &dest).map_err(io_error("write", &dest))?;
+            (Some(ROLLBACK_EXECUTABLE.to_owned()), bytes)
+        } else {
+            (None, 0)
+        };
+        let pending = PendingRestart {
+            commit: commit.to_owned(),
+            previous_commit: previous_commit.map(str::to_owned),
+            rollback_file,
+            rollback_bytes,
+            started_at: unix_seconds(),
+        };
+        let path = self.folder.join(PENDING_RESTART);
+        let next = self.folder.join("pending-restart.json.next");
+        let text = serde_json::to_string_pretty(&pending)
+            .map_err(|error| io_error("write", &path)(error.into()))?;
+        std::fs::write(&next, text).map_err(io_error("write", &next))?;
+        std::fs::rename(&next, &path).map_err(io_error("write", &path))?;
+        Ok(pending)
+    }
+
+    pub fn clear_pending_restart(&self) {
+        for name in [
+            PENDING_RESTART,
+            "pending-restart.json.next",
+            ROLLBACK_EXECUTABLE,
+            "rollback.exe.next",
+        ] {
+            let _ = std::fs::remove_file(self.folder.join(name));
+        }
+    }
+
+    /// Reads the previous executable to restore when a restarted build fails startup or
+    /// heartbeat verification (#609).
+    pub fn read_rollback_executable(
+        &self,
+        pending: &PendingRestart,
+    ) -> Result<Vec<u8>, LocalBuildError> {
+        if let Some(name) = pending.rollback_file.as_deref() {
+            let path = self.folder.join(name);
+            let bytes = std::fs::read(&path).map_err(io_error("read", &path))?;
+            if bytes.is_empty() || bytes.len() as u64 != pending.rollback_bytes {
+                return Err(LocalBuildError::Changed {
+                    path: path.display().to_string(),
+                });
+            }
+            return Ok(bytes);
+        }
+        let builds = self.list();
+        if let Some(previous) = pending.previous_commit.as_deref()
+            && let Some(build) = builds
+                .iter()
+                .find(|build| commits_match(&build.commit, previous))
+        {
+            return self.read_executable(build);
+        }
+        if let Some(build) = builds
+            .iter()
+            .find(|build| !commits_match(&build.commit, &pending.commit))
+        {
+            return self.read_executable(build);
+        }
+        Err(LocalBuildError::NoExecutable {
+            folder: self.folder.display().to_string(),
+        })
     }
 
     pub fn settings(&self) -> LocalBuildSettings {
@@ -372,7 +547,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-fn unix_seconds() -> u64 {
+pub(crate) fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -491,8 +666,8 @@ impl LocalBuildState {
     /// Returns the commit to auto-restart into when auto-restart is enabled, the newest
     /// local build strictly descends from the running copy, nothing is busy or awaiting
     /// confirmation, this commit is not inside its 10-minute failure backoff window (#605),
-    /// and either a waiting issue needs a land contained in it or no agent turn has been
-    /// running for 2 minutes (#601).
+    /// and either a waiting issue needs a land contained in it or Velocity is idle with no
+    /// turn, land, deploy or local build in progress (#601, #609).
     pub fn should_auto_restart(
         &self,
         waiting_need_satisfied: bool,
@@ -651,10 +826,10 @@ impl LocalBuildState {
         }
     }
 
-    fn runs(&self, commit: &str) -> bool {
-        self.running_commit.as_deref().is_some_and(|running| {
-            commit.eq_ignore_ascii_case(running) || commit.starts_with(running)
-        })
+    pub fn runs(&self, commit: &str) -> bool {
+        self.running_commit
+            .as_deref()
+            .is_some_and(|running| commits_match(commit, running))
     }
 
     fn relation_of(&self, commit: &str) -> CommitRelation {
@@ -667,12 +842,15 @@ impl LocalBuildState {
             .unwrap_or(CommitRelation::Unknown)
     }
 
-    /// Builds made on the release this copy runs, newest first. After a published update
-    /// the older builds may hold less than the running copy, so they are no longer offered.
+    /// Builds made on the release this copy runs, newest first, skipping any commit marked
+    /// failed (#609). After a published update the older builds may hold less than the
+    /// running copy, so they are no longer offered.
     fn same_base_builds(&self) -> impl Iterator<Item = &LocalBuild> {
-        self.builds
-            .iter()
-            .filter(|build| release_base(&build.version).0 == self.running_base)
+        let failed = self.failed.as_ref().map(|record| record.commit.as_str());
+        self.builds.iter().filter(move |build| {
+            release_base(&build.version).0 == self.running_base
+                && failed.is_none_or(|commit| !commits_match(&build.commit, commit))
+        })
     }
 }
 
@@ -1022,6 +1200,131 @@ mod tests {
         );
         state.set_auto_restart(false);
         assert_eq!(state.should_auto_restart(true, true, None, now), None);
+        Ok(())
+    }
+
+    // Risk (#609): the post-restart rollback guard must survive save/reload, resolve the
+    // previous executable both from a kept local build and from a fallback copy of a
+    // published release, and marking a rolled-back commit as failed must prevent Velocity
+    // from offering, rebuilding, or auto-restarting into that broken commit again.
+    #[test]
+    fn pending_restart_persists_and_marked_failed_commit_is_not_restarted_into()
+    -> Result<(), Box<dyn Error>> {
+        assert!(IdleBlockers::default().is_idle());
+        assert!(
+            !IdleBlockers {
+                turn_in_progress: true,
+                ..IdleBlockers::default()
+            }
+            .is_idle()
+        );
+        assert!(
+            !IdleBlockers {
+                land_in_progress: true,
+                ..IdleBlockers::default()
+            }
+            .is_idle()
+        );
+        assert!(
+            !IdleBlockers {
+                deploy_in_progress: true,
+                ..IdleBlockers::default()
+            }
+            .is_idle()
+        );
+
+        let scratch = std::env::temp_dir().join(format!(
+            "velocity-local-build-pending-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch)?;
+        let builds = LocalBuilds::new(&scratch);
+
+        // Case 1: previous copy is a published release (not in local-builds/), so arming
+        // copies the running executable into rollback.exe.
+        let running_exe = scratch.join("velocity-app.exe");
+        std::fs::write(&running_exe, b"published-beta-22")?;
+        let bad_commit = "786d72e".to_owned() + &"1".repeat(33);
+        let bad_version = local_version("0.1.0-beta.22", &bad_commit);
+        let bad_folder = builds.prepare(&bad_commit)?;
+        std::fs::write(
+            bad_folder.join(format!("Velocity_{bad_version}_x64-portable.exe")),
+            b"bad-786d72e",
+        )?;
+        let _ = builds.finish(&bad_commit, &bad_version)?;
+
+        let armed = builds.arm_pending_restart(&bad_commit, Some("b9169e5"), Some(&running_exe))?;
+        let reloaded = LocalBuilds::new(&scratch)
+            .pending_restart()
+            .ok_or("pending restart did not survive reload")?;
+        assert_eq!(reloaded, armed);
+        assert!(reloaded.matches_running(Some("786d72e")));
+        assert!(!reloaded.matches_running(Some("b9169e5")));
+        assert_eq!(
+            builds.read_rollback_executable(&reloaded)?,
+            b"published-beta-22"
+        );
+
+        // Marking the rolled-back commit failed removes its folder, writes failed.json, and
+        // blocks rebuild / offer / auto-restart.
+        let failure = FailedBuild {
+            commit: bad_commit.clone(),
+            reason: "Restarted build missed heartbeats".into(),
+        };
+        builds.mark_build_failed(&failure)?;
+        builds.clear_pending_restart();
+        assert!(builds.pending_restart().is_none());
+        assert!(!scratch.join(FOLDER).join(ROLLBACK_EXECUTABLE).exists());
+        assert_eq!(builds.failure(), Some(failure.clone()));
+        assert!(builds.list().is_empty());
+
+        let mut state = LocalBuildState::new(
+            "0.1.0-beta.22",
+            Some("b9169e5"),
+            vec![LocalBuild {
+                commit: bad_commit.clone(),
+                version: bad_version,
+                built_at: 100,
+                executable_bytes: 11,
+            }],
+            Some(failure),
+        );
+        state.set_relations(BTreeMap::from([(
+            bad_commit.clone(),
+            CommitRelation::Descendant,
+        )]));
+        assert_eq!(state.newest_descendant_commit(), None);
+        assert_eq!(
+            state.should_auto_restart(true, true, None, Instant::now()),
+            None
+        );
+        assert_eq!(
+            state.wanted(Some(&bad_commit), CommitRelation::Descendant),
+            None
+        );
+        assert!(state.view().failed);
+        assert!(state.view().status.contains("786d72e"));
+
+        // Case 2: previous copy IS a kept local build; arming uses that build directly.
+        let prev_commit = "b9169e5".to_owned() + &"2".repeat(33);
+        let prev_version = local_version("0.1.0-beta.22", &prev_commit);
+        let prev_folder = builds.prepare(&prev_commit)?;
+        std::fs::write(
+            prev_folder.join(format!("Velocity_{prev_version}_x64-portable.exe")),
+            b"kept-prev-b9169e5",
+        )?;
+        let _ = builds.finish(&prev_commit, &prev_version)?;
+        let next_commit = "999aaaa".to_owned() + &"3".repeat(33);
+        let armed_kept =
+            builds.arm_pending_restart(&next_commit, Some(&prev_commit), Some(&running_exe))?;
+        assert!(armed_kept.rollback_file.is_none());
+        assert_eq!(
+            builds.read_rollback_executable(&armed_kept)?,
+            b"kept-prev-b9169e5"
+        );
+
+        let _ = std::fs::remove_dir_all(&scratch);
         Ok(())
     }
 }

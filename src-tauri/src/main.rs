@@ -74,7 +74,12 @@ fn main() -> anyhow::Result<()> {
     if velocity_app_lib::graph_access::serve_graph_server()? {
         return Ok(());
     }
-    if velocity_updates::supervision::supervise()? {
+    let build_commit =
+        (!env!("VELOCITY_BUILD_COMMIT").is_empty()).then_some(env!("VELOCITY_BUILD_COMMIT"));
+    if velocity_updates::supervision::supervise_with_local_rollback(
+        helper_app_data().as_deref(),
+        build_commit,
+    )? {
         return Ok(());
     }
     velocity_rosen::agent_run::install(&std::env::current_exe()?);

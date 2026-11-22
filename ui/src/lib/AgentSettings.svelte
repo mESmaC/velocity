@@ -292,8 +292,8 @@
         </label>
         <p class="worktree-description">
           Restart into the newest local build by itself when waiting issues need
-          its agent tooling, or when no agent turn has been running for 2
-          minutes.
+          its agent tooling, or at the next idle check with no turn, land,
+          deploy or local build in progress.
         </p>
       </section>
       <SharedMcpServers />

@@ -8,33 +8,92 @@ use velocity_core::window::{WindowAction, WindowOperation, window_operation};
 pub const MAIN_WINDOW: &str = "main";
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 const PAGE_START_GRACE: Duration = Duration::from_secs(12);
+/// How long a freshly restarted local build has to report its first visible renderer
+/// heartbeat before startup is considered failed (#609).
+const STARTUP_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
 
-pub struct WindowHeartbeat(Mutex<Instant>);
+struct HeartbeatState {
+    deadline: Instant,
+    received_any: bool,
+    consecutive_timeouts: u32,
+    reload_failed: bool,
+}
+
+pub struct WindowHeartbeat(Mutex<HeartbeatState>);
 
 impl Default for WindowHeartbeat {
     fn default() -> Self {
-        Self(Mutex::new(Instant::now() + PAGE_START_GRACE))
+        Self(Mutex::new(HeartbeatState {
+            deadline: Instant::now() + PAGE_START_GRACE,
+            received_any: false,
+            consecutive_timeouts: 0,
+            reload_failed: false,
+        }))
     }
 }
 
 impl WindowHeartbeat {
     fn extend(&self, grace: Duration) {
-        *self.0.lock().unwrap_or_else(|error| error.into_inner()) = Instant::now() + grace;
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .deadline = Instant::now() + grace;
+    }
+
+    fn record_beat(&self) {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        state.deadline = Instant::now() + HEARTBEAT_TIMEOUT;
+        state.received_any = true;
+        state.consecutive_timeouts = 0;
+        state.reload_failed = false;
     }
 
     fn expired(&self) -> bool {
-        Instant::now() >= *self.0.lock().unwrap_or_else(|error| error.into_inner())
+        Instant::now()
+            >= self
+                .0
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .deadline
     }
 
     fn begin_recovery(&self) -> bool {
-        let mut deadline = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
         let now = Instant::now();
-        if now < *deadline {
+        if now < state.deadline {
             return false;
         }
         // Give the next page time to boot before trying again.
-        *deadline = now + PAGE_START_GRACE;
+        state.deadline = now + PAGE_START_GRACE;
+        state.consecutive_timeouts = state.consecutive_timeouts.saturating_add(1);
         true
+    }
+
+    fn record_reload_failure(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .reload_failed = true;
+    }
+
+    /// Returns a failure reason when a freshly restarted local build failed startup or
+    /// renderer heartbeat checks (#609).
+    pub(crate) fn post_restart_failure(
+        &self,
+        elapsed: Duration,
+        window_visible: bool,
+    ) -> Option<&'static str> {
+        let state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if state.reload_failed {
+            return Some("renderer heartbeat timed out and main window reload failed");
+        }
+        if state.consecutive_timeouts >= 2 {
+            return Some("renderer missed heartbeats repeatedly after restart");
+        }
+        if window_visible && !state.received_any && elapsed >= STARTUP_HEARTBEAT_TIMEOUT {
+            return Some("renderer did not report a startup heartbeat");
+        }
+        None
     }
 }
 
@@ -42,7 +101,7 @@ impl WindowHeartbeat {
 #[specta::specta]
 pub fn window_heartbeat(webview: Webview, heartbeat: State<'_, WindowHeartbeat>) {
     if webview.label() == MAIN_WINDOW {
-        heartbeat.extend(HEARTBEAT_TIMEOUT);
+        heartbeat.record_beat();
     }
 }
 
@@ -72,6 +131,7 @@ pub fn watch_renderer(application: &AppHandle) {
                     "Heartbeat timed out. Reloading the main window.",
                 );
                 if let Err(error) = window.reload() {
+                    heartbeat.record_reload_failure();
                     crate::diagnostics::record("webview", &format!("Could not reload: {error}"));
                 }
             }
