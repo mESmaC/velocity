@@ -23,13 +23,14 @@ use velocity_core::collapse::{
     downstream_settings_page,
 };
 use velocity_core::project_health::{
-    AIRC_ISSUE_FAILURE_TTL_SECONDS, DISPATCH_IDLE_KEY, DispatchIdleIssueAction, DispatchIdleSample,
-    DispatchIdleTracker, HOST_SOURCE_CHANGED_KEY, HealthSeverity, HealthSignalKind,
-    INTEGRATION_UNCOVERED_LANDS, INTEGRATION_UNCOVERED_SECONDS, MIRROR_BEHIND_LIMIT_SECONDS,
-    POST_LAND_STALL_LIMIT_SECONDS, ProjectHealthHistoryEntry, ProjectHealthItem, ProjectHealthView,
-    REVIEW_STUCK_LIMIT_SECONDS, ReopenedLandedNotice, airc_issue_tool_failure_item,
-    dispatch_idle_item, dispatch_idle_notification_text, format_duration,
-    format_stopped_check_detail, host_issue_problem_item, host_source_change_item,
+    AIRC_ISSUE_FAILURE_TTL_SECONDS, COLLAPSE_SERVER_RESTART_KEY, CollapseHealthSample,
+    DISPATCH_IDLE_KEY, DispatchIdleIssueAction, DispatchIdleSample, DispatchIdleTracker,
+    HOST_SOURCE_CHANGED_KEY, HealthSeverity, HealthSignalKind, INTEGRATION_UNCOVERED_LANDS,
+    INTEGRATION_UNCOVERED_SECONDS, MIRROR_BEHIND_LIMIT_SECONDS, POST_LAND_STALL_LIMIT_SECONDS,
+    ProjectHealthHistoryEntry, ProjectHealthItem, ProjectHealthView, REVIEW_STUCK_LIMIT_SECONDS,
+    ReopenedLandedNotice, airc_issue_tool_failure_item, collapse_restart_log_needed,
+    collapse_server_restart_item, dispatch_idle_item, dispatch_idle_notification_text,
+    format_duration, format_stopped_check_detail, host_issue_problem_item, host_source_change_item,
     reopened_already_landed_item, short_commit,
 };
 use velocity_core::release::{
@@ -58,6 +59,9 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(60);
 const MIRROR_RETRY_COOLDOWN_SECS: u64 = 10 * 60;
 const REVIEW_CHECK_COOLDOWN_SECS: u64 = 10 * 60;
 const COLLAPSE_IMPORT_CHECK_COOLDOWN_SECS: u64 = 5 * 60;
+const COLLAPSE_HEALTHZ_REFRESH_MIN_SECS: u64 = 30;
+const COLLAPSE_HEALTHZ_ERROR_POLL_SECS: u64 = 60;
+const COLLAPSE_HEALTHZ_IDLE_POLL_SECS: u64 = 30 * 60;
 const RECENT_ACTION_TTL_SECS: u64 = 20 * 60;
 const MANUAL_PARKED_LIMIT_SECS: u64 = 2 * 60 * 60;
 const RELEASE_HEALTH_COOLDOWN_SECS: u64 = 15 * 60;
@@ -78,6 +82,14 @@ pub struct ManagedProjectHealth {
 struct HealthRegistry {
     projects: BTreeMap<u32, ProjectHealthTracker>,
     views: BTreeMap<u32, Vec<ProjectHealthItem>>,
+    collapse_server_health: Option<CollapseServerHealthCache>,
+    collapse_healthz_attempt_secs: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CollapseServerHealthCache {
+    observed_at_ms: u64,
+    health: velocity_collapse::ServerHealth,
 }
 
 #[derive(Default)]
@@ -214,6 +226,14 @@ pub fn get_project_health(application: AppHandle, project_identifier: u32) -> Pr
         history = project.health_history.clone();
         if !items.iter().any(|item| item.key == COLLAPSE_FORWARDING_KEY)
             && let Some(item) = check_collapse_forwarding(&application, &project, unix_millis())
+        {
+            upsert_item(&mut items, item);
+        }
+        if !items
+            .iter()
+            .any(|item| item.key == COLLAPSE_SERVER_RESTART_KEY)
+            && project_uses_collapse(&project)
+            && let Some(item) = cached_collapse_server_health_item(&application, &project)
         {
             upsert_item(&mut items, item);
         }
@@ -1202,6 +1222,7 @@ async fn check_all_projects(application: &AppHandle) {
         return;
     };
     let projects = rosen_projects(application).await;
+    poll_collapse_server_health_for_projects(application, &projects).await;
     for project in projects {
         check_project(application, &app_data, &project).await;
     }
@@ -1237,6 +1258,9 @@ async fn check_project(application: &AppHandle, app_data: &Path, project: &Proje
         items.push(item);
     }
     if let Some(item) = check_collapse_issues_import(application, project, now, now_ms).await {
+        items.push(item);
+    }
+    if let Some(item) = check_collapse_server_health(application, project, &server).await {
         items.push(item);
     }
     if let Some(item) = check_host_source_change(project) {
@@ -2090,6 +2114,212 @@ fn collapse_issues_not_imported_item(
         now_ms,
     )
     .with_detail(detail)
+}
+
+/// Polls Collapse's public `/healthz` endpoint alongside Collapse mirror health checks
+/// and updates every Collapse-enabled project's health view (#684).
+pub(crate) async fn refresh_collapse_server_health(application: &AppHandle) {
+    poll_collapse_server_health(application, COLLAPSE_HEALTHZ_REFRESH_MIN_SECS).await;
+}
+
+async fn poll_collapse_server_health_for_projects(
+    application: &AppHandle,
+    projects: &[ProjectItem],
+) {
+    let any_collapse = projects.iter().any(project_uses_collapse);
+    if !any_collapse {
+        return;
+    }
+    let any_mirror_error = projects
+        .iter()
+        .any(|project| project_uses_collapse(project) && project.rosen_mirror.is_some());
+    let min_interval = if any_mirror_error {
+        COLLAPSE_HEALTHZ_ERROR_POLL_SECS
+    } else {
+        COLLAPSE_HEALTHZ_IDLE_POLL_SECS
+    };
+    poll_collapse_server_health(application, min_interval).await;
+}
+
+async fn poll_collapse_server_health(application: &AppHandle, min_interval_secs: u64) {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let now = unix_seconds();
+    {
+        let mut reg = registry(&managed);
+        if let Some(last_attempt) = reg.collapse_healthz_attempt_secs
+            && now.saturating_sub(last_attempt) < min_interval_secs
+        {
+            return;
+        }
+        reg.collapse_healthz_attempt_secs = Some(now);
+    }
+    if let Ok(health) = velocity_collapse::server_health().await {
+        apply_collapse_server_health(application, health, unix_millis());
+    }
+}
+
+fn apply_collapse_server_health(
+    application: &AppHandle,
+    health: velocity_collapse::ServerHealth,
+    now_ms: u64,
+) {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let collapse_targets = collapse_projects(application);
+    let mut updates = Vec::new();
+    let log_line;
+    {
+        let mut reg = registry(&managed);
+        let previous = reg.collapse_server_health.clone();
+        let next = next_collapse_health_cache(previous.as_ref(), health, now_ms);
+        log_line = collapse_restart_log_line(previous.as_ref(), &next);
+        reg.collapse_server_health = Some(next.clone());
+        for project in collapse_targets {
+            let dashboard_url = collapse_dashboard_url(&project);
+            let next_item = collapse_server_restart_item(collapse_health_sample(
+                &next,
+                dashboard_url.as_deref(),
+            ));
+            let list = reg.views.entry(project.id).or_default();
+            if sync_keyed_item(list, COLLAPSE_SERVER_RESTART_KEY, next_item) {
+                updates.push((project.id, list.clone()));
+            }
+        }
+    }
+    if let Some(line) = log_line {
+        crate::diagnostics::record(SOURCE, &line);
+    }
+    for (project_id, items) in updates {
+        emit_view(application, project_id, items);
+    }
+}
+
+fn next_collapse_health_cache(
+    previous: Option<&CollapseServerHealthCache>,
+    health: velocity_collapse::ServerHealth,
+    now_ms: u64,
+) -> CollapseServerHealthCache {
+    let observed_at_ms = match previous {
+        Some(prev)
+            if prev.health.started_at == health.started_at
+                && prev.health.restarts_24h == health.restarts_24h
+                && prev.health.last_start_reason == health.last_start_reason =>
+        {
+            prev.observed_at_ms
+        }
+        _ => now_ms,
+    };
+    CollapseServerHealthCache {
+        observed_at_ms,
+        health,
+    }
+}
+
+fn collapse_restart_log_line(
+    previous: Option<&CollapseServerHealthCache>,
+    next: &CollapseServerHealthCache,
+) -> Option<String> {
+    let prev_sample = previous.map(|entry| collapse_health_sample(entry, None));
+    let next_sample = collapse_health_sample(next, None);
+    if !collapse_restart_log_needed(prev_sample, next_sample) {
+        return None;
+    }
+    let item = collapse_server_restart_item(next_sample)?;
+    Some(match item.detail {
+        Some(detail) => format!("{} ({detail})", item.signal),
+        None => item.signal,
+    })
+}
+
+fn sync_keyed_item(
+    list: &mut Vec<ProjectHealthItem>,
+    key: &str,
+    next: Option<ProjectHealthItem>,
+) -> bool {
+    match next {
+        Some(item) => {
+            let changed = list.iter().find(|existing| existing.key == key) != Some(&item);
+            upsert_item(list, item);
+            changed
+        }
+        None => {
+            let before = list.len();
+            list.retain(|existing| existing.key != key);
+            list.len() != before
+        }
+    }
+}
+
+async fn check_collapse_server_health(
+    application: &AppHandle,
+    project: &ProjectItem,
+    server: &ProjectServer,
+) -> Option<ProjectHealthItem> {
+    if !project_uses_collapse(project) {
+        collapse_mirror_target(project, server).await?;
+        let min_interval = if project.rosen_mirror.is_some() {
+            COLLAPSE_HEALTHZ_ERROR_POLL_SECS
+        } else {
+            COLLAPSE_HEALTHZ_IDLE_POLL_SECS
+        };
+        poll_collapse_server_health(application, min_interval).await;
+    }
+    cached_collapse_server_health_item(application, project)
+}
+
+fn cached_collapse_server_health_item(
+    application: &AppHandle,
+    project: &ProjectItem,
+) -> Option<ProjectHealthItem> {
+    let managed = application.try_state::<ManagedProjectHealth>()?;
+    let cached = registry(&managed).collapse_server_health.clone()?;
+    let dashboard_url = collapse_dashboard_url(project);
+    collapse_server_restart_item(collapse_health_sample(&cached, dashboard_url.as_deref()))
+}
+
+fn collapse_health_sample<'a>(
+    cache: &'a CollapseServerHealthCache,
+    dashboard_url: Option<&'a str>,
+) -> CollapseHealthSample<'a> {
+    CollapseHealthSample {
+        started_at: cache.health.started_at.as_deref(),
+        restarts_24h: cache.health.restarts_24h,
+        last_start_reason: cache.health.last_start_reason.as_deref(),
+        commit: cache.health.commit.as_deref(),
+        dashboard_url,
+        observed_at_ms: cache.observed_at_ms,
+    }
+}
+
+fn collapse_dashboard_url(project: &ProjectItem) -> Option<String> {
+    project
+        .collapse_repository
+        .as_deref()
+        .and_then(velocity_core::collapse::repository_page)
+        .or_else(|| Some("https://collapse.sh".to_owned()))
+}
+
+fn project_uses_collapse(project: &ProjectItem) -> bool {
+    project.collapse_repository.is_some() || project.effective_issue_host() == IssueHost::Collapse
+}
+
+fn collapse_projects(application: &AppHandle) -> Vec<ProjectItem> {
+    let Some(store) = application.try_state::<crate::state::ManagedStateStore>() else {
+        return Vec::new();
+    };
+    let Ok(store) = crate::threads::lock(store.inner(), "persisted state") else {
+        return Vec::new();
+    };
+    store
+        .state()
+        .projects
+        .iter()
+        .filter(|project| project.rosen_in_use() && project_uses_collapse(project))
+        .cloned()
+        .collect()
 }
 
 /// Signal 1: Mirror behind the base for more than 10 min (#509).

@@ -42,7 +42,9 @@ pub use git_credential::{
     checkout_repository, clone_repository, ensure_proactive_auth, ensure_remote_tag,
     resolve_remote_tag_commit,
 };
-pub use health::{RepositoryActivity, repository_activity, repository_downstream};
+pub use health::{
+    RepositoryActivity, ServerHealth, repository_activity, repository_downstream, server_health,
+};
 pub use issue_import::{
     GitHubIssueImportResult, GitHubIssueImportStatus, IssueImportFailure, get_issue_import_status,
     import_github_issues_and_wait,

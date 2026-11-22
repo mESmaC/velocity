@@ -14,6 +14,9 @@ pub const HOST_SOURCE_CHANGED_KEY: &str = "host-source-changed";
 /// Stable project-health key for idle continuous-dispatch slots (#509, #616).
 pub const DISPATCH_IDLE_KEY: &str = "dispatch-idle";
 
+/// Stable project-health key for Collapse server unexpected or out-of-memory restarts (#684).
+pub const COLLAPSE_SERVER_RESTART_KEY: &str = "collapse-server-restart";
+
 /// How long the mirror may sit behind the base before Velocity retries the push (#509).
 pub const MIRROR_BEHIND_LIMIT_SECONDS: u64 = 10 * 60;
 
@@ -63,6 +66,7 @@ pub enum HealthSignalKind {
     CollapseProactiveAuth,
     CollapseForwarding,
     CollapseIssuesNotImported,
+    CollapseServerRestart,
     HostSourceChanged,
     HostIssueMissing,
     HostIssueMismatch,
@@ -80,6 +84,159 @@ pub enum HealthSignalKind {
     AircIssueToolFailed,
     Deploy,
     LocalBuildRestartFailed,
+}
+
+/// Last start reason reported by Collapse's `GET /healthz` endpoint (collapse.sh#237, #684).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollapseStartReason {
+    Started,
+    Idle,
+    Shutdown,
+    Crash,
+    OomKilled,
+    #[default]
+    Unknown,
+}
+
+impl CollapseStartReason {
+    /// Parses the wire `last_start_reason` string returned by Collapse `/healthz`.
+    pub fn from_wire(raw: &str) -> Self {
+        match raw.trim() {
+            "started" => Self::Started,
+            "idle" => Self::Idle,
+            "shutdown" => Self::Shutdown,
+            "crash" => Self::Crash,
+            "oom_killed" => Self::OomKilled,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// True when the server's latest start followed an unexpected exit or OOM kill.
+    pub fn is_unexpected(self) -> bool {
+        matches!(self, Self::Crash | Self::OomKilled)
+    }
+}
+
+/// Inputs from Collapse's `GET /healthz` for formatting a restart/OOM project health row (#684).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CollapseHealthSample<'a> {
+    pub started_at: Option<&'a str>,
+    pub restarts_24h: u32,
+    pub last_start_reason: Option<&'a str>,
+    pub commit: Option<&'a str>,
+    pub dashboard_url: Option<&'a str>,
+    pub observed_at_ms: u64,
+}
+
+/// Formats unexpected or out-of-memory Collapse restarts from `/healthz` as a project health row,
+/// returning `None` when no unexpected restarts occurred (#684).
+pub fn collapse_server_restart_item(sample: CollapseHealthSample<'_>) -> Option<ProjectHealthItem> {
+    let reason = CollapseStartReason::from_wire(sample.last_start_reason.unwrap_or_default());
+    if sample.restarts_24h == 0 && !reason.is_unexpected() {
+        return None;
+    }
+    let severity = if reason == CollapseStartReason::OomKilled || sample.restarts_24h >= 2 {
+        HealthSeverity::Error
+    } else {
+        HealthSeverity::Warning
+    };
+    let signal = collapse_restart_signal(sample.restarts_24h, reason);
+    let action = collapse_restart_action(reason);
+    let detail = collapse_restart_detail(sample);
+    let mut item = ProjectHealthItem::new(
+        COLLAPSE_SERVER_RESTART_KEY,
+        HealthSignalKind::CollapseServerRestart,
+        severity,
+        signal,
+        action,
+        sample.observed_at_ms,
+    )
+    .with_detail(detail);
+    if let Some(url) = sample
+        .dashboard_url
+        .filter(|value| value.starts_with("https://"))
+    {
+        item = item.with_action_link(Some(url.to_owned()), "Open Collapse");
+    }
+    Some(item)
+}
+
+/// Whether `next` reports a newly observed unexpected or OOM Collapse restart compared with
+/// `previous`, so Velocity logs it once per restart or reason upgrade without spamming (#684).
+pub fn collapse_restart_log_needed(
+    previous: Option<CollapseHealthSample<'_>>,
+    next: CollapseHealthSample<'_>,
+) -> bool {
+    let next_reason = CollapseStartReason::from_wire(next.last_start_reason.unwrap_or_default());
+    if next.restarts_24h == 0 && !next_reason.is_unexpected() {
+        return false;
+    }
+    let Some(prev) = previous else {
+        return true;
+    };
+    let prev_reason = CollapseStartReason::from_wire(prev.last_start_reason.unwrap_or_default());
+    trimmed_option(next.started_at) != trimmed_option(prev.started_at)
+        || next.restarts_24h > prev.restarts_24h
+        || next_reason != prev_reason
+}
+
+fn collapse_restart_signal(restarts_24h: u32, reason: CollapseStartReason) -> String {
+    let count = if restarts_24h == 1 {
+        "1 time".to_owned()
+    } else {
+        format!("{restarts_24h} times")
+    };
+    match (restarts_24h, reason) {
+        (0, CollapseStartReason::OomKilled) => "Collapse restarted (out of memory)".to_owned(),
+        (0, CollapseStartReason::Crash) => "Collapse restarted unexpectedly".to_owned(),
+        (_, CollapseStartReason::OomKilled) => {
+            format!("Collapse restarted {count} in the last 24h (out of memory)")
+        }
+        (_, CollapseStartReason::Crash) => {
+            format!("Collapse restarted {count} in the last 24h (unexpected restart)")
+        }
+        _ => format!("Collapse restarted unexpectedly {count} in the last 24h"),
+    }
+}
+
+fn collapse_restart_action(reason: CollapseStartReason) -> &'static str {
+    match reason {
+        CollapseStartReason::OomKilled => {
+            "Collapse Fly Machine was killed for running out of memory; requests during the restart may have failed"
+        }
+        CollapseStartReason::Crash => {
+            "Collapse exited without a clean shutdown; requests during the restart may have failed"
+        }
+        CollapseStartReason::Idle => {
+            "Previous unexpected restart in the last 24h; latest start woke from idle"
+        }
+        CollapseStartReason::Shutdown => {
+            "Previous unexpected restart in the last 24h; latest start was a clean restart"
+        }
+        CollapseStartReason::Started | CollapseStartReason::Unknown => {
+            "Collapse recorded unexpected restarts in the last 24h"
+        }
+    }
+}
+
+fn collapse_restart_detail(sample: CollapseHealthSample<'_>) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(started_at) = trimmed_option(sample.started_at) {
+        parts.push(format!("Started {started_at}"));
+    }
+    if let Some(reason) = trimmed_option(sample.last_start_reason) {
+        parts.push(format!("last start: {reason}"));
+    }
+    if let Some(commit) = trimmed_option(sample.commit) {
+        let short = commit.get(..7).unwrap_or(commit);
+        parts.push(format!("server {short}"));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+fn trimmed_option(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|text| !text.is_empty())
 }
 
 /// Persisted record of the latest non-GitHub AIRC issue tool failure for one project (#581).

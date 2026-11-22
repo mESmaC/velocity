@@ -1570,11 +1570,14 @@ pub(crate) async fn refresh_health(application: &AppHandle) -> Result<(), String
     }
     let _reading = ReadingGuard;
     let Some(credentials) = load_credentials().await? else {
+        crate::project_health::refresh_collapse_server_health(application).await;
         return Ok(());
     };
-    let rows = velocity_collapse::repository_activity(&credentials)
-        .await
-        .map_err(|error| error.to_string())?;
+    let (activity_result, ()) = tokio::join!(
+        velocity_collapse::repository_activity(&credentials),
+        crate::project_health::refresh_collapse_server_health(application),
+    );
+    let rows = activity_result.map_err(|error| error.to_string())?;
     let mut updates = Vec::with_capacity(mirrored.len());
     let mut forwarding_states = Vec::with_capacity(mirrored.len());
     for (project, repository, github_remote) in mirrored {

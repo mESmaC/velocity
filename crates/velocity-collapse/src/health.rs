@@ -14,6 +14,44 @@ use crate::url_text::encode;
 
 const READ_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Runtime uptime and restart telemetry returned by `GET /healthz` (collapse.sh#237, #684).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct ServerHealth {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub commit: Option<String>,
+    #[serde(default)]
+    pub source_tree: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub restarts_24h: u32,
+    #[serde(default)]
+    pub last_start_reason: Option<String>,
+}
+
+/// Reads Collapse's public `/healthz` endpoint for server uptime and unexpected/OOM restarts
+/// (collapse.sh#237, #684).
+pub async fn server_health() -> Result<ServerHealth, CollapseError> {
+    let client = Client::builder()
+        .timeout(READ_TIMEOUT)
+        .build()
+        .map_err(failed)?;
+    let url = format!("{}/healthz", crate::issues::API_HOST.trim_end_matches('/'));
+    let response = client
+        .get(url)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(failed)?;
+    success(response, "read Collapse server health")
+        .await?
+        .json()
+        .await
+        .map_err(failed)
+}
+
 /// A downstream remote reference Collapse may return as a string or an object (#574).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
