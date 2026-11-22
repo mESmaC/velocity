@@ -945,7 +945,7 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
         titling: entry.titling,
         title_model_name: entry.title_model_name.clone(),
         account_label: entry.account_label.clone(),
-        change_label: entry.branch.clone(),
+        change_label: change_label(entry),
         workspace_path: entry.worktree_path.clone(),
         workspace_short_path: shorten_worktree_path(&entry.worktree_path),
         workspace_chip: chip,
@@ -1089,4 +1089,58 @@ pub fn evaluate_composer_submission(
 /// Maps a composer key press through the verified `handle_composer_key` rule.
 pub fn map_composer_key(key: ComposerKey, slash_menu_open: bool) -> ComposerKeyAction {
     thread_view::handle_composer_key(key, slash_menu_open)
+}
+
+fn change_label(entry: &ThreadDetailEntry) -> String {
+    entry
+        .rosen_change
+        .as_ref()
+        .map_or_else(|| entry.branch.clone(), |change| change.identifier.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Risk (#645): Rosen spec interview headers previously showed the Git branch
+    /// (`branch_name`) instead of the saved Rosen change ID after workspace creation.
+    #[test]
+    fn project_thread_detail_prefers_rosen_change_id_over_branch() {
+        let mut rosen_entry = ThreadDetailEntry::new(
+            7,
+            "Project spec".into(),
+            "master".into(),
+            "Z:\\work\\spec-7".into(),
+            ThreadLifecycle::Working,
+            ProviderColor::Claude,
+        );
+        rosen_entry.rosen_change = Some(RosenChangeView::new(
+            "uqplywqzrquxqnyxquuormznooqmotnk".into(),
+            RosenChangeStage::Editing,
+        ));
+        let rosen_snapshot = project_thread_detail(&rosen_entry);
+        assert_eq!(
+            rosen_snapshot.change_label,
+            "uqplywqzrquxqnyxquuormznooqmotnk"
+        );
+        assert_eq!(
+            rosen_snapshot
+                .rosen_change
+                .as_ref()
+                .map(|change| change.identifier.as_str()),
+            Some("uqplywqzrquxqnyxquuormznooqmotnk")
+        );
+
+        let git_entry = ThreadDetailEntry::new(
+            8,
+            "Project spec".into(),
+            "main".into(),
+            String::new(),
+            ThreadLifecycle::Working,
+            ProviderColor::Codex,
+        );
+        let git_snapshot = project_thread_detail(&git_entry);
+        assert_eq!(git_snapshot.change_label, "main");
+        assert!(git_snapshot.rosen_change.is_none());
+    }
 }

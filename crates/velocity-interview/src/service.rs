@@ -365,6 +365,9 @@ fn launch<H: Host>(host: &Arc<H>, key: InterviewKey, prompt: String) {
             });
             return;
         }
+        // Publish workspace path and saved Rosen change ID to the interview header right
+        // after workspace creation instead of waiting for the first turn to end (#645).
+        refresh(task_host.as_ref());
         run(task_host, key, agent.launch, setup, receiver).await;
     }));
 }

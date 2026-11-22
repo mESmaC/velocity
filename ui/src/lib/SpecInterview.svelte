@@ -36,8 +36,17 @@
   <header class="thread-head">
     <h1>{thread.title}</h1>
     <div class="meta">
-      {#if thread.change_label}
-        <span class="change"><Icon name="change" />{thread.change_label}</span>
+      {#if thread.rosen_change}
+        <span class="change mono" title={thread.rosen_change.identifier}>
+          <Icon name="change" /><span class="label"
+            >{thread.rosen_change.identifier}</span
+          >
+        </span>
+      {:else if thread.change_label}
+        <span class="change" title={thread.change_label}
+          ><Icon name="change" /><span class="label">{thread.change_label}</span
+          ></span
+        >
       {/if}
       <span>{interview.status_label}</span>
       {#if thread.model_pill.model_name}<span
