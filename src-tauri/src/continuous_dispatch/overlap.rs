@@ -12,7 +12,7 @@ use velocity_rosen::policy::{self, MergedPaths};
 use velocity_rosen::{ProjectServer, change_details, review_swarm};
 use velocity_store::{
     ProjectItem, ThreadItem, ThreadState, VersionControl, continuous_dispatch::IssueOverlap,
-    issues::ThreadIssue,
+    issues::ThreadIssue, rosen_work::IssueVersion,
 };
 use velocity_threads::continuous_dispatch::actionable_in_project;
 use velocity_threads::overlap_paths::{is_reference, widely_shared};
@@ -704,10 +704,14 @@ fn is_skipped_external(
     now: u64,
 ) -> bool {
     let identity = ThreadIssue::new(repository.into(), issue.number);
-    has_landed(project, repository, issue.number)
-        || project
-            .remote_work_hold(&identity, Some(&issue.updated_at), now)
-            .is_some()
+    has_landed(
+        project,
+        repository,
+        issue.number,
+        IssueVersion::from_github(issue),
+    ) || project
+        .remote_work_hold(&identity, Some(&issue.updated_at), now)
+        .is_some()
 }
 
 fn blocker_skipped_external(
@@ -718,23 +722,34 @@ fn blocker_skipped_external(
     now: u64,
 ) -> bool {
     let identity = ThreadIssue::new(repository.into(), blocker);
-    let updated_at = issues
-        .iter()
-        .find(|issue| issue.number == blocker)
-        .map(|issue| issue.updated_at.as_str());
-    has_landed(project, repository, blocker)
+    let issue = issues.iter().find(|issue| issue.number == blocker);
+    let updated_at = issue.map(|issue| issue.updated_at.as_str());
+    let version = issue.map(IssueVersion::from_github).unwrap_or_default();
+    has_landed(project, repository, blocker, version)
         || project
             .remote_work_hold(&identity, updated_at, now)
             .is_some()
 }
 
 /// Whether `number` has a landed change of its own, from a thread, the work projection
-/// or the GitHub land record dispatch saved (#504).
-fn has_landed(project: &ProjectItem, repository: &str, number: u32) -> bool {
+/// or the GitHub land record dispatch saved (#504, #602).
+fn has_landed(
+    project: &ProjectItem,
+    repository: &str,
+    number: u32,
+    version: IssueVersion<'_>,
+) -> bool {
     let identity = ThreadIssue::new(repository.into(), number);
-    project.rosen_issue_completed(&identity)
+    let key = velocity_core::work_pool::WorkKey::issue(repository, number);
+    if project.rosen_work_item(&key).is_some() {
+        return project.rosen_issue_completed_for_version(&identity, version)
+            || project
+                .landed_awaiting_integration_for_version(&identity, version)
+                .is_some();
+    }
+    project.rosen_issue_completed_for_version(&identity, version)
         || project
-            .landed_awaiting_integration(&identity, None)
+            .landed_awaiting_integration_for_version(&identity, version)
             .is_some()
         || project.threads.iter().any(|thread| {
             thread

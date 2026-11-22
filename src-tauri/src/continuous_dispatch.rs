@@ -687,9 +687,17 @@ fn hold_external_issue(
         .map_err(|error| error.to_string())?
     {
         Some(ExternalIssueState::Landed { commit, landed_at }) => {
+            if reopened_after(issue, landed_at) {
+                clear_stale_external_holds(application, identifier, issue.number)?;
+                return Ok(false);
+            }
             handle_external_land(application, identifier, client, issue, commit, landed_at)
         }
         Some(ExternalIssueState::InProgressElsewhere { started_at }) => {
+            if reopened_after(issue, Some(started_at)) {
+                clear_stale_external_holds(application, identifier, issue.number)?;
+                return Ok(false);
+            }
             let hold = RemoteWorkHold::new(
                 identity,
                 issue.updated_at.clone(),
@@ -709,6 +717,20 @@ fn hold_external_issue(
             Ok(false)
         }
     }
+}
+
+/// Whether GitHub recorded a reopen event strictly after an earlier external land or run (#602).
+fn reopened_after(issue: &GitHubIssue, event_seconds: Option<u64>) -> bool {
+    let (Some(reopened), Some(event)) = (
+        issue
+            .reopened_at
+            .as_deref()
+            .and_then(velocity_store::rosen_work::parse_timestamp_seconds),
+        event_seconds,
+    ) else {
+        return false;
+    };
+    reopened > event
 }
 
 fn handle_external_land(
@@ -1105,11 +1127,12 @@ fn start_issue(
         )
         .map_err(|error| error.to_string())?;
         let thread = store
-            .record_continuous_dispatch(
+            .record_continuous_dispatch_for_version(
                 identifier,
                 plan.launch.thread.clone(),
                 plan.issue,
                 issue.updated_at.clone(),
+                issue.reopened_at.as_deref(),
             )
             .map_err(|error| error.to_string())?;
         (plan.launch, thread, rosen_project)

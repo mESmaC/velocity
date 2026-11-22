@@ -5,7 +5,8 @@
 The row shows its GitHub issue badge, number, title, labels and scout attribution alongside the live claim and Rosen state.
 Thread and change links appear as each becomes available, and the issue itself remains directly accessible on GitHub.
 A tracked issue remains in the Work history after GitHub closes it.
-Until GitHub catches up, local completion keeps the issue out of dispatch even if GitHub still lists it as open.
+Until GitHub catches up, local completion keeps the issue out of dispatch for the version it completed even if GitHub still lists it as open.
+When an open issue has a newer `updated_at` or reopen event after its completed work item's `green_at`/`landed_at`, it is actionable again, its next Rosen change is tracked as a new work item, and the earlier completed work item is kept for history (#602).
 
 **Questions and details.** `spec-question` rows stay in a separate group at the top, ordered by how many pieces they block.
 Their expanded rows show the recommended answer from a `Recommended answer:` or `Recommendation:` paragraph and the blocked count from the `Blocks:` bullets.

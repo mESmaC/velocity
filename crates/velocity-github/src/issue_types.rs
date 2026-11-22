@@ -27,6 +27,10 @@ pub struct GitHubIssue {
     pub created_at: String,
     pub updated_at: String,
     pub closed_at: Option<String>,
+    /// Latest `ReopenedEvent` timestamp from GitHub's timeline, so a reopened issue is
+    /// recognized even before its previous completed work item is replaced (#602).
+    #[serde(default)]
+    pub reopened_at: Option<String>,
     #[serde(default)]
     pub labels: Vec<String>,
     pub scout: Option<String>,

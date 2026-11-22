@@ -8,7 +8,8 @@ use velocity_core::issue_holds::{
 };
 use velocity_github::{GitHubIssue, IssueClient, IssueState};
 use velocity_store::continuous_dispatch::{available_task, busy_count};
-use velocity_store::issues::{ThreadIssue, issue_thread};
+use velocity_store::issues::{ThreadIssue, issue_thread, issue_thread_label};
+use velocity_store::rosen_work::IssueVersion;
 use velocity_store::{
     ProjectItem, StateStore, TaskAttribution, TaskItem, ThreadState, VersionControl,
 };
@@ -102,8 +103,9 @@ pub fn stalled_landed_issues(
         .filter(|issue| issue.state == IssueState::Open)
         .filter_map(|issue| {
             let identity = ThreadIssue::new(repository.into(), issue.number);
+            let version = IssueVersion::from_github(issue);
             let since = project
-                .landed_awaiting_integration(&identity, None)?
+                .landed_awaiting_integration_for_version(&identity, version)?
                 .since?;
             (now.saturating_sub(since) >= INTEGRATION_WAIT_LIMIT_SECONDS)
                 .then_some((since, issue.number))
@@ -190,6 +192,7 @@ pub enum SkipCategory {
     Claimed,
     LaunchHold,
     Attempted,
+    Completed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -209,8 +212,8 @@ const SKIP_LABELS: &[&str] = &[
     IssueClient::NO_CHANGE_LABEL,
 ];
 
-/// Explains why an open issue was skipped by continuous dispatch (#509).
-/// Returns `None` if the issue is closed, already has an active thread, already landed,
+/// Explains why an open issue was skipped by continuous dispatch (#509, #602).
+/// Returns `None` only when the issue is closed, already has an actively running thread,
 /// or is currently dispatchable.
 pub fn issue_skip_reason(
     project: &ProjectItem,
@@ -223,13 +226,37 @@ pub fn issue_skip_reason(
         return None;
     }
     let identity = ThreadIssue::new(repository.into(), issue.number);
-    if issue_thread(project, &identity).is_some()
-        || project.rosen_issue_completed(&identity)
-        || project
-            .landed_awaiting_integration(&identity, Some(&issue.updated_at))
-            .is_some()
+    let version = IssueVersion::from_github(issue);
+    if let Some(thread) = issue_thread(project, &identity) {
+        if matches!(thread.state, ThreadState::Working | ThreadState::Review) {
+            return None;
+        }
+        return Some(SkippedIssue {
+            number: issue.number,
+            category: SkipCategory::Claimed,
+            reason: format!(
+                "kept on thread {} ({})",
+                thread.id,
+                issue_thread_label(thread)
+            ),
+        });
+    }
+    if project
+        .landed_awaiting_integration_for_version(&identity, version)
+        .is_some()
     {
-        return None;
+        return Some(SkippedIssue {
+            number: issue.number,
+            category: SkipCategory::Completed,
+            reason: "landed · waiting for integration".into(),
+        });
+    }
+    if project.rosen_issue_completed_for_version(&identity, version) {
+        return Some(SkippedIssue {
+            number: issue.number,
+            category: SkipCategory::Completed,
+            reason: "completed by landed Rosen change".into(),
+        });
     }
     if let Some(wait) = project
         .continuous_dispatch
@@ -463,13 +490,14 @@ pub fn dispatchable_issue(
     claimed: &HashSet<String>,
 ) -> bool {
     let identity = ThreadIssue::new(repository.into(), issue.number);
+    let version = IssueVersion::from_github(issue);
     actionable_in_project(project, repository, issue)
         && !claimed.contains(&format!("issue:{}", issue.number))
         && issue_thread(project, &identity).is_none()
-        && !project.rosen_issue_completed(&identity)
+        && !project.rosen_issue_completed_for_version(&identity, version)
         // A landed issue waits for its integration build to close it (#504).
         && project
-            .landed_awaiting_integration(&identity, Some(&issue.updated_at))
+            .landed_awaiting_integration_for_version(&identity, version)
             .is_none()
         && !project
             .continuous_dispatch
@@ -705,6 +733,7 @@ mod tests {
             created_at: "2026-11-19T23:12:00Z".into(),
             updated_at: "2026-11-19T23:12:00Z".into(),
             closed_at: None,
+            reopened_at: None,
             open_blocker_count: 0,
             open_blockers: Vec::new(),
             closed_blockers: Vec::new(),
@@ -777,5 +806,143 @@ mod tests {
             stale_claim_reason("scout-1-1"),
             "stale AIRC claim by scout-1-1, released"
         );
+    }
+
+    // Risk (#602): a persisted completed Rosen work item must not hide a reopened open
+    // issue from dispatch, and issue_skip_reason must report every open issue dispatch drops.
+    #[test]
+    fn reopened_issue_dispatches_across_save_and_dropped_issues_report_reasons()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = std::env::temp_dir().join(format!(
+            "velocity-dispatch-602-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        let mut project = ProjectItem::new(1, "collapse".into(), "Z:/repo".into());
+        project.version_control = VersionControl::Rosen;
+        project.spec_locked = true;
+        let nov_18 = velocity_store::rosen_work::parse_timestamp_seconds("2026-11-18T12:00:00Z")
+            .ok_or("valid timestamp")?
+            .to_string();
+        let nov_21_land =
+            velocity_store::rosen_work::parse_timestamp_seconds("2026-11-21T09:00:00Z")
+                .ok_or("valid timestamp")?
+                .to_string();
+        project
+            .rosen_work_items
+            .push(velocity_core::work_pool::WorkItem {
+                key: velocity_core::work_pool::WorkKey::issue("owner/repo", 39),
+                title: "Build web side".into(),
+                thread_identifier: None,
+                change: Some("chg-39".into()),
+                status: velocity_core::work_pool::WorkStatus::Green,
+                claimed_at: Some(nov_18.clone()),
+                updated_at: Some(nov_18.clone()),
+                landed_at: Some(nov_18.clone()),
+                green_at: Some(nov_18),
+                reverted_at: None,
+                landed_commit: Some("4a63d3f".into()),
+                revert_reason: None,
+            });
+        project
+            .rosen_work_items
+            .push(velocity_core::work_pool::WorkItem {
+                key: velocity_core::work_pool::WorkKey::issue("owner/repo", 40),
+                title: "Waiting for integration".into(),
+                thread_identifier: None,
+                change: Some("chg-40".into()),
+                status: velocity_core::work_pool::WorkStatus::Landed,
+                claimed_at: Some(nov_21_land.clone()),
+                updated_at: Some(nov_21_land.clone()),
+                landed_at: Some(nov_21_land),
+                green_at: None,
+                reverted_at: None,
+                landed_commit: Some("deadbeef".into()),
+                revert_reason: None,
+            });
+        let mut kept_error = ThreadItem::new(50, "Failed issue".into());
+        kept_error.state = ThreadState::Error;
+        kept_error.issue = Some(ThreadIssue::new("owner/repo".into(), 41));
+        project.threads.push(kept_error);
+        let mut active = ThreadItem::new(51, "Active issue".into());
+        active.state = ThreadState::Working;
+        active.issue = Some(ThreadIssue::new("owner/repo".into(), 42));
+        project.threads.push(active);
+
+        std::fs::create_dir_all(&directory)?;
+        let mut persisted = velocity_store::PersistedState::default();
+        persisted.projects.push(project);
+        std::fs::write(
+            directory.join(velocity_store::STATE_FILE_NAME),
+            serde_json::to_vec(&persisted)?,
+        )?;
+        let loaded = StateStore::load_or_default(&directory)?;
+        let project = loaded.project(1).ok_or("reloaded project missing")?;
+        let claimed = HashSet::new();
+
+        // Un-reopened green issue is skipped with an explicit reason instead of disappearing.
+        let mut still_green = sample_issue(39);
+        still_green.updated_at = "2026-11-18T11:30:00Z".into();
+        assert!(!dispatchable_issue(
+            project,
+            "owner/repo",
+            &still_green,
+            &claimed
+        ));
+        let skip_green = issue_skip_reason(project, "owner/repo", &still_green, &claimed, 0);
+        assert_eq!(
+            skip_green.as_ref().map(|item| item.category),
+            Some(SkipCategory::Completed)
+        );
+
+        // Reopened issue (newer updated_at / reopen event) is dispatchable again.
+        let mut reopened = sample_issue(39);
+        reopened.updated_at = "2026-11-21T10:00:00Z".into();
+        assert!(dispatchable_issue(
+            project,
+            "owner/repo",
+            &reopened,
+            &claimed
+        ));
+        assert!(issue_skip_reason(project, "owner/repo", &reopened, &claimed, 0).is_none());
+
+        // In-flight land stays held after Velocity's land comment bumps updated_at, and reports a reason.
+        let mut awaiting = sample_issue(40);
+        awaiting.updated_at = "2026-11-21T09:00:05Z".into();
+        assert!(!dispatchable_issue(
+            project,
+            "owner/repo",
+            &awaiting,
+            &claimed
+        ));
+        let skip_landed = issue_skip_reason(project, "owner/repo", &awaiting, &claimed, 0);
+        assert_eq!(
+            skip_landed.as_ref().map(|item| item.reason.as_str()),
+            Some("landed · waiting for integration")
+        );
+
+        // Reopening an issue with a Landed work item makes it dispatchable again.
+        let mut reopened_landed = awaiting;
+        reopened_landed.updated_at = "2026-11-21T10:00:00Z".into();
+        reopened_landed.reopened_at = Some("2026-11-21T10:00:00Z".into());
+        assert!(dispatchable_issue(
+            project,
+            "owner/repo",
+            &reopened_landed,
+            &claimed
+        ));
+        assert!(issue_skip_reason(project, "owner/repo", &reopened_landed, &claimed, 0).is_none());
+
+        // Kept failed thread is reported; actively working thread is not flagged as skipped.
+        let kept_skip = issue_skip_reason(project, "owner/repo", &sample_issue(41), &claimed, 0);
+        assert_eq!(
+            kept_skip.as_ref().map(|item| item.category),
+            Some(SkipCategory::Claimed)
+        );
+        assert!(issue_skip_reason(project, "owner/repo", &sample_issue(42), &claimed, 0).is_none());
+
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
     }
 }

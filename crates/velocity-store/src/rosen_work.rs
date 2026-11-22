@@ -16,27 +16,171 @@ pub struct WorkEvidence<'a> {
     pub revert_reason: Option<&'a str>,
 }
 
+/// Open-issue timestamps used to check whether a completed Rosen work item still covers
+/// the current GitHub version of an issue (#602).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IssueVersion<'a> {
+    pub updated_at: Option<&'a str>,
+    pub reopened_at: Option<&'a str>,
+}
+
+impl<'a> IssueVersion<'a> {
+    pub fn from_github(issue: &'a velocity_github::GitHubIssue) -> Self {
+        Self {
+            updated_at: Some(issue.updated_at.as_str()),
+            reopened_at: issue.reopened_at.as_deref(),
+        }
+    }
+
+    pub fn updated_at(updated_at: &'a str) -> Self {
+        Self {
+            updated_at: Some(updated_at),
+            reopened_at: None,
+        }
+    }
+}
+
+/// Parses either a decimal Unix-seconds string or an RFC3339 timestamp into UTC Unix seconds.
+pub fn parse_timestamp_seconds(value: &str) -> Option<u64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.bytes().all(|byte| byte.is_ascii_digit()) {
+        return trimmed.parse::<u64>().ok();
+    }
+    let (date, time_and_zone) = trimmed.split_once(['T', 't'])?;
+    let mut date_parts = date.split('-').map(|part| part.parse::<i64>().ok());
+    let (year, month, day) = (
+        date_parts.next()??,
+        date_parts.next()??,
+        date_parts.next()??,
+    );
+    if date_parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let (time_part, offset_seconds) = split_rfc3339_offset(time_and_zone)?;
+    let clock = time_part.split('.').next()?;
+    let mut clock_parts = clock.split(':').map(|part| part.parse::<i64>().ok());
+    let (hour, minute, second) = (
+        clock_parts.next()??,
+        clock_parts.next()??,
+        clock_parts.next()??,
+    );
+    if clock_parts.next().is_some()
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=60).contains(&second)
+    {
+        return None;
+    }
+    let adjusted_year = if month <= 2 { year - 1 } else { year };
+    let shifted_month = if month > 2 { month - 3 } else { month + 9 };
+    let year_of_era = adjusted_year.rem_euclid(400);
+    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = adjusted_year.div_euclid(400) * 146_097 + day_of_era - 719_468;
+    let utc_seconds = days * 86_400 + hour * 3_600 + minute * 60 + second - offset_seconds;
+    u64::try_from(utc_seconds).ok()
+}
+
+fn split_rfc3339_offset(time_and_zone: &str) -> Option<(&str, i64)> {
+    if let Some(clock) = time_and_zone
+        .strip_suffix('Z')
+        .or_else(|| time_and_zone.strip_suffix('z'))
+    {
+        return Some((clock, 0));
+    }
+    let sign_index = time_and_zone.rfind(['+', '-'])?;
+    let (clock, zone) = time_and_zone.split_at(sign_index);
+    let sign = if zone.starts_with('+') { 1 } else { -1 };
+    let (hours, minutes) = zone[1..].split_once(':')?;
+    let hours = hours.parse::<i64>().ok()?;
+    let minutes = minutes.parse::<i64>().ok()?;
+    if !(0..=23).contains(&hours) || !(0..=59).contains(&minutes) {
+        return None;
+    }
+    Some((clock, sign * (hours * 3_600 + minutes * 60)))
+}
+
+fn completed_timestamp(item: &WorkItem) -> Option<u64> {
+    let raw = match item.status {
+        WorkStatus::Green => item
+            .green_at
+            .as_deref()
+            .or(item.landed_at.as_deref())
+            .or(item.updated_at.as_deref()),
+        WorkStatus::Landed => item.landed_at.as_deref().or(item.updated_at.as_deref()),
+        WorkStatus::Claimed | WorkStatus::InChange | WorkStatus::Reopened => return None,
+    };
+    raw.and_then(parse_timestamp_seconds)
+}
+
+/// Whether a completed work item is superseded by a newer open version of its issue (#602).
+///
+/// For `Green` items, either a reopen event or a newer `updated_at` timestamp after
+/// `green_at`/`landed_at` makes the issue actionable again. For `Landed` items still
+/// awaiting integration, Velocity's own land comment bumps `updated_at` right after
+/// landing, so only a reopen event later than `landed_at` supersedes the in-flight land.
+pub(crate) fn item_superseded_by_issue(item: &WorkItem, version: IssueVersion<'_>) -> bool {
+    if !item.status.completed() {
+        return false;
+    }
+    let completed_at = completed_timestamp(item);
+    if let Some(reopened_at) = version.reopened_at.and_then(parse_timestamp_seconds)
+        && completed_at.is_none_or(|done| reopened_at > done)
+    {
+        return true;
+    }
+    item.status == WorkStatus::Green
+        && matches!(
+            (
+                version.updated_at.and_then(parse_timestamp_seconds),
+                completed_at,
+            ),
+            (Some(updated_at), Some(done)) if updated_at > done
+        )
+}
+
 impl ProjectItem {
+    /// Returns the newest tracked Rosen work item for `key`. Earlier completed items for
+    /// reopened issues remain in `rosen_work_items` for history (#602).
     pub fn rosen_work_item(&self, key: &WorkKey) -> Option<&WorkItem> {
-        self.rosen_work_items.iter().find(|item| &item.key == key)
+        self.rosen_work_items
+            .iter()
+            .rev()
+            .find(|item| &item.key == key)
     }
 
     pub fn rosen_issue_completed(&self, issue: &ThreadIssue) -> bool {
+        self.rosen_issue_completed_for_version(issue, IssueVersion::default())
+    }
+
+    /// Whether `issue` is covered by a completed Rosen work item at `version` (#602).
+    /// Returns `false` when an open issue's `updated_at` or reopen event is later than the
+    /// work item's completion timestamp.
+    pub fn rosen_issue_completed_for_version(
+        &self,
+        issue: &ThreadIssue,
+        version: IssueVersion<'_>,
+    ) -> bool {
         let key = WorkKey::issue(&issue.repository, issue.number);
-        self.rosen_work_item(&key)
-            .map(|item| item.status.completed())
-            .unwrap_or_else(|| {
-                self.completed_goal_issues
-                    .iter()
-                    .any(|completed| same_issue(completed, issue))
-                    || self.threads.iter().any(|thread| {
-                        thread.rosen_change.is_some()
-                            && thread.state == ThreadState::Merged
-                            && thread
-                                .issue
-                                .as_ref()
-                                .is_some_and(|assigned| same_issue(assigned, issue))
-                    })
+        if let Some(item) = self.rosen_work_item(&key) {
+            return item.status.completed() && !item_superseded_by_issue(item, version);
+        }
+        if version.reopened_at.is_some() {
+            return false;
+        }
+        self.completed_goal_issues
+            .iter()
+            .any(|completed| same_issue(completed, issue))
+            || self.threads.iter().any(|thread| {
+                thread.rosen_change.is_some()
+                    && thread.state == ThreadState::Merged
+                    && thread
+                        .issue
+                        .as_ref()
+                        .is_some_and(|assigned| same_issue(assigned, issue))
             })
     }
 
@@ -143,29 +287,35 @@ fn track(project: &mut ProjectItem, identifier: u32, at: Option<&str>, restore: 
         return;
     }
     for (key, title) in sources(project, thread) {
-        let current = project
+        if update_owned_work_item(
+            &mut project.rosen_work_items,
+            &key,
+            identifier,
+            thread,
+            at,
+            restore,
+        ) {
+            continue;
+        }
+        let latest = project
             .rosen_work_items
             .iter_mut()
+            .rev()
             .find(|item| item.key == key);
-        match current {
-            Some(item) if item.thread_identifier == Some(identifier) => {
-                if item.change != thread.rosen_change {
-                    item.change.clone_from(&thread.rosen_change);
-                    item.status = WorkStatus::Claimed;
-                    item.updated_at = at.map(str::to_owned);
-                    item.landed_at = None;
-                    item.green_at = None;
-                    item.landed_commit = None;
-                } else if restore
-                    && item.status == WorkStatus::Landed
-                    && item.landed_at.is_none()
-                    && item.landed_commit.is_none()
-                {
-                    item.landed_commit = saved_land(thread);
-                }
-            }
+        match latest {
             Some(item) if !restore && !item.status.completed() => {
                 *item = claimed(key, title, thread, at);
+            }
+            // Re-dispatching a reopened issue keeps its prior completed work item for history
+            // and tracks the new Rosen change as a fresh work item (#602).
+            Some(item)
+                if item.status.completed() && (!restore || thread.state != ThreadState::Merged) =>
+            {
+                let mut next = claimed(key, title, thread, at);
+                if restore {
+                    restore_status(&mut next, thread);
+                }
+                project.rosen_work_items.push(next);
             }
             Some(_) => {}
             None => {
@@ -177,6 +327,41 @@ fn track(project: &mut ProjectItem, identifier: u32, at: Option<&str>, restore: 
             }
         }
     }
+}
+
+fn update_owned_work_item(
+    work_items: &mut [WorkItem],
+    key: &WorkKey,
+    identifier: u32,
+    thread: &ThreadItem,
+    at: Option<&str>,
+    restore: bool,
+) -> bool {
+    let Some(item) = work_items.iter_mut().rev().find(|item| {
+        &item.key == key
+            && (item.thread_identifier == Some(identifier)
+                || (restore && item.change.is_some() && item.change == thread.rosen_change))
+    }) else {
+        return false;
+    };
+    if item.thread_identifier.is_none() && restore {
+        item.thread_identifier = Some(identifier);
+    }
+    if item.change != thread.rosen_change {
+        item.change.clone_from(&thread.rosen_change);
+        item.status = WorkStatus::Claimed;
+        item.updated_at = at.map(str::to_owned);
+        item.landed_at = None;
+        item.green_at = None;
+        item.landed_commit = None;
+    } else if restore
+        && item.status == WorkStatus::Landed
+        && item.landed_at.is_none()
+        && item.landed_commit.is_none()
+    {
+        item.landed_commit = saved_land(thread);
+    }
+    true
 }
 
 fn claimed(key: WorkKey, title: String, thread: &ThreadItem, at: Option<&str>) -> WorkItem {
@@ -576,6 +761,103 @@ mod tests {
         assert!(
             !loaded.state.projects[0]
                 .rosen_issue_integration_green(&ThreadIssue::new("Other/Repo".into(), 133))
+        );
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#602): a persisted completed Rosen work item must survive save and load for
+    // history while a reopened issue is actionable again and gets a new work item.
+    #[test]
+    fn reopened_issue_keeps_completed_history_across_save_and_load()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, mut store) = fixture()?;
+        store.set_continuous_dispatch(1, 2, false)?;
+        let issue = ThreadIssue::new("Owner/Repo".into(), 7);
+        let key = WorkKey::issue("owner/repo", 7);
+        event(
+            &mut store,
+            1,
+            "original",
+            RosenProgress::Landed,
+            Some("4a63d3f"),
+        )?;
+        assert!(store.confirm_rosen_work_build(1, 2, &["4a63d3f".into()])?);
+        store.remove_thread(1, 4)?;
+        let nov_18 = parse_timestamp_seconds("2026-11-18T12:00:00Z")
+            .ok_or("valid timestamp")?
+            .to_string();
+        let mut snapshot = store.state.clone();
+        if let Some(work) = snapshot.projects[0]
+            .rosen_work_items
+            .iter_mut()
+            .find(|item| item.key == key)
+        {
+            work.landed_at = Some(nov_18.clone());
+            work.green_at = Some(nov_18);
+        }
+        store.store_snapshot(snapshot)?;
+
+        let mut loaded = StateStore::load_or_default(&directory)?;
+        let same_version = IssueVersion::updated_at("2026-11-18T11:30:00Z");
+        let reopened_updated = IssueVersion::updated_at("2026-11-21T10:00:00Z");
+        let reopened_event = IssueVersion {
+            updated_at: Some("2026-11-21T10:00:00Z"),
+            reopened_at: Some("2026-11-21T10:00:00Z"),
+        };
+        assert!(loaded.state.projects[0].rosen_issue_completed_for_version(&issue, same_version));
+        assert!(
+            !loaded.state.projects[0].rosen_issue_completed_for_version(&issue, reopened_updated)
+        );
+        assert!(
+            !loaded.state.projects[0].rosen_issue_completed_for_version(&issue, reopened_event)
+        );
+
+        let new_thread = crate::threads::NewThread::new(
+            "Reopened issue #7".into(),
+            "vel/issue-7".into(),
+            r"C:\project\issue-7".into(),
+            &loaded.settings(),
+        );
+        assert!(matches!(
+            loaded.record_continuous_dispatch_for_version(
+                1,
+                new_thread.clone(),
+                issue.clone(),
+                "2026-11-18T11:30:00Z".into(),
+                None,
+            ),
+            Err(ThreadError::IssueCompleted(7))
+        ));
+        let second_id = loaded.record_continuous_dispatch_for_version(
+            1,
+            new_thread,
+            issue,
+            "2026-11-21T10:00:00Z".into(),
+            Some("2026-11-21T10:00:00Z"),
+        )?;
+        loaded.update_rosen_work_thread(1, second_id, |thread| {
+            thread.rosen_change = Some("second-pass".into());
+        })?;
+
+        let reloaded = StateStore::load_or_default(&directory)?;
+        let history: Vec<&WorkItem> = reloaded.state.projects[0]
+            .rosen_work_items
+            .iter()
+            .filter(|item| item.key == key)
+            .collect();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].status, WorkStatus::Green);
+        assert_eq!(history[0].change.as_deref(), Some("original"));
+        assert_eq!(history[0].landed_commit.as_deref(), Some("4a63d3f"));
+        assert_eq!(history[1].status, WorkStatus::Claimed);
+        assert_eq!(history[1].change.as_deref(), Some("second-pass"));
+        assert_eq!(history[1].thread_identifier, Some(second_id));
+        assert_eq!(
+            reloaded.state.projects[0]
+                .rosen_work_item(&key)
+                .and_then(|item| item.change.as_deref()),
+            Some("second-pass")
         );
         std::fs::remove_dir_all(directory)?;
         Ok(())

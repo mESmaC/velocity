@@ -307,14 +307,36 @@ impl ProjectItem {
         issue: &ThreadIssue,
         updated_at: Option<&str>,
     ) -> Option<LandedWait> {
+        self.landed_awaiting_integration_for_version(
+            issue,
+            crate::rosen_work::IssueVersion {
+                updated_at,
+                reopened_at: None,
+            },
+        )
+    }
+
+    /// Version-aware form of [`Self::landed_awaiting_integration`] that releases an earlier
+    /// land when a GitHub reopen event is newer than the work item's land timestamp (#602).
+    pub fn landed_awaiting_integration_for_version(
+        &self,
+        issue: &ThreadIssue,
+        version: crate::rosen_work::IssueVersion<'_>,
+    ) -> Option<LandedWait> {
         let key = velocity_core::work_pool::WorkKey::issue(&issue.repository, issue.number);
         if let Some(item) = self.rosen_work_item(&key) {
-            return (item.status == velocity_core::work_pool::WorkStatus::Landed).then(|| {
-                LandedWait {
-                    commit: item.landed_commit.clone(),
-                    since: item.landed_at.as_deref().and_then(|at| at.parse().ok()),
-                }
+            return (item.status == velocity_core::work_pool::WorkStatus::Landed
+                && !crate::rosen_work::item_superseded_by_issue(item, version))
+            .then(|| LandedWait {
+                commit: item.landed_commit.clone(),
+                since: item
+                    .landed_at
+                    .as_deref()
+                    .and_then(crate::rosen_work::parse_timestamp_seconds),
             });
+        }
+        if version.reopened_at.is_some() {
+            return self.matching_landed_hold(issue, version.updated_at);
         }
         let merged = self.threads.iter().find_map(|thread| {
             let assigned = thread.issue.as_ref()?;
@@ -341,6 +363,14 @@ impl ProjectItem {
                 since: None,
             });
         }
+        self.matching_landed_hold(issue, version.updated_at)
+    }
+
+    fn matching_landed_hold(
+        &self,
+        issue: &ThreadIssue,
+        updated_at: Option<&str>,
+    ) -> Option<LandedWait> {
         self.continuous_dispatch
             .landed_holds
             .get(&issue.number)
@@ -762,6 +792,19 @@ impl StateStore {
         issue: crate::issues::ThreadIssue,
         updated_at: String,
     ) -> Result<u32, ThreadError> {
+        self.record_continuous_dispatch_for_version(project, thread, issue, updated_at, None)
+    }
+
+    /// Version-aware dispatch recording that permits re-dispatching an issue reopened after
+    /// an earlier completed Rosen work item (#602).
+    pub fn record_continuous_dispatch_for_version(
+        &mut self,
+        project: u32,
+        thread: crate::threads::NewThread,
+        issue: crate::issues::ThreadIssue,
+        updated_at: String,
+        reopened_at: Option<&str>,
+    ) -> Result<u32, ThreadError> {
         let mut next = self.state.clone();
         let item = next
             .projects
@@ -790,12 +833,22 @@ impl StateStore {
             ));
         }
         let selected = item.active_thread_id;
+        let version = crate::rosen_work::IssueVersion {
+            updated_at: Some(updated_at.as_str()),
+            reopened_at,
+        };
+        let identifier = crate::threads::insert_thread_for_version(
+            &mut next,
+            project,
+            thread,
+            Some(issue.clone()),
+            version,
+        )?;
         let attempt = DispatchAttempt {
-            repository: issue.repository.clone(),
+            repository: issue.repository,
             number: issue.number,
             updated_at,
         };
-        let identifier = crate::threads::insert_thread(&mut next, project, thread, Some(issue))?;
         if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
             mark_dispatch(item, selected, identifier);
             item.continuous_dispatch.attempts.retain(|prior| {

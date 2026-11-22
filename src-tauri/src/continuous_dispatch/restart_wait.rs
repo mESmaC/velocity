@@ -20,6 +20,7 @@ use velocity_rosen::post_land::{LandedCommitSummary, commit_contains, commits_si
 use velocity_rosen::review_swarm::landed_commit_paths;
 use velocity_store::ProjectItem;
 use velocity_store::issues::{ThreadIssue, issue_thread};
+use velocity_store::rosen_work::IssueVersion;
 use velocity_threads::continuous_dispatch::SkippedIssue;
 use velocity_updates::local_build::short_commit;
 
@@ -293,10 +294,11 @@ fn evaluate_issue(
         return None;
     }
     let identity = ThreadIssue::new(repository.into(), issue.number);
+    let version = IssueVersion::from_github(issue);
     if issue_thread(project, &identity).is_some()
-        || project.rosen_issue_completed(&identity)
+        || project.rosen_issue_completed_for_version(&identity, version)
         || project
-            .landed_awaiting_integration(&identity, Some(&issue.updated_at))
+            .landed_awaiting_integration_for_version(&identity, version)
             .is_some()
     {
         return None;

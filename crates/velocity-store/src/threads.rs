@@ -271,7 +271,28 @@ impl StateStore {
         thread: NewThread,
         issue: crate::issues::ThreadIssue,
     ) -> Result<u32, ThreadError> {
-        self.add_linked_thread(project, thread, Some(issue), None)
+        self.add_issue_thread_for_version(
+            project,
+            thread,
+            issue,
+            crate::rosen_work::IssueVersion::default(),
+        )
+    }
+
+    /// Version-aware variant of [`Self::add_issue_thread`] that accepts an open issue
+    /// reopened after an earlier completed Rosen work item (#602).
+    pub fn add_issue_thread_for_version(
+        &mut self,
+        project: u32,
+        thread: NewThread,
+        issue: crate::issues::ThreadIssue,
+        version: crate::rosen_work::IssueVersion<'_>,
+    ) -> Result<u32, ThreadError> {
+        let mut next = self.state.clone();
+        let identifier =
+            insert_thread_for_version(&mut next, project, thread, Some(issue), version)?;
+        self.commit(next)?;
+        Ok(identifier)
     }
 
     fn add_linked_thread(
@@ -405,6 +426,22 @@ pub(crate) fn insert_thread(
     thread: NewThread,
     issue: Option<crate::issues::ThreadIssue>,
 ) -> Result<u32, ThreadError> {
+    insert_thread_for_version(
+        next,
+        project,
+        thread,
+        issue,
+        crate::rosen_work::IssueVersion::default(),
+    )
+}
+
+pub(crate) fn insert_thread_for_version(
+    next: &mut crate::PersistedState,
+    project: u32,
+    thread: NewThread,
+    issue: Option<crate::issues::ThreadIssue>,
+    version: crate::rosen_work::IssueVersion<'_>,
+) -> Result<u32, ThreadError> {
     if let Some(issue) = &issue
         && let Some(existing) = next
             .projects
@@ -428,7 +465,7 @@ pub(crate) fn insert_thread(
         .find(|item| item.id == project)
         .ok_or(ThreadError::UnknownProject(project))?;
     if let Some(issue) = &issue
-        && item.rosen_issue_completed(issue)
+        && item.rosen_issue_completed_for_version(issue, version)
     {
         return Err(ThreadError::IssueCompleted(issue.number));
     }

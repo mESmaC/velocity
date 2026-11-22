@@ -9,6 +9,7 @@ use velocity_core::work_pool::{
 use velocity_github::{GitHubIssue, IssueClient, OPEN_ISSUES_REFRESH};
 use velocity_spec::ProjectSpec;
 use velocity_store::issues::{ThreadIssue, issue_thread};
+use velocity_store::rosen_work::IssueVersion;
 use velocity_store::{ProjectItem, TaskState, ThreadState};
 
 #[derive(Debug, Error)]
@@ -169,7 +170,9 @@ fn issue_pieces(
             crate::continuous_dispatch::actionable_in_project(project, &repository, issue)
         }) {
             let assignment = ThreadIssue::new(repository.clone(), issue.number);
-            if project.rosen_issue_completed(&assignment) {
+            if project
+                .rosen_issue_completed_for_version(&assignment, IssueVersion::from_github(issue))
+            {
                 continue;
             }
             let owner = issue_thread(project, &assignment).map(|thread| thread.id);

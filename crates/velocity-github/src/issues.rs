@@ -13,7 +13,8 @@ use crate::rosen_issue::{INTEGRATION_CONTEXT, unix_seconds};
 use crate::{GitHubCommandError, GitHubIssue, IssueInventory};
 
 pub(crate) const ISSUE_FIELDS: &str = "id number title body url state author { login }
-    createdAt updatedAt closedAt milestone { number } labels(first:100) { nodes { name } totalCount }";
+    createdAt updatedAt closedAt milestone { number } labels(first:100) { nodes { name } totalCount }
+    timelineItems(last:1,itemTypes:[REOPENED_EVENT]) { nodes { ... on ReopenedEvent { createdAt } } }";
 pub(crate) const BLOCKER_FIELDS: &str = "number state repository { nameWithOwner }";
 /// How many commits of the default branch history are bundled with the open-issues query
 /// so integration status checks need no separate ref or commit-status polling (#556).
@@ -27,10 +28,26 @@ pub struct IssueClient {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct IssueNode {
     #[serde(flatten)]
     pub(crate) issue: GitHubIssue,
     pub(crate) labels: Labels,
+    #[serde(default)]
+    pub(crate) timeline_items: Option<ReopenTimeline>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ReopenTimeline {
+    #[serde(default)]
+    nodes: Vec<Option<ReopenNode>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReopenNode {
+    #[serde(default)]
+    created_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -398,6 +415,14 @@ impl IssueClient {
             .collect();
         node.issue.labels.sort();
         node.issue.scout = scout_attribution(&node.issue.body);
+        node.issue.reopened_at = node.timeline_items.and_then(|timeline| {
+            timeline
+                .nodes
+                .into_iter()
+                .flatten()
+                .rev()
+                .find_map(|event| event.created_at)
+        });
         Ok(node.issue)
     }
 

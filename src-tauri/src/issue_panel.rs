@@ -11,8 +11,9 @@ use velocity_github::{
     GitHubCommandError, IssueClient, IssueDiscussion, IssuePanelCache, IssuePanelSnapshot,
     OPEN_ISSUES_REFRESH,
 };
-use velocity_store::VersionControl;
 use velocity_store::issues::{ThreadIssue, issue_thread};
+use velocity_store::rosen_work::IssueVersion;
+use velocity_store::{ThreadState, VersionControl};
 
 use crate::layout::MainLayout;
 use crate::state::ManagedStateStore;
@@ -265,9 +266,10 @@ async fn dispatch_selected_issue(
         let store = application.state::<ManagedStateStore>();
         let mut store = lock(store.inner(), "persisted state")?;
         let identity = ThreadIssue::new(repository.clone(), number);
+        let version = IssueVersion::from_github(&issue);
         if store.project(project_identifier).is_some_and(|project| {
             project.version_control == VersionControl::Rosen
-                && project.rosen_issue_completed(&identity)
+                && project.rosen_issue_completed_for_version(&identity, version)
         }) {
             return Err(format!("Issue #{number} has a landed change"));
         }
@@ -376,12 +378,14 @@ fn open_assigned_thread(
         let projected_owner = if project.version_control == VersionControl::Rosen {
             project
                 .rosen_work_item(&WorkKey::issue(repository, number))
+                .filter(|item| !item.status.completed())
                 .and_then(|item| item.thread_identifier)
                 .filter(|identifier| {
-                    project
-                        .threads
-                        .iter()
-                        .any(|thread| thread.id == *identifier)
+                    project.threads.iter().any(|thread| {
+                        thread.id == *identifier
+                            && !thread.supervision.released
+                            && !matches!(thread.state, ThreadState::Merged | ThreadState::Done)
+                    })
                 })
         } else {
             None

@@ -123,6 +123,8 @@ pub enum DispatchError {
 pub struct IssueDispatchPlan {
     pub launch: LaunchPlan,
     pub issue: ThreadIssue,
+    pub updated_at: String,
+    pub reopened_at: Option<String>,
 }
 
 impl IssueDispatchPlan {
@@ -133,10 +135,15 @@ impl IssueDispatchPlan {
                 "The selected project changed; dispatch again".into(),
             ));
         }
-        Ok(store.add_issue_thread(
+        let version = velocity_store::rosen_work::IssueVersion {
+            updated_at: Some(self.updated_at.as_str()),
+            reopened_at: self.reopened_at.as_deref(),
+        };
+        Ok(store.add_issue_thread_for_version(
             self.launch.project,
             self.launch.thread.clone(),
             self.issue.clone(),
+            version,
         )?)
     }
 }
@@ -211,6 +218,8 @@ pub fn plan_project_issue_dispatch(
     Ok(IssueDispatchPlan {
         launch,
         issue: assignment,
+        updated_at: issue.updated_at.clone(),
+        reopened_at: issue.reopened_at.clone(),
     })
 }
 
