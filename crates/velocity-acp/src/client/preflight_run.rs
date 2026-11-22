@@ -267,13 +267,17 @@ impl StepRunner<'_> {
         let changed = build_changed_files(self.worktree, snapshot);
         let check_plan = plan(&changed, &context);
         let mut steps = Vec::new();
-        record_snapshot_checks(snapshot, &mut steps);
+        let blocking_skip = record_snapshot_checks(snapshot, &mut steps);
         steps.push(check_overlaps(snapshot, self.output).await);
         steps.push(self.check_signature_references(snapshot).await);
         if self.stop.is_cancelled() {
             return Err(Cancelled);
         }
         steps.push(self.check_rustfmt(&check_plan).await?);
+        if let Some(reason) = blocking_skip {
+            steps.extend(skipped_after_snapshot_failure(&check_plan, reason));
+            return Ok(steps);
+        }
         steps.extend(self.check_ui(&check_plan).await?);
         steps.extend(self.check_lockfiles(&check_plan).await?);
         steps.extend(self.check_rust_and_bindings(&check_plan).await?);
@@ -682,37 +686,61 @@ impl StepRunner<'_> {
     }
 }
 
-fn record_snapshot_checks(snapshot: &PreflightSnapshot, steps: &mut Vec<StepOutcome>) {
-    if !snapshot.unreadable.is_empty() {
+fn record_snapshot_checks(
+    snapshot: &PreflightSnapshot,
+    steps: &mut Vec<StepOutcome>,
+) -> Option<&'static str> {
+    let workspace_tree = snapshot.workspace_tree.to_string();
+    let change_head = snapshot.head.to_string();
+    evaluate_snapshot_checks(
+        &snapshot.unreadable,
+        &workspace_tree,
+        &change_head,
+        snapshot.land_refusal.as_ref(),
+        steps,
+    )
+}
+
+/// Evaluates synchronous snapshot checks and returns a skip reason when a blocking
+/// workspace/tree failure makes UI, lockfile, and queued Rust checks meaningless (#681).
+fn evaluate_snapshot_checks(
+    unreadable: &[String],
+    workspace_tree: &str,
+    change_head: &str,
+    land_refusal: Option<&LandRefusal>,
+    steps: &mut Vec<StepOutcome>,
+) -> Option<&'static str> {
+    let has_unreadable = !unreadable.is_empty();
+    if has_unreadable {
         steps.push(StepOutcome::failed(
             "workspace snapshot",
             "some files are held open",
             Some(format!(
                 "Close or save these files before naming the change: {}",
-                snapshot.unreadable.join(", ")
+                unreadable.join(", ")
             )),
         ));
     }
-    if snapshot.workspace_tree != snapshot.head {
-        let workspace_tree = snapshot.workspace_tree.to_string();
-        let change_head = snapshot.head.to_string();
+    let behind_rebase = workspace_tree != change_head;
+    if behind_rebase {
         steps.push(StepOutcome::failed(
             "workspace rebase",
             "workspace is behind a server rebase",
             Some(format!(
                 "Workspace tree {} differs from change head {}. Run `rosen rebase` before running preflight.",
-                workspace_tree.get(..8).unwrap_or(&workspace_tree),
-                change_head.get(..8).unwrap_or(&change_head),
+                workspace_tree.get(..8).unwrap_or(workspace_tree),
+                change_head.get(..8).unwrap_or(change_head),
             )),
         ));
     }
-    match &snapshot.land_refusal {
+    let has_conflict = match land_refusal {
         Some(LandRefusal::Regenerate { paths }) => {
             steps.push(StepOutcome::failed(
                 "generated files (base merge)",
                 format!("needs regeneration: {}", paths.join(", ")),
                 Some(regeneration_instructions(paths).trim().to_owned()),
             ));
+            false
         }
         Some(LandRefusal::Conflict { paths, message }) => {
             let detail = format!(
@@ -724,9 +752,57 @@ fn record_snapshot_checks(snapshot: &PreflightSnapshot, steps: &mut Vec<StepOutc
                 format!("{} path(s) conflict with base", paths.len()),
                 Some(detail),
             ));
+            true
         }
-        Some(LandRefusal::Other { .. }) | None => {}
+        Some(LandRefusal::Other { .. }) | None => false,
+    };
+    snapshot_skip_reason(has_unreadable, behind_rebase, has_conflict)
+}
+
+fn snapshot_skip_reason(
+    has_unreadable: bool,
+    behind_rebase: bool,
+    has_conflict: bool,
+) -> Option<&'static str> {
+    match (has_unreadable, behind_rebase, has_conflict) {
+        (false, false, false) => None,
+        (true, false, false) => {
+            Some("skipped because unreadable workspace files must be closed or saved first")
+        }
+        (false, true, false) => {
+            Some("skipped because the workspace must rebase first (`rosen rebase`)")
+        }
+        (false, _, true) => {
+            Some("skipped because the workspace must rebase and resolve merge conflicts first")
+        }
+        (true, _, _) => Some(
+            "skipped because workspace snapshot, rebase, or merge conflict errors must be fixed first",
+        ),
     }
+}
+
+fn skipped_after_snapshot_failure(check_plan: &PreflightPlan, reason: &str) -> Vec<StepOutcome> {
+    let mut outcomes = Vec::new();
+    if check_plan.ui_check || check_plan.ui_lint {
+        outcomes.push(StepOutcome::skipped("UI checks", reason));
+    } else {
+        outcomes.push(StepOutcome::skipped("UI checks", "no ui/ changes"));
+    }
+    if check_plan.check_cargo_lock {
+        outcomes.push(StepOutcome::skipped("Cargo.lock freshness", reason));
+    }
+    if check_plan.check_pnpm_lock {
+        outcomes.push(StepOutcome::skipped("ui/pnpm-lock.yaml freshness", reason));
+    }
+    if check_plan.needs_light_rust_turn() {
+        outcomes.push(StepOutcome::skipped("Rust checks", reason));
+    } else {
+        outcomes.push(StepOutcome::skipped(
+            "Rust checks",
+            "no touched Rust crates",
+        ));
+    }
+    outcomes
 }
 
 async fn check_overlaps(snapshot: &PreflightSnapshot, output: &mut File) -> StepOutcome {
@@ -1007,8 +1083,11 @@ fn is_diagnostic(line: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{clippy_command, overlap_outcome};
-    use velocity_core::preflight::{StepStatus, format_report};
+    use super::{
+        clippy_command, evaluate_snapshot_checks, overlap_outcome, skipped_after_snapshot_failure,
+    };
+    use velocity_core::preflight::{PreflightPlan, StepOutcome, StepStatus, format_report};
+    use velocity_rosen::landing::LandRefusal;
 
     // Risk (#564): failing preflight on open-change shared symbols deadlocks concurrent
     // changes symmetrically before either can land; overlaps must warn instead.
@@ -1072,6 +1151,97 @@ mod tests {
                     "warnings".to_owned(),
                 ],
             ))
+        );
+    }
+
+    // Risk (#681): acquiring the shared light Rust queue lock and running UI, lockfile,
+    // or clippy checks when workspace snapshot/rebase/conflict checks already failed wastes
+    // queue wait time and invalidates shared target fingerprints on a stale/conflicted tree.
+    #[test]
+    fn blocking_snapshot_failures_short_circuit_heavy_checks() {
+        let head = "1111111111111111111111111111111111111111";
+        let stale = "2222222222222222222222222222222222222222";
+
+        let mut clean_steps = Vec::new();
+        assert!(evaluate_snapshot_checks(&[], head, head, None, &mut clean_steps).is_none());
+        assert!(clean_steps.is_empty());
+
+        let mut regenerate_steps = Vec::new();
+        let regenerate = LandRefusal::Regenerate {
+            paths: vec!["Cargo.lock".to_owned()],
+        };
+        assert!(
+            evaluate_snapshot_checks(&[], head, head, Some(&regenerate), &mut regenerate_steps)
+                .is_none()
+        );
+        assert_eq!(regenerate_steps.len(), 1);
+        assert_eq!(regenerate_steps[0].status, StepStatus::Failed);
+
+        let mut rebase_steps = Vec::new();
+        let rebase_reason = evaluate_snapshot_checks(&[], stale, head, None, &mut rebase_steps);
+        assert!(rebase_reason.is_some());
+        assert_eq!(rebase_steps[0].name, "workspace rebase");
+        assert_eq!(rebase_steps[0].status, StepStatus::Failed);
+
+        let mut conflict_steps = Vec::new();
+        let conflict = LandRefusal::Conflict {
+            paths: vec!["crates/velocity-acp/src/lib.rs".to_owned()],
+            message: "merge conflict".to_owned(),
+        };
+        let conflict_reason =
+            evaluate_snapshot_checks(&[], head, head, Some(&conflict), &mut conflict_steps);
+        assert!(conflict_reason.is_some());
+        assert_eq!(conflict_steps[0].name, "merge conflicts");
+
+        let mut unreadable_steps = Vec::new();
+        let unreadable = vec!["crates/velocity-acp/src/lib.rs".to_owned()];
+        let unreadable_reason =
+            evaluate_snapshot_checks(&unreadable, head, head, None, &mut unreadable_steps);
+        assert!(unreadable_reason.is_some());
+        assert_eq!(unreadable_steps[0].name, "workspace snapshot");
+
+        let full_plan = PreflightPlan {
+            ui_check: true,
+            ui_lint: true,
+            clippy_crates: vec!["velocity-acp".to_owned()],
+            check_cargo_lock: true,
+            check_pnpm_lock: true,
+            check_bindings: true,
+            ..PreflightPlan::default()
+        };
+        let reason = rebase_reason.unwrap_or_default();
+        let skipped = skipped_after_snapshot_failure(&full_plan, reason);
+        assert_eq!(
+            skipped,
+            vec![
+                StepOutcome::skipped("UI checks", reason),
+                StepOutcome::skipped("Cargo.lock freshness", reason),
+                StepOutcome::skipped("ui/pnpm-lock.yaml freshness", reason),
+                StepOutcome::skipped("Rust checks", reason),
+            ]
+        );
+
+        let mut all_steps = rebase_steps;
+        all_steps.extend(skipped);
+        let (passed, report) = format_report("ootnropm1234", 1, &all_steps, "preflight.log");
+        assert!(!passed);
+        assert!(report.contains("[FAIL] workspace rebase"));
+        assert!(report.contains("[SKIP] Rust checks"));
+    }
+
+    // Risk (#681): when UI or Rust crates were not touched, short-circuited skip rows
+    // should still reflect that those suites had no matching changes rather than implying
+    // they would have run after rebase.
+    #[test]
+    fn skipped_after_snapshot_failure_keeps_untouched_summaries() {
+        let skipped =
+            skipped_after_snapshot_failure(&PreflightPlan::default(), "skipped because rebase");
+        assert_eq!(
+            skipped,
+            vec![
+                StepOutcome::skipped("UI checks", "no ui/ changes"),
+                StepOutcome::skipped("Rust checks", "no touched Rust crates"),
+            ]
         );
     }
 }
