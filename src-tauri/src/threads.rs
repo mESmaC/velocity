@@ -75,6 +75,7 @@ fn configure_session(
     setup.read_only = role.is_read_only();
     setup.airc = airc;
     setup.graph_task_title = title;
+    setup.queued_run_store = Some(queued_run_store(application, key));
     if let Ok(app_data) = application.path().app_data_dir() {
         match velocity_threads::agent_memory::prepare_project_memory_for_project(
             &app_data, key.0, rosen,
@@ -1964,6 +1965,47 @@ fn save_agent_session(
     .map_err(|error| error.to_string())
 }
 
+struct ThreadQueuedRunPersistence {
+    application: AppHandle,
+    key: ThreadKey,
+}
+
+impl velocity_acp::client::QueuedRunPersistence for ThreadQueuedRunPersistence {
+    fn persist_added(
+        &self,
+        record: &velocity_core::queued_runs::QueuedRunRecord,
+    ) -> Result<(), String> {
+        let store = self.application.state::<ManagedStateStore>();
+        velocity_threads::queued_runs::persist_added(store.inner(), self.key, record)
+    }
+
+    fn persist_cancelled(
+        &self,
+        record: &velocity_core::queued_runs::QueuedRunRecord,
+    ) -> Result<(), String> {
+        let store = self.application.state::<ManagedStateStore>();
+        velocity_threads::queued_runs::persist_cancelled(store.inner(), self.key, record)
+    }
+
+    fn persist_finished(
+        &self,
+        record: &velocity_core::queued_runs::QueuedRunRecord,
+    ) -> Result<(), String> {
+        let store = self.application.state::<ManagedStateStore>();
+        velocity_threads::queued_runs::persist_finished(store.inner(), self.key, record)
+    }
+}
+
+pub(crate) fn queued_run_store(
+    application: &AppHandle,
+    key: ThreadKey,
+) -> velocity_acp::client::QueuedRunStore {
+    velocity_acp::client::QueuedRunStore::new(std::sync::Arc::new(ThreadQueuedRunPersistence {
+        application: application.clone(),
+        key,
+    }))
+}
+
 /// Persists outstanding `queue_run` commands, phase transitions, and finished run history
 /// so a Velocity restart can replay or report them and `run_status` can recover results (#516, #536).
 fn save_queued_runs(
@@ -1996,8 +2038,15 @@ fn save_queued_runs(
                         .iter_mut()
                         .find(|existing| existing.id == record.id)
                     {
-                        *existing = record.clone();
-                    } else if matches!(event, AgentEvent::QueuedRunAdded(_)) {
+                        if matches!(event, AgentEvent::QueuedRunUpdated(_)) {
+                            *existing = record.clone();
+                        }
+                    } else if matches!(event, AgentEvent::QueuedRunAdded(_))
+                        && !thread
+                            .queued_run_history
+                            .iter()
+                            .any(|existing| existing.id == record.id)
+                    {
                         thread.queued_runs.push(record.clone());
                     }
                 }

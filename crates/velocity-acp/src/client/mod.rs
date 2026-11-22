@@ -84,7 +84,7 @@ pub use queued_run_tool::{
     QUEUED_RUN_TOOL, RUN_CANCEL_TOOL, RUN_STATUS_TOOL, queued_run_tool, request_queued_run,
     request_run_cancel, request_run_status, run_cancel_tool, run_status_tool,
 };
-pub use queued_runs::enable_queued_runs;
+pub use queued_runs::{QueuedRunPersistence, QueuedRunStore, enable_queued_runs};
 pub use session::{
     SessionResume, SessionSetup, StartedSession, answer_permission, session_servers,
 };

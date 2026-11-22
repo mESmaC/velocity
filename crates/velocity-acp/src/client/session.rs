@@ -67,6 +67,8 @@ pub struct SessionSetup {
     pub restored_runs: Vec<velocity_core::queued_runs::QueuedRunRecord>,
     /// Recent finished queued runs persisted on this thread for `run_status` and restart recovery (#536).
     pub run_history: Vec<velocity_core::queued_runs::QueuedRunRecord>,
+    /// Durable persistence hook for `queue_run` and `run_cancel` acknowledgements (#664).
+    pub queued_run_store: Option<super::queued_runs::QueuedRunStore>,
     /// Thread role that determines which MCP tools this session receives (#533).
     pub role: velocity_core::tool_policy::ThreadRole,
     /// True for read-only question threads: disables file write capabilities and write tools (#533).
@@ -133,6 +135,7 @@ impl SessionSetup {
             project_memory_dir: None,
             restored_runs: Vec::new(),
             run_history: Vec::new(),
+            queued_run_store: None,
             role: velocity_core::tool_policy::ThreadRole::Builder,
             read_only: false,
             lazy_tools: false,

@@ -138,6 +138,11 @@ impl QueuedRun {
             .run(rosen, policy, registered, worktree, launch, stop, &sink)
             .await;
         let cancelled_by_user = sink.is_cancelled_by_user();
+        let outcome = if cancelled_by_user {
+            ExecutionOutcome::Cancelled
+        } else {
+            outcome
+        };
         let formatted = format_outcome(&self.record, &self.title, &self.log, outcome);
         let mut result = formatted.message;
         if formatted.include_log {

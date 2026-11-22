@@ -791,6 +791,7 @@ fn launch_resumed_session(
     reset_supervision(application, key, &thread)?;
     setup.pause_on_subscription_limit = true;
     setup.run_history = thread.queued_run_history.clone();
+    setup.queued_run_store = Some(crate::threads::queued_run_store(application, key));
     let inputs = resume_inputs(application, key, path, opening, &thread, &mut setup)?;
     crate::threads::save_activity(application, key, AgentActivity::Thinking, None)?;
     crate::threads::refresh(application, key, false)?;

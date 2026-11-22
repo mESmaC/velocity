@@ -29,6 +29,7 @@ pub mod overlap_paths;
 pub mod parked_review;
 pub mod parking;
 mod process;
+pub mod queued_runs;
 pub mod restart;
 mod review_swarm;
 mod review_swarm_server;

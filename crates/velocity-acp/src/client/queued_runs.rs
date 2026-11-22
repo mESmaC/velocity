@@ -44,6 +44,67 @@ pub fn enable_queued_runs(executable: PathBuf) {
     let _ = EXECUTABLE.set(executable);
 }
 
+/// Durable persistence boundary for acknowledged `queue_run` and `run_cancel` transitions (#664).
+///
+/// Implementations must flush the transition to durable storage (for example `state.json`)
+/// before returning `Ok(())`. Returning `Err` rejects the tool request so Velocity never
+/// acknowledges a durable `run_id` or cancellation that would be lost on restart.
+pub trait QueuedRunPersistence: Send + Sync {
+    /// Durably records an accepted queued run before `queue_run` returns its `run_id`.
+    fn persist_added(&self, record: &QueuedRunRecord) -> Result<(), String>;
+
+    /// Durably records a cancelled run before `run_cancel` returns `cancelled: true`.
+    fn persist_cancelled(&self, record: &QueuedRunRecord) -> Result<(), String>;
+
+    /// Durably records a terminal run record when a concurrent completion wins over `run_cancel`.
+    fn persist_finished(&self, record: &QueuedRunRecord) -> Result<(), String>;
+}
+
+/// Shared handle to the owning thread's durable queued-run persistence (#664).
+#[derive(Clone)]
+pub struct QueuedRunStore(Arc<dyn QueuedRunPersistence>);
+
+impl QueuedRunStore {
+    pub fn new(backend: Arc<dyn QueuedRunPersistence>) -> Self {
+        Self(backend)
+    }
+
+    async fn persist_added(&self, record: QueuedRunRecord) -> Result<(), String> {
+        let backend = Arc::clone(&self.0);
+        tokio::task::spawn_blocking(move || backend.persist_added(&record))
+            .await
+            .map_err(|error| format!("Queued run persistence task failed: {error}"))?
+    }
+
+    async fn persist_cancelled(&self, record: QueuedRunRecord) -> Result<(), String> {
+        let backend = Arc::clone(&self.0);
+        tokio::task::spawn_blocking(move || backend.persist_cancelled(&record))
+            .await
+            .map_err(|error| format!("Queued run persistence task failed: {error}"))?
+    }
+
+    async fn persist_finished(&self, record: QueuedRunRecord) -> Result<(), String> {
+        let backend = Arc::clone(&self.0);
+        tokio::task::spawn_blocking(move || backend.persist_finished(&record))
+            .await
+            .map_err(|error| format!("Queued run persistence task failed: {error}"))?
+    }
+}
+
+impl std::fmt::Debug for QueuedRunStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("QueuedRunStore(..)")
+    }
+}
+
+impl PartialEq for QueuedRunStore {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for QueuedRunStore {}
+
 pub(super) struct RunQueue {
     stop: CancellationToken,
     worker: JoinHandle<()>,
@@ -92,6 +153,7 @@ impl RunQueue {
             outstanding: Arc::clone(&outstanding),
             turn_ended,
             registry: Arc::clone(&registry),
+            persistence: setup.queued_run_store.clone(),
         };
         let mut initial_runs = JoinSet::new();
         let mut results = RunResults {
@@ -428,6 +490,21 @@ impl RunRegistry {
         self.runs.iter().map(|run| run.record.clone()).collect()
     }
 
+    fn prepare_cancel(&self, run_id: &str) -> Result<(QueuedRunRecord, bool), String> {
+        let Some(entry) = self.runs.iter().find(|run| run.record.id == run_id) else {
+            return Err(format!("Unknown run ID: {run_id}"));
+        };
+        if entry.record.phase.is_terminal() {
+            return Ok((entry.record.clone(), false));
+        }
+        let mut cancelled = entry.record.clone();
+        cancelled.phase = QueuedRunPhase::Cancelled;
+        cancelled.queue_reason = None;
+        cancelled.exit_status = Some("cancelled".into());
+        cancelled.delivered = true;
+        Ok((cancelled, true))
+    }
+
     fn cancel(&mut self, run_id: &str) -> Result<(QueuedRunRecord, bool), String> {
         let Some(entry) = self.runs.iter_mut().find(|run| run.record.id == run_id) else {
             return Err(format!("Unknown run ID: {run_id}"));
@@ -553,6 +630,7 @@ struct QueueHost {
     outstanding: Arc<AtomicUsize>,
     turn_ended: watch::Receiver<()>,
     registry: Arc<Mutex<RunRegistry>>,
+    persistence: Option<QueuedRunStore>,
 }
 
 impl QueueHost {
@@ -694,7 +772,7 @@ impl QueueHost {
                 Work::Command(command) => self.enqueue(command, runs).await.map(Accepted::Queued),
                 Work::Workflow(workflow) => self.start_workflow(workflow, runs).await,
                 Work::Status(query) => self.status(query).await.map(Accepted::Json),
-                Work::Cancel(query) => self.cancel(query).map(Accepted::Json),
+                Work::Cancel(query) => self.cancel(query).await.map(Accepted::Json),
                 Work::Preflight(_) => self.start_preflight(runs).map(Accepted::Log),
             },
             Ok(Ok(_)) => Err("Invalid session token".into()),
@@ -771,11 +849,25 @@ impl QueueHost {
             .map_err(|error| error.to_string())?;
         let record = run.record();
         let accepted = accepted_reply(&record, run.log.clone(), estimated);
-        let (run_stop, sink) = self.register_run(record.clone(), policy);
         // Subscribe before acknowledging. A fast turn end must release this command
         // without allowing it to run during the agent's final handoff call.
         let mut turn_ended = self.turn_ended.clone();
         turn_ended.mark_unchanged();
+        if self.stop.is_cancelled() {
+            let log = run.log.clone();
+            drop(run);
+            let _ = std::fs::remove_file(&log);
+            return Err("The session stopped before the queued run could be saved".into());
+        }
+        if let Some(store) = &self.persistence
+            && let Err(error) = store.persist_added(record.clone()).await
+        {
+            let log = run.log.clone();
+            drop(run);
+            let _ = std::fs::remove_file(&log);
+            return Err(format!("Could not persist queued run: {error}"));
+        }
+        let (run_stop, sink) = self.register_run(record.clone(), policy);
         self.outstanding.fetch_add(1, Ordering::Release);
         let _ = self.events.send(QueueEvent::Added(record));
         let _ = self
@@ -931,22 +1023,43 @@ impl QueueHost {
         .map_err(str::to_owned)
     }
 
-    fn cancel(&self, query: RunCancelRequest) -> Result<Value, String> {
+    async fn cancel(&self, query: RunCancelRequest) -> Result<Value, String> {
+        let (candidate, needs_cancel) = self
+            .registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .prepare_cancel(&query.run_id)?;
+        if !needs_cancel {
+            return Ok(cancel_reply(&candidate, false));
+        }
+        if let Some(store) = &self.persistence {
+            store
+                .persist_cancelled(candidate)
+                .await
+                .map_err(|error| format!("Could not persist run cancellation: {error}"))?;
+        }
         let (record, cancelled) = self
             .registry
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .cancel(&query.run_id)?;
-        Ok(json!({
-            "run_id": record.id,
-            "cancelled": cancelled,
-            "already_finished": !cancelled,
-            "phase": record.phase.as_str(),
-            "exit_code": record.exit_code,
-            "exit_status": record.exit_status,
-            "log": record.log,
-        }))
+        if !cancelled && let Some(store) = &self.persistence {
+            let _ = store.persist_finished(record.clone()).await;
+        }
+        Ok(cancel_reply(&record, cancelled))
     }
+}
+
+fn cancel_reply(record: &QueuedRunRecord, cancelled: bool) -> Value {
+    json!({
+        "run_id": record.id,
+        "cancelled": cancelled,
+        "already_finished": !cancelled,
+        "phase": record.phase.as_str(),
+        "exit_code": record.exit_code,
+        "exit_status": record.exit_status,
+        "log": record.log,
+    })
 }
 
 fn apply_restored_notices(
@@ -1218,6 +1331,7 @@ mod tests {
             outstanding: Arc::clone(&outstanding),
             turn_ended,
             registry: Arc::clone(&registry),
+            persistence: None,
         };
         let mut runs = JoinSet::new();
         let mut results = RunResults {
@@ -1262,5 +1376,265 @@ mod tests {
         drop(guard);
 
         let _ = std::fs::remove_dir_all(&worktree);
+    }
+
+    #[derive(Default)]
+    struct TestRunPersistence {
+        active: Mutex<Vec<QueuedRunRecord>>,
+        history: Mutex<Vec<QueuedRunRecord>>,
+        fail_add: AtomicBool,
+        fail_cancel: AtomicBool,
+    }
+
+    impl TestRunPersistence {
+        fn snapshot(&self) -> (Vec<QueuedRunRecord>, Vec<QueuedRunRecord>) {
+            let active = self
+                .active
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            let history = self
+                .history
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            (active, history)
+        }
+    }
+
+    impl QueuedRunPersistence for TestRunPersistence {
+        fn persist_added(&self, record: &QueuedRunRecord) -> Result<(), String> {
+            if self.fail_add.load(Ordering::Acquire) {
+                return Err("simulated add write failure".into());
+            }
+            let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+            if !active.iter().any(|existing| existing.id == record.id) {
+                active.push(record.clone());
+            }
+            Ok(())
+        }
+
+        fn persist_cancelled(&self, record: &QueuedRunRecord) -> Result<(), String> {
+            if self.fail_cancel.load(Ordering::Acquire) {
+                return Err("simulated cancel write failure".into());
+            }
+            self.persist_finished(record)
+        }
+
+        fn persist_finished(&self, record: &QueuedRunRecord) -> Result<(), String> {
+            self.active
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .retain(|existing| existing.id != record.id);
+            let mut history = self.history.lock().unwrap_or_else(PoisonError::into_inner);
+            history.retain(|existing| existing.id != record.id);
+            history.push(record.clone());
+            Ok(())
+        }
+    }
+
+    async fn spawn_test_host(
+        worktree: &Path,
+        restored: Vec<QueuedRunRecord>,
+        history: Vec<QueuedRunRecord>,
+        persistence: Option<QueuedRunStore>,
+    ) -> io::Result<(
+        u16,
+        CancellationToken,
+        JoinHandle<()>,
+        RunResults,
+        Arc<Mutex<RunRegistry>>,
+    )> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = listener.local_addr()?.port();
+        let (events, receiver) = unbounded_channel();
+        let (released, turn_ended) = watch::channel(());
+        let stop = CancellationToken::new();
+        let outstanding = Arc::new(AtomicUsize::new(0));
+        let registry = Arc::new(Mutex::new(RunRegistry::from_history(&history)));
+        let host = QueueHost {
+            token: "test-token".into(),
+            rosen: PathBuf::from("rosen"),
+            worktree: worktree.to_path_buf(),
+            launch: AgentLaunch::new(PathBuf::from("agent")),
+            graph_context: None,
+            stop: stop.clone(),
+            events,
+            outstanding: Arc::clone(&outstanding),
+            turn_ended,
+            registry: Arc::clone(&registry),
+            persistence,
+        };
+        let mut initial_runs = JoinSet::new();
+        let mut results = RunResults {
+            outstanding,
+            receiver: Some(receiver),
+            released: Some(released),
+            registry: Some(Arc::clone(&registry)),
+            ..RunResults::default()
+        };
+        let (agent_sender, _agent_receiver) = unbounded_channel();
+        host.start_restored(
+            restored,
+            history,
+            &mut initial_runs,
+            &mut results,
+            &agent_sender,
+        )
+        .await;
+        let worker = tokio::spawn(host.serve(listener, initial_runs));
+        Ok((port, stop, worker, results, registry))
+    }
+
+    async fn call_tool(
+        port: u16,
+        call: fn(u16, &str, Value) -> Result<Value, String>,
+        arguments: Value,
+    ) -> Result<Value, String> {
+        tokio::task::spawn_blocking(move || call(port, "test-token", arguments))
+            .await
+            .map_err(|error| error.to_string())?
+    }
+
+    fn remove_log_files(records: &[QueuedRunRecord]) {
+        for record in records {
+            if let Some(log) = &record.log {
+                let _ = std::fs::remove_file(log);
+            }
+        }
+    }
+
+    // Risk (#664): positive `queue_run` replies must wait for durable persistence so crashing
+    // before the ACP/Tauri event pump handles `Added` still recovers the acknowledged `run_id`,
+    // while persistence failures reject the tool call without leaking in-memory state.
+    #[tokio::test]
+    async fn queue_run_persists_before_reply_and_survives_restart()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let worktree =
+            std::env::temp_dir().join(format!("velocity-664-add-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&worktree)?;
+        let backend = Arc::new(TestRunPersistence::default());
+        let store = QueuedRunStore::new(Arc::clone(&backend) as Arc<dyn QueuedRunPersistence>);
+        let args = json!({ "program": "cargo", "arguments": ["check", "-p", "velocity-acp"] });
+
+        let (port, stop, worker, results, registry) =
+            spawn_test_host(&worktree, Vec::new(), Vec::new(), Some(store.clone())).await?;
+        backend.fail_add.store(true, Ordering::Release);
+        assert!(
+            call_tool(port, queued_run_tool::request_queued_run, args.clone())
+                .await
+                .is_err()
+        );
+        assert!(!results.outstanding());
+        assert!(
+            registry
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .all_records()
+                .is_empty()
+        );
+
+        backend.fail_add.store(false, Ordering::Release);
+        let accepted = call_tool(port, queued_run_tool::request_queued_run, args).await?;
+        let run_id = accepted["run_id"]
+            .as_str()
+            .ok_or("missing run_id")?
+            .to_owned();
+        let (active, history) = backend.snapshot();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, run_id);
+        assert!(history.is_empty());
+
+        // Crash before draining QueueEvent::Added; a restarted host must still recover the run.
+        stop.cancel();
+        let _ = worker.await;
+        let (restarted_port, restarted_stop, restarted_worker, restarted_results, _) =
+            spawn_test_host(&worktree, active.clone(), history, Some(store)).await?;
+        assert!(restarted_results.waiting);
+        let status = call_tool(
+            restarted_port,
+            queued_run_tool::request_run_status,
+            json!({ "run_id": run_id }),
+        )
+        .await?;
+        assert_eq!(status["run_id"].as_str(), Some(active[0].id.as_str()));
+
+        restarted_stop.cancel();
+        let _ = restarted_worker.await;
+        remove_log_files(&active);
+        let _ = std::fs::remove_dir_all(&worktree);
+        Ok(())
+    }
+
+    // Risk (#664): positive `run_cancel` replies must wait for durable persistence so crashing
+    // before the finished event reaches the pump never replays the cancelled command on restart,
+    // while persistence failures reject `run_cancel` and keep the run active.
+    #[tokio::test]
+    async fn run_cancel_persists_before_reply_and_prevents_restart_replay()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let worktree =
+            std::env::temp_dir().join(format!("velocity-664-cancel-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&worktree)?;
+        let backend = Arc::new(TestRunPersistence::default());
+        let store = QueuedRunStore::new(Arc::clone(&backend) as Arc<dyn QueuedRunPersistence>);
+        let args = json!({ "program": "cargo", "arguments": ["check", "-p", "velocity-acp"] });
+
+        let (port, stop, worker, _results, _registry) =
+            spawn_test_host(&worktree, Vec::new(), Vec::new(), Some(store.clone())).await?;
+        let accepted = call_tool(port, queued_run_tool::request_queued_run, args).await?;
+        let run_id = accepted["run_id"]
+            .as_str()
+            .ok_or("missing run_id")?
+            .to_owned();
+
+        backend.fail_cancel.store(true, Ordering::Release);
+        assert!(
+            call_tool(
+                port,
+                queued_run_tool::request_run_cancel,
+                json!({ "run_id": run_id })
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(backend.snapshot().0.len(), 1);
+
+        backend.fail_cancel.store(false, Ordering::Release);
+        let cancelled = call_tool(
+            port,
+            queued_run_tool::request_run_cancel,
+            json!({ "run_id": run_id }),
+        )
+        .await?;
+        assert_eq!(cancelled["cancelled"].as_bool(), Some(true));
+        assert_eq!(cancelled["phase"].as_str(), Some("cancelled"));
+
+        // Crash before draining QueueEvent::Finished; restart must not replay the cancelled run.
+        let (active, history) = backend.snapshot();
+        assert!(active.is_empty());
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].phase, QueuedRunPhase::Cancelled);
+        assert!(history[0].delivered);
+        stop.cancel();
+        let _ = worker.await;
+
+        let (restarted_port, restarted_stop, restarted_worker, restarted_results, _) =
+            spawn_test_host(&worktree, active, history.clone(), Some(store)).await?;
+        assert!(!restarted_results.waiting);
+        assert!(!restarted_results.outstanding());
+        assert!(restarted_results.ready.is_empty());
+        let status = call_tool(
+            restarted_port,
+            queued_run_tool::request_run_status,
+            json!({ "run_id": run_id }),
+        )
+        .await?;
+        assert_eq!(status["phase"].as_str(), Some("cancelled"));
+
+        restarted_stop.cancel();
+        let _ = restarted_worker.await;
+        remove_log_files(&history);
+        let _ = std::fs::remove_dir_all(&worktree);
+        Ok(())
     }
 }
