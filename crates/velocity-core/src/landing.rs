@@ -104,9 +104,93 @@ pub fn landing_request(
     }
 }
 
+/// Category of a Rosen land refusal for the F6 retry and handoff policy (#487, #633).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LandRefusalKind {
+    /// Rosen requires generated files to be regenerated on the merged inputs.
+    Regenerate,
+    /// Rosen reported merge conflicts to resolve in the workspace.
+    Conflict,
+    /// Rosen's before-land policy rejected the land (`unapproved`, `no_receipt`, `receipt_stale`).
+    BeforeLandPolicy,
+    /// Any other refusal without a built-in repair path; eligible for one retry per generation.
+    Ordinary,
+}
+
+impl LandRefusalKind {
+    /// Classifies a `LandRefusal::Other` code into before-land policy vs ordinary refusal.
+    pub fn from_other_code(code: &str) -> Self {
+        match code {
+            "unapproved" | "no_receipt" | "receipt_stale" => Self::BeforeLandPolicy,
+            _ => Self::Ordinary,
+        }
+    }
+
+    /// Whether this refusal hands back to the author immediately without retrying.
+    pub const fn immediate_handoff(self) -> bool {
+        match self {
+            Self::Regenerate | Self::Conflict | Self::BeforeLandPolicy => true,
+            Self::Ordinary => false,
+        }
+    }
+}
+
+/// Decision for one Rosen land refusal on a named change generation (SPEC.md F6, #487, #633).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefusalAction {
+    /// The refusal is for an older generation or settled thread; ignore so a newer head stays open.
+    Ignore,
+    /// A project prerequisite check is running; retry later without spending the retry slot.
+    DeferPrerequisite,
+    /// First ordinary refusal for this named generation; record it and retry once on a later pass.
+    RetryOnce,
+    /// Return the change to Working and deliver repair instructions to its author.
+    Handoff,
+}
+
+impl RefusalAction {
+    /// Retry attempts scheduled by this decision (0 or 1).
+    pub const fn retry_attempts(self) -> u32 {
+        match self {
+            Self::DeferPrerequisite | Self::RetryOnce => 1,
+            Self::Ignore | Self::Handoff => 0,
+        }
+    }
+
+    /// Author handoff submissions triggered by this decision (0 or 1).
+    pub const fn handoff_submissions(self) -> u32 {
+        match self {
+            Self::Handoff => 1,
+            Self::Ignore | Self::DeferPrerequisite | Self::RetryOnce => 0,
+        }
+    }
+}
+
+/// Decides whether to ignore a stale refusal, defer while a prerequisite check runs,
+/// retry an ordinary refusal once for the named generation, or hand back to the author
+/// (SPEC.md F6, #487, #633).
+pub fn refusal_plan(
+    same_generation: bool,
+    kind: LandRefusalKind,
+    prerequisite_check_running: bool,
+    already_retried: bool,
+) -> RefusalAction {
+    if !same_generation {
+        RefusalAction::Ignore
+    } else if kind.immediate_handoff() {
+        RefusalAction::Handoff
+    } else if prerequisite_check_running {
+        RefusalAction::DeferPrerequisite
+    } else if !already_retried {
+        RefusalAction::RetryOnce
+    } else {
+        RefusalAction::Handoff
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{PostLandCheckPlan, PreLandCheckPlan};
+    use super::{LandRefusalKind, PostLandCheckPlan, PreLandCheckPlan, RefusalAction};
 
     fn parse_pre_land_action(label: &str) -> Result<PreLandCheckPlan, String> {
         match label {
@@ -114,6 +198,26 @@ mod tests {
             "check_bindings" => Ok(PreLandCheckPlan::RunBindingsCheck),
             "land" => Ok(PreLandCheckPlan::LandNow),
             other => Err(format!("unknown pre_land action: {other}")),
+        }
+    }
+
+    fn parse_refusal_kind(label: &str) -> Result<LandRefusalKind, String> {
+        match label {
+            "regenerate" => Ok(LandRefusalKind::Regenerate),
+            "conflict" => Ok(LandRefusalKind::Conflict),
+            "before_land_policy" => Ok(LandRefusalKind::BeforeLandPolicy),
+            "ordinary" => Ok(LandRefusalKind::Ordinary),
+            other => Err(format!("unknown refusal kind: {other}")),
+        }
+    }
+
+    fn parse_refusal_action(label: &str) -> Result<RefusalAction, String> {
+        match label {
+            "ignore" => Ok(RefusalAction::Ignore),
+            "defer_prerequisite" => Ok(RefusalAction::DeferPrerequisite),
+            "retry_once" => Ok(RefusalAction::RetryOnce),
+            "handoff" => Ok(RefusalAction::Handoff),
+            other => Err(format!("unknown refusal action: {other}")),
         }
     }
 
@@ -130,13 +234,31 @@ mod tests {
         Ok(())
     }
 
-    // Risk (#629): omitting a rebase or skipping a required Rosen pre-land/post-land check
-    // risks landing stale snapshots, stale bindings, or unverified commits.
-    // Missing an eligible land request can also strand named work.
+    fn check_refusal(fields: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+        let action = super::refusal_plan(
+            fields[1].parse()?,
+            parse_refusal_kind(fields[2])?,
+            fields[3].parse()?,
+            fields[4].parse()?,
+        );
+        assert_eq!(action, parse_refusal_action(fields[5])?);
+        assert_eq!(action.retry_attempts(), fields[6].parse::<u32>()?);
+        assert_eq!(action.handoff_submissions(), fields[7].parse::<u32>()?);
+        Ok(())
+    }
+
+    // Risk (#629, #633): omitting a rebase, skipping a required Rosen pre-land/post-land check,
+    // missing an eligible land request, or mishandling a refusal retry/handoff risks landing
+    // stale snapshots, stranding named work, or reopening a newer generation.
     #[test]
     fn lean_landing_fixtures() -> Result<(), Box<dyn std::error::Error>> {
-        let (mut rebase_rows, mut pre_land_rows, mut post_land_rows, mut request_rows) =
-            (0, 0, 0, 0);
+        let (
+            mut rebase_rows,
+            mut pre_land_rows,
+            mut post_land_rows,
+            mut request_rows,
+            mut refusal_rows,
+        ) = (0, 0, 0, 0, 0);
         for line in include_str!("../../../proofs/fixtures/targeted-rebase.tsv").lines() {
             let fields: Vec<_> = line.split('\t').collect();
             match fields.first().copied() {
@@ -181,14 +303,24 @@ mod tests {
                     request_rows += 1;
                     check_landing_request(&fields)?;
                 }
+                Some("refusal") => {
+                    refusal_rows += 1;
+                    check_refusal(&fields)?;
+                }
                 other => {
                     return Err(format!("unexpected targeted-rebase fixture row: {other:?}").into());
                 }
             }
         }
         assert_eq!(
-            (rebase_rows, pre_land_rows, post_land_rows, request_rows),
-            (8, 8, 8, 16)
+            (
+                rebase_rows,
+                pre_land_rows,
+                post_land_rows,
+                request_rows,
+                refusal_rows,
+            ),
+            (8, 8, 8, 16, 32)
         );
         Ok(())
     }

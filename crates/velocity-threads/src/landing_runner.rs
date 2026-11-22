@@ -12,7 +12,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
-use velocity_core::{duty::DutyEventKind, landing::landing_request, rosen_checker};
+use velocity_core::{
+    duty::DutyEventKind,
+    landing::{LandRefusalKind, RefusalAction, landing_request, refusal_plan},
+    rosen_checker,
+};
 use velocity_rosen::landing::{self, LandOutcome, LandRefusal};
 use velocity_rosen::{ProjectServer, checker};
 use velocity_store::duty::LandingProject;
@@ -308,6 +312,31 @@ impl RosenLanding {
         );
     }
 
+    fn generation_current<Host: LandingHost>(
+        &self,
+        host: &Host,
+        project_id: u32,
+        thread_id: u32,
+        change: &str,
+        generation: u64,
+    ) -> bool {
+        host.projects()
+            .into_iter()
+            .find(|project| project.project.id == project_id)
+            .is_some_and(|project| {
+                project.project.threads.iter().any(|thread| {
+                    thread.id == thread_id
+                        && thread.rosen_change.as_deref() == Some(change)
+                        && thread.rosen_progress_generation == generation
+                        && thread.state == ThreadState::Review
+                        && matches!(
+                            thread.review_stage,
+                            Some(ReviewStage::Review | ReviewStage::Approved)
+                        )
+                })
+            })
+    }
+
     fn report_refusal<Host: LandingHost>(
         &self,
         host: &Host,
@@ -319,11 +348,20 @@ impl RosenLanding {
         let project_id = project.project.id;
         let generation = thread.rosen_progress_generation;
         let key = (project_id, thread.id);
-        if matches!(&refusal, LandRefusal::Other { .. })
-            && !is_before_land_gate(&refusal)
-            && self.retry_later(key, generation)
-        {
-            return;
+        let same_generation =
+            self.generation_current(host, project_id, thread.id, change, generation);
+        let kind = refusal_kind(&refusal);
+        match refusal_plan(same_generation, kind, false, false) {
+            RefusalAction::Ignore => {
+                self.lock().refusal_retries.remove(&key);
+                return;
+            }
+            RefusalAction::Handoff => {}
+            RefusalAction::DeferPrerequisite | RefusalAction::RetryOnce => {
+                if self.retry_later(key, generation) {
+                    return;
+                }
+            }
         }
         let branch = crate::launch::base_branch(&project.project);
         let refusal = refusal_instructions(change, &branch, refusal);
@@ -337,11 +375,18 @@ impl RosenLanding {
     fn retry_later(&self, key: (u32, u32), generation: u64) -> bool {
         let checking = self.checking_bindings(key.0);
         let mut state = self.lock();
-        if checking {
-            state.refusal_retries.remove(&key);
-            return true;
+        let already_retried = state.refusal_retries.get(&key) == Some(&generation);
+        match refusal_plan(true, LandRefusalKind::Ordinary, checking, already_retried) {
+            RefusalAction::DeferPrerequisite => {
+                state.refusal_retries.remove(&key);
+                true
+            }
+            RefusalAction::RetryOnce => {
+                state.refusal_retries.insert(key, generation);
+                true
+            }
+            RefusalAction::Ignore | RefusalAction::Handoff => false,
         }
-        state.refusal_retries.insert(key, generation) != Some(generation)
     }
 
     /// Gives the change back to its author with the reason and the repair.
@@ -396,8 +441,8 @@ pub fn refusal_instructions(
                 rosen_checker::conflict_message(change, base_branch, &paths)
             },
         ),
-        LandRefusal::Other { code, message } => match code.as_str() {
-            "unapproved" | "no_receipt" | "receipt_stale" => (
+        LandRefusal::Other { code, message } => match LandRefusalKind::from_other_code(&code) {
+            LandRefusalKind::BeforeLandPolicy => (
                 code,
                 format!(
                     "Rosen's before-land policy refused the land.\n\n{message}\n\nTo complete the switch to `after-land`, use Switch to after-land in the Rosen status pane, or approve this head (`rosen review approve {change} --head <head>`), submit the pre-land receipt (`rosen receipt submit {change} --head <head> --base <base>`) and run `rosen land {change}`. Do not name the change again, because a new snapshot voids approvals and receipts."
@@ -413,10 +458,10 @@ pub fn refusal_instructions(
     }
 }
 
-fn is_before_land_gate(refusal: &LandRefusal) -> bool {
-    matches!(
-        refusal,
-        LandRefusal::Other { code, .. }
-            if matches!(code.as_str(), "unapproved" | "no_receipt" | "receipt_stale")
-    )
+fn refusal_kind(refusal: &LandRefusal) -> LandRefusalKind {
+    match refusal {
+        LandRefusal::Regenerate { .. } => LandRefusalKind::Regenerate,
+        LandRefusal::Conflict { .. } => LandRefusalKind::Conflict,
+        LandRefusal::Other { code, .. } => LandRefusalKind::from_other_code(code),
+    }
 }

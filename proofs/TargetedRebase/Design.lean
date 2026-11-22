@@ -65,6 +65,33 @@ def selectsLand (afterLand named hasChange policySwitch : Bool) : Bool :=
 def Eligible (afterLand named hasChange policySwitch : Bool) : Prop :=
   named = true ∧ hasChange = true ∧ (afterLand = true ∨ policySwitch = true)
 
+-- Live F6 Rosen refusal retry and handoff policy (landing_runner.rs, velocity-store/src/rosen.rs,
+-- #487, #503, #633): ignore stale generations; hand off regeneration, conflicts and before-land
+-- policy refusals immediately; defer ordinary refusals while a prerequisite check runs; otherwise
+-- retry once per named generation before handoff.
+inductive RefusalKind where | regenerate | conflict | beforeLandPolicy | ordinary deriving DecidableEq
+inductive RefusalAction where | ignore | deferPrerequisite | retryOnce | handoff deriving DecidableEq
+def immediateHandoff : RefusalKind → Bool
+  | .regenerate | .conflict | .beforeLandPolicy => true
+  | .ordinary => false
+def refusalPlan (sameGen : Bool) (kind : RefusalKind) (prereq retried : Bool) : RefusalAction :=
+  if !sameGen then .ignore else if immediateHandoff kind then .handoff
+  else if prereq then .deferPrerequisite else if !retried then .retryOnce else .handoff
+def refusalRetryCost : RefusalAction → Nat
+  | .deferPrerequisite | .retryOnce => 1
+  | .ignore | .handoff => 0
+def refusalHandoffCost : RefusalAction → Nat
+  | .handoff => 1
+  | .ignore | .deferPrerequisite | .retryOnce => 0
+def NeedsRetry (sameGen : Bool) (kind : RefusalKind) (prereq retried : Bool) : Prop :=
+  sameGen = true ∧ kind = .ordinary ∧ (prereq = true ∨ retried = false)
+def NeedsHandoff (sameGen : Bool) (kind : RefusalKind) (prereq retried : Bool) : Prop :=
+  sameGen = true ∧ (immediateHandoff kind = true ∨ (prereq = false ∧ retried = true))
+def EnoughRefusalHandling (sameGen : Bool) (kind : RefusalKind) (prereq retried : Bool)
+    (retries handoffs : Nat) : Prop :=
+  (NeedsRetry sameGen kind prereq retried → 1 ≤ retries) ∧
+  (NeedsHandoff sameGen kind prereq retried → 1 ≤ handoffs)
+
 def Spec (live : Finset Nat) (overlap : Nat → Bool) (sameHead sameBase touch : Bool) : Prop :=
   (∀ agent, agent ∈ selected live overlap ↔ agent ∈ live ∧ overlap agent = true) ∧
   EnoughChecks sameHead sameBase touch (checks sameHead sameBase touch) ∧
@@ -86,11 +113,18 @@ def Spec (live : Finset Nat) (overlap : Nat → Bool) (sameHead sameBase touch :
       afterLand = true ∧ hasFullSuite = false)) ∧
   (∀ afterLand named hasChange policySwitch,
     selectsLand afterLand named hasChange policySwitch = true ↔
-      Eligible afterLand named hasChange policySwitch)
+      Eligible afterLand named hasChange policySwitch) ∧
+  (∀ sameGen kind prereq retried,
+    let action := refusalPlan sameGen kind prereq retried
+    EnoughRefusalHandling sameGen kind prereq retried (refusalRetryCost action) (refusalHandoffCost action) ∧
+    (action = .ignore ↔ sameGen = false) ∧
+    (action = .handoff ↔ NeedsHandoff sameGen kind prereq retried) ∧
+    (action = .deferPrerequisite ↔ sameGen = true ∧ kind = .ordinary ∧ prereq = true) ∧
+    (action = .retryOnce ↔ sameGen = true ∧ kind = .ordinary ∧ prereq = false ∧ retried = false))
 
 theorem correct (live : Finset Nat) (overlap : Nat → Bool) (sameHead sameBase touch : Bool) :
     Spec live overlap sameHead sameBase touch := by
-  refine ⟨?_, ?_, ?_, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩
   · intro agent; simp [selected]
   · cases sameHead <;> cases sameBase <;> cases touch <;> simp [EnoughChecks, checks]
   · intro preflightCurrent touchesBindings bindingsVerified
@@ -102,6 +136,10 @@ theorem correct (live : Finset Nat) (overlap : Nat → Bool) (sameHead sameBase 
   · intro afterLand named hasChange policySwitch
     cases afterLand <;> cases named <;> cases hasChange <;> cases policySwitch <;>
       simp [selectsLand, Eligible]
+  · intro sameGen kind prereq retried
+    cases sameGen <;> cases kind <;> cases prereq <;> cases retried <;>
+      simp [EnoughRefusalHandling, NeedsRetry, NeedsHandoff, immediateHandoff,
+        refusalPlan, refusalRetryCost, refusalHandoffCost]
 
 -- Cost counts branch updates and check passes. Discovery/network costs are external.
 def cost (agents : Finset Nat) (passes : Nat) : Nat := agents.card + passes
@@ -116,6 +154,11 @@ def rosenCheckCost (preflightCurrent touchesBindings bindingsVerified
 def submissionCost (afterLand named hasChange policySwitch : Bool) : Nat :=
   if selectsLand afterLand named hasChange policySwitch then 1 else 0
 
+-- Count retry attempts and author handoff submissions per Rosen refusal event.
+def refusalCost (sameGen : Bool) (kind : RefusalKind) (prereq retried : Bool) : Nat :=
+  let action := refusalPlan sameGen kind prereq retried
+  refusalRetryCost action + refusalHandoffCost action
+
 theorem cost_bound (live : Finset Nat) (overlap : Nat → Bool) (sameHead sameBase touch : Bool) :
     cost (selected live overlap) (checks sameHead sameBase touch) ≤ live.card + 2 ∧
     (∀ preflightCurrent touchesBindings bindingsVerified afterLand buildPrefixRequired,
@@ -124,8 +167,13 @@ theorem cost_bound (live : Finset Nat) (overlap : Nat → Bool) (sameHead sameBa
       rosenCheckCost preflightCurrent touchesBindings bindingsVerified afterLand buildPrefixRequired ≤
         (if afterLand then 2 else 3)) ∧
     (∀ afterLand named hasChange policySwitch,
-      submissionCost afterLand named hasChange policySwitch ≤ 1) := by
-  refine ⟨?_, ?_, ?_⟩
+      submissionCost afterLand named hasChange policySwitch ≤ 1) ∧
+    (∀ sameGen kind prereq retried,
+      let action := refusalPlan sameGen kind prereq retried
+      refusalRetryCost action ≤ (if sameGen && !immediateHandoff kind then 1 else 0) ∧
+      refusalHandoffCost action ≤ (if sameGen then 1 else 0) ∧
+      refusalCost sameGen kind prereq retried ≤ (if sameGen then 1 else 0)) := by
+  refine ⟨?_, ?_, ?_, ?_⟩
   · have bound : (selected live overlap).card ≤ live.card := Finset.card_le_card (Finset.filter_subset _ _)
     cases sameHead <;> cases sameBase <;> cases touch <;> simp_all [cost, checks] <;> omega
   · intro preflightCurrent touchesBindings bindingsVerified afterLand buildPrefixRequired
@@ -135,10 +183,13 @@ theorem cost_bound (live : Finset Nat) (overlap : Nat → Bool) (sameHead sameBa
   · intro afterLand named hasChange policySwitch
     unfold submissionCost
     split <;> omega
+  · intro sameGen kind prereq retried
+    cases sameGen <;> cases kind <;> cases prereq <;> cases retried <;>
+      simp [refusalCost, refusalPlan, refusalRetryCost, refusalHandoffCost, immediateHandoff]
 
 -- Alternatives may add updates/checks but must cover affected agents, stale code,
--- required pre-land bindings checks, and required post-land build/test passes.
--- An alternative submission strategy must submit every eligible candidate.
+-- required pre-land bindings checks, required post-land build/test passes, eligible
+-- land requests, and required F6 refusal retries/handoffs.
 theorem optimal (live : Finset Nat) (overlap : Nat → Bool)
     (sameHead sameBase touch : Bool) (alternative : Finset Nat) (passes : Nat)
     (covers : ∀ agent ∈ live, overlap agent = true → agent ∈ alternative)
@@ -152,8 +203,13 @@ theorem optimal (live : Finset Nat) (overlap : Nat → Bool)
         altPreLand + altPostLand) ∧
     (∀ afterLand named hasChange policySwitch (alternativeSubmissions : Nat),
       (Eligible afterLand named hasChange policySwitch → 1 ≤ alternativeSubmissions) →
-      submissionCost afterLand named hasChange policySwitch ≤ alternativeSubmissions) := by
-  refine ⟨?_, ?_, ?_⟩
+      submissionCost afterLand named hasChange policySwitch ≤ alternativeSubmissions) ∧
+    (∀ sameGen kind prereq retried (altRetries altHandoffs : Nat),
+      EnoughRefusalHandling sameGen kind prereq retried altRetries altHandoffs →
+      let action := refusalPlan sameGen kind prereq retried
+      refusalRetryCost action ≤ altRetries ∧ refusalHandoffCost action ≤ altHandoffs ∧
+      refusalCost sameGen kind prereq retried ≤ altRetries + altHandoffs) := by
+  refine ⟨?_, ?_, ?_, ?_⟩
   · have subset : selected live overlap ⊆ alternative := by
       intro agent member
       have parts := Finset.mem_filter.mp member
@@ -169,6 +225,10 @@ theorem optimal (live : Finset Nat) (overlap : Nat → Bool)
   · intro afterLand named hasChange policySwitch alternativeSubmissions coversEligible
     cases afterLand <;> cases named <;> cases hasChange <;> cases policySwitch <;>
       simp_all [Eligible, submissionCost, selectsLand]
+  · intro sameGen kind prereq retried altRetries altHandoffs enoughRefusal
+    cases sameGen <;> cases kind <;> cases prereq <;> cases retried <;>
+      simp_all [EnoughRefusalHandling, NeedsRetry, NeedsHandoff, immediateHandoff,
+        refusalCost, refusalPlan, refusalRetryCost, refusalHandoffCost] <;> omega
 
 #print axioms correct
 #print axioms cost_bound
@@ -178,30 +238,42 @@ def preLandActionName : PreLandAction → String
   | .refusePreflight => "refuse_preflight"
   | .checkBindings => "check_bindings"
   | .land => "land"
+def refusalKindName : RefusalKind → String
+  | .regenerate => "regenerate"
+  | .conflict => "conflict"
+  | .beforeLandPolicy => "before_land_policy"
+  | .ordinary => "ordinary"
+def refusalActionName : RefusalAction → String
+  | .ignore => "ignore"
+  | .deferPrerequisite => "defer_prerequisite"
+  | .retryOnce => "retry_once"
+  | .handoff => "handoff"
 
 def rebaseFixtures : String := String.join ([false, true].flatMap fun claimed =>
   [false, true].flatMap fun edited => [false, true].map fun contested =>
     s!"rebase\t{claimed}\t{edited}\t{contested}\t{affected claimed edited contested}\n")
-
 def preLandFixtures : String := String.join ([false, true].flatMap fun preflightCurrent =>
   [false, true].flatMap fun touchesBindings => [false, true].map fun bindingsVerified =>
     let action := preLandPlan preflightCurrent touchesBindings bindingsVerified
     let passes := preLandPasses preflightCurrent touchesBindings bindingsVerified
     s!"pre_land\t{preflightCurrent}\t{touchesBindings}\t{bindingsVerified}\t{preLandActionName action}\t{passes}\n")
-
 def postLandFixtures : String := String.join ([false, true].flatMap fun afterLand =>
   [false, true].flatMap fun buildPrefixRequired => [false, true].map fun hasFullSuite =>
     let sep := postLandSeparateBuild afterLand buildPrefixRequired
     let prepend := postLandPrependPreLand afterLand hasFullSuite
     let passes := postLandPasses afterLand buildPrefixRequired
     s!"post_land\t{afterLand}\t{buildPrefixRequired}\t{hasFullSuite}\t{sep}\t{prepend}\t{passes}\n")
-
 def landingRequestFixtures : String := String.join ([false, true].flatMap fun afterLand =>
   [false, true].flatMap fun named => [false, true].flatMap fun hasChange =>
     [false, true].map fun policySwitch =>
       let request := selectsLand afterLand named hasChange policySwitch
       s!"landing_request\t{afterLand}\t{named}\t{hasChange}\t{policySwitch}\t{request}\n")
-
-def fixtures : String := rebaseFixtures ++ preLandFixtures ++ postLandFixtures ++ landingRequestFixtures
+def refusalFixtures : String := String.join ([false, true].flatMap fun sameGen =>
+  [RefusalKind.regenerate, .conflict, .beforeLandPolicy, .ordinary].flatMap fun kind =>
+    [false, true].flatMap fun prereq => [false, true].map fun retried =>
+      let action := refusalPlan sameGen kind prereq retried
+      s!"refusal\t{sameGen}\t{refusalKindName kind}\t{prereq}\t{retried}\t{refusalActionName action}\t{refusalRetryCost action}\t{refusalHandoffCost action}\n")
+def fixtures : String :=
+  rebaseFixtures ++ preLandFixtures ++ postLandFixtures ++ landingRequestFixtures ++ refusalFixtures
 #eval IO.FS.writeFile "fixtures/targeted-rebase.tsv" fixtures
 end TargetedRebase

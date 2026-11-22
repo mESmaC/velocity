@@ -38,3 +38,35 @@ landing_request	true	true	false	false	false
 landing_request	true	true	false	true	false
 landing_request	true	true	true	false	true
 landing_request	true	true	true	true	true
+refusal	false	regenerate	false	false	ignore	0	0
+refusal	false	regenerate	false	true	ignore	0	0
+refusal	false	regenerate	true	false	ignore	0	0
+refusal	false	regenerate	true	true	ignore	0	0
+refusal	false	conflict	false	false	ignore	0	0
+refusal	false	conflict	false	true	ignore	0	0
+refusal	false	conflict	true	false	ignore	0	0
+refusal	false	conflict	true	true	ignore	0	0
+refusal	false	before_land_policy	false	false	ignore	0	0
+refusal	false	before_land_policy	false	true	ignore	0	0
+refusal	false	before_land_policy	true	false	ignore	0	0
+refusal	false	before_land_policy	true	true	ignore	0	0
+refusal	false	ordinary	false	false	ignore	0	0
+refusal	false	ordinary	false	true	ignore	0	0
+refusal	false	ordinary	true	false	ignore	0	0
+refusal	false	ordinary	true	true	ignore	0	0
+refusal	true	regenerate	false	false	handoff	0	1
+refusal	true	regenerate	false	true	handoff	0	1
+refusal	true	regenerate	true	false	handoff	0	1
+refusal	true	regenerate	true	true	handoff	0	1
+refusal	true	conflict	false	false	handoff	0	1
+refusal	true	conflict	false	true	handoff	0	1
+refusal	true	conflict	true	false	handoff	0	1
+refusal	true	conflict	true	true	handoff	0	1
+refusal	true	before_land_policy	false	false	handoff	0	1
+refusal	true	before_land_policy	false	true	handoff	0	1
+refusal	true	before_land_policy	true	false	handoff	0	1
+refusal	true	before_land_policy	true	true	handoff	0	1
+refusal	true	ordinary	false	false	retry_once	1	0
+refusal	true	ordinary	false	true	handoff	0	1
+refusal	true	ordinary	true	false	defer_prerequisite	1	0
+refusal	true	ordinary	true	true	defer_prerequisite	1	0
