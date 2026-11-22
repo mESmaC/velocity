@@ -5,7 +5,7 @@ use std::path::Path;
 
 use rosen_client::protocol::{LogRequest, MarkReviewed};
 use rosen_client::{ChangeState, ChannelMembership};
-use rosen_core::ReviewedState;
+use rosen_core::{Change, ReviewedState, SnapshotKind};
 
 use crate::{ProjectServer, RosenError, change_details, landing, workspace};
 
@@ -294,6 +294,65 @@ pub async fn open_workspace(
     ))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkspaceFinishAction {
+    Land,
+    Abandon,
+    Keep,
+}
+
+fn current_head_is_named(change: &Change) -> bool {
+    change.snapshots.iter().rev().any(|snapshot| {
+        matches!(snapshot.kind, SnapshotKind::Named(_)) && snapshot.tree == change.head
+    })
+}
+
+/// Decides how `finish_workspace` handles a live review change after flushing local writes (#625).
+///
+/// Rosen keeps a change in `Open` after `rosen commit -m` until someone requests a land, so
+/// nonempty after-land changes whose current head has a named snapshot follow the same preflight
+/// and automatic landing path as `Ready` changes. Unnamed edits and conflicts stay in the workspace.
+fn workspace_finish_action(
+    change: &Change,
+    expected_head: Option<&str>,
+    empty_diff: bool,
+    after_land: bool,
+) -> WorkspaceFinishAction {
+    if expected_head.is_some_and(|expected| change.head.to_string() != expected) {
+        return WorkspaceFinishAction::Keep;
+    }
+    if change.state == ChangeState::Ready {
+        return if change.conflicts.is_empty() {
+            WorkspaceFinishAction::Land
+        } else {
+            WorkspaceFinishAction::Keep
+        };
+    }
+    if empty_diff {
+        return WorkspaceFinishAction::Abandon;
+    }
+    if change.state == ChangeState::Open
+        && after_land
+        && change.conflicts.is_empty()
+        && current_head_is_named(change)
+    {
+        return WorkspaceFinishAction::Land;
+    }
+    WorkspaceFinishAction::Keep
+}
+
+async fn land_review_workspace(server: &ProjectServer, change: &str) -> Result<bool, RosenError> {
+    match crate::preflight::verify_for_land(server, change).await? {
+        crate::preflight::LandPreflightGate::Passed
+        | crate::preflight::LandPreflightGate::Closed => {}
+        crate::preflight::LandPreflightGate::Refused { .. } => return Ok(false),
+    }
+    Ok(matches!(
+        landing::land(server, "velocity-checker", change).await?,
+        landing::LandOutcome::Landed { .. }
+    ))
+}
+
 /// Named proof and fix-forward work lands through Rosen's ordinary after-land policy.
 /// An unfinished or conflicted change is kept for its worker, including after restart.
 pub async fn finish_workspace(
@@ -318,25 +377,28 @@ pub async fn finish_workspace(
     if expected_head.is_some_and(|expected| record.head.to_string() != expected) {
         return Ok(false);
     }
-    if record.state == ChangeState::Ready {
-        match crate::preflight::verify_for_land(server, change).await? {
-            crate::preflight::LandPreflightGate::Passed
-            | crate::preflight::LandPreflightGate::Closed => {}
-            crate::preflight::LandPreflightGate::Refused { .. } => return Ok(false),
-        }
-        return Ok(matches!(
-            landing::land(server, "velocity-checker", change).await?,
-            landing::LandOutcome::Landed { .. }
-        ));
-    }
-    if change_details::changed_paths(server, change)
-        .await?
-        .is_empty()
+    let empty_diff = if record.state == ChangeState::Ready {
+        false
+    } else {
+        change_details::changed_paths(server, change)
+            .await?
+            .is_empty()
+    };
+    let mut action = workspace_finish_action(&record, expected_head, empty_diff, true);
+    if action == WorkspaceFinishAction::Land
+        && record.state == ChangeState::Open
+        && !crate::post_land::after_land(server).await?
     {
-        session.abandon(change).await?;
-        return Ok(true);
+        action = workspace_finish_action(&record, expected_head, empty_diff, false);
     }
-    Ok(false)
+    match action {
+        WorkspaceFinishAction::Land => land_review_workspace(server, change).await,
+        WorkspaceFinishAction::Abandon => {
+            session.abandon(change).await?;
+            Ok(true)
+        }
+        WorkspaceFinishAction::Keep => Ok(false),
+    }
 }
 
 pub async fn snapshot_head(
@@ -416,5 +478,149 @@ mod issue_closure_tests {
             matches!(reviewed.closer("change", "first-land", false), Some(IssueCloser::Reviewer(by)) if by == "scout-1")
         );
         assert!(reviewed.closer("change", "later-land", true).is_none());
+    }
+
+    fn test_change(
+        state: ChangeState,
+        head: rosen_core::ObjectId,
+        snapshots: Vec<rosen_core::Snapshot>,
+        conflicts: Vec<rosen_core::ConflictId>,
+    ) -> Result<Change, rosen_core::Error> {
+        let base: rosen_core::ObjectId = "1".repeat(40).parse()?;
+        let mut change = Change::new(
+            rosen_core::ChangeId::from_bytes([0x11; 16]),
+            rosen_core::AgentId::new("scout-1")?,
+            rosen_core::ChangeParent::Base(base),
+            base,
+        );
+        change.state = state;
+        change.head = head;
+        change.snapshots = snapshots;
+        change.conflicts = conflicts;
+        Ok(change)
+    }
+
+    // #625: Rosen leaves a change in Open after `rosen commit -m`, so review swarm finalization
+    // skipped preflight and automatic landing for named proof work unless state was already Ready.
+    #[test]
+    fn finish_action_lands_named_open_after_land_changes() -> Result<(), rosen_core::Error> {
+        use rosen_core::{ObjectId, Snapshot};
+
+        let tree_a: ObjectId = "a".repeat(40).parse()?;
+        let tree_b: ObjectId = "b".repeat(40).parse()?;
+        let commit_1: ObjectId = "2".repeat(40).parse()?;
+        let commit_2: ObjectId = "3".repeat(40).parse()?;
+        let named_open = test_change(
+            ChangeState::Open,
+            tree_a,
+            vec![
+                Snapshot {
+                    commit: commit_1,
+                    tree: tree_a,
+                    kind: SnapshotKind::Named("first name".into()),
+                },
+                Snapshot {
+                    commit: commit_2,
+                    tree: tree_a,
+                    kind: SnapshotKind::Named("second name".into()),
+                },
+            ],
+            Vec::new(),
+        )?;
+        let expected_a = tree_a.to_string();
+        assert_eq!(
+            workspace_finish_action(&named_open, Some(&expected_a), false, true),
+            WorkspaceFinishAction::Land
+        );
+        assert_eq!(
+            workspace_finish_action(&named_open, Some(&expected_a), false, false),
+            WorkspaceFinishAction::Keep
+        );
+        assert_eq!(
+            workspace_finish_action(&named_open, Some(&tree_b.to_string()), false, true),
+            WorkspaceFinishAction::Keep
+        );
+        assert_eq!(
+            workspace_finish_action(&named_open, Some(&expected_a), true, true),
+            WorkspaceFinishAction::Abandon
+        );
+        Ok(())
+    }
+
+    // #625: Unnamed edits after a named snapshot and conflicted workspaces must be retained.
+    #[test]
+    fn finish_action_keeps_unnamed_or_conflicted_changes() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use rosen_core::{ConflictId, ObjectId, Snapshot};
+
+        let tree_a: ObjectId = "a".repeat(40).parse()?;
+        let tree_b: ObjectId = "b".repeat(40).parse()?;
+        let commit_1: ObjectId = "2".repeat(40).parse()?;
+        let commit_2: ObjectId = "3".repeat(40).parse()?;
+        let conflict: ConflictId = "0123456789abcdef".parse()?;
+
+        let unnamed_only = test_change(
+            ChangeState::Open,
+            tree_a,
+            vec![Snapshot {
+                commit: commit_1,
+                tree: tree_a,
+                kind: SnapshotKind::Automatic,
+            }],
+            Vec::new(),
+        )?;
+        assert_eq!(
+            workspace_finish_action(&unnamed_only, Some(&tree_a.to_string()), false, true),
+            WorkspaceFinishAction::Keep
+        );
+
+        let unnamed_after_named = test_change(
+            ChangeState::Open,
+            tree_b,
+            vec![
+                Snapshot {
+                    commit: commit_1,
+                    tree: tree_a,
+                    kind: SnapshotKind::Named("earlier name".into()),
+                },
+                Snapshot {
+                    commit: commit_2,
+                    tree: tree_b,
+                    kind: SnapshotKind::Automatic,
+                },
+            ],
+            Vec::new(),
+        )?;
+        assert_eq!(
+            workspace_finish_action(&unnamed_after_named, Some(&tree_b.to_string()), false, true),
+            WorkspaceFinishAction::Keep
+        );
+
+        let conflicted_named = test_change(
+            ChangeState::Open,
+            tree_a,
+            vec![Snapshot {
+                commit: commit_1,
+                tree: tree_a,
+                kind: SnapshotKind::Named("named".into()),
+            }],
+            vec![conflict],
+        )?;
+        assert_eq!(
+            workspace_finish_action(&conflicted_named, Some(&tree_a.to_string()), false, true),
+            WorkspaceFinishAction::Keep
+        );
+
+        let ready_clean = test_change(ChangeState::Ready, tree_a, Vec::new(), Vec::new())?;
+        assert_eq!(
+            workspace_finish_action(&ready_clean, Some(&tree_a.to_string()), false, false),
+            WorkspaceFinishAction::Land
+        );
+        let ready_conflicted = test_change(ChangeState::Ready, tree_a, Vec::new(), vec![conflict])?;
+        assert_eq!(
+            workspace_finish_action(&ready_conflicted, Some(&tree_a.to_string()), false, true),
+            WorkspaceFinishAction::Keep
+        );
+        Ok(())
     }
 }
