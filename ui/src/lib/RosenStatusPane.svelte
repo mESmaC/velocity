@@ -185,8 +185,8 @@
     send({ OpenThread: identifier });
   }
 
-  // The state feed line of the Mirror section (#517). Rosen records which event
-  // Collapse last acknowledged, so the time is when that event happened.
+  // The state feed line of the Mirror section (#517, #662). Rosen reports the
+  // actual successful-send timestamp via CollapseHealth.state_feed.last_success_at.
   function feedLine(sentAt: string | null | undefined) {
     const at = sentAt ? Number(sentAt) : Number.NaN;
     return Number.isFinite(at)

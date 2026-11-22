@@ -326,26 +326,37 @@ pub fn collapse_feed_id(server: &ProjectServer) -> Option<String> {
 }
 
 /// Reads the landed Collapse settings, state feed / ledger push health and active server
-/// relay allow-list for `server` (#576).
+/// relay allow-list for `server` (#576, #662).
 pub async fn collapse_state(server: &ProjectServer) -> Result<CollapseServerState, RosenError> {
     let client = requests(server.endpoint()).await?;
-    let record = client.project_config(None).await?;
-    let state_url = record.config.state_feed_url();
-    let ledger_url = record.config.ledger_push_url();
-    let owned = server.clone();
-    let metadata = tokio::task::spawn_blocking(move || {
-        crate::status::metadata::read_collapse(&owned, state_url.as_deref(), ledger_url.as_deref())
-    })
-    .await
-    .map_err(|error| RosenError::StatusData(error.to_string()))??;
+    let (record, status) = tokio::try_join!(client.project_config(None), client.status())?;
+    let (state_feed, ledger_push) = match status.collapse.as_ref() {
+        Some(collapse) => (
+            crate::status::collapse_feed_health(&collapse.state_feed),
+            crate::status::collapse_feed_health(&collapse.ledger_push),
+        ),
+        None => (CollapseFeedHealth::default(), CollapseFeedHealth::default()),
+    };
+    let (relay_allow, relay_revoked) = match status.relay {
+        Some(relay) => (
+            CollapseRelayKind::normalize(relay.allow.into_iter().map(from_relay_kind)),
+            relay.revoked,
+        ),
+        None => {
+            let owned = server.clone();
+            tokio::task::spawn_blocking(move || crate::status::metadata::read_relay_setting(&owned))
+                .await
+                .map_err(|error| RosenError::StatusData(error.to_string()))??
+        }
+    };
     Ok(CollapseServerState {
         collapse_root: record.config.collapse,
         collapse_channel: record.config.collapse_channel,
         config_error: record.error,
-        state_feed: metadata.state_feed,
-        ledger_push: metadata.ledger_push,
-        relay_allow: metadata.relay_allow,
-        relay_revoked: metadata.relay_revoked,
+        state_feed,
+        ledger_push,
+        relay_allow,
+        relay_revoked,
     })
 }
 

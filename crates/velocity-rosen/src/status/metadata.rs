@@ -2,29 +2,19 @@ use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
-use velocity_core::collapse::{CollapseFeedHealth, CollapseRelayKind};
+use velocity_core::collapse::CollapseRelayKind;
 
 use super::{BaseStatus, LandingStatus, MirrorStatus};
 use crate::{ProjectServer, RosenError};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct CollapseMetadata {
-    pub state_feed: CollapseFeedHealth,
-    pub ledger_push: CollapseFeedHealth,
-    pub relay_allow: Vec<CollapseRelayKind>,
-    pub relay_revoked: bool,
-}
-
-/// Reads Collapse feed health, ledger push health and the server's active relay allow-list
-/// from `metadata.sqlite` without opening or creating a missing database (#576).
-pub(crate) fn read_collapse(
+/// Reads the server's active relay allow-list and revocation flag from `metadata.sqlite`
+/// without opening or creating a missing database (#576).
+pub(crate) fn read_relay_setting(
     server: &ProjectServer,
-    state_endpoint: Option<&str>,
-    ledger_endpoint: Option<&str>,
-) -> Result<CollapseMetadata, RosenError> {
+) -> Result<(Vec<CollapseRelayKind>, bool), RosenError> {
     let path = server.data_dir().join("metadata.sqlite");
     if !path.is_file() {
-        return Ok(CollapseMetadata::default());
+        return Ok((Vec::new(), false));
     }
     let mut connection =
         Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(data_error)?;
@@ -32,7 +22,7 @@ pub(crate) fn read_collapse(
         .busy_timeout(Duration::from_millis(200))
         .map_err(data_error)?;
     let transaction = connection.transaction().map_err(data_error)?;
-    collapse_snapshot(&transaction, state_endpoint, ledger_endpoint).map_err(data_error)
+    relay_setting(&transaction).map_err(data_error)
 }
 
 /// Reads Rosen's local Collapse feed identifier (`collapse_feed.feed_id`), if recorded.
@@ -56,98 +46,6 @@ pub(crate) fn read_collapse_feed_id(server: &ProjectServer) -> Option<String> {
         .ok()
         .flatten()
         .filter(|id| !id.trim().is_empty())
-}
-
-fn collapse_snapshot(
-    connection: &Connection,
-    state_endpoint: Option<&str>,
-    ledger_endpoint: Option<&str>,
-) -> rusqlite::Result<CollapseMetadata> {
-    let state_feed = match state_endpoint {
-        Some(endpoint) => {
-            let (last_sent_at, last_error) = state_feed(connection, endpoint)?;
-            CollapseFeedHealth {
-                last_sent_at,
-                last_error,
-            }
-        }
-        None => CollapseFeedHealth::default(),
-    };
-    let ledger_push = match ledger_endpoint {
-        Some(endpoint) => ledger_push_health(connection, endpoint)?,
-        None => CollapseFeedHealth::default(),
-    };
-    let (relay_allow, relay_revoked) = relay_setting(connection)?;
-    Ok(CollapseMetadata {
-        state_feed,
-        ledger_push,
-        relay_allow,
-        relay_revoked,
-    })
-}
-
-fn ledger_push_health(
-    connection: &Connection,
-    endpoint: &str,
-) -> rusqlite::Result<CollapseFeedHealth> {
-    let mut newest_delivered: Option<i64> = None;
-    if table(connection, "ledger_push")? && table(connection, "channel_ledger")? {
-        for ledger in ["discovery", "past_work"] {
-            let delivered: i64 = connection
-                .query_row(
-                    "SELECT delivered FROM ledger_push WHERE endpoint = ?1 AND ledger = ?2",
-                    (endpoint, ledger),
-                    |row| row.get(0),
-                )
-                .optional()?
-                .unwrap_or_default();
-            if delivered > 0
-                && let Some(created_at) = connection
-                    .query_row(
-                        "SELECT created_at FROM channel_ledger
-                          WHERE ledger = ?1 AND seq <= ?2 ORDER BY seq DESC LIMIT 1",
-                        (ledger, delivered),
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .optional()?
-            {
-                newest_delivered =
-                    Some(newest_delivered.map_or(created_at, |best| best.max(created_at)));
-            }
-        }
-    }
-    let last_error = if table(connection, "events")? {
-        connection
-            .query_row(
-                "SELECT json_extract(detail, '$.status'), json_extract(detail, '$.error'),
-                        json_extract(detail, '$.endpoint'), created_at
-                   FROM events WHERE kind = 'ledger_push' ORDER BY seq DESC LIMIT 1",
-                [],
-                |row| {
-                    Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                },
-            )
-            .optional()?
-            .filter(|(status, _, failed_endpoint, failed_at)| {
-                matches!(status.as_deref(), Some("failed" | "stopped"))
-                    && failed_endpoint
-                        .as_deref()
-                        .is_none_or(|failed| failed == endpoint)
-                    && newest_delivered.is_none_or(|sent| sent <= *failed_at)
-            })
-            .map(|(_, error, _, _)| error.unwrap_or_else(|| "Rosen reported no error".into()))
-    } else {
-        None
-    };
-    Ok(CollapseFeedHealth {
-        last_sent_at: newest_delivered.map(|at| at.to_string()),
-        last_error,
-    })
 }
 
 fn relay_setting(connection: &Connection) -> rusqlite::Result<(Vec<CollapseRelayKind>, bool)> {
@@ -204,8 +102,7 @@ const PRESENCE: i64 = 90_000;
 
 // R9 carries lifecycle notifications but omits event times and several read-only
 // fields. Read the pinned daemon's metadata together, without writing or migrating it.
-/// `feed` is the state feed endpoint the configuration in force names, if any.
-pub(super) fn read(server: &ProjectServer, feed: Option<&str>) -> Result<Metadata, RosenError> {
+pub(super) fn read(server: &ProjectServer) -> Result<Metadata, RosenError> {
     let mut connection = Connection::open_with_flags(
         server.data_dir().join("metadata.sqlite"),
         OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -215,14 +112,14 @@ pub(super) fn read(server: &ProjectServer, feed: Option<&str>) -> Result<Metadat
         .busy_timeout(Duration::from_millis(200))
         .map_err(data_error)?;
     let transaction = connection.transaction().map_err(data_error)?;
-    snapshot(&transaction, feed).map_err(data_error)
+    snapshot(&transaction).map_err(data_error)
 }
 
 fn data_error(error: rusqlite::Error) -> RosenError {
     RosenError::StatusData(error.to_string())
 }
 
-fn snapshot(connection: &Connection, feed: Option<&str>) -> rusqlite::Result<Metadata> {
+fn snapshot(connection: &Connection) -> rusqlite::Result<Metadata> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
@@ -238,10 +135,7 @@ fn snapshot(connection: &Connection, feed: Option<&str>) -> rusqlite::Result<Met
         .min()
         .map(|deadline| Duration::from_millis(deadline.saturating_sub(now).max(1) as u64))
         .unwrap_or(Duration::from_secs(86_400));
-    let mut mirror = mirror(connection, base.tip.as_deref())?;
-    if let Some(endpoint) = feed {
-        (mirror.feed_sent_at, mirror.feed_error) = state_feed(connection, endpoint)?;
-    }
+    let mirror = mirror(connection, base.tip.as_deref())?;
     Ok(Metadata {
         base,
         landing,
@@ -488,64 +382,6 @@ fn mirror(connection: &Connection, tip: Option<&str>) -> rusqlite::Result<Mirror
     }
     status.state = Some(label.into());
     Ok(status)
-}
-
-/// What the state feed delivered to `endpoint` (#517): when the newest event Collapse
-/// acknowledged was recorded, and the feed's latest failure while nothing newer arrived.
-/// Rosen publishes `recovered` only within one run, so a delivery after the failure is
-/// what proves a feed that recovered across a restart.
-fn state_feed(
-    connection: &Connection,
-    endpoint: &str,
-) -> rusqlite::Result<(Option<String>, Option<String>)> {
-    if !table(connection, "events")? {
-        return Ok((None, None));
-    }
-    let delivered: i64 = if table(connection, "state_push")? {
-        connection
-            .query_row(
-                "SELECT delivered FROM state_push WHERE endpoint = ?1",
-                [endpoint],
-                |row| row.get(0),
-            )
-            .optional()?
-            .unwrap_or_default()
-    } else {
-        0
-    };
-    let sent_at = connection
-        .query_row(
-            "SELECT created_at FROM events WHERE seq <= ?1 ORDER BY seq DESC LIMIT 1",
-            [delivered],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?
-        .map(|at| at.to_string());
-    let error = connection
-        .query_row(
-            "SELECT json_extract(detail, '$.status'), json_extract(detail, '$.error'),
-                    json_extract(detail, '$.endpoint'), seq
-               FROM events WHERE kind = 'state_push' ORDER BY seq DESC LIMIT 1",
-            [],
-            |row| {
-                Ok((
-                    row.get::<_, Option<String>>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, i64>(3)?,
-                ))
-            },
-        )
-        .optional()?
-        .filter(|(status, _, failed_endpoint, sequence)| {
-            matches!(status.as_deref(), Some("failed" | "stopped"))
-                && failed_endpoint
-                    .as_deref()
-                    .is_none_or(|failed| failed == endpoint)
-                && *sequence > delivered
-        })
-        .map(|(_, error, _, _)| error.unwrap_or_else(|| "Rosen reported no error".into()));
-    Ok((sent_at, error))
 }
 
 fn changes(

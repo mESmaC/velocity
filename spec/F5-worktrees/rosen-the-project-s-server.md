@@ -73,5 +73,4 @@
   While any project mirrors to Collapse, Velocity reads Collapse's dashboard with the personal token after each mirror push, on window focus, when the Rosen status pane opens, and once a minute for five minutes after the last land, and saves each repository's last land and forwarder state with the project (#572).
   The Rosen status pane's Mirror section shows them (F6), and the project header warns while the forwarder is stopped or the repository is archived, with Open on Collapse to retry there.
   Beside them the section shows the state feed: `Collapse receives commits only` without the `collapse` root, otherwise when it last sent, and `State feed failing` with Rosen's error while its latest pass failed or stopped.
-  Rosen records the newest event Collapse acknowledged, not a send time, so the time shown is when that event was recorded; the feed sends within a minute of an event.
-  Rosen reports a recovery only within one run of the server, so a failure counts until a newer event is delivered.
+  Velocity reads the state feed and ledger push send times and errors from Rosen's `ServerStatus.collapse` (`CollapseHealth.*.last_success_at` and `last_error`) so the displayed send time reflects the actual successful delivery rather than an acknowledged event's creation timestamp (#662).

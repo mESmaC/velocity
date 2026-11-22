@@ -1060,13 +1060,14 @@ impl CollapseRelayKind {
     }
 }
 
-/// Last delivery time and failure for a Rosen push stream to Collapse (#576).
+/// Last delivery time and failure for a Rosen push stream to Collapse (#576, #662).
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 pub struct CollapseFeedHealth {
-    /// Unix milliseconds when the newest acknowledged event or ledger entry was recorded.
+    /// Unix milliseconds of the most recent delivered batch, from Rosen's
+    /// `CollapseHealth.*.last_success_at`, or `None` before a delivery succeeds.
     pub last_sent_at: Option<String>,
-    /// Why the latest pass failed or stopped while nothing newer arrived.
+    /// Why the latest pass failed or stopped, cleared once a subsequent pass succeeds.
     pub last_error: Option<String>,
 }
 

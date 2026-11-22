@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use rosen_client::protocol::{ChangeRecord, DiffRequest, EventKind, OverlapQuery};
+use rosen_client::protocol::{ChangeRecord, DiffRequest, EventKind, FeedHealth, OverlapQuery};
 use rosen_core::{ChangeParent, ChangeState, ObjectId, SnapshotKind};
 use rosen_core::{ProjectConfig, RecheckMode, ReviewMode};
 use serde::Serialize;
+use velocity_core::collapse::CollapseFeedHealth;
 
 use crate::{ProjectServer, RosenError};
 
@@ -57,11 +58,10 @@ pub struct MirrorStatus {
     /// The configuration in force names the Collapse root, so Rosen sends Collapse its
     /// live state and ledger entries and reads the owner's relayed actions (#517).
     pub live_state: bool,
-    /// When the newest event Collapse acknowledged from the state feed was recorded, in
-    /// Unix milliseconds. Rosen records what the endpoint holds, not when it was sent;
-    /// the feed sends within a minute of an event. `None` before the first delivery.
+    /// Unix milliseconds of the state feed's most recent delivered batch, from Rosen's
+    /// `CollapseHealth.state_feed.last_success_at` (#662). `None` before a delivery succeeds.
     pub feed_sent_at: Option<String>,
-    /// Why the state feed last failed or stopped, while nothing newer was delivered.
+    /// Why the state feed last failed or stopped, cleared once a subsequent pass succeeds.
     pub feed_error: Option<String>,
 }
 
@@ -174,14 +174,12 @@ impl StatusFeed {
         target: u32,
     ) -> Result<Duration, RosenError> {
         let server = self.server.clone();
-        let feed = self.config.state_feed_url();
         let local = tokio::task::spawn_blocking(move || {
-            let metadata = metadata::read(&server, feed.as_deref())?;
+            let metadata = metadata::read(&server)?;
             Ok::<_, RosenError>((metadata, local::read(&server)))
         });
-        if status.server.is_none() {
-            status.server = Some(self.client.status().await?.server);
-        }
+        let server_status = self.client.status().await?;
+        status.server = Some(server_status.server);
         let (metadata, local) = local
             .await
             .map_err(|error| RosenError::StatusData(error.to_string()))??;
@@ -206,6 +204,13 @@ impl StatusFeed {
         }
         status.mirror = metadata.mirror;
         status.mirror.live_state = self.config.collapse.is_some();
+        if status.mirror.live_state
+            && let Some(collapse) = server_status.collapse.as_ref()
+        {
+            let state_feed = collapse_feed_health(&collapse.state_feed);
+            status.mirror.feed_sent_at = state_feed.last_sent_at;
+            status.mirror.feed_error = state_feed.last_error;
+        }
         status.machines = metadata.machines;
         status.local = local;
         status.local.target = self.config.warm_pool.size.max(target);
@@ -389,4 +394,69 @@ fn changes_rows(kind: EventKind) -> bool {
             | EventKind::Green
             | EventKind::PostLandFailure
     )
+}
+
+/// Maps Rosen's live Collapse feed health (`ServerStatus.collapse`) into Velocity's view (#662).
+/// Uses the actual delivery timestamp (`last_success_at`) instead of the delivered event's clock.
+pub(crate) fn collapse_feed_health(health: &FeedHealth) -> CollapseFeedHealth {
+    let last_error = health.last_error.as_ref().map(|error| {
+        if error.message.trim().is_empty() {
+            error.http_status.map_or_else(
+                || "Rosen reported no error".to_owned(),
+                |code| format!("HTTP {code}"),
+            )
+        } else {
+            error.message.clone()
+        }
+    });
+    CollapseFeedHealth {
+        last_sent_at: health.last_success_at.map(|at| at.to_string()),
+        last_error,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rosen_client::protocol::{FeedError, FeedHealth, FeedState};
+
+    use super::collapse_feed_health;
+
+    // Risk (#662): after an outage, a delayed backlog send must show Rosen's actual
+    // delivery time (`last_success_at`), never an older event clock derived from `cursor`.
+    #[test]
+    fn collapse_feed_health_uses_actual_delivery_time() {
+        let delayed_delivery = FeedHealth {
+            state: FeedState::Current,
+            last_success_at: Some(1_700_007_200_000),
+            cursor: Some(42),
+            ledger_cursors: None,
+            doorbell_generation: None,
+            backlog: 0,
+            last_error: None,
+            next_retry_at: None,
+            refused: Vec::new(),
+            moved_to: None,
+            hint: None,
+        };
+        let view = collapse_feed_health(&delayed_delivery);
+        assert_eq!(view.last_sent_at.as_deref(), Some("1700007200000"));
+        assert_eq!(view.last_error, None);
+
+        let failing_before_success = FeedHealth {
+            state: FeedState::Failing,
+            last_success_at: None,
+            last_error: Some(FeedError {
+                http_status: Some(503),
+                message: "HTTP 503: upstream outage".into(),
+                at: 1_700_003_600_000,
+            }),
+            ..delayed_delivery
+        };
+        let failing = collapse_feed_health(&failing_before_success);
+        assert_eq!(failing.last_sent_at, None);
+        assert_eq!(
+            failing.last_error.as_deref(),
+            Some("HTTP 503: upstream outage")
+        );
+    }
 }

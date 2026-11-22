@@ -1134,22 +1134,28 @@ export type CollapseConnection_Serialize = {
 	url: string,
 };
 
-/**  Last delivery time and failure for a Rosen push stream to Collapse (#576). */
+/**  Last delivery time and failure for a Rosen push stream to Collapse (#576, #662). */
 export type CollapseFeedHealth = CollapseFeedHealth_Serialize | CollapseFeedHealth_Deserialize;
 
-/**  Last delivery time and failure for a Rosen push stream to Collapse (#576). */
+/**  Last delivery time and failure for a Rosen push stream to Collapse (#576, #662). */
 export type CollapseFeedHealth_Deserialize = {
-	/**  Unix milliseconds when the newest acknowledged event or ledger entry was recorded. */
+	/**
+	 *  Unix milliseconds of the most recent delivered batch, from Rosen's
+	 *  `CollapseHealth.*.last_success_at`, or `None` before a delivery succeeds.
+	 */
 	last_sent_at?: string | null,
-	/**  Why the latest pass failed or stopped while nothing newer arrived. */
+	/**  Why the latest pass failed or stopped, cleared once a subsequent pass succeeds. */
 	last_error?: string | null,
 };
 
-/**  Last delivery time and failure for a Rosen push stream to Collapse (#576). */
+/**  Last delivery time and failure for a Rosen push stream to Collapse (#576, #662). */
 export type CollapseFeedHealth_Serialize = {
-	/**  Unix milliseconds when the newest acknowledged event or ledger entry was recorded. */
+	/**
+	 *  Unix milliseconds of the most recent delivered batch, from Rosen's
+	 *  `CollapseHealth.*.last_success_at`, or `None` before a delivery succeeds.
+	 */
 	last_sent_at: string | null,
-	/**  Why the latest pass failed or stopped while nothing newer arrived. */
+	/**  Why the latest pass failed or stopped, cleared once a subsequent pass succeeds. */
 	last_error: string | null,
 };
 
@@ -3551,12 +3557,11 @@ export type MirrorStatus_Deserialize = {
 	 */
 	live_state: boolean,
 	/**
-	 *  When the newest event Collapse acknowledged from the state feed was recorded, in
-	 *  Unix milliseconds. Rosen records what the endpoint holds, not when it was sent;
-	 *  the feed sends within a minute of an event. `None` before the first delivery.
+	 *  Unix milliseconds of the state feed's most recent delivered batch, from Rosen's
+	 *  `CollapseHealth.state_feed.last_success_at` (#662). `None` before a delivery succeeds.
 	 */
 	feed_sent_at?: string | null,
-	/**  Why the state feed last failed or stopped, while nothing newer was delivered. */
+	/**  Why the state feed last failed or stopped, cleared once a subsequent pass succeeds. */
 	feed_error?: string | null,
 };
 
@@ -3572,12 +3577,11 @@ export type MirrorStatus_Serialize = {
 	 */
 	live_state: boolean,
 	/**
-	 *  When the newest event Collapse acknowledged from the state feed was recorded, in
-	 *  Unix milliseconds. Rosen records what the endpoint holds, not when it was sent;
-	 *  the feed sends within a minute of an event. `None` before the first delivery.
+	 *  Unix milliseconds of the state feed's most recent delivered batch, from Rosen's
+	 *  `CollapseHealth.state_feed.last_success_at` (#662). `None` before a delivery succeeds.
 	 */
 	feed_sent_at: string | null,
-	/**  Why the state feed last failed or stopped, while nothing newer was delivered. */
+	/**  Why the state feed last failed or stopped, cleared once a subsequent pass succeeds. */
 	feed_error: string | null,
 };
 
