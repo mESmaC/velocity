@@ -599,6 +599,8 @@ async fn acquire_workspace(
     let change = match existing {
         Some(change) => change,
         None => {
+            velocity_rosen::ensure_no_existing_workspace(&request.worktree_path)
+                .map_err(|error| error.to_string())?;
             let change = velocity_rosen::create_change(server, agent, None)
                 .await
                 .map_err(|error| error.to_string())?;
@@ -880,6 +882,9 @@ pub(crate) fn prepare_resume(
             "Rosen workspace {} is missing",
             root.display()
         )));
+    }
+    if let Err(error) = velocity_rosen::verify_workspace_change(root, change) {
+        return Some(Err(error.to_string()));
     }
     if let Err(error) = setup_resumed_workspace(application, project, root) {
         return Some(Err(error));

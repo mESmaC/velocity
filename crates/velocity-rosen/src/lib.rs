@@ -85,8 +85,8 @@ pub use stack::stack_workspace;
 pub use velocity_core::tool_policy;
 pub use workspace::{
     AgentWorkspace, Watches, abandon_change, create_change, create_workspace,
-    create_workspace_retaining_change, has_workspace, open_workspace_within, rebase_pending,
-    reopen_workspace,
+    create_workspace_retaining_change, ensure_no_existing_workspace, has_workspace,
+    open_workspace_within, rebase_pending, reopen_workspace, verify_workspace_change,
 };
 pub use workspace_wait::{CreationWait, creation_wait};
 
@@ -134,6 +134,16 @@ pub enum RosenError {
         change: String,
         source: Box<rosen_client::Error>,
     },
+    #[error(
+        "workspace at {root} belongs to Rosen change {existing}, not {expected}; keeping it intact"
+    )]
+    WorkspaceChangeMismatch {
+        root: PathBuf,
+        existing: String,
+        expected: String,
+    },
+    #[error("workspace at {root} already belongs to Rosen change {existing}; keeping it intact")]
+    WorkspaceOccupied { root: PathBuf, existing: String },
     #[error(
         "Rosen made no workspace at {root} in {seconds} seconds, on the shared connection \
          or on one of its own"

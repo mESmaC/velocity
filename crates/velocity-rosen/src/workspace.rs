@@ -67,7 +67,9 @@ pub async fn create_change(
 }
 
 /// Gives `change` its workspace at `root`, as [`reopen_workspace`] does, without waiting on
-/// one connection for ever (#514). After `limit` with no workspace, `fell_back` is called
+/// one connection for ever (#514). Reuses an existing folder only when its
+/// `.rosen/workspace.json` marker names `change`; a folder carrying another change's marker
+/// is left intact and refused (#659). After `limit` with no workspace, `fell_back` is called
 /// and a second attempt starts on a connection of its own, which is what
 /// `rosen change new --workspace` has: a request held up on Velocity's shared connection
 /// cannot delay it. Both attempts then run for `limit` more and the first workspace wins.
@@ -81,7 +83,7 @@ pub async fn open_workspace_within(
     limit: std::time::Duration,
     fell_back: impl FnOnce(),
 ) -> Result<AgentWorkspace, RosenError> {
-    if prepare_root(root)? {
+    if prepare_root(root, change)? {
         let root = root.to_path_buf();
         return Ok(AgentWorkspace::new(
             change.to_owned(),
@@ -159,6 +161,44 @@ pub fn has_workspace(root: &Path) -> bool {
     root.is_dir() && rosen_client::snapshot::WorkspaceMarker::path(root).is_file()
 }
 
+/// Verifies that an existing Rosen workspace at `root` belongs to `expected` by reading
+/// `.rosen/workspace.json`, without touching anything on disk (#659).
+pub fn verify_workspace_change(root: &Path, expected: &str) -> Result<(), RosenError> {
+    let marker =
+        rosen_client::snapshot::WorkspaceMarker::read(root).map_err(|source| RosenError::Io {
+            action: "read the Rosen marker of",
+            path: root.to_path_buf(),
+            source,
+        })?;
+    let existing = marker.change.to_string();
+    if existing != expected {
+        return Err(RosenError::WorkspaceChangeMismatch {
+            root: root.to_path_buf(),
+            existing,
+            expected: expected.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// Refuses to launch a brand-new change at `root` when a Rosen workspace already lives
+/// there, preserving the existing folder untouched (#659).
+pub fn ensure_no_existing_workspace(root: &Path) -> Result<(), RosenError> {
+    if !has_workspace(root) {
+        return Ok(());
+    }
+    let marker =
+        rosen_client::snapshot::WorkspaceMarker::read(root).map_err(|source| RosenError::Io {
+            action: "read the Rosen marker of",
+            path: root.to_path_buf(),
+            source,
+        })?;
+    Err(RosenError::WorkspaceOccupied {
+        root: root.to_path_buf(),
+        existing: marker.change.to_string(),
+    })
+}
+
 /// Clears an existing directory that holds only empty subdirectories and no files,
 /// matching [`prepare_root`] when recreating a workspace after guarded deletion.
 pub(crate) fn clear_empty_root(root: &Path) -> Result<(), RosenError> {
@@ -172,11 +212,14 @@ pub(crate) fn clear_empty_root(root: &Path) -> Result<(), RosenError> {
     })
 }
 
-/// Readies `root` for a workspace. `true` when it already is one, which is kept as it is.
-/// Folders a guarded deletion left behind, empty of files, are cleared; a folder that
-/// holds files is never replaced.
-fn prepare_root(root: &Path) -> Result<bool, RosenError> {
+/// Readies `root` for `change`'s workspace. Returns `true` only when `root` already holds
+/// a Rosen workspace whose `.rosen/workspace.json` marker names `change`, leaving it intact
+/// (#659). A workspace belonging to another change, or with an unreadable marker, is refused
+/// without modifying the folder. Folders a guarded deletion left behind, empty of files, are
+/// cleared; a folder that holds files is never replaced.
+fn prepare_root(root: &Path, change: &str) -> Result<bool, RosenError> {
     if has_workspace(root) {
+        verify_workspace_change(root, change)?;
         return Ok(true);
     }
     clear_empty_root(root)?;
@@ -247,7 +290,8 @@ pub async fn create_workspace_retaining_change(
 
 /// Gives the existing change `change` a workspace at `root` again, at its current head: a
 /// change Rosen reverted and reopened lost its workspace when it landed (R4, R12). A folder
-/// that is still a workspace is left as it is. Folders a guarded deletion left behind,
+/// that is already a workspace for `change` is left as it is; a workspace belonging to
+/// another change is refused and kept intact (#659). Folders a guarded deletion left behind,
 /// empty of files, are cleared first; a folder that holds files is never replaced.
 pub async fn reopen_workspace(
     server: &ProjectServer,
@@ -255,7 +299,7 @@ pub async fn reopen_workspace(
     change: &str,
     root: &Path,
 ) -> Result<(), RosenError> {
-    if prepare_root(root)? {
+    if prepare_root(root, change)? {
         return Ok(());
     }
     session(server, agent)
@@ -475,4 +519,119 @@ async fn rebase_waiting(session: &Session, root: &Path) -> Result<bool, RosenErr
         rosen_client::ChangeState::Open | rosen_client::ChangeState::Ready
     );
     Ok(open && record.head != marker.tree)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rosen_client::snapshot::WorkspaceMarker;
+    use rosen_core::{ChangeId, ObjectId};
+
+    fn write_marker(root: &Path, byte: u8) -> Result<String, Box<dyn std::error::Error>> {
+        let change = ChangeId::from_bytes([byte; 16]);
+        let tree: ObjectId = "a".repeat(40).parse()?;
+        WorkspaceMarker::new(change, tree, Vec::new(), Vec::new()).write(root)?;
+        Ok(change.to_string())
+    }
+
+    // Risk (#659): thread launch reuse previously trusted `.rosen/workspace.json` existence alone,
+    // adopting a foreign change's folder and running per-agent setup in it.
+    #[tokio::test]
+    async fn launch_openers_require_matching_marker_and_preserve_foreign_folder()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().join("workspace-a");
+        let existing_change = write_marker(&root, 0x11)?;
+        let requested_change = ChangeId::from_bytes([0x22; 16]).to_string();
+        let sentinel = root.join("work.txt");
+        std::fs::write(&sentinel, "do not touch")?;
+        let server = ProjectServer::new(dir.path(), 1);
+
+        let opened = open_workspace_within(
+            &server,
+            "agent",
+            &existing_change,
+            &root,
+            std::time::Duration::from_secs(1),
+            || {},
+        )
+        .await?;
+        assert_eq!(
+            opened,
+            AgentWorkspace::new(existing_change.clone(), root.clone(), "reopened", false)
+        );
+        reopen_workspace(&server, "agent", &existing_change, &root).await?;
+
+        let mismatch = open_workspace_within(
+            &server,
+            "agent",
+            &requested_change,
+            &root,
+            std::time::Duration::from_secs(1),
+            || {},
+        )
+        .await;
+        assert!(matches!(
+            mismatch,
+            Err(RosenError::WorkspaceChangeMismatch {
+                ref existing,
+                ref expected,
+                ..
+            }) if existing == &existing_change && expected == &requested_change
+        ));
+        assert!(matches!(
+            reopen_workspace(&server, "agent", &requested_change, &root).await,
+            Err(RosenError::WorkspaceChangeMismatch { .. })
+        ));
+        assert!(matches!(
+            ensure_no_existing_workspace(&root),
+            Err(RosenError::WorkspaceOccupied { ref existing, .. }) if existing == &existing_change
+        ));
+        assert_eq!(std::fs::read_to_string(&sentinel)?, "do not touch");
+        assert_eq!(
+            WorkspaceMarker::read(&root)?.change.to_string(),
+            existing_change
+        );
+        Ok(())
+    }
+
+    // Risk (#659): an unreadable marker or non-empty folder must never be wiped or adopted.
+    #[test]
+    fn prepare_root_preserves_corrupt_marker_and_clears_only_empty_dirs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let corrupt = dir.path().join("corrupt");
+        std::fs::create_dir_all(corrupt.join(".rosen"))?;
+        std::fs::write(WorkspaceMarker::path(&corrupt), "{not-json")?;
+        let sentinel = corrupt.join("keep.txt");
+        std::fs::write(&sentinel, "kept")?;
+
+        let requested = ChangeId::from_bytes([0x33; 16]).to_string();
+        assert!(matches!(
+            prepare_root(&corrupt, &requested),
+            Err(RosenError::Io { .. })
+        ));
+        assert!(matches!(
+            ensure_no_existing_workspace(&corrupt),
+            Err(RosenError::Io { .. })
+        ));
+        assert_eq!(std::fs::read_to_string(&sentinel)?, "kept");
+
+        let empty = dir.path().join("empty");
+        std::fs::create_dir_all(empty.join("nested"))?;
+        assert!(!prepare_root(&empty, &requested)?);
+        assert!(!empty.exists());
+        assert!(ensure_no_existing_workspace(&empty).is_ok());
+
+        let non_empty = dir.path().join("non-empty");
+        std::fs::create_dir_all(&non_empty)?;
+        let leftover = non_empty.join("file.txt");
+        std::fs::write(&leftover, "present")?;
+        assert!(matches!(
+            prepare_root(&non_empty, &requested),
+            Err(RosenError::Io { .. })
+        ));
+        assert_eq!(std::fs::read_to_string(&leftover)?, "present");
+        Ok(())
+    }
 }
