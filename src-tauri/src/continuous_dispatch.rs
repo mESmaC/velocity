@@ -710,9 +710,17 @@ fn reconcile_idle_seconds(
     attempted_numbers: &HashSet<u32>,
     now: u64,
 ) -> Result<Option<u64>, String> {
-    let slots_free_and_empty = project.continuous_dispatch.slots > 0
-        && !project.continuous_dispatch.paused
-        && busy_count(project) == 0;
+    let busy = busy_count(project);
+    crate::fleet_ledger::observe_idle_slots(
+        application,
+        project.id,
+        project.continuous_dispatch.slots,
+        busy,
+        project.continuous_dispatch.paused,
+        now,
+    );
+    let slots_free_and_empty =
+        project.continuous_dispatch.slots > 0 && !project.continuous_dispatch.paused && busy == 0;
     if !slots_free_and_empty {
         sync_idle_since(application, project, false, now)?;
         return Ok(None);
@@ -1501,6 +1509,8 @@ fn start_issue(
             .map_err(|error| error.to_string())?;
         (plan.launch, thread, rosen_project)
     };
+    let provider_name = plan.thread.provider.key();
+    let model_name = plan.thread.model_name.clone();
     if let Some(project) = rosen_project {
         crate::graph_access::warn_dispatch_signatures(
             application,
@@ -1509,6 +1519,15 @@ fn start_issue(
             &[issue.title.clone(), issue.body.clone()],
         );
     }
+    crate::fleet_ledger::record_dispatch(
+        application,
+        identifier,
+        repository,
+        issue,
+        thread,
+        &provider_name,
+        &model_name,
+    );
     crate::threads::start_planned_with_selection(application, plan, thread, false)?;
     record_dispatched(application, identifier);
     Ok(())

@@ -1477,6 +1477,7 @@ fn elapsed_since_last_land(poller: &DashboardPoller) -> Option<Duration> {
 /// Records a land on `project` and activates the 5-minute post-land dashboard polling
 /// window when `project` mirrors to Collapse (#572).
 pub(crate) fn note_land(application: &AppHandle, project: u32) {
+    crate::fleet_ledger::push_collapse_rollups_if_due(application, project, true);
     if !project_mirrors_to_collapse(application, project) {
         return;
     }

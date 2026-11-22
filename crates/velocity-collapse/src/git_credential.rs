@@ -114,6 +114,11 @@ pub fn has_push_secret(url: &str) -> Result<bool, CollapseError> {
     held_secret(url).map(|secret| secret.is_some())
 }
 
+/// Reads the push token held for `url` for in-memory HTTP Basic auth only; never logged or saved.
+pub(crate) fn load_push_secret(url: &str) -> Result<Option<String>, CollapseError> {
+    held_secret(url)
+}
+
 /// The password the helper holds for `url`, or `None` when no helper answers. Never
 /// prompts: with the terminal and askpass programs off, an unanswered `git credential
 /// fill` fails instead of opening a window.

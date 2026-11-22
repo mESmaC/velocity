@@ -139,6 +139,8 @@ export const commands = {
 	unlinkCollapse: (projectIdentifier: number) => __TAURI_INVOKE<CollapseActionResult_Serialize>("unlink_collapse", { projectIdentifier }),
 	getContinuousDispatch: (projectIdentifier: number) => __TAURI_INVOKE<DispatchView_Serialize>("get_continuous_dispatch", { projectIdentifier }),
 	setContinuousDispatch: (projectIdentifier: number, slots: number, paused: boolean) => __TAURI_INVOKE<DispatchView_Serialize>("set_continuous_dispatch", { projectIdentifier, slots, paused }),
+	/**  Returns the Fleet status summary (last 24 hours and last 7 days + top offenders) for `project_identifier`. */
+	getFleetStats: (projectIdentifier: number) => __TAURI_INVOKE<FleetStatusView_Serialize>("get_fleet_stats", { projectIdentifier }),
 	getTokenUsage: (period: Period, projectIdentifier: number | null, threadIdentifier: number | null) => __TAURI_INVOKE<Report_Serialize>("get_token_usage", { period, projectIdentifier, threadIdentifier }),
 	getWindowState: () => __TAURI_INVOKE<WindowStateChanged>("get_window_state"),
 	minimizeWindow: () => __TAURI_INVOKE<null>("minimize_window"),
@@ -1897,6 +1899,107 @@ export type FlaggedRule = {
 	kind: LintKind,
 	phrase: string,
 	message: string,
+};
+
+/**  IPC-safe offender row for the status pane (`f64` avoids specta BigInt restrictions). */
+export type FleetOffenderView = FleetOffenderView_Serialize | FleetOffenderView_Deserialize;
+
+/**  IPC-safe offender row for the status pane (`f64` avoids specta BigInt restrictions). */
+export type FleetOffenderView_Deserialize = {
+	repository: string,
+	issue: number,
+	title?: string | null,
+	url?: string | null,
+	thread_id?: number | null,
+	dispatched_to_landed_secs?: number | null,
+	filed_to_landed_secs?: number | null,
+	tokens_total: number | null,
+	retries: number,
+	restarts: number,
+	reverts: number,
+	review_findings: number,
+};
+
+/**  IPC-safe offender row for the status pane (`f64` avoids specta BigInt restrictions). */
+export type FleetOffenderView_Serialize = {
+	repository: string,
+	issue: number,
+	title: string | null,
+	url: string | null,
+	thread_id: number | null,
+	dispatched_to_landed_secs: number | null,
+	filed_to_landed_secs: number | null,
+	tokens_total: number | null,
+	retries: number,
+	restarts: number,
+	reverts: number,
+	review_findings: number,
+};
+
+/**  Complete Fleet status payload for the status pane (last 24 hours and last 7 days, #619). */
+export type FleetStatusView = FleetStatusView_Serialize | FleetStatusView_Deserialize;
+
+/**  Complete Fleet status payload for the status pane (last 24 hours and last 7 days, #619). */
+export type FleetStatusView_Deserialize = {
+	last_24h: FleetWindowView_Deserialize,
+	last_7d: FleetWindowView_Deserialize,
+};
+
+/**  Complete Fleet status payload for the status pane (last 24 hours and last 7 days, #619). */
+export type FleetStatusView_Serialize = {
+	last_24h: FleetWindowView_Serialize,
+	last_7d: FleetWindowView_Serialize,
+};
+
+/**  IPC-safe window summary for the status pane Fleet section (#619). */
+export type FleetWindowView = FleetWindowView_Serialize | FleetWindowView_Deserialize;
+
+/**  IPC-safe window summary for the status pane Fleet section (#619). */
+export type FleetWindowView_Deserialize = {
+	window_hours: number,
+	lands: number,
+	issues_dispatched: number,
+	median_filed_to_landed_secs?: number | null,
+	median_dispatched_to_landed_secs?: number | null,
+	idle_slot_minutes: number | null,
+	tokens_total: number | null,
+	tokens_per_landed_change?: number | null,
+	post_land_failures: number,
+	reverts: number,
+	post_land_failure_rate?: number | null,
+	revert_rate?: number | null,
+	checks_queued: number,
+	check_queue_wait_ms_median?: number | null,
+	retries_total: number,
+	retries_per_issue?: number | null,
+	review_findings: number,
+	slowest_issues: FleetOffenderView_Deserialize[],
+	most_tokens: FleetOffenderView_Deserialize[],
+	most_retries: FleetOffenderView_Deserialize[],
+};
+
+/**  IPC-safe window summary for the status pane Fleet section (#619). */
+export type FleetWindowView_Serialize = {
+	window_hours: number,
+	lands: number,
+	issues_dispatched: number,
+	median_filed_to_landed_secs: number | null,
+	median_dispatched_to_landed_secs: number | null,
+	idle_slot_minutes: number | null,
+	tokens_total: number | null,
+	tokens_per_landed_change: number | null,
+	post_land_failures: number,
+	reverts: number,
+	post_land_failure_rate: number | null,
+	revert_rate: number | null,
+	checks_queued: number,
+	check_queue_wait_ms_median: number | null,
+	retries_total: number,
+	retries_per_issue: number | null,
+	review_findings: number,
+	slowest_issues: FleetOffenderView_Serialize[],
+	most_tokens: FleetOffenderView_Serialize[],
+	most_retries: FleetOffenderView_Serialize[],
 };
 
 /**  What Collapse's forwarder is doing with the repository's downstream remote (C4). */

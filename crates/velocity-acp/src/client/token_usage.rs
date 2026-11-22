@@ -164,7 +164,10 @@ impl SessionMeter {
         })
     }
 
-    pub(super) async fn finish(&mut self, response: Option<TokenCounts>) -> Option<u64> {
+    pub(super) async fn finish(
+        &mut self,
+        response: Option<TokenCounts>,
+    ) -> (Option<u64>, u64, u64) {
         finish_for_change(
             &self.ledger,
             self.change.clone(),
@@ -209,7 +212,7 @@ pub(super) async fn finish(
     log: &mut Option<ProviderLog>,
     since: &mut i64,
 ) {
-    finish_for_change(ledger, None, capture, response, log, since).await;
+    let _ = finish_for_change(ledger, None, capture, response, log, since).await;
 }
 
 async fn finish_for_change(
@@ -219,7 +222,7 @@ async fn finish_for_change(
     response: Option<TokenCounts>,
     log: &mut Option<ProviderLog>,
     since: &mut i64,
-) -> Option<u64> {
+) -> (Option<u64>, u64, u64) {
     let (calls, aggregate, occupancy) = {
         let mut capture = capture.lock().unwrap_or_else(PoisonError::into_inner);
         let (calls, aggregate) = capture.finish(response);
@@ -251,20 +254,26 @@ async fn finish_for_change(
             let may_overlap = !calls.is_empty();
             (calls, may_overlap)
         };
+        let tokens_in = calls
+            .iter()
+            .fold(0u64, |sum, call| sum.saturating_add(call.counts.input));
+        let tokens_out = calls
+            .iter()
+            .fold(0u64, |sum, call| sum.saturating_add(call.counts.output));
         ledger.save(change.as_deref(), calls);
-        (reader, may_overlap, occupancy)
+        (reader, may_overlap, occupancy, tokens_in, tokens_out)
     })
     .await;
-    if let Ok((reader, may_overlap, occupancy)) = result {
+    if let Ok((reader, may_overlap, occupancy, tokens_in, tokens_out)) = result {
         *log = reader;
         // A provider log can flush after the ACP result. Do not import the same
         // turn again after using explicit ACP counts for it.
         if may_overlap {
             *since = turn_end;
         }
-        return occupancy;
+        return (occupancy, tokens_in, tokens_out);
     }
-    None
+    (None, 0, 0)
 }
 
 impl Ledger {

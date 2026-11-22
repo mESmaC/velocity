@@ -10,6 +10,7 @@ pub mod connect;
 pub mod credential;
 pub mod deploy_credential;
 pub mod downstream;
+pub mod fleet_feed;
 mod git_credential;
 pub mod health;
 pub mod issue_import;
@@ -33,6 +34,7 @@ pub use deploy_credential::{
     load_deploy_secret, save_deploy_secret,
 };
 pub use downstream::{DownstreamSetup, set_downstream};
+pub use fleet_feed::{FleetRollupFeedItem, push_fleet_rollups};
 pub use git_credential::{
     MIN_PROACTIVE_AUTH_GIT_VERSION, PROACTIVE_AUTH_KEY, ProactiveAuthStatus, check_proactive_auth,
     checkout_repository, clone_repository, ensure_proactive_auth, ensure_remote_tag,

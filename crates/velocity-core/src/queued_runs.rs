@@ -111,6 +111,15 @@ pub struct QueuedRunRecord {
     /// Whether this run's terminal result was delivered to the agent in a prompt.
     #[serde(default)]
     pub delivered: bool,
+    /// UTC Unix seconds when the run was accepted into the queue (#619).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_at: Option<u64>,
+    /// Milliseconds spent waiting in the queue before execution started (#619).
+    #[serde(default)]
+    pub wait_ms: u64,
+    /// Milliseconds spent executing the command (#619).
+    #[serde(default)]
+    pub run_ms: u64,
 }
 
 impl QueuedRunRecord {
@@ -137,6 +146,9 @@ impl QueuedRunRecord {
             exit_status: None,
             result: None,
             delivered: false,
+            queued_at: None,
+            wait_ms: 0,
+            run_ms: 0,
         }
     }
 

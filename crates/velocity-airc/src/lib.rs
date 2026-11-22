@@ -4,6 +4,7 @@ pub mod claims;
 mod comment;
 mod delivery;
 mod event_log;
+mod fleet_stats_tools;
 mod issue_tools;
 mod launch;
 mod next_work_tools;
@@ -35,10 +36,12 @@ pub use claims::{Claim, ClaimResult, piece_key};
 pub use delivery::{
     Delivery, DeliveryPriority, deliver_messages, deliver_targeted, message_for, prompt_lines,
 };
+pub use fleet_stats_tools::FleetStatsRequest;
 pub use issue_tools::{IssueCreate, IssueRead, IssueRequest, IssueUpdate, IssueUpdateKind};
 pub use launch::{
     CONTINUOUS_DISPATCH_ARGUMENT, LAZY_ARGUMENT, ROLE_ARGUMENT, SERVER_NAME, SERVER_SWITCH,
-    serve_stdio, serve_stdio_with_handlers, serve_stdio_with_issues, server_arguments,
+    serve_stdio, serve_stdio_with_all_handlers, serve_stdio_with_handlers, serve_stdio_with_issues,
+    server_arguments,
 };
 pub use next_work_tools::NextWorkRequest;
 pub use payload::{EventPayload, OverlapDetail, OverlapSymbols, WokenDetail};

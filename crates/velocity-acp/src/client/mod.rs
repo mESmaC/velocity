@@ -163,6 +163,12 @@ pub enum AgentEvent {
     ProviderQueued(bool, String),
     /// A turn ended: why, or the error the prompt failed with.
     TurnEnded(Result<StopReason, String>),
+    /// Per-turn token and wall-time metrics emitted when a turn completes (#619).
+    TurnMetrics {
+        tokens_in: u64,
+        tokens_out: u64,
+        wall_ms: u64,
+    },
     /// A successful turn crossed the experiment's context threshold.
     HandoffThreshold {
         change: String,
@@ -789,10 +795,24 @@ struct TurnAccounting {
 impl TurnAccounting {
     async fn record(&mut self, result: &PromptResult, shared: &Shared) -> Option<u64> {
         let usage = self.prompt_usage.turn(result.usage.as_ref());
-        let context = match &mut self.tokens {
+        let (context, tokens_in, tokens_out) = match &mut self.tokens {
             Some(tokens) => tokens.finish(usage).await,
-            None => None,
+            None => {
+                let tokens_in = usage.map_or(0, |counts| {
+                    counts
+                        .input
+                        .saturating_add(counts.cached_read)
+                        .saturating_add(counts.cached_write)
+                });
+                let tokens_out = usage.map_or(0, |counts| counts.output);
+                (None, tokens_in, tokens_out)
+            }
         };
+        shared.emit(AgentEvent::TurnMetrics {
+            tokens_in,
+            tokens_out,
+            wall_ms: u64::try_from(result.elapsed.as_millis()).unwrap_or(u64::MAX),
+        });
         if let Some(meter) = &self.meter {
             let reads = shared
                 .code_reads

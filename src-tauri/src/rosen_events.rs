@@ -229,8 +229,38 @@ async fn consume(
             crate::collapse_mirror::on_mirror_push(application, project);
         }
     }
+    if event.kind == velocity_rosen::ProjectEventKind::PostLandFailure {
+        let commit = event
+            .detail
+            .get("commit")
+            .and_then(|value| value.as_str())
+            .or_else(|| event.detail.get("culprit").and_then(|value| value.as_str()));
+        crate::fleet_ledger::record_failure_or_revert(
+            application,
+            project,
+            event.change.as_deref(),
+            commit,
+            event.seq,
+            false,
+        );
+    }
+    if event.kind == velocity_rosen::ProjectEventKind::Snapshot
+        && let Some(change) = event.change.as_deref()
+    {
+        crate::fleet_ledger::record_snapshot(application, project, change);
+    }
     if event.kind == velocity_rosen::ProjectEventKind::Review {
         crate::handoff::observe_review(application, project, event)?;
+        if let Some(change) = event.change.as_deref()
+            && event.detail["action"].as_str() == Some("mark")
+            && event.detail["state"].as_str() == Some("issues_filed")
+        {
+            let target = event.detail["commit"]
+                .as_str()
+                .map(|commit| format!("land:{commit}"))
+                .unwrap_or_else(|| format!("seq:{}", event.seq));
+            crate::fleet_ledger::record_review_finding(application, project, change, &target);
+        }
     }
     if matches!(
         event.kind,
@@ -618,6 +648,7 @@ fn record_named(
             .map_err(|error| error.to_string())?;
         store.layout_refresh()
     };
+    crate::fleet_ledger::record_named(application, project, change);
     publish_progress(application, refresh)?;
     crate::rosen_landing::wake(application);
     Ok(())

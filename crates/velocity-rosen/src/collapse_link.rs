@@ -320,6 +320,11 @@ fn edit_collapse_unlink(source: &str) -> Result<Option<String>, WorkspaceSetting
     Ok(Some(updated))
 }
 
+/// Reads the local Rosen server's Collapse state-feed identifier, if one has been minted (#619).
+pub fn collapse_feed_id(server: &ProjectServer) -> Option<String> {
+    crate::status::metadata::read_collapse_feed_id(server)
+}
+
 /// Reads the landed Collapse settings, state feed / ledger push health and active server
 /// relay allow-list for `server` (#576).
 pub async fn collapse_state(server: &ProjectServer) -> Result<CollapseServerState, RosenError> {

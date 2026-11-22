@@ -819,6 +819,7 @@ pub(crate) fn record_change(
     })
     .map_err(|error| error.to_string())?;
     if recorded {
+        crate::fleet_ledger::bind_change(application, key, change);
         crate::rosen_status::ownership_changed(application);
     }
     Ok(recorded)

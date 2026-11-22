@@ -22,6 +22,7 @@ mod continuous_dispatch;
 mod desktop_notifications;
 mod diagnostics;
 pub mod duty;
+mod fleet_ledger;
 mod github_requests;
 mod goal_stack;
 mod goal_swarm;
@@ -122,6 +123,7 @@ fn bindings() -> Builder<tauri::Wry> {
         collapse_mirror::unlink_collapse,
         continuous_dispatch::get_continuous_dispatch,
         continuous_dispatch::set_continuous_dispatch,
+        fleet_ledger::get_fleet_stats,
         token_usage::get_token_usage,
         window::get_window_state,
         window::minimize_window,

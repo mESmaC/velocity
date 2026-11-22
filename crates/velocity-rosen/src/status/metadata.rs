@@ -35,6 +35,29 @@ pub(crate) fn read_collapse(
     collapse_snapshot(&transaction, state_endpoint, ledger_endpoint).map_err(data_error)
 }
 
+/// Reads Rosen's local Collapse feed identifier (`collapse_feed.feed_id`), if recorded.
+pub(crate) fn read_collapse_feed_id(server: &ProjectServer) -> Option<String> {
+    let path = server.data_dir().join("metadata.sqlite");
+    if !path.is_file() {
+        return None;
+    }
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let _ = connection.busy_timeout(Duration::from_millis(200));
+    if !table(&connection, "collapse_feed").ok()? {
+        return None;
+    }
+    connection
+        .query_row(
+            "SELECT feed_id FROM collapse_feed WHERE id = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .filter(|id| !id.trim().is_empty())
+}
+
 fn collapse_snapshot(
     connection: &Connection,
     state_endpoint: Option<&str>,

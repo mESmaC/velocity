@@ -6,6 +6,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use agent_client_protocol::v1::schema::{
     SessionUpdate, ToolCall, ToolCallId, ToolCallStatus, ToolKind,
@@ -16,7 +17,7 @@ use velocity_core::preflight::{
     ChangedFile, PreflightContext, PreflightPlan, StepOutcome, format_failure_summary,
     format_report, plan,
 };
-use velocity_core::queued_runs::QueuedRunClass;
+use velocity_core::queued_runs::{QueuedRunClass, QueuedRunPhase, QueuedRunRecord};
 use velocity_core::rosen_checker::{
     BINDINGS, BINDINGS_EXPORTER, changes_bindings, regeneration_instructions,
 };
@@ -48,6 +49,8 @@ pub(super) struct PreflightRun {
     pub log: PathBuf,
     endpoint: String,
     graph_context: Option<(PathBuf, PathBuf, String)>,
+    queued_at: u64,
+    queued_instant: Instant,
     output: File,
 }
 
@@ -77,11 +80,17 @@ impl PreflightRun {
         let id = format!("{RUN_ID_PREFIX}{}", uuid::Uuid::new_v4());
         let log = std::env::temp_dir().join(format!("{id}.log"));
         let output = create_log(&log).map_err(|error| error.to_string())?;
+        let queued_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         Ok(Self {
             id: ToolCallId::new(id),
             log,
             endpoint,
             graph_context,
+            queued_at,
+            queued_instant: Instant::now(),
             output,
         })
     }
@@ -134,9 +143,17 @@ impl PreflightRun {
             log_path: &self.log,
             output: &mut self.output,
             stop: &stop,
+            queue_wait_ms: 0,
         };
+        let run_started = Instant::now();
+        let initial_wait_ms =
+            u64::try_from(self.queued_instant.elapsed().as_millis()).unwrap_or(u64::MAX);
         match runner.run_all(&snapshot).await {
             Ok(steps) => {
+                let total_wait_ms = initial_wait_ms.saturating_add(runner.queue_wait_ms);
+                let total_elapsed_ms =
+                    u64::try_from(run_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let run_ms = total_elapsed_ms.saturating_sub(runner.queue_wait_ms);
                 let log_display = self.log.display().to_string();
                 let (mut passed, mut report) =
                     format_report(&snapshot.change, snapshot.files.len(), &steps, &log_display);
@@ -154,7 +171,31 @@ impl PreflightRun {
                 )
                 .await;
                 let _ = writeln!(self.output, "\n=== summary ===\n{report}");
-                RunResult::new(self.id, passed, report)
+                let mut record = QueuedRunRecord::new(
+                    self.id.0.to_string(),
+                    "preflight".into(),
+                    Vec::new(),
+                    None,
+                    QueuedRunClass::Verify,
+                );
+                record.log = Some(log_display);
+                record.phase = if passed {
+                    QueuedRunPhase::Completed
+                } else {
+                    QueuedRunPhase::Failed
+                };
+                record.change = Some(snapshot.change.clone());
+                record.head = Some(snapshot.head.to_string());
+                record.exit_code = Some(if passed { 0 } else { 1 });
+                record.exit_status = Some(if passed {
+                    "passed".into()
+                } else {
+                    "failed".into()
+                });
+                record.queued_at = Some(self.queued_at);
+                record.wait_ms = total_wait_ms;
+                record.run_ms = run_ms;
+                RunResult::with_record(self.id, record, passed, report)
             }
             Err(Cancelled) => cancelled_result(self.id, &self.log),
         }
@@ -214,6 +255,7 @@ struct StepRunner<'a> {
     log_path: &'a Path,
     output: &'a mut File,
     stop: &'a CancellationToken,
+    queue_wait_ms: u64,
 }
 
 impl StepRunner<'_> {
@@ -408,8 +450,13 @@ impl StepRunner<'_> {
                 "no touched Rust crates",
             )]);
         }
+        let wait_started = Instant::now();
         let turn = match self.acquire_light_turn().await {
-            Ok(turn) => turn,
+            Ok(turn) => {
+                let waited = u64::try_from(wait_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                self.queue_wait_ms = self.queue_wait_ms.saturating_add(waited);
+                turn
+            }
             Err(QueuedTurnError::Cancelled) => return Err(Cancelled),
             Err(QueuedTurnError::TimedOut(report)) => {
                 let _ = writeln!(

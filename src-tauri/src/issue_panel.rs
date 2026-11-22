@@ -312,6 +312,17 @@ async fn dispatch_selected_issue(
         let thread = plan.record(&mut store).map_err(|error| error.to_string())?;
         (plan.launch, thread)
     };
+    let provider_name = plan.thread.provider.key();
+    let model_name = plan.thread.model_name.clone();
+    crate::fleet_ledger::record_dispatch(
+        &application,
+        project_identifier,
+        &repository,
+        &issue,
+        thread,
+        &provider_name,
+        &model_name,
+    );
     let snapshot = crate::threads::start_planned(&application, plan, thread)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

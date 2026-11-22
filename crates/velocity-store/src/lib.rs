@@ -16,6 +16,7 @@ pub mod claim_piece;
 pub mod continuous_dispatch;
 pub mod deleted_worktrees;
 pub mod deploy_repairs;
+pub mod fleet_ledger;
 pub mod follow_through;
 
 use serde::{Deserialize, Serialize};
@@ -1467,6 +1468,11 @@ pub struct ProjectItem {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[specta(skip)]
     pub health_history: Vec<velocity_core::project_health::ProjectHealthHistoryEntry>,
+    /// Persisted fleet development ledger (per-issue timings/tokens/checks and hourly idle
+    /// slot-seconds, #619).
+    #[serde(default)]
+    #[specta(skip)]
+    pub fleet_ledger: velocity_core::fleet_ledger::FleetLedger,
 }
 
 /// The New project dialog's interview choices, kept until the spec interview
@@ -1544,6 +1550,7 @@ impl ProjectItem {
             rosen_mirror_divergence: None,
             retried_release_runs: Vec::new(),
             health_history: Vec::new(),
+            fleet_ledger: velocity_core::fleet_ledger::FleetLedger::default(),
         }
     }
 

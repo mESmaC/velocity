@@ -1,5 +1,6 @@
 use crate::{
     Channel, DiscoveryKind, DiscoveryReportInput, Error, FrictionReport, ToolRequestReport,
+    fleet_stats_tools::{self, FleetStatsHandler},
     issue_tools::{self, IssueHandler},
     next_work_tools::{self, NextWorkHandler},
     read_tools::{self, MessageReader},
@@ -24,6 +25,7 @@ pub(crate) struct ToolOptions<'a> {
     issue_handler: Option<&'a IssueHandler<'a>>,
     app_data: Option<&'a Path>,
     next_work_handler: Option<&'a NextWorkHandler<'a>>,
+    fleet_stats_handler: Option<&'a FleetStatsHandler<'a>>,
     role: Option<ThreadRole>,
     lazy: bool,
 }
@@ -39,6 +41,7 @@ impl<'a> ToolOptions<'a> {
             issue_handler,
             app_data,
             next_work_handler: None,
+            fleet_stats_handler: None,
             role: None,
             lazy: false,
         }
@@ -46,6 +49,11 @@ impl<'a> ToolOptions<'a> {
 
     pub(crate) fn with_next_work(mut self, handler: &'a NextWorkHandler<'a>) -> Self {
         self.next_work_handler = Some(handler);
+        self
+    }
+
+    pub(crate) fn with_fleet_stats(mut self, handler: &'a FleetStatsHandler<'a>) -> Self {
+        self.fleet_stats_handler = Some(handler);
         self
     }
 
@@ -427,6 +435,9 @@ fn call_inner(
             arguments,
             options.next_work_handler,
         ),
+        fleet_stats_tools::FLEET_STATS_TOOL => {
+            fleet_stats_tools::call(arguments, options.fleet_stats_handler)
+        }
         "join" => Ok(json!({"nick":channel.join_with_session(member, nick, true)?})),
         "leave" => {
             channel.leave(member)?;
@@ -686,6 +697,9 @@ fn tool_list(rosen: bool, options: &ToolOptions<'_>) -> Vec<Value> {
     }
     if options.next_work_handler.is_some() {
         tools.push(next_work_tools::tool());
+    }
+    if options.fleet_stats_handler.is_some() {
+        tools.push(fleet_stats_tools::tool());
     }
     tools.extend(writing_tools());
     tools.extend(claim_tools(rosen));

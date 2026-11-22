@@ -90,9 +90,25 @@ pub(crate) fn observe(
     event: IssueEvent<'_>,
 ) -> Result<(), String> {
     let observation = match event {
-        IssueEvent::Landed(commit) => IssueObservation::Landed(commit),
-        IssueEvent::BuildPassed(commit) => IssueObservation::BuildPassed(commit),
-        IssueEvent::Reverted { commit, reason } => IssueObservation::Reverted { commit, reason },
+        IssueEvent::Landed(commit) => {
+            crate::fleet_ledger::record_landed(application, project, change, Some(commit));
+            IssueObservation::Landed(commit)
+        }
+        IssueEvent::BuildPassed(commit) => {
+            crate::fleet_ledger::record_post_land_green(application, project, change, commit);
+            IssueObservation::BuildPassed(commit)
+        }
+        IssueEvent::Reverted { commit, reason } => {
+            crate::fleet_ledger::record_failure_or_revert(
+                application,
+                project,
+                Some(change),
+                commit,
+                sequence,
+                true,
+            );
+            IssueObservation::Reverted { commit, reason }
+        }
     };
     lock(
         application.state::<ManagedStateStore>().inner(),
@@ -294,6 +310,9 @@ pub(crate) async fn confirm_builds(
             if covered_for_store.contains(&commit) {
                 store
                     .confirm_rosen_issue_build(project, &change, &commit)
+                    .map_err(|error| error.to_string())?;
+                store
+                    .record_fleet_post_land_green(project, &change, &commit, now)
                     .map_err(|error| error.to_string())?;
             }
         }
@@ -698,6 +717,13 @@ fn finish(
     change: &str,
     action: &IssueAction,
 ) -> Result<(), String> {
+    if action.is_close() {
+        let issue = action
+            .issue
+            .as_ref()
+            .map(|item| (item.repository.as_str(), item.number));
+        crate::fleet_ledger::record_closed(application, project, change, issue);
+    }
     lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",

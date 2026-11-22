@@ -6,6 +6,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use agent_client_protocol::v1::schema::{
     ContentBlock, ContentChunk, Meta, SessionUpdate, ToolCall, ToolCallContent, ToolCallId,
@@ -38,7 +39,15 @@ pub(super) struct QueuedRun {
     pub log: PathBuf,
     command: RunCommand,
     record: QueuedRunRecord,
+    queued_instant: Instant,
     output: File,
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 enum ExecutionOutcome {
@@ -59,6 +68,7 @@ impl QueuedRun {
         record.queue_reason = Some("waiting for the current agent turn to end".into());
         record.change = change;
         record.head = head;
+        record.queued_at = Some(unix_now());
         Self::with_record(record, log, command)
     }
 
@@ -82,6 +92,7 @@ impl QueuedRun {
         record.queue_reason = Some("requeued after Velocity restart".into());
         record.change = change.or_else(|| previous.change.clone());
         record.head = head.or_else(|| previous.head.clone());
+        record.queued_at = previous.queued_at.or_else(|| Some(unix_now()));
         Self::with_record(record, log, command)
     }
 
@@ -95,6 +106,7 @@ impl QueuedRun {
             log,
             command,
             record,
+            queued_instant: Instant::now(),
             output,
         })
     }
@@ -199,13 +211,26 @@ impl QueuedRun {
             .await
         {
             Ok(turn) => turn,
-            Err(QueuedTurnError::Cancelled) => return ExecutionOutcome::Cancelled,
+            Err(QueuedTurnError::Cancelled) => {
+                self.record.wait_ms =
+                    u64::try_from(self.queued_instant.elapsed().as_millis()).unwrap_or(u64::MAX);
+                return ExecutionOutcome::Cancelled;
+            }
             Err(QueuedTurnError::TimedOut(report)) => {
+                self.record.wait_ms =
+                    u64::try_from(self.queued_instant.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let _ = writeln!(&self.output, "{report}");
                 return ExecutionOutcome::TimedOut(report);
             }
-            Err(QueuedTurnError::Io(error)) => return ExecutionOutcome::Failed(error),
+            Err(QueuedTurnError::Io(error)) => {
+                self.record.wait_ms =
+                    u64::try_from(self.queued_instant.elapsed().as_millis()).unwrap_or(u64::MAX);
+                return ExecutionOutcome::Failed(error);
+            }
         };
+        self.record.wait_ms =
+            u64::try_from(self.queued_instant.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let run_started = Instant::now();
         let (change, head) = workspace_context(worktree, launch);
         if change.is_some() {
             self.record.change = change;
@@ -225,6 +250,7 @@ impl QueuedRun {
                 &stop,
             )
             .await;
+        self.record.run_ms = u64::try_from(run_started.elapsed().as_millis()).unwrap_or(u64::MAX);
         drop(turn);
         outcome
     }
@@ -726,6 +752,22 @@ impl RunResult {
         Self {
             id,
             record: None,
+            succeeded,
+            result,
+            deliver_prompt: true,
+        }
+    }
+
+    /// Attaches a timing/history record (used by `preflight` so check wait/run times persist, #619).
+    pub fn with_record(
+        id: ToolCallId,
+        record: QueuedRunRecord,
+        succeeded: bool,
+        result: String,
+    ) -> Self {
+        Self {
+            id,
+            record: Some(record),
             succeeded,
             result,
             deliver_prompt: true,

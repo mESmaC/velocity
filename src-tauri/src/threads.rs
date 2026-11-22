@@ -1779,6 +1779,25 @@ pub(crate) async fn pump(application: &AppHandle, key: ThreadKey, mut session: R
         }
         report(save_agent_session(application, key, &batch));
         report(save_queued_runs(application, key, &batch));
+        for event in &batch {
+            match event {
+                AgentEvent::TurnMetrics {
+                    tokens_in,
+                    tokens_out,
+                    wall_ms,
+                } => crate::fleet_ledger::record_turn(
+                    application,
+                    key,
+                    *tokens_in,
+                    *tokens_out,
+                    *wall_ms,
+                ),
+                AgentEvent::QueuedRunFinished(record) => {
+                    crate::fleet_ledger::record_check(application, key, record);
+                }
+                _ => {}
+            }
+        }
         report(crate::agent_activity::observe(application, key, &batch));
         report(crate::handoff::observe(
             application,

@@ -13,6 +13,7 @@ pub mod deletion;
 pub mod dependencies;
 pub mod deploy_repairs;
 pub mod dispatch;
+pub mod fleet_stats;
 pub mod follow_through;
 pub mod goal_selection;
 pub mod goal_swarm;

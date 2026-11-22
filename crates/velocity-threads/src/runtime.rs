@@ -1056,6 +1056,7 @@ impl ThreadRuntimes {
             | AgentEvent::QueuedRunUpdated(_)
             | AgentEvent::QueuedRunFinished(_)
             | AgentEvent::QueuedRunsDelivered { .. }
+            | AgentEvent::TurnMetrics { .. }
             | AgentEvent::FileWritten { .. } => return None,
         }
         Some(progress(thread))

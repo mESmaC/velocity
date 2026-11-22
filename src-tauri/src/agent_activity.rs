@@ -498,7 +498,10 @@ fn restart(application: &AppHandle, key: ThreadKey, channel: &Channel) -> Result
         key,
         "You were restarted after remaining silent. Continue from your transcript and retained claims.",
     ) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            crate::fleet_ledger::record_restart(application, key);
+            Ok(())
+        }
         Err(error) if error.is_non_resumable() => {
             crate::parking::drop_non_resumable_delivery(application, key, &error);
             Ok(())

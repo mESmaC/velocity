@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::{Channel, Error, IssueRequest, NextWorkRequest, protocol::ToolOptions};
+use crate::{
+    Channel, Error, FleetStatsRequest, IssueRequest, NextWorkRequest, protocol::ToolOptions,
+};
 
 /// The switch that makes Velocity's own executable serve AIRC, so the server ships inside
 /// the app and needs no separate install.
@@ -37,14 +39,14 @@ pub fn server_arguments(app_data: &Path, project: &str, member: &str, nick: &str
 /// Serves one agent's connection on stdin/stdout from [`server_arguments`]: joins on
 /// `initialize`, leaves at end of input.
 pub fn serve_stdio(arguments: &[OsString]) -> Result<(), Error> {
-    serve_stdio_inner(arguments, None, None)
+    serve_stdio_inner(arguments, None, None, None)
 }
 
 pub fn serve_stdio_with_issues(
     arguments: &[OsString],
     handler: impl Fn(&Path, &str, IssueRequest<'_>) -> Result<Value, Error>,
 ) -> Result<(), Error> {
-    serve_stdio_inner(arguments, Some(&handler), None)
+    serve_stdio_inner(arguments, Some(&handler), None, None)
 }
 
 pub fn serve_stdio_with_handlers(
@@ -52,17 +54,39 @@ pub fn serve_stdio_with_handlers(
     issue_handler: impl Fn(&Path, &str, IssueRequest<'_>) -> Result<Value, Error>,
     next_work_handler: impl Fn(&Path, &str, &Channel, NextWorkRequest<'_>) -> Result<Value, Error>,
 ) -> Result<(), Error> {
-    serve_stdio_inner(arguments, Some(&issue_handler), Some(&next_work_handler))
+    serve_stdio_inner(
+        arguments,
+        Some(&issue_handler),
+        Some(&next_work_handler),
+        None,
+    )
+}
+
+pub fn serve_stdio_with_all_handlers(
+    arguments: &[OsString],
+    issue_handler: impl Fn(&Path, &str, IssueRequest<'_>) -> Result<Value, Error>,
+    next_work_handler: impl Fn(&Path, &str, &Channel, NextWorkRequest<'_>) -> Result<Value, Error>,
+    fleet_stats_handler: impl Fn(&Path, &str, FleetStatsRequest<'_>) -> Result<Value, Error>,
+) -> Result<(), Error> {
+    serve_stdio_inner(
+        arguments,
+        Some(&issue_handler),
+        Some(&next_work_handler),
+        Some(&fleet_stats_handler),
+    )
 }
 
 type StdioIssueHandler<'a> = dyn Fn(&Path, &str, IssueRequest<'_>) -> Result<Value, Error> + 'a;
 type StdioNextWorkHandler<'a> =
     dyn Fn(&Path, &str, &Channel, NextWorkRequest<'_>) -> Result<Value, Error> + 'a;
+type StdioFleetStatsHandler<'a> =
+    dyn Fn(&Path, &str, FleetStatsRequest<'_>) -> Result<Value, Error> + 'a;
 
 fn serve_stdio_inner(
     arguments: &[OsString],
     handler: Option<&StdioIssueHandler<'_>>,
     next_work: Option<&StdioNextWorkHandler<'_>>,
+    fleet_stats: Option<&StdioFleetStatsHandler<'_>>,
 ) -> Result<(), Error> {
     let [app_data, project, member, nick, options @ ..] = arguments else {
         return Err(Error::Invalid(USAGE.into()));
@@ -91,6 +115,11 @@ fn serve_stdio_inner(
             &app_data, &project, channel, request,
         )
     };
+    let handle_fleet_stats = |request: FleetStatsRequest<'_>| {
+        fleet_stats.ok_or_else(|| Error::Invalid("fleet_stats is unavailable".into()))?(
+            &app_data, &project, request,
+        )
+    };
     let mut options = ToolOptions::new(
         continuous_dispatch,
         handler.map(|_| &handle_issue as &crate::issue_tools::IssueHandler<'_>),
@@ -102,6 +131,11 @@ fn serve_stdio_inner(
     if next_work.is_some() {
         options = options
             .with_next_work(&handle_next_work as &crate::next_work_tools::NextWorkHandler<'_>);
+    }
+    if fleet_stats.is_some() {
+        options = options.with_fleet_stats(
+            &handle_fleet_stats as &crate::fleet_stats_tools::FleetStatsHandler<'_>,
+        );
     }
     crate::protocol::serve_with_options(
         &channel,

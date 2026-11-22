@@ -247,7 +247,8 @@ fn airc_access(role: ThreadRole, tool: &str) -> ToolAccess {
             | "issue_blocked_upstream"
             | "issue_hold"
             | "issue_close_not_planned"
-            | "next_work" => ToolAccess::Occasional,
+            | "next_work"
+            | "fleet_stats" => ToolAccess::Occasional,
             // Explicitly forbidden: join, leave, task_delete and any unknown tool.
             _ => ToolAccess::Forbidden,
         },
@@ -257,7 +258,7 @@ fn airc_access(role: ThreadRole, tool: &str) -> ToolAccess {
             }
             "airc_share" | "airc_release" | "airc_wait" | "read_feed" | "read_events"
             | "read_messages" | "send_message" | "list_nicks" | "task_list" | "issue_create"
-            | "issue_comment" => ToolAccess::Occasional,
+            | "issue_comment" | "fleet_stats" => ToolAccess::Occasional,
             _ => ToolAccess::Forbidden,
         },
         ThreadRole::Scout => match tool {
@@ -265,7 +266,7 @@ fn airc_access(role: ThreadRole, tool: &str) -> ToolAccess {
                 ToolAccess::Eager
             }
             "airc_claim" | "airc_share" | "airc_release" | "read_events" | "read_messages"
-            | "send_message" | "list_nicks" | "task_list" | "issue_create" => {
+            | "send_message" | "list_nicks" | "task_list" | "issue_create" | "fleet_stats" => {
                 ToolAccess::Occasional
             }
             _ => ToolAccess::Forbidden,
@@ -274,12 +275,12 @@ fn airc_access(role: ThreadRole, tool: &str) -> ToolAccess {
             "airc_claims" | "airc_claim" | "read_ledger" | "append_ledger" => ToolAccess::Eager,
             "airc_share" | "airc_release" | "airc_wait" | "airc_rebase" | "read_feed"
             | "read_events" | "read_messages" | "send_message" | "list_nicks" | "issue_read"
-            | "issue_comment" => ToolAccess::Occasional,
+            | "issue_comment" | "fleet_stats" => ToolAccess::Occasional,
             _ => ToolAccess::Forbidden,
         },
         ThreadRole::Question => match tool {
             "read_feed" | "read_ledger" | "airc_claims" | "task_list" | "list_nicks"
-            | "issue_read" => ToolAccess::Eager,
+            | "issue_read" | "fleet_stats" => ToolAccess::Eager,
             "read_events" | "read_messages" => ToolAccess::Occasional,
             _ => ToolAccess::Forbidden,
         },

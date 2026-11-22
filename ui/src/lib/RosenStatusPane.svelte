@@ -1,12 +1,17 @@
 <script lang="ts">
   import {
     collapseCommands,
+    getFleetStats,
+    issueCommands,
     onRosenStatus,
     releaseCommands,
     switchToAfterLand as requestSwitchToAfterLand,
     watchRosenStatus,
     type BaseCi,
     type CollapseMirrorHealth,
+    type FleetOffenderView,
+    type FleetStatusView,
+    type FleetWindowView,
     type LayoutAction,
     type MirrorBehind,
     type RosenStatusChanged,
@@ -67,6 +72,7 @@
     'Server',
     'Base',
     'Landing',
+    'Fleet',
     'Claims and conflicts',
     'Warm pool',
     'Mirror',
@@ -258,6 +264,95 @@
   const seconds = new Intl.NumberFormat(undefined, {
     maximumFractionDigits: 2,
   });
+
+  // Fleet ledger rollups for the last 24 hours and 7 days (#619).
+  let fleet = $state<FleetStatusView | null>(null);
+  let fleetWindow = $state<'24h' | '7d'>('24h');
+  let fleetError = $state('');
+  const activeFleet = $derived<FleetWindowView | null>(
+    fleet ? (fleetWindow === '24h' ? fleet.last_24h : fleet.last_7d) : null,
+  );
+  const landsLastHour = $derived(status?.landing.lands_last_hour ?? 0);
+
+  $effect(() => {
+    const current = currentProject;
+    void landsLastHour;
+    if (current === null) {
+      fleet = null;
+      fleetError = '';
+      return;
+    }
+    let stopped = false;
+    async function refreshFleet() {
+      if (current === null) return;
+      try {
+        const next = await getFleetStats(current);
+        if (!stopped) {
+          fleet = next;
+          fleetError = '';
+        }
+      } catch (reason) {
+        if (!stopped) fleetError = String(reason);
+      }
+    }
+    void refreshFleet();
+    const timer = window.setInterval(() => void refreshFleet(), 30_000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  });
+
+  function formatDuration(totalSeconds: number | null | undefined): string {
+    if (totalSeconds === null || totalSeconds === undefined) return '—';
+    const rounded = Math.max(0, Math.round(totalSeconds));
+    if (rounded < 60) return `${rounded}s`;
+    const minutes = Math.floor(rounded / 60);
+    if (minutes < 60) {
+      const rem = rounded % 60;
+      return rem > 0 ? `${minutes}m ${rem}s` : `${minutes}m`;
+    }
+    const hours = Math.floor(minutes / 60);
+    const remMinutes = minutes % 60;
+    return remMinutes > 0 ? `${hours}h ${remMinutes}m` : `${hours}h`;
+  }
+
+  function formatMs(ms: number | null | undefined): string {
+    if (ms === null || ms === undefined) return '—';
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+    if (ms < 60_000) return `${seconds.format(ms / 1000)}s`;
+    return formatDuration(ms / 1000);
+  }
+
+  function formatTokens(count: number | null | undefined): string {
+    if (count === null || count === undefined) return '—';
+    if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+    if (count >= 1_000) return `${Math.round(count / 1_000)}k`;
+    return String(Math.round(count));
+  }
+
+  function formatPercent(rate: number | null | undefined): string {
+    if (rate === null || rate === undefined) return '—';
+    return `${Math.round(rate * 100)}%`;
+  }
+
+  function formatDecimal(value: number | null | undefined): string {
+    if (value === null || value === undefined) return '—';
+    return value.toFixed(1);
+  }
+
+  async function openOffenderIssue(offender: FleetOffenderView) {
+    if (project === null) return;
+    try {
+      if (offender.url && offender.url.startsWith('https://')) {
+        await collapseCommands.openPage(offender.url);
+      } else {
+        await issueCommands.open(project, offender.issue);
+      }
+    } catch (reason) {
+      fleetError = String(reason);
+    }
+  }
 </script>
 
 {#if enabled && project !== null}
@@ -412,6 +507,146 @@
                   Post-land backlog · {status.landing.builds_pending} builds · {status
                     .landing.tests_pending} full tests
                 </p>
+              {:else if section === 'Fleet'}
+                <div
+                  class="fleet-window"
+                  role="group"
+                  aria-label="Fleet window"
+                >
+                  <button
+                    class="mini"
+                    class:active-window={fleetWindow === '24h'}
+                    aria-pressed={fleetWindow === '24h'}
+                    onclick={() => (fleetWindow = '24h')}>24h</button
+                  >
+                  <button
+                    class="mini"
+                    class:active-window={fleetWindow === '7d'}
+                    aria-pressed={fleetWindow === '7d'}
+                    onclick={() => (fleetWindow = '7d')}>7d</button
+                  >
+                </div>
+                {#if fleetError}
+                  <p class="failing">{fleetError}</p>
+                {:else if activeFleet}
+                  <p>
+                    {activeFleet.lands}
+                    {activeFleet.lands === 1 ? 'land' : 'lands'} · {activeFleet.issues_dispatched}
+                    dispatched
+                  </p>
+                  <p class="hint">
+                    Median dispatch → land {formatDuration(
+                      activeFleet.median_dispatched_to_landed_secs,
+                    )} · filed → land {formatDuration(
+                      activeFleet.median_filed_to_landed_secs,
+                    )}
+                  </p>
+                  <p class="hint">
+                    Idle {formatDecimal(activeFleet.idle_slot_minutes)} slot-min ·
+                    Tokens/land {formatTokens(
+                      activeFleet.tokens_per_landed_change,
+                    )}
+                    ({formatTokens(activeFleet.tokens_total)} total)
+                  </p>
+                  <p class="hint">
+                    Post-land fail {formatPercent(
+                      activeFleet.post_land_failure_rate,
+                    )} · Revert {formatPercent(activeFleet.revert_rate)} · Check wait
+                    {formatMs(activeFleet.check_queue_wait_ms_median)}
+                  </p>
+                  <p class="hint">
+                    Retries/issue {formatDecimal(activeFleet.retries_per_issue)}
+                    ({activeFleet.retries_total}) · Review findings {activeFleet.review_findings}
+                  </p>
+                  {#if activeFleet.slowest_issues.length}
+                    <p class="fleet-subhead">Slowest issues</p>
+                    {#each activeFleet.slowest_issues as item (`slow:${item.repository}#${item.issue}`)}
+                      <div class="fleet-row">
+                        <button
+                          class="fleet-link"
+                          title={item.title ??
+                            `${item.repository}#${item.issue}`}
+                          onclick={() => void openOffenderIssue(item)}
+                        >
+                          #{item.issue}
+                          {#if item.title}
+                            · {item.title}{/if}
+                        </button>
+                        <span class="fleet-metric"
+                          >{formatDuration(
+                            item.dispatched_to_landed_secs ??
+                              item.filed_to_landed_secs,
+                          )}</span
+                        >
+                        {#if item.thread_id !== null}
+                          <button
+                            class="fleet-thread"
+                            onclick={() => open(String(item.thread_id))}
+                            >Thread</button
+                          >
+                        {/if}
+                      </div>
+                    {/each}
+                  {/if}
+                  {#if activeFleet.most_tokens.length}
+                    <p class="fleet-subhead">Most tokens</p>
+                    {#each activeFleet.most_tokens as item (`tok:${item.repository}#${item.issue}`)}
+                      <div class="fleet-row">
+                        <button
+                          class="fleet-link"
+                          title={item.title ??
+                            `${item.repository}#${item.issue}`}
+                          onclick={() => void openOffenderIssue(item)}
+                        >
+                          #{item.issue}
+                          {#if item.title}
+                            · {item.title}{/if}
+                        </button>
+                        <span class="fleet-metric"
+                          >{formatTokens(item.tokens_total)}</span
+                        >
+                        {#if item.thread_id !== null}
+                          <button
+                            class="fleet-thread"
+                            onclick={() => open(String(item.thread_id))}
+                            >Thread</button
+                          >
+                        {/if}
+                      </div>
+                    {/each}
+                  {/if}
+                  {#if activeFleet.most_retries.length}
+                    <p class="fleet-subhead">Most retries</p>
+                    {#each activeFleet.most_retries as item (`ret:${item.repository}#${item.issue}`)}
+                      <div class="fleet-row">
+                        <button
+                          class="fleet-link"
+                          title={item.title ??
+                            `${item.repository}#${item.issue}`}
+                          onclick={() => void openOffenderIssue(item)}
+                        >
+                          #{item.issue}
+                          {#if item.title}
+                            · {item.title}{/if}
+                        </button>
+                        <span class="fleet-metric"
+                          >{item.retries}r{item.restarts > 0
+                            ? ` · ${item.restarts}rs`
+                            : ''}</span
+                        >
+                        {#if item.thread_id !== null}
+                          <button
+                            class="fleet-thread"
+                            onclick={() => open(String(item.thread_id))}
+                            >Thread</button
+                          >
+                        {/if}
+                      </div>
+                    {/each}
+                  {/if}
+                {:else}
+                  <p class="hint">Loading fleet metrics…</p>
+                {/if}
               {:else if section === 'Claims and conflicts'}
                 {#each status.claims as claim (`${claim.change}:${claim.kind}:${claim.paths.join()}`)}
                   <p>
@@ -644,5 +879,56 @@
   }
   .mono {
     font-family: var(--mono);
+  }
+  .fleet-window {
+    display: flex;
+    gap: var(--sp-2);
+    margin: var(--sp-2) 0 var(--sp-1);
+    padding: 0 var(--sp-3) 0 calc(var(--sp-3) + 10px + var(--sp-3));
+  }
+  .fleet-window .active-window {
+    background: var(--surface-3);
+    color: var(--text);
+  }
+  .fleet-subhead {
+    margin-top: var(--sp-2);
+    color: var(--text);
+    font-weight: var(--fw-semibold);
+  }
+  .fleet-row {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+    margin: var(--sp-1) 0 0;
+    padding: 0 var(--sp-3) 0 calc(var(--sp-3) + 10px + var(--sp-3));
+    font-size: var(--fs-sm);
+    line-height: var(--lh);
+  }
+  .fleet-link {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+    color: var(--text-2);
+  }
+  .fleet-link:hover {
+    color: var(--text);
+    text-decoration: underline;
+  }
+  .fleet-metric {
+    flex-shrink: 0;
+    font-family: var(--mono);
+    color: var(--muted);
+  }
+  .fleet-thread {
+    flex-shrink: 0;
+    color: var(--muted);
+    font-size: var(--fs-xs);
+  }
+  .fleet-thread:hover {
+    color: var(--text);
+    text-decoration: underline;
   }
 </style>
