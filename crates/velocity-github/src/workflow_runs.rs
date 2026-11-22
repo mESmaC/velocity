@@ -39,6 +39,9 @@ pub(crate) struct WorkflowRun {
     pub name: Option<String>,
     #[serde(default)]
     pub run_number: u64,
+    /// GitHub's attempt counter for this run, incremented when a run is re-run (#671).
+    #[serde(default)]
+    pub run_attempt: Option<u64>,
     pub status: Option<String>,
     pub conclusion: Option<String>,
     #[serde(default)]
@@ -468,6 +471,7 @@ mod tests {
         assert_eq!(jobs.len(), 101);
 
         let run = BaseRun {
+            workflow_key: String::new(),
             workflow: "CI".into(),
             run: 507,
             commit: "a".repeat(40),

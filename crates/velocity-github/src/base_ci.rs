@@ -45,6 +45,166 @@ pub struct BaseRunSnapshot {
     pub run_jobs: BTreeMap<u64, Vec<RunJob>>,
 }
 
+/// Cache shared across consecutive [`BaseCiWatch::runs`] polls for one project so already-completed
+/// Actions runs and settled tip check runs are not re-polled on every tick (#671).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BaseCiPollCache {
+    repository: String,
+    branch: String,
+    completed_run_jobs: BTreeMap<u64, CachedRunJobs>,
+    tip_check_runs: CachedTipCheckRuns,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RunJobsStamp {
+    run_attempt: Option<u64>,
+    conclusion: Option<String>,
+    updated_at: Option<String>,
+}
+
+impl RunJobsStamp {
+    fn from_workflow_run(run: &WorkflowRun) -> Self {
+        Self {
+            run_attempt: run.run_attempt,
+            conclusion: run.conclusion.clone(),
+            updated_at: run.updated_at.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CachedRunJobs {
+    stamp: RunJobsStamp,
+    jobs: Vec<RunJob>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum CachedTipCheckRuns {
+    #[default]
+    None,
+    /// Observed an empty check-runs list once for `sha`; re-check once on the next poll
+    /// before treating it as settled so late-starting check runs right after a push are not missed.
+    EmptyOnce { sha: String },
+    /// All check runs for `sha` are completed (or remained empty across consecutive polls).
+    Settled {
+        sha: String,
+        checks: Vec<CheckRunInput>,
+    },
+}
+
+impl BaseCiPollCache {
+    /// Clears all cached run jobs and tip check-runs state.
+    pub fn clear(&mut self) {
+        self.repository.clear();
+        self.branch.clear();
+        self.completed_run_jobs.clear();
+        self.tip_check_runs = CachedTipCheckRuns::None;
+    }
+
+    fn reset_if_target_changed(&mut self, repository: &str, branch: &str) {
+        if self.repository != repository || self.branch != branch {
+            self.repository = repository.to_owned();
+            self.branch = branch.to_owned();
+            self.completed_run_jobs.clear();
+            self.tip_check_runs = CachedTipCheckRuns::None;
+        }
+    }
+
+    fn prune_completed_runs(&mut self, completed_stamps: &BTreeMap<u64, RunJobsStamp>) {
+        self.completed_run_jobs.retain(|run_id, cached| {
+            completed_stamps
+                .get(run_id)
+                .is_some_and(|stamp| *stamp == cached.stamp)
+        });
+    }
+
+    fn completed_jobs(&self, run_id: u64, stamp: Option<&RunJobsStamp>) -> Option<Vec<RunJob>> {
+        let stamp = stamp?;
+        let cached = self.completed_run_jobs.get(&run_id)?;
+        (cached.stamp == *stamp).then(|| cached.jobs.clone())
+    }
+
+    fn record_completed_jobs(
+        &mut self,
+        run_id: u64,
+        stamp: Option<&RunJobsStamp>,
+        jobs: &[RunJob],
+    ) {
+        let Some(stamp) = stamp else {
+            return;
+        };
+        // Avoid caching if GitHub's jobs endpoint still reports a running job due to eventual
+        // consistency right as a workflow run transitions to `completed`.
+        if jobs.iter().all(|job| job.state() != JobState::Running) {
+            self.completed_run_jobs.insert(
+                run_id,
+                CachedRunJobs {
+                    stamp: stamp.clone(),
+                    jobs: jobs.to_vec(),
+                },
+            );
+        }
+    }
+
+    fn settled_tip_checks(
+        &self,
+        tip_sha: &str,
+        has_running_actions_on_tip: bool,
+    ) -> Option<&[CheckRunInput]> {
+        let tip_sha = tip_sha.trim();
+        if tip_sha.is_empty() || has_running_actions_on_tip {
+            return None;
+        }
+        match &self.tip_check_runs {
+            CachedTipCheckRuns::Settled { sha, checks } if sha == tip_sha => {
+                Some(checks.as_slice())
+            }
+            _ => None,
+        }
+    }
+
+    fn record_tip_checks(
+        &mut self,
+        tip_sha: &str,
+        has_running_actions_on_tip: bool,
+        truncated: bool,
+        checks: &[CheckRunInput],
+    ) {
+        let tip_sha = tip_sha.trim();
+        if tip_sha.is_empty() || has_running_actions_on_tip || truncated {
+            self.tip_check_runs = CachedTipCheckRuns::None;
+            return;
+        }
+        if !checks.is_empty() && checks.iter().all(is_check_run_completed) {
+            self.tip_check_runs = CachedTipCheckRuns::Settled {
+                sha: tip_sha.to_owned(),
+                checks: checks.to_vec(),
+            };
+        } else if checks.is_empty() {
+            let confirmed_empty = matches!(
+                &self.tip_check_runs,
+                CachedTipCheckRuns::EmptyOnce { sha } if sha == tip_sha
+            );
+            self.tip_check_runs = if confirmed_empty {
+                CachedTipCheckRuns::Settled {
+                    sha: tip_sha.to_owned(),
+                    checks: Vec::new(),
+                }
+            } else {
+                CachedTipCheckRuns::EmptyOnce {
+                    sha: tip_sha.to_owned(),
+                }
+            };
+        } else {
+            self.tip_check_runs = CachedTipCheckRuns::None;
+        }
+    }
+}
+
+fn is_check_run_completed(check: &CheckRunInput) -> bool {
+    check.status.as_deref() == Some("completed")
+}
+
 /// A failed run's failed steps' output, and where the whole of it was saved.
 #[derive(Clone, Debug, Default)]
 pub struct FailedLog {
@@ -64,7 +224,12 @@ impl BaseCiWatch {
     /// The runs GitHub started for commits of `branch`, and the statuses on its tip.
     /// Cancelled runs newer than each workflow's latest decided run are inspected so a
     /// timed-out job (reported as `cancelled` by GitHub) counts as failed (#584).
-    pub fn runs(&self, branch: &str) -> Result<BaseRunSnapshot, GitHubCommandError> {
+    /// Completed run jobs and settled tip check runs are reused from `cache` across polls (#671).
+    pub fn runs(
+        &self,
+        branch: &str,
+        cache: &mut BaseCiPollCache,
+    ) -> Result<BaseRunSnapshot, GitHubCommandError> {
         #[derive(Deserialize)]
         struct Runs {
             workflow_runs: Vec<WorkflowRun>,
@@ -80,115 +245,47 @@ impl BaseCiWatch {
             .into_iter()
             .filter(|run| run.event.as_deref().is_some_and(base_ci::counts_for_base))
             .collect();
-        let mut workflow_paths = BTreeMap::new();
-        let mut runs = Vec::with_capacity(raw_runs.len());
-        let mut cancelled_ids = HashSet::new();
-        for raw in raw_runs {
-            if raw.status.as_deref() == Some("completed")
-                && raw.conclusion.as_deref() == Some("cancelled")
-            {
-                cancelled_ids.insert(raw.id);
-            }
-            if let Some(workflow_path) =
-                raw.path.as_deref().filter(|value| !value.trim().is_empty())
-            {
-                workflow_paths.insert(raw.id, workflow_path.to_owned());
-            }
-            runs.push(base_run(raw));
-        }
-        let mut run_jobs =
-            self.promote_timed_out_runs(&mut runs, &cancelled_ids, &workflow_paths)?;
-        self.inspect_relevant_runs(&runs, &workflow_paths, &mut run_jobs)?;
+        cache.reset_if_target_changed(self.client.repository(), branch);
+        let PreparedRuns {
+            mut runs,
+            workflow_paths,
+            cancelled_ids,
+            completed_stamps,
+        } = prepare_workflow_runs(raw_runs);
+        cache.prune_completed_runs(&completed_stamps);
+        let mut inspect_jobs = |run, commit: &str, workflow_path: Option<&str>, has_newer| {
+            self.inspect_run_jobs(run, commit, workflow_path, has_newer)
+        };
+        let mut run_jobs = promote_timed_out_runs(
+            &mut runs,
+            &cancelled_ids,
+            &workflow_paths,
+            &completed_stamps,
+            cache,
+            &mut inspect_jobs,
+        )?;
+        inspect_relevant_runs(
+            &runs,
+            &workflow_paths,
+            &completed_stamps,
+            &mut run_jobs,
+            cache,
+            &mut inspect_jobs,
+        )?;
         let (tip_sha, status_runs) = self.statuses(branch)?;
+        let has_running_actions_on_tip = has_running_actions_for_tip(&runs, &tip_sha);
         runs.extend(status_runs);
-        let actions_job_ids: BTreeSet<u64> = run_jobs
-            .values()
-            .flatten()
-            .filter_map(|job| match job {
-                RunJob::Failed(failed) if failed.id != 0 => Some(failed.id),
-                _ => None,
-            })
-            .collect();
-        runs.extend(self.check_runs(branch, &tip_sha, &actions_job_ids)?);
+        let actions_job_ids = failed_actions_job_ids(&run_jobs);
+        let check_runs = resolve_check_runs(
+            self.client.repository(),
+            &tip_sha,
+            has_running_actions_on_tip,
+            &actions_job_ids,
+            cache,
+            || self.fetch_check_runs(branch, &tip_sha),
+        )?;
+        runs.extend(check_runs);
         Ok(BaseRunSnapshot { runs, run_jobs })
-    }
-
-    fn promote_timed_out_runs(
-        &self,
-        runs: &mut [BaseRun],
-        cancelled_ids: &HashSet<u64>,
-        workflow_paths: &BTreeMap<u64, String>,
-    ) -> Result<BTreeMap<u64, Vec<RunJob>>, GitHubCommandError> {
-        let inputs: Vec<RunCandidateInput<'_>> = runs
-            .iter()
-            .map(|run| RunCandidateInput {
-                workflow: run.identity(),
-                run: run.run,
-                state: run.state,
-                cancelled: cancelled_ids.contains(&run.run),
-            })
-            .collect();
-        let candidates = base_ci::cancelled_candidates(&inputs);
-        let mut run_jobs = BTreeMap::new();
-        let mut resolved_workflows: HashSet<String> = HashSet::new();
-        let mut checked_per_workflow: BTreeMap<String, usize> = BTreeMap::new();
-        for candidate in candidates {
-            if resolved_workflows.contains(&candidate.workflow) {
-                continue;
-            }
-            let checked = checked_per_workflow
-                .entry(candidate.workflow.clone())
-                .or_insert(0);
-            if *checked >= MAX_CANCELLED_CHECKS_PER_WORKFLOW {
-                continue;
-            }
-            *checked += 1;
-            let Some(run) = runs.iter_mut().find(|entry| entry.run == candidate.run) else {
-                continue;
-            };
-            let jobs = self.inspect_run_jobs(
-                run.run,
-                &run.commit,
-                workflow_paths.get(&run.run).map(String::as_str),
-                candidate.has_newer_workflow_run,
-            )?;
-            let has_failure = jobs.iter().any(|job| job.state() == JobState::Failed);
-            run_jobs.insert(run.run, jobs);
-            if has_failure {
-                run.state = RunState::Failed;
-                resolved_workflows.insert(candidate.workflow);
-            }
-        }
-        Ok(run_jobs)
-    }
-
-    /// Reads jobs for each workflow's newest failed run and any newer in-progress runs so
-    /// each job is decided by the newest run in which that job finished (#587).
-    fn inspect_relevant_runs(
-        &self,
-        runs: &[BaseRun],
-        workflow_paths: &BTreeMap<u64, String>,
-        run_jobs: &mut BTreeMap<u64, Vec<RunJob>>,
-    ) -> Result<(), GitHubCommandError> {
-        for run_id in base_ci::runs_to_inspect(runs, MAX_RUNNING_CHECKS_PER_WORKFLOW) {
-            if run_jobs.contains_key(&run_id) {
-                continue;
-            }
-            let Some(run) = runs.iter().find(|entry| entry.run == run_id) else {
-                continue;
-            };
-            let has_newer = runs
-                .iter()
-                .any(|other| other.identity() == run.identity() && other.run > run.run);
-            let jobs = self.inspect_run_jobs(
-                run.run,
-                &run.commit,
-                workflow_paths.get(&run.run).map(String::as_str),
-                has_newer,
-            )?;
-            run_jobs.insert(run.run, jobs);
-        }
-        Ok(())
     }
 
     /// The tip's commit statuses, which is how legacy CI other than GitHub Actions reports.
@@ -234,14 +331,13 @@ impl BaseCiWatch {
         Ok((combined.sha, runs))
     }
 
-    /// Standalone GitHub App check runs on the base branch's tip commit (#652).
-    /// GitHub Actions check runs are excluded because `/actions/runs` already tracks them.
-    fn check_runs(
+    /// Reads raw check runs on the base branch's tip commit (#652), reporting whether
+    /// pagination stopped at `MAX_CHECK_RUN_PAGES` before exhausting all check runs.
+    fn fetch_check_runs(
         &self,
         branch: &str,
         tip_sha: &str,
-        actions_job_ids: &BTreeSet<u64>,
-    ) -> Result<Vec<BaseRun>, GitHubCommandError> {
+    ) -> Result<(Vec<CheckRunInput>, bool), GitHubCommandError> {
         let reference = if tip_sha.trim().is_empty() {
             format!("heads/{}", encoded(branch, true))
         } else {
@@ -249,6 +345,7 @@ impl BaseCiWatch {
         };
         let base_path = format!("/commits/{reference}/check-runs?per_page={CHECK_RUNS_PER_PAGE}");
         let mut checks = Vec::new();
+        let mut truncated = true;
         for page in 1..=MAX_CHECK_RUN_PAGES {
             let path = if page == 1 {
                 base_path.clone()
@@ -261,20 +358,11 @@ impl BaseCiWatch {
             if received < CHECK_RUNS_PER_PAGE
                 || (response.total_count > 0 && checks.len() >= response.total_count)
             {
+                truncated = false;
                 break;
             }
         }
-        let commit_page = format!(
-            "https://github.com/{}/commit/{}",
-            self.client.repository(),
-            tip_sha
-        );
-        Ok(base_ci::check_runs_to_base_runs(
-            &checks,
-            tip_sha,
-            &commit_page,
-            actions_job_ids,
-        ))
+        Ok((checks, truncated))
     }
 
     fn inspect_run_jobs(
@@ -428,6 +516,206 @@ impl BaseCiWatch {
             .join("\n");
         Ok(formatted)
     }
+}
+
+struct PreparedRuns {
+    runs: Vec<BaseRun>,
+    workflow_paths: BTreeMap<u64, String>,
+    cancelled_ids: HashSet<u64>,
+    completed_stamps: BTreeMap<u64, RunJobsStamp>,
+}
+
+fn prepare_workflow_runs(raw_runs: Vec<WorkflowRun>) -> PreparedRuns {
+    let mut workflow_paths = BTreeMap::new();
+    let mut runs = Vec::with_capacity(raw_runs.len());
+    let mut cancelled_ids = HashSet::new();
+    let mut completed_stamps = BTreeMap::new();
+    for raw in raw_runs {
+        if raw.completed() {
+            completed_stamps.insert(raw.id, RunJobsStamp::from_workflow_run(&raw));
+            if raw.conclusion.as_deref() == Some("cancelled") {
+                cancelled_ids.insert(raw.id);
+            }
+        }
+        if let Some(workflow_path) = raw.path.as_deref().filter(|value| !value.trim().is_empty()) {
+            workflow_paths.insert(raw.id, workflow_path.to_owned());
+        }
+        runs.push(base_run(raw));
+    }
+    PreparedRuns {
+        runs,
+        workflow_paths,
+        cancelled_ids,
+        completed_stamps,
+    }
+}
+
+fn load_run_jobs<F>(
+    run_id: u64,
+    commit: &str,
+    workflow_path: Option<&str>,
+    has_newer_workflow_run: bool,
+    completed_stamps: &BTreeMap<u64, RunJobsStamp>,
+    cache: &mut BaseCiPollCache,
+    fetch: &mut F,
+) -> Result<Vec<RunJob>, GitHubCommandError>
+where
+    F: FnMut(u64, &str, Option<&str>, bool) -> Result<Vec<RunJob>, GitHubCommandError>,
+{
+    let stamp = completed_stamps.get(&run_id);
+    if let Some(cached) = cache.completed_jobs(run_id, stamp) {
+        return Ok(cached);
+    }
+    let jobs = fetch(run_id, commit, workflow_path, has_newer_workflow_run)?;
+    cache.record_completed_jobs(run_id, stamp, &jobs);
+    Ok(jobs)
+}
+
+fn promote_timed_out_runs<F>(
+    runs: &mut [BaseRun],
+    cancelled_ids: &HashSet<u64>,
+    workflow_paths: &BTreeMap<u64, String>,
+    completed_stamps: &BTreeMap<u64, RunJobsStamp>,
+    cache: &mut BaseCiPollCache,
+    fetch: &mut F,
+) -> Result<BTreeMap<u64, Vec<RunJob>>, GitHubCommandError>
+where
+    F: FnMut(u64, &str, Option<&str>, bool) -> Result<Vec<RunJob>, GitHubCommandError>,
+{
+    let inputs: Vec<RunCandidateInput<'_>> = runs
+        .iter()
+        .map(|run| RunCandidateInput {
+            workflow: run.identity(),
+            run: run.run,
+            state: run.state,
+            cancelled: cancelled_ids.contains(&run.run),
+        })
+        .collect();
+    let candidates = base_ci::cancelled_candidates(&inputs);
+    let mut run_jobs = BTreeMap::new();
+    let mut resolved_workflows: HashSet<String> = HashSet::new();
+    let mut checked_per_workflow: BTreeMap<String, usize> = BTreeMap::new();
+    for candidate in candidates {
+        if resolved_workflows.contains(&candidate.workflow) {
+            continue;
+        }
+        let checked = checked_per_workflow
+            .entry(candidate.workflow.clone())
+            .or_insert(0);
+        if *checked >= MAX_CANCELLED_CHECKS_PER_WORKFLOW {
+            continue;
+        }
+        *checked += 1;
+        let Some(run) = runs.iter_mut().find(|entry| entry.run == candidate.run) else {
+            continue;
+        };
+        let jobs = load_run_jobs(
+            run.run,
+            &run.commit,
+            workflow_paths.get(&run.run).map(String::as_str),
+            candidate.has_newer_workflow_run,
+            completed_stamps,
+            cache,
+            fetch,
+        )?;
+        let has_failure = jobs.iter().any(|job| job.state() == JobState::Failed);
+        run_jobs.insert(run.run, jobs);
+        if has_failure {
+            run.state = RunState::Failed;
+            resolved_workflows.insert(candidate.workflow);
+        }
+    }
+    Ok(run_jobs)
+}
+
+/// Reads jobs for each workflow's newest failed run and any newer in-progress runs so
+/// each job is decided by the newest run in which that job finished (#587).
+fn inspect_relevant_runs<F>(
+    runs: &[BaseRun],
+    workflow_paths: &BTreeMap<u64, String>,
+    completed_stamps: &BTreeMap<u64, RunJobsStamp>,
+    run_jobs: &mut BTreeMap<u64, Vec<RunJob>>,
+    cache: &mut BaseCiPollCache,
+    fetch: &mut F,
+) -> Result<(), GitHubCommandError>
+where
+    F: FnMut(u64, &str, Option<&str>, bool) -> Result<Vec<RunJob>, GitHubCommandError>,
+{
+    for run_id in base_ci::runs_to_inspect(runs, MAX_RUNNING_CHECKS_PER_WORKFLOW) {
+        if run_jobs.contains_key(&run_id) {
+            continue;
+        }
+        let Some(run) = runs.iter().find(|entry| entry.run == run_id) else {
+            continue;
+        };
+        let has_newer = runs
+            .iter()
+            .any(|other| other.identity() == run.identity() && other.run > run.run);
+        let jobs = load_run_jobs(
+            run.run,
+            &run.commit,
+            workflow_paths.get(&run.run).map(String::as_str),
+            has_newer,
+            completed_stamps,
+            cache,
+            fetch,
+        )?;
+        run_jobs.insert(run.run, jobs);
+    }
+    Ok(())
+}
+
+fn has_running_actions_for_tip(runs: &[BaseRun], tip_sha: &str) -> bool {
+    let tip_sha = tip_sha.trim();
+    !tip_sha.is_empty()
+        && runs.iter().any(|run| {
+            run.run != 0
+                && run.state == RunState::Running
+                && run.commit.trim().eq_ignore_ascii_case(tip_sha)
+        })
+}
+
+fn failed_actions_job_ids(run_jobs: &BTreeMap<u64, Vec<RunJob>>) -> BTreeSet<u64> {
+    run_jobs
+        .values()
+        .flatten()
+        .filter_map(|job| match job {
+            RunJob::Failed(failed) if failed.id != 0 => Some(failed.id),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Standalone GitHub App check runs on the base branch's tip commit (#652), reusing cached
+/// check runs when the tip SHA is unchanged and all check runs are already completed (#671).
+fn resolve_check_runs<F>(
+    repository: &str,
+    tip_sha: &str,
+    has_running_actions_on_tip: bool,
+    actions_job_ids: &BTreeSet<u64>,
+    cache: &mut BaseCiPollCache,
+    fetch: F,
+) -> Result<Vec<BaseRun>, GitHubCommandError>
+where
+    F: FnOnce() -> Result<(Vec<CheckRunInput>, bool), GitHubCommandError>,
+{
+    let commit_page = format!("https://github.com/{repository}/commit/{tip_sha}");
+    if let Some(cached) = cache.settled_tip_checks(tip_sha, has_running_actions_on_tip) {
+        return Ok(base_ci::check_runs_to_base_runs(
+            cached,
+            tip_sha,
+            &commit_page,
+            actions_job_ids,
+        ));
+    }
+    let (checks, truncated) = fetch()?;
+    cache.record_tip_checks(tip_sha, has_running_actions_on_tip, truncated, &checks);
+    Ok(base_ci::check_runs_to_base_runs(
+        &checks,
+        tip_sha,
+        &commit_page,
+        actions_job_ids,
+    ))
 }
 
 fn save_failed_log(run: u64, text: &str) -> Option<PathBuf> {
@@ -600,12 +888,359 @@ pub(crate) fn encoded(text: &str, path: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
-    use velocity_core::base_ci::{self, RunState};
+    use velocity_core::base_ci::{self, CheckRunInput, FailedJob, RunJob, RunState};
 
-    use super::{ApiCheckRun, CheckRunsResponse, base_run};
+    use super::{
+        ApiCheckRun, BaseCiPollCache, CheckRunsResponse, PreparedRuns, base_run,
+        has_running_actions_for_tip, inspect_relevant_runs, prepare_workflow_runs,
+        promote_timed_out_runs, resolve_check_runs,
+    };
     use crate::workflow_runs::WorkflowRun;
+
+    fn workflow_run(
+        id: u64,
+        workflow_id: u64,
+        status: &str,
+        conclusion: Option<&str>,
+        run_attempt: u64,
+        updated_at: &str,
+    ) -> WorkflowRun {
+        WorkflowRun {
+            id,
+            workflow_id: Some(workflow_id),
+            name: Some(format!("Workflow {workflow_id}")),
+            run_number: id,
+            run_attempt: Some(run_attempt),
+            status: Some(status.to_owned()),
+            conclusion: conclusion.map(str::to_owned),
+            head_sha: format!("{id:040x}"),
+            html_url: format!("https://github.com/mESmaC/velocity/actions/runs/{id}"),
+            run_started_at: None,
+            updated_at: Some(updated_at.to_owned()),
+            event: Some("push".to_owned()),
+            path: Some(format!(".github/workflows/w{workflow_id}.yml")),
+        }
+    }
+
+    fn failed_run_job(id: u64, name: &str, timed_out: bool) -> RunJob {
+        RunJob::Failed(FailedJob {
+            id,
+            job: name.to_owned(),
+            timed_out,
+            ..FailedJob::default()
+        })
+    }
+
+    struct PollOutcome {
+        runs: Vec<base_ci::BaseRun>,
+        run_jobs: BTreeMap<u64, Vec<RunJob>>,
+        fetched: Vec<u64>,
+    }
+
+    fn run_cached_job_poll(
+        raw_runs: Vec<WorkflowRun>,
+        cache: &mut BaseCiPollCache,
+        mut fetch: impl FnMut(u64) -> Vec<RunJob>,
+    ) -> Result<PollOutcome, crate::GitHubCommandError> {
+        cache.reset_if_target_changed("mESmaC/collapse.sh", "main");
+        let PreparedRuns {
+            mut runs,
+            workflow_paths,
+            cancelled_ids,
+            completed_stamps,
+        } = prepare_workflow_runs(raw_runs);
+        cache.prune_completed_runs(&completed_stamps);
+        let mut fetched = Vec::new();
+        let mut inspect = |run_id, _commit: &str, _path: Option<&str>, _has_newer| {
+            fetched.push(run_id);
+            Ok(fetch(run_id))
+        };
+        let mut run_jobs = promote_timed_out_runs(
+            &mut runs,
+            &cancelled_ids,
+            &workflow_paths,
+            &completed_stamps,
+            cache,
+            &mut inspect,
+        )?;
+        inspect_relevant_runs(
+            &runs,
+            &workflow_paths,
+            &completed_stamps,
+            &mut run_jobs,
+            cache,
+            &mut inspect,
+        )?;
+        Ok(PollOutcome {
+            runs,
+            run_jobs,
+            fetched,
+        })
+    }
+
+    // Risk (#671): steady-state BaseCiWatch polls must cache completed failed and cancelled
+    // Actions run jobs across polls so they do not trigger gh_rate bursts on every tick.
+    #[test]
+    fn completed_failed_and_cancelled_run_jobs_are_cached_across_polls()
+    -> Result<(), crate::GitHubCommandError> {
+        let mut cache = BaseCiPollCache::default();
+        let make_runs = || {
+            vec![
+                workflow_run(
+                    100,
+                    1,
+                    "completed",
+                    Some("failure"),
+                    1,
+                    "2026-04-01T00:00:00Z",
+                ),
+                workflow_run(
+                    200,
+                    2,
+                    "completed",
+                    Some("cancelled"),
+                    1,
+                    "2026-04-01T00:00:00Z",
+                ),
+                workflow_run(
+                    201,
+                    2,
+                    "completed",
+                    Some("cancelled"),
+                    1,
+                    "2026-04-01T00:01:00Z",
+                ),
+            ]
+        };
+        let job_map = |run_id: u64| match run_id {
+            100 => vec![failed_run_job(1001, "linux", false)],
+            200 => vec![failed_run_job(2001, "macos", true)],
+            _ => vec![RunJob::Undecided("macos".to_owned())],
+        };
+
+        let first = run_cached_job_poll(make_runs(), &mut cache, job_map)?;
+        assert_eq!(first.fetched, vec![201, 200, 100]);
+        assert_eq!(first.runs[1].state, RunState::Failed);
+        assert_eq!(first.run_jobs.len(), 3);
+
+        let second = run_cached_job_poll(make_runs(), &mut cache, job_map)?;
+        assert!(second.fetched.is_empty());
+        assert_eq!(second.runs, first.runs);
+        assert_eq!(second.run_jobs, first.run_jobs);
+        Ok(())
+    }
+
+    // Risk (#671): in-progress runs and eventually-consistent completed runs with running jobs
+    // must not be cached prematurely.
+    #[test]
+    fn in_progress_and_lagging_completed_runs_are_not_cached()
+    -> Result<(), crate::GitHubCommandError> {
+        let mut cache = BaseCiPollCache::default();
+        let running = workflow_run(300, 1, "in_progress", None, 1, "2026-04-01T00:00:00Z");
+        let failed = workflow_run(
+            299,
+            1,
+            "completed",
+            Some("failure"),
+            1,
+            "2026-04-01T00:00:00Z",
+        );
+
+        let first = run_cached_job_poll(vec![running.clone(), failed.clone()], &mut cache, |_| {
+            vec![RunJob::Running("test".to_owned())]
+        })?;
+        assert_eq!(first.fetched, vec![300, 299]);
+        assert!(cache.completed_run_jobs.is_empty());
+
+        let second =
+            run_cached_job_poll(vec![running.clone(), failed.clone()], &mut cache, |id| {
+                if id == 300 {
+                    vec![RunJob::Running("test".to_owned())]
+                } else {
+                    vec![failed_run_job(2991, "test", false)]
+                }
+            })?;
+        assert_eq!(second.fetched, vec![300, 299]);
+        assert!(cache.completed_run_jobs.contains_key(&299));
+        assert!(!cache.completed_run_jobs.contains_key(&300));
+
+        let third = run_cached_job_poll(vec![running, failed], &mut cache, |_| {
+            vec![RunJob::Running("test".to_owned())]
+        })?;
+        assert_eq!(third.fetched, vec![300]);
+        Ok(())
+    }
+
+    // Risk (#671): re-run attempts on the same run ID must invalidate cached jobs and runs
+    // outside the current window must be pruned from the cache.
+    #[test]
+    fn reruns_invalidate_and_aged_out_runs_are_pruned() -> Result<(), crate::GitHubCommandError> {
+        let mut cache = BaseCiPollCache::default();
+        let attempt_1 = workflow_run(
+            299,
+            1,
+            "completed",
+            Some("failure"),
+            1,
+            "2026-04-01T00:00:00Z",
+        );
+        let first = run_cached_job_poll(vec![attempt_1], &mut cache, |_| {
+            vec![failed_run_job(2991, "test", false)]
+        })?;
+        assert_eq!(first.fetched, vec![299]);
+
+        let attempt_2 = workflow_run(
+            299,
+            1,
+            "completed",
+            Some("failure"),
+            2,
+            "2026-04-01T00:05:00Z",
+        );
+        let second = run_cached_job_poll(vec![attempt_2], &mut cache, |_| {
+            vec![failed_run_job(2992, "test", false)]
+        })?;
+        assert_eq!(second.fetched, vec![299]);
+
+        let newer_pass = workflow_run(
+            301,
+            1,
+            "completed",
+            Some("success"),
+            1,
+            "2026-04-01T00:10:00Z",
+        );
+        let third = run_cached_job_poll(vec![newer_pass], &mut cache, |_| Vec::new())?;
+        assert!(third.fetched.is_empty());
+        assert!(cache.completed_run_jobs.is_empty());
+        Ok(())
+    }
+
+    fn standalone_check(sha: &str, status: &str, conclusion: Option<&str>) -> CheckRunInput {
+        CheckRunInput {
+            id: 77,
+            name: "deploy".to_owned(),
+            head_sha: sha.to_owned(),
+            status: Some(status.to_owned()),
+            conclusion: conclusion.map(str::to_owned),
+            app_id: Some(24),
+            app_slug: Some("external-ci".to_owned()),
+            ..CheckRunInput::default()
+        }
+    }
+
+    // Risk (#671): settled tip check-runs must skip redundant `/commits/{sha}/check-runs`
+    // requests while still re-polling pending check runs and active Actions tips.
+    #[test]
+    fn tip_check_runs_cache_reuses_completed_tip_and_refreshes_pending()
+    -> Result<(), crate::GitHubCommandError> {
+        let mut cache = BaseCiPollCache::default();
+        let sha1 = "a".repeat(40);
+        let mut fetches = 0usize;
+
+        let pending = resolve_check_runs(
+            "mESmaC/collapse.sh",
+            &sha1,
+            false,
+            &BTreeSet::new(),
+            &mut cache,
+            || {
+                fetches += 1;
+                Ok((vec![standalone_check(&sha1, "in_progress", None)], false))
+            },
+        )?;
+        assert_eq!(fetches, 1);
+        assert_eq!(pending[0].state, RunState::Running);
+
+        let completed_first = resolve_check_runs(
+            "mESmaC/collapse.sh",
+            &sha1,
+            false,
+            &BTreeSet::new(),
+            &mut cache,
+            || {
+                fetches += 1;
+                Ok((
+                    vec![standalone_check(&sha1, "completed", Some("failure"))],
+                    false,
+                ))
+            },
+        )?;
+        assert_eq!(fetches, 2);
+        assert_eq!(completed_first[0].state, RunState::Failed);
+
+        let completed_cached = resolve_check_runs(
+            "mESmaC/collapse.sh",
+            &sha1,
+            false,
+            &BTreeSet::new(),
+            &mut cache,
+            || {
+                fetches += 1;
+                Ok((Vec::new(), false))
+            },
+        )?;
+        assert_eq!(fetches, 2);
+        assert_eq!(completed_cached, completed_first);
+
+        let running_actions = vec![base_run(workflow_run(
+            400,
+            1,
+            "in_progress",
+            None,
+            1,
+            "2026-04-01T00:00:00Z",
+        ))];
+        assert!(has_running_actions_for_tip(
+            &running_actions,
+            &running_actions[0].commit
+        ));
+        Ok(())
+    }
+
+    // Risk (#671): empty check-runs lists must re-check once before settling so late-starting
+    // checks after a push are not missed, and moving to a new tip or target must clear cache.
+    #[test]
+    fn tip_check_runs_cache_confirms_empty_and_resets_on_new_tip_or_target()
+    -> Result<(), crate::GitHubCommandError> {
+        let mut cache = BaseCiPollCache::default();
+        let sha2 = "b".repeat(40);
+        let mut fetches = 0usize;
+
+        for expected_fetches in [1usize, 2, 2] {
+            let result = resolve_check_runs(
+                "mESmaC/collapse.sh",
+                &sha2,
+                false,
+                &BTreeSet::new(),
+                &mut cache,
+                || {
+                    fetches += 1;
+                    Ok((Vec::new(), false))
+                },
+            )?;
+            assert_eq!(fetches, expected_fetches);
+            assert!(result.is_empty());
+        }
+
+        cache.reset_if_target_changed("mESmaC/other", "main");
+        let after_reset = resolve_check_runs(
+            "mESmaC/other",
+            &sha2,
+            false,
+            &BTreeSet::new(),
+            &mut cache,
+            || {
+                fetches += 1;
+                Ok((Vec::new(), false))
+            },
+        )?;
+        assert_eq!(fetches, 3);
+        assert!(after_reset.is_empty());
+        Ok(())
+    }
 
     // Risk (#652): the check-runs transport decoder must deserialize minimal GitHub App
     // check-run payloads (without optional URL or output fields) and pass them through to

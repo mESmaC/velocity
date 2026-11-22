@@ -17,7 +17,7 @@ use velocity_core::base_ci::{
 };
 use velocity_core::project_health::short_commit;
 use velocity_core::thread_view_model::RosenChangeStage;
-use velocity_github::base_ci::{BaseCiWatch, FailedLog};
+use velocity_github::base_ci::{BaseCiPollCache, BaseCiWatch, FailedLog};
 use velocity_rosen::ProjectServer;
 use velocity_rosen::landing::{self, LandCheckOutcome};
 use velocity_rosen::post_land::{self, CommitAncestry};
@@ -74,12 +74,23 @@ pub fn initialize(application: &AppHandle) {
         let mut last_failures: BTreeMap<u32, String> = BTreeMap::new();
         // Cache failed-step logs by project and run ID so steady-state polls never re-fetch.
         let mut log_caches: BTreeMap<u32, BTreeMap<u64, FailedLog>> = BTreeMap::new();
+        // Cache completed Actions run jobs and settled tip check runs across polls (#671).
+        let mut poll_caches: BTreeMap<u32, BaseCiPollCache> = BTreeMap::new();
         let _ = receiver.recv_timeout(FIRST_LOOK);
         loop {
             while receiver.try_recv().is_ok() {}
-            for subject in subjects(&application) {
+            let current_subjects = subjects(&application);
+            let active_projects: HashSet<u32> = current_subjects
+                .iter()
+                .map(|subject| subject.project)
+                .collect();
+            last_failures.retain(|project, _| active_projects.contains(project));
+            log_caches.retain(|project, _| active_projects.contains(project));
+            poll_caches.retain(|project, _| active_projects.contains(project));
+            for subject in current_subjects {
                 let run_logs = log_caches.entry(subject.project).or_default();
-                let failure = look(&application, &subject, run_logs).err();
+                let poll_cache = poll_caches.entry(subject.project).or_default();
+                let failure = look(&application, &subject, run_logs, poll_cache).err();
                 if let Some(failure) = &failure
                     && last_failures.get(&subject.project) != Some(failure)
                 {
@@ -140,17 +151,29 @@ fn look(
     application: &AppHandle,
     subject: &Subject,
     run_logs: &mut BTreeMap<u64, FailedLog>,
+    poll_cache: &mut BaseCiPollCache,
 ) -> Result<(), String> {
     match &subject.mode {
         SubjectMode::GitHub { repository, branch } => {
             // Never follow GitHub Actions if `[mirror] remote` in `rosen.toml` is Collapse (#613),
             // even before `rosen_mirror::refresh` updates `collapse_repository` in persisted state.
             if mirror_remote_is_collapse(application, subject.project) {
+                poll_cache.clear();
                 return look_rosen(application, subject);
             }
-            look_github(application, subject, repository, branch, run_logs)
+            look_github(
+                application,
+                subject,
+                repository,
+                branch,
+                run_logs,
+                poll_cache,
+            )
         }
-        SubjectMode::Rosen => look_rosen(application, subject),
+        SubjectMode::Rosen => {
+            poll_cache.clear();
+            look_rosen(application, subject)
+        }
     }
 }
 
@@ -173,9 +196,12 @@ fn look_github(
     repository: &str,
     branch: &str,
     run_logs: &mut BTreeMap<u64, FailedLog>,
+    poll_cache: &mut BaseCiPollCache,
 ) -> Result<(), String> {
     let client = BaseCiWatch::new(repository).map_err(|error| error.to_string())?;
-    let snapshot = client.runs(branch).map_err(|error| error.to_string())?;
+    let snapshot = client
+        .runs(branch, poll_cache)
+        .map_err(|error| error.to_string())?;
     let mut verdict = base_ci::evaluate_jobs(&snapshot.runs, &snapshot.run_jobs);
     let open = open_repairs(application, subject.project, &verdict.active_failures)?;
     populate_signatures(
