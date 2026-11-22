@@ -16,16 +16,14 @@ specta = { workspace = true, optional = true }
 tempfile = "3.27"
 thiserror.workspace = true
 tokio = { version = "1.54", features = ["process", "rt", "time"] }
-velocity-git.workspace = true
+velocity-acp = { path = "../velocity-acp" }
 velocity-core = { path = "../velocity-core" }
+velocity-git.workspace = true
 velocity-spec.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 junction = "2.1.0"
 windows = { version = "0.62", features = ["Win32_System_Threading"] }
-
-[dev-dependencies]
-velocity-acp = { path = "../velocity-acp" }
 
 [lints]
 workspace = true

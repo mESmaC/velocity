@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use tauri::{AppHandle, Manager};
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::{Update, UpdaterExt};
 use tauri_specta::Event;
 use velocity_core::release::{
@@ -67,7 +68,11 @@ pub fn initialize(application: &AppHandle) {
     let kind = executable
         .as_deref()
         .map_or(InstallKind::Portable, velocity_updates::detect);
-    if let Some(cleanup_executable) = executable.clone() {
+    // Portable sidecars and `taskkill`-backed helper cleanup apply only on Windows (#627).
+    if cfg!(windows)
+        && !matches!(kind, InstallKind::AppImage | InstallKind::Deb)
+        && let Some(cleanup_executable) = executable
+    {
         tauri::async_runtime::spawn_blocking(move || {
             let stopped = velocity_updates::stop_orphaned_helpers(
                 &cleanup_executable,
@@ -338,13 +343,13 @@ fn to_published_releases(releases: Vec<GitHubReleaseEntry>) -> Vec<PublishedRele
         .collect()
 }
 
-/// Each install kind has its own entry in the manifest, so a portable copy never runs
-/// the setup and an installed copy never swaps its executable.
+/// Each install kind checks its matching manifest entry: Windows kinds and Linux AppImage
+/// use their suffixed target, while `.deb` checks the base Linux entry to surface releases.
 async fn find(application: &AppHandle, kind: InstallKind) -> Result<Option<Update>, String> {
     let base = tauri_plugin_updater::target().ok_or("Updates aren't supported on this system")?;
     let updater = application
         .updater_builder()
-        .target(format!("{base}-{}", kind.manifest_suffix()))
+        .target(kind.manifest_target(&base))
         .build()
         .map_err(|error| error.to_string())?;
     match updater.check().await {
@@ -370,9 +375,18 @@ async fn install(application: &AppHandle) -> Result<(), String> {
         if state.phase != UpdatePhase::Available {
             return Err("No update is ready to install. Check for updates first.".into());
         }
-        state.downloaded(0, None);
+        if state.install_kind != InstallKind::Deb {
+            state.downloaded(0, None);
+        }
         state.install_kind
     };
+    if kind == InstallKind::Deb {
+        let url = deb_download_url(update.download_url.as_str(), &update.version);
+        return application
+            .opener()
+            .open_url(&url, None::<&str>)
+            .map_err(|error| format!("Could not open {url}: {error}"));
+    }
     publish(application);
     let progress = application.clone();
     let bytes = update
@@ -393,6 +407,14 @@ async fn install(application: &AppHandle) -> Result<(), String> {
     install_download(application, kind, &update, &bytes).await
 }
 
+fn deb_download_url(download_url: &str, version: &str) -> String {
+    let file = format!("Velocity_{version}_amd64.deb");
+    match download_url.rsplit_once('/') {
+        Some((prefix, _)) if !prefix.is_empty() => format!("{prefix}/{file}"),
+        _ => format!("https://github.com/mESmaC/velocity/releases/download/v{version}/{file}"),
+    }
+}
+
 async fn install_download(
     application: &AppHandle,
     kind: InstallKind,
@@ -406,8 +428,30 @@ async fn install_download(
         InstallKind::Nsis | InstallKind::Msi => update
             .install(bytes)
             .map_err(|error| format!("Could not start the installer: {error}")),
+        // Tauri replaces the AppImage file in place and returns; relaunch into it.
+        InstallKind::AppImage => restart_appimage(application, update, bytes),
+        InstallKind::Deb => Err(
+            "Debian packages can't update themselves. Update with your package manager or download the new .deb package."
+                .into(),
+        ),
     })
     .await
+}
+
+fn restart_appimage(application: &AppHandle, update: &Update, bytes: &[u8]) -> Result<(), String> {
+    update
+        .install(bytes)
+        .map_err(|error| format!("Could not replace the AppImage: {error}"))?;
+    let appimage = std::env::var_os("APPIMAGE")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+        .ok_or("The AppImage was replaced, but its path could not be found to restart")?;
+    velocity_updates::relaunch(&appimage).map_err(|error| {
+        format!("The AppImage was replaced, but Velocity could not restart: {error}")
+    })?;
+    application.exit(0);
+    Ok(())
 }
 
 /// Starts the existing executable again if a restart fails or aborts after state was
@@ -522,6 +566,9 @@ pub(crate) async fn hand_over(
 /// and our own helper children are stopped first, then the new executable takes the
 /// running one's name, starts with the same arguments, and this copy exits (#605).
 pub(crate) fn restart_portable(application: &AppHandle, bytes: &[u8]) -> Result<(), String> {
+    if !cfg!(windows) {
+        return Err("Portable executable swap is only supported on Windows.".into());
+    }
     let executable = std::env::current_exe()
         .map_err(|error| format!("Could not find Velocity's executable: {error}"))?;
     let stopped = velocity_updates::stop_before_swap(&executable, Duration::from_secs(5));

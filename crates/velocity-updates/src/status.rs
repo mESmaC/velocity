@@ -124,6 +124,7 @@ pub enum UpdateAction {
     None,
     Check,
     Install,
+    Download,
 }
 
 /// The Updates modal and the footer badge, ready to render.
@@ -159,7 +160,7 @@ impl UpdateState {
                 Some(update) if offering || downloading => update.notes.trim().to_owned(),
                 _ => String::new(),
             },
-            warning: if offering {
+            warning: if offering && self.install_kind.supports_in_app_update() {
                 restart_warning(working_agents)
             } else {
                 String::new()
@@ -174,6 +175,7 @@ impl UpdateState {
                 UpdateAction::None => String::new(),
                 UpdateAction::Check => "Check for updates".to_owned(),
                 UpdateAction::Install => "Restart to update".to_owned(),
+                UpdateAction::Download => "Download .deb".to_owned(),
             },
             action,
             progress: self.percent(),
@@ -216,6 +218,13 @@ impl UpdateState {
                 };
                 (headline, checked, UpdateAction::Check)
             }
+            UpdatePhase::Available if self.install_kind == InstallKind::Deb => (
+                format!("Velocity {next} is available"),
+                format!(
+                    "You have {current}. Update with your package manager, or download Velocity_{next}_amd64.deb. {checked}"
+                ),
+                UpdateAction::Download,
+            ),
             UpdatePhase::Available => (
                 format!("Velocity {next} is available"),
                 format!("You have {current}. {checked}"),

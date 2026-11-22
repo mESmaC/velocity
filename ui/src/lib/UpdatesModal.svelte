@@ -20,7 +20,9 @@
   // Results arrive on `update://status`; a failure shows in the modal, not as an error.
   function act() {
     if (update.action === 'check') void updateCommands.check();
-    else if (update.action === 'install') void updateCommands.install();
+    else if (update.action === 'install' || update.action === 'download') {
+      void updateCommands.install();
+    }
   }
 </script>
 

@@ -1,5 +1,5 @@
-# Downloads the Windows Rosen binaries from the Rosen release Velocity pins (#433) into
-# -Destination as rosen.exe and rosen-server.exe, and prints the step output `found`.
+# Downloads the Rosen binaries for -Target from the Rosen release Velocity pins (#433, #627)
+# into -Destination as rosen(.exe) and rosen-server(.exe), and prints the step output `found`.
 #
 # Rosen's release workflow attaches each binary per target, SHA256SUMS.txt over them, and
 # rosen-client-commit.txt naming the commit the release was built from (mESmaC/rosen#398).
@@ -10,15 +10,19 @@ param(
     [Parameter(Mandatory)] [string] $Url,
     [Parameter(Mandatory)] [string] $Rev,
     [string] $Release = '',
-    [Parameter(Mandatory)] [string] $Destination
+    [Parameter(Mandatory)] [string] $Destination,
+    [string] $Target = ''
 )
 $ErrorActionPreference = 'Stop'
 
-$target = 'x86_64-pc-windows-msvc'
+if (-not $Target) {
+    $Target = if ($IsLinux) { 'x86_64-unknown-linux-gnu' } else { 'x86_64-pc-windows-msvc' }
+}
+$ext = if ($Target -like '*-windows-*') { '.exe' } else { '' }
 # Release asset name to the file name Velocity's bundle and stress harness expect.
 $binaries = [ordered]@{
-    "rosen-$target.exe" = 'rosen.exe'
-    "rosen-server-$target.exe" = 'rosen-server.exe'
+    "rosen-$Target$ext" = "rosen$ext"
+    "rosen-server-$Target$ext" = "rosen-server$ext"
 }
 
 function Write-Found([bool] $found) {
@@ -91,6 +95,10 @@ foreach ($asset in $binaries.Keys) {
     if ($actual -cne $expected) { throw "$asset is $actual, but Rosen $Release lists $expected" }
     $installed = Join-Path $bin $binaries[$asset]
     Move-Item -Force $path $installed
+    if ($ext -eq '') {
+        chmod +x $installed
+        if ($LASTEXITCODE -ne 0) { throw "Could not mark $($binaries[$asset]) executable" }
+    }
     & $installed --version
     if ($LASTEXITCODE -ne 0) { throw "$($binaries[$asset]) from Rosen $Release does not run" }
 }

@@ -89,11 +89,13 @@ There are two views of the same work, switched from the title bar or with `B`:
   There is no dollar spend: every provider runs on a subscription.
   - **Updates:** Velocity checks its Collapse Releases first (`https://api.collapse.sh/mESmaC/velocity/releases/download/updater/latest.json`) and falls back to GitHub Releases (`https://github.com/mESmaC/velocity/releases/download/updater/latest.json`) 30 seconds after it starts, every 6 hours, and when you press Check for updates (#593).
     While one is available, the Updates button turns accent-coloured.
-    It opens the Updates modal, a centred dialog like the usage modal (Esc or a click outside closes it), which shows the new version, its release notes, how this copy was installed (setup, MSI or portable), how many agents are mid-turn, and **Restart to update**.
+    It opens the Updates modal, a centred dialog like the usage modal (Esc or a click outside closes it), which shows the new version, its release notes, how this copy was installed (setup, MSI, portable, AppImage or `.deb`), how many agents are mid-turn, and **Restart to update** (or **Download .deb** for a `.deb` install).
     Restarting stops running turns; workspaces and transcripts are kept, and each stopped turn continues by itself when Velocity starts again (§3.2 Resume after a restart).
     Every download is verified against Velocity's release signing key, with the version bound into the signature, before anything runs.
     Setup and MSI copies run their installer, which restarts Velocity.
     A portable copy replaces its own executable and starts again.
+    An AppImage replaces itself in place through Tauri's updater and restarts Velocity.
+    A `.deb` install cannot replace itself in place, so the modal directs the user to update with their package manager or download the new `.deb` package instead of offering an in-app install.
     Installing an update restarts Velocity only when you press the button; fatal process exits recover automatically (§3.2).
     There is one channel: the newest release, betas included.
     Development builds check only when asked and never install.

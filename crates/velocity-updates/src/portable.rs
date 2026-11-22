@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::process_tree::{any_pid_alive, is_previous_sidecar_name, stop_processes_using_image};
+#[cfg(windows)]
+use super::process_tree::stop_processes_using_image;
+use super::process_tree::{any_pid_alive, is_previous_sidecar_name};
 
 #[derive(Debug, thiserror::Error)]
 pub enum UpdateError {
@@ -145,6 +147,7 @@ const REPLACED_PREVIOUS_PATH: &str = "VELOCITY_REPLACED_PREVIOUS_PATH";
 const REPLACED_PREVIOUS_PID: &str = "VELOCITY_REPLACED_PREVIOUS_PID";
 const REPLACED_LAUNCHER_PID: &str = "VELOCITY_REPLACED_LAUNCHER_PID";
 const RELAUNCH_ALIVE_CHECK: Duration = Duration::from_millis(250);
+#[cfg(windows)]
 const FORCE_STOP_AFTER: Duration = Duration::from_secs(2);
 
 /// Starts `executable` with this process's arguments, marked so it waits for this copy to
@@ -210,21 +213,25 @@ pub(crate) fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> std::proce
     command
 }
 
-/// Waits, up to `limit`, for the replaced copy (and its moved-aside `<name>.old-<unix-ms>`
-/// image) to exit before opening the window (#605). Starting the window before then races
-/// the old copy's single-instance lock and WebView2 shutting down over the same profile,
-/// causing the new copy to exit without showing anything.
+/// Waits, up to `limit`, for the replaced copy to exit before opening the window (#605).
+/// On Windows, also removes its moved-aside `<name>.old-<unix-ms>` image and waits for
+/// WebView2 to release the profile; Linux kinds do not use `.old` sidecars or `taskkill`.
 pub fn wait_for_previous(executable: &Path, limit: Duration) {
+    #[cfg(windows)]
     let previous = std::env::var_os(REPLACED_PREVIOUS_PATH)
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| sidecar(executable, "old"));
+    #[cfg(not(windows))]
+    let _ = executable;
     let pids = previous_pids();
     let started = Instant::now();
+    #[cfg(windows)]
     let mut stopped_lingering = false;
     loop {
         let processes_gone = !any_pid_alive(&pids);
         if processes_gone {
+            #[cfg(windows)]
             match std::fs::remove_file(&previous) {
                 Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
                     if !stopped_lingering && started.elapsed() >= FORCE_STOP_AFTER {
@@ -234,6 +241,8 @@ pub fn wait_for_previous(executable: &Path, limit: Duration) {
                 }
                 _ => break,
             }
+            #[cfg(not(windows))]
+            break;
         }
         if started.elapsed() >= limit {
             return;
@@ -241,6 +250,7 @@ pub fn wait_for_previous(executable: &Path, limit: Duration) {
         std::thread::sleep(Duration::from_millis(100));
     }
     // The old copy's WebView2 browser processes close just after it does.
+    #[cfg(windows)]
     std::thread::sleep(Duration::from_millis(500));
 }
 

@@ -9,7 +9,7 @@ mod process_tree;
 mod status;
 pub mod supervision;
 
-pub use install_kind::{InstallKind, classify, detect};
+pub use install_kind::{InstallKind, classify, classify_linux, detect};
 pub use portable::{
     REPLACED_MARKER, UpdateError, relaunch, relaunch_replaced, remove_previous, replace_running,
     restore_previous, wait_for_previous,

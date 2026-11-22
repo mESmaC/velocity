@@ -4,7 +4,7 @@
 
 Velocity is a desktop IDE that finishes projects fast by running many coding
 agents in parallel, without stopping to ask for approval. It is built in Rust
-and Tauri and runs on Windows 11.
+and Tauri and runs on Windows 11 and Linux.
 
 **Status:** beta. The first release is
 [0.1.0 beta 1](https://github.com/mESmaC/velocity/releases/tag/v0.1.0-beta.1).
@@ -63,20 +63,31 @@ whole app with simulated data.
   edit files, run commands, use the network and use GitHub until it finishes.
   Use it on projects and machines where that is acceptable.
 - **It is a beta.** Expect rough edges. Settings and saved state live in
-  `%APPDATA%\dev.velocity.ide`; back that folder up before upgrading.
+  `%APPDATA%\dev.velocity.ide` on Windows and
+  `~/.local/share/dev.velocity.ide` on Linux; back that folder up before
+  upgrading.
+- **Linux runtime packages.** Linux builds require
+  `libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1`.
 - **The downloads are not code-signed.** Windows SmartScreen warns on first run.
 
 ## Install
 
 1. Download a build from the
-   [releases page](https://github.com/mESmaC/velocity/releases). The `-setup.exe`
-   file installs Velocity; the `-portable.exe` file runs without installing.
-2. On first run, Windows SmartScreen shows a warning because the build is
+   [releases page](https://github.com/mESmaC/velocity/releases):
+   - **Windows:** the `-setup.exe` file installs Velocity; the `-portable.exe`
+     file runs without installing.
+   - **Linux:** the `.AppImage` runs without installing and updates itself in
+     place; the `.deb` installs Velocity with `apt` or `dpkg` on Debian and
+     Ubuntu.
+2. On Windows, SmartScreen shows a warning on first run because the build is
    unsigned. Choose **More info**, then **Run anyway**.
+3. On Linux with an AppImage, mark it executable (`chmod +x Velocity_*.AppImage`)
+   before running it.
 
 You need:
 
-- Windows 11, 64-bit. The WebView2 runtime ships with it.
+- Windows 11 (64-bit, WebView2 ships with it) or 64-bit Linux with
+  `libwebkit2gtk-4.1-0`, `libgtk-3-0`, and `libayatana-appindicator3-1`.
 - `git`, and the GitHub CLI signed in (`gh auth login`).
 - Node.js 22 or later for the Claude and Codex agents. Velocity offers to
   install it when it is missing.

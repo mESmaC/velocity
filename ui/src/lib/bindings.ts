@@ -6689,7 +6689,7 @@ export type UiZoomView = {
 };
 
 /**  The one action the panel offers. */
-export type UpdateAction = "none" | "check" | "install";
+export type UpdateAction = "none" | "check" | "install" | "download";
 
 export type UpdateStatusChanged = UpdateStatusChanged_Serialize | UpdateStatusChanged_Deserialize;
 

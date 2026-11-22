@@ -98,10 +98,21 @@ jobs:
   # The steps, cache path and cache key are those of release.yml's `rosen` job. Keep
   # them the same, or the release never finds this cache.
   rosen:
-    name: Warm the pinned Rosen cache
+    name: Warm the pinned Rosen cache (${{ matrix.os }})
     # A pull request's cache is private to it, so only a push fills the shared one.
     if: github.event_name == 'push'
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          # Build against glibc 2.35 so the cached binaries match release.yml's AppImage build.
+          - os: linux
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -125,7 +136,8 @@ jobs:
           -Url '${{ steps.rosen-pin.outputs.url }}'
           -Rev '${{ steps.rosen-pin.outputs.rev }}'
           -Release '${{ steps.rosen-pin.outputs.release }}'
-          -Destination "$env:RUNNER_TEMP\rosen\bin"
+          -Target '${{ matrix.target }}'
+          -Destination "$env:RUNNER_TEMP/rosen/bin"
       - name: Cache pinned Rosen installation
         id: rosen-cache
         if: steps.prebuilt.outputs.found != 'true'
@@ -138,5 +150,5 @@ jobs:
         shell: pwsh
         run: |
           rustup show active-toolchain
-          cargo install --locked --git '${{ steps.rosen-pin.outputs.url }}' --rev '${{ steps.rosen-pin.outputs.rev }}' --root "$env:RUNNER_TEMP\rosen" rosen-server rosen-cli
+          cargo install --locked --git '${{ steps.rosen-pin.outputs.url }}' --rev '${{ steps.rosen-pin.outputs.rev }}' --root "$env:RUNNER_TEMP/rosen" rosen-server rosen-cli
           if ($LASTEXITCODE -ne 0) { throw "Could not build Rosen" }

@@ -77,7 +77,7 @@ pub use probe::{AgentProbe, ProbedModel, probe_agent};
 pub use process::{
     AgentLaunch, AgentProcess, hidden_command, spawn_owned_command, stop_owned_process,
 };
-pub use program_path::program_found;
+pub use program_path::{find_program, program_found, search_path};
 pub use queued_run_command::is_queued_run_notice;
 pub use queued_run_tool::{
     QUEUED_RUN_PORT_ENV, QUEUED_RUN_SERVER, QUEUED_RUN_SWITCH, QUEUED_RUN_TOKEN_ENV,

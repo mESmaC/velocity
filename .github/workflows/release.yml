@@ -62,15 +62,30 @@ env:
   MANIFEST_TAG: updater
 
 jobs:
-  # The gate and the build both need the pinned Rosen; this job gets it once for both (#433).
+  # The gate and the builds all need the pinned Rosen; this job gets it once per OS (#433, #627).
   # A pinned Rosen release supplies prebuilt binaries, checked against the pinned rev and
-  # their SHA-256 sums. Without one, Rosen is built from source here, cached by rev, and
-  # the two jobs share the result through the `rosen-windows` artifact.
+  # their SHA-256 sums. Without one, Rosen is built from source here, cached per OS by rev,
+  # and shared through the `rosen-windows` and `rosen-linux` artifacts.
   rosen:
-    name: Get Rosen
+    name: Get Rosen (${{ matrix.os }})
     permissions:
       contents: read
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            cli: rosen.exe
+            server: rosen-server.exe
+          # Build against glibc 2.35 so source-built binaries match the ubuntu-22.04 AppImage.
+          - os: linux
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            cli: rosen
+            server: rosen-server
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -94,9 +109,10 @@ jobs:
           -Url '${{ steps.rosen-pin.outputs.url }}'
           -Rev '${{ steps.rosen-pin.outputs.rev }}'
           -Release '${{ steps.rosen-pin.outputs.release }}'
-          -Destination "$env:RUNNER_TEMP\rosen\bin"
-      # Keyed on the pinned commit, not Velocity's lockfile: `cargo install --locked` builds
-      # from Rosen's own lockfile, so only a new pin or toolchain changes the binaries.
+          -Target '${{ matrix.target }}'
+          -Destination "$env:RUNNER_TEMP/rosen/bin"
+      # Keyed on the pinned commit and OS, not Velocity's lockfile: `cargo install --locked`
+      # builds from Rosen's own lockfile, so only a new pin or toolchain changes the binaries.
       # build.yml's `rosen` job fills this cache on the default branch after each pin bump
       # (#434); keep its steps, path and key the same as these.
       - name: Cache pinned Rosen installation
@@ -111,14 +127,14 @@ jobs:
         shell: pwsh
         run: |
           rustup show active-toolchain
-          cargo install --locked --git '${{ steps.rosen-pin.outputs.url }}' --rev '${{ steps.rosen-pin.outputs.rev }}' --root "$env:RUNNER_TEMP\rosen" rosen-server rosen-cli
+          cargo install --locked --git '${{ steps.rosen-pin.outputs.url }}' --rev '${{ steps.rosen-pin.outputs.rev }}' --root "$env:RUNNER_TEMP/rosen" rosen-server rosen-cli
           if ($LASTEXITCODE -ne 0) { throw "Could not build Rosen" }
       - uses: actions/upload-artifact@v4
         with:
-          name: rosen-windows
+          name: rosen-${{ matrix.os }}
           path: |
-            ${{ runner.temp }}/rosen/bin/rosen.exe
-            ${{ runner.temp }}/rosen/bin/rosen-server.exe
+            ${{ runner.temp }}/rosen/bin/${{ matrix.cli }}
+            ${{ runner.temp }}/rosen/bin/${{ matrix.server }}
           if-no-files-found: error
           retention-days: 1
 
@@ -389,6 +405,102 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  # Build the Linux AppImage and .deb on ubuntu-22.04 (glibc 2.35), the oldest supported
+  # runner, so the AppImage runs on every distribution with glibc 2.35 or newer (#627).
+  build-linux:
+    name: Build and sign (Linux)
+    needs: rosen
+    permissions:
+      contents: read
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libssl-dev
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: release
+      - name: Install UI dependencies
+        run: pnpm -C ui install --frozen-lockfile
+      - name: Build frontend
+        run: pnpm -C ui build
+
+      - name: Read the version from the tag
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:TAG -notmatch '^v(\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?)$') { throw "Tag $env:TAG is not v<semver>" }
+          $version = $Matches[1]
+          "version=$version" >> $env:GITHUB_OUTPUT
+          # The UI is already built above; override version and skip Tauri's own beforeBuildCommand.
+          @{ version = $version; build = @{ beforeBuildCommand = '' } } | ConvertTo-Json -Depth 3 | Set-Content -Encoding utf8 "$env:RUNNER_TEMP/version.json"
+
+      - name: Get the pinned Rosen
+        uses: actions/download-artifact@v4
+        with:
+          name: rosen-linux
+          path: ${{ runner.temp }}/rosen/bin
+      - name: Use the pinned Rosen
+        shell: pwsh
+        run: |
+          chmod +x "$env:RUNNER_TEMP/rosen/bin/rosen" "$env:RUNNER_TEMP/rosen/bin/rosen-server"
+          if ($LASTEXITCODE -ne 0) { throw "Could not mark Rosen binaries executable" }
+          "VELOCITY_ROSEN_SERVER_EXE=$env:RUNNER_TEMP/rosen/bin/rosen-server" >> $env:GITHUB_ENV
+          "VELOCITY_ROSEN_CLI_EXE=$env:RUNNER_TEMP/rosen/bin/rosen" >> $env:GITHUB_ENV
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $buildCommit = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($buildCommit -cnotmatch '^[0-9a-f]{40}$') { throw "Could not determine release commit: $buildCommit" }
+          $env:VELOCITY_BUILD_COMMIT = $buildCommit
+          $env:APPIMAGE_EXTRACT_AND_RUN = '1'
+          npx -y $env:TAURI_CLI build --ci --bundles appimage,deb --features bundled-rosen --config "$env:RUNNER_TEMP/version.json"
+          if ($LASTEXITCODE -ne 0) { throw "tauri build failed" }
+
+      - name: Collect and sign the downloads
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $release = 'target/release'
+          $out = New-Item -ItemType Directory -Force dist-linux
+          $appImage = Get-ChildItem "$release/bundle/appimage/*.AppImage" | Select-Object -First 1
+          if (-not $appImage) { throw "No AppImage in $release/bundle/appimage" }
+          $appImageOut = "$out/Velocity_${version}_amd64.AppImage"
+          Copy-Item $appImage $appImageOut
+          $deb = Get-ChildItem "$release/bundle/deb/*.deb" | Select-Object -First 1
+          if (-not $deb) { throw "No .deb package in $release/bundle/deb" }
+          Copy-Item $deb "$out/Velocity_${version}_amd64.deb"
+          # Bind the version into the AppImage signature, matching the Windows installers.
+          npx -y $env:TAURI_CLI signer sign --app-version $version $appImageOut
+          if ($LASTEXITCODE -ne 0) { throw "Could not sign $(Split-Path -Leaf $appImageOut)" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-downloads-linux
+          path: dist-linux/
+          if-no-files-found: error
+
   # The standalone code graph indexer Collapse pins and runs like `git` (C11, #428): a Linux
   # x86-64 build of the `velocity-graph` binary, versioned with the release, so Collapse's
   # graph answers carry the same records and addresses as this release's MCP tools.
@@ -430,11 +542,12 @@ jobs:
   # and the builds always pass, and stress and proofs pass unless the beta path skipped them.
   publish:
     name: Publish
-    needs: [checks, stress, proofs, build, graph-indexer]
+    needs: [checks, stress, proofs, build, build-linux, graph-indexer]
     if: >-
       !cancelled()
       && needs.checks.result == 'success'
       && needs.build.result == 'success'
+      && needs.build-linux.result == 'success'
       && needs.graph-indexer.result == 'success'
       && (needs.checks.outputs.full_gate == 'false'
         || (needs.stress.result == 'success' && needs.proofs.result == 'success'))
@@ -455,12 +568,20 @@ jobs:
           path: dist/
       - uses: actions/download-artifact@v4
         with:
+          name: release-downloads-linux
+          path: dist/
+      - uses: actions/download-artifact@v4
+        with:
           name: graph-indexer
           path: dist/
 
       - name: Publish the release
         shell: pwsh
         run: |
+          # Write one SHA256SUMS.txt covering both Windows and Linux downloads.
+          Get-ChildItem dist -File -Filter 'Velocity_*' -Exclude *.sig | Sort-Object Name | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content -Encoding utf8 dist/SHA256SUMS.txt
           $exists = $true
           gh release view $env:TAG *> $null
           if ($LASTEXITCODE -ne 0) {
@@ -512,10 +633,13 @@ jobs:
             @{ url = "$base/$name"; signature = (Get-Content -Raw "dist/$name.sig").Trim() }
           }
           $setup = Entry "Velocity_${version}_x64-setup.exe"
+          $appImage = Entry "Velocity_${version}_amd64.AppImage"
           $platforms = [ordered]@{
             'windows-x86_64' = $setup
             'windows-x86_64-nsis' = $setup
             'windows-x86_64-portable' = Entry "Velocity_${version}_x64-portable.exe"
+            'linux-x86_64' = $appImage
+            'linux-x86_64-appimage' = $appImage
           }
           if (Test-Path "dist/Velocity_${version}_x64_en-US.msi") {
             $platforms['windows-x86_64-msi'] = Entry "Velocity_${version}_x64_en-US.msi"
@@ -562,7 +686,7 @@ jobs:
   # Record clearly in the run summary when the updater manifest was not moved (#521).
   manifest-not-moved:
     name: Updater manifest status
-    needs: [checks, stress, proofs, build, graph-indexer, publish]
+    needs: [checks, stress, proofs, build, build-linux, graph-indexer, publish]
     if: always() && needs.publish.result != 'success'
     permissions: {}
     runs-on: ubuntu-latest
@@ -570,7 +694,7 @@ jobs:
       - name: Report that the updater manifest was not moved
         shell: bash
         run: |
-          msg="Updater manifest (${MANIFEST_TAG}/latest.json) was NOT moved for ${TAG} (checks=${{ needs.checks.result }}, build=${{ needs.build.result }}, publish=${{ needs.publish.result }}). Installed copies will not be offered this release."
+          msg="Updater manifest (${MANIFEST_TAG}/latest.json) was NOT moved for ${TAG} (checks=${{ needs.checks.result }}, build=${{ needs.build.result }}, build-linux=${{ needs.build-linux.result }}, publish=${{ needs.publish.result }}). Installed copies will not be offered this release."
           echo "::warning::${msg}"
           {
             echo "### Updater manifest not moved"

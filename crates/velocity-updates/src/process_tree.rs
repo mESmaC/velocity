@@ -2,18 +2,26 @@
 //!
 //! Stops orphaned `velocity-app.exe` child helpers (graph-project, MCP servers) whose
 //! parent Velocity process is gone, and stops any lingering previous-copy process trees
-//! and helper children before swapping the executable on Windows.
+//! and helper children before swapping the executable on Windows. Off Windows, Linux
+//! AppImage and `.deb` installs never run portable swap cleanup or `taskkill` (#627).
+#[cfg(windows)]
 use std::collections::{HashMap, HashSet};
+#[cfg(any(windows, test))]
 use std::ffi::OsString;
 use std::path::Path;
 #[cfg(windows)]
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(windows)]
+use std::time::Instant;
 
-use sysinfo::{Pid, Process, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+#[cfg(windows)]
+use sysinfo::{Process, UpdateKind};
 
 /// Subcommands spawned by Velocity as helper children (`src-tauri/src/main.rs`).
 /// Never includes the launcher, `--velocity-supervised` main window, or `machine` worker.
+#[cfg(any(windows, test))]
 const CHILD_HELPER_SWITCHES: &[&str] = &[
     "--graph-project",
     "--graph-mcp",
@@ -29,6 +37,7 @@ const CHILD_HELPER_SWITCHES: &[&str] = &[
     "app-server",
 ];
 
+#[cfg(windows)]
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Result of stopping helper or previous-copy process trees.
@@ -39,52 +48,69 @@ pub struct StopSummary {
 }
 
 /// Stops `velocity-app.exe` child helpers (current or `.old*` in the same folder as
-/// `executable`) whose parent Velocity process is gone (#605).
+/// `executable`) whose parent Velocity process is gone (#605). No-op off Windows.
 pub fn stop_orphaned_helpers(executable: &Path, timeout: Duration) -> StopSummary {
-    let Some(mut system) = refresh_all_processes() else {
-        return StopSummary::default();
-    };
-    let protected = self_and_ancestors(&system, Pid::from_u32(std::process::id()));
-    let roots: Vec<Pid> = system
-        .processes()
-        .values()
-        .filter(|process| !protected.contains(&process.pid()))
-        .filter(|process| {
-            process
-                .exe()
-                .is_some_and(|exe| is_same_install_image(executable, exe))
-        })
-        .filter(|process| is_child_helper(process.cmd()))
-        .filter(|process| !has_live_velocity_host(&system, executable, process.pid()))
-        .map(Process::pid)
-        .collect();
-    kill_and_wait_trees(&mut system, roots, &protected, timeout)
+    #[cfg(not(windows))]
+    {
+        let _ = (executable, timeout);
+        StopSummary::default()
+    }
+    #[cfg(windows)]
+    {
+        let Some(mut system) = refresh_all_processes() else {
+            return StopSummary::default();
+        };
+        let protected = self_and_ancestors(&system, Pid::from_u32(std::process::id()));
+        let roots: Vec<Pid> = system
+            .processes()
+            .values()
+            .filter(|process| !protected.contains(&process.pid()))
+            .filter(|process| {
+                process
+                    .exe()
+                    .is_some_and(|exe| is_same_install_image(executable, exe))
+            })
+            .filter(|process| is_child_helper(process.cmd()))
+            .filter(|process| !has_live_velocity_host(&system, executable, process.pid()))
+            .map(Process::pid)
+            .collect();
+        kill_and_wait_trees(&mut system, roots, &protected, timeout)
+    }
 }
 
 /// Before swapping `executable`, kills and waits for every lingering process tree running
 /// from a previous `.old*` image in the same folder, every orphaned helper, and this
 /// copy's own spawned helper children (`--graph-project`, MCP servers) so nothing keeps
-/// either the previous or newly moved-aside image locked (#605).
+/// either the previous or newly moved-aside image locked (#605). No-op off Windows.
 pub fn stop_before_swap(executable: &Path, timeout: Duration) -> StopSummary {
-    let Some(mut system) = refresh_all_processes() else {
-        return StopSummary::default();
-    };
-    let current = Pid::from_u32(std::process::id());
-    let protected = self_and_ancestors(&system, current);
-    let own_root = own_velocity_root(&system, executable, current);
-    let descendants = collect_descendants(&system, own_root);
-    let roots: Vec<Pid> = system
-        .processes()
-        .values()
-        .filter(|process| !protected.contains(&process.pid()))
-        .filter(|process| should_stop_before_swap(&system, executable, &descendants, process))
-        .map(Process::pid)
-        .collect();
-    kill_and_wait_trees(&mut system, roots, &protected, timeout)
+    #[cfg(not(windows))]
+    {
+        let _ = (executable, timeout);
+        StopSummary::default()
+    }
+    #[cfg(windows)]
+    {
+        let Some(mut system) = refresh_all_processes() else {
+            return StopSummary::default();
+        };
+        let current = Pid::from_u32(std::process::id());
+        let protected = self_and_ancestors(&system, current);
+        let own_root = own_velocity_root(&system, executable, current);
+        let descendants = collect_descendants(&system, own_root);
+        let roots: Vec<Pid> = system
+            .processes()
+            .values()
+            .filter(|process| !protected.contains(&process.pid()))
+            .filter(|process| should_stop_before_swap(&system, executable, &descendants, process))
+            .map(Process::pid)
+            .collect();
+        kill_and_wait_trees(&mut system, roots, &protected, timeout)
+    }
 }
 
 /// Stops any processes still running from the moved-aside `image` path (excluding this
 /// process and its ancestors) so `wait_for_previous` can remove the file promptly (#605).
+#[cfg(windows)]
 pub(crate) fn stop_processes_using_image(image: &Path, timeout: Duration) -> StopSummary {
     let Some(mut system) = refresh_all_processes() else {
         return StopSummary::default();
@@ -122,6 +148,7 @@ pub(crate) fn any_pid_alive(pids: &[u32]) -> bool {
     targets.iter().any(|pid| system.process(*pid).is_some())
 }
 
+#[cfg(windows)]
 fn should_stop_before_swap(
     system: &System,
     executable: &Path,
@@ -141,6 +168,7 @@ fn should_stop_before_swap(
         || !has_live_velocity_host(system, executable, process.pid())
 }
 
+#[cfg(windows)]
 fn refresh_all_processes() -> Option<System> {
     let mut system = System::new().ok()?;
     system.refresh_processes_specifics(
@@ -153,6 +181,7 @@ fn refresh_all_processes() -> Option<System> {
     Some(system)
 }
 
+#[cfg(windows)]
 fn self_and_ancestors(system: &System, start: Pid) -> HashSet<Pid> {
     let mut protected = HashSet::from([start]);
     let mut cursor = start;
@@ -165,6 +194,7 @@ fn self_and_ancestors(system: &System, start: Pid) -> HashSet<Pid> {
     protected
 }
 
+#[cfg(windows)]
 fn own_velocity_root(system: &System, executable: &Path, current: Pid) -> Pid {
     let mut root = current;
     let mut seen = HashSet::from([root]);
@@ -186,6 +216,7 @@ fn own_velocity_root(system: &System, executable: &Path, current: Pid) -> Pid {
     root
 }
 
+#[cfg(windows)]
 fn has_live_velocity_host(system: &System, executable: &Path, start: Pid) -> bool {
     let mut seen = HashSet::from([start]);
     let mut cursor = start;
@@ -208,6 +239,7 @@ fn has_live_velocity_host(system: &System, executable: &Path, start: Pid) -> boo
 
 /// Returns `child`'s parent PID only when the parent still exists and started no later
 /// than `child` (guarding against Windows PID reuse).
+#[cfg(windows)]
 fn valid_parent(system: &System, child: Pid) -> Option<Pid> {
     let process = system.process(child)?;
     let parent_pid = process.parent()?;
@@ -215,6 +247,7 @@ fn valid_parent(system: &System, child: Pid) -> Option<Pid> {
     (parent.start_time() <= process.start_time()).then_some(parent_pid)
 }
 
+#[cfg(windows)]
 fn children_map(system: &System) -> HashMap<Pid, Vec<Pid>> {
     let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
     for process in system.processes().values() {
@@ -225,6 +258,7 @@ fn children_map(system: &System) -> HashMap<Pid, Vec<Pid>> {
     children
 }
 
+#[cfg(windows)]
 fn collect_descendants(system: &System, root: Pid) -> HashSet<Pid> {
     let map = children_map(system);
     let mut queue = vec![root];
@@ -244,6 +278,7 @@ fn collect_descendants(system: &System, root: Pid) -> HashSet<Pid> {
     seen
 }
 
+#[cfg(windows)]
 fn kill_and_wait_trees(
     system: &mut System,
     roots: Vec<Pid>,
@@ -258,6 +293,7 @@ fn kill_and_wait_trees(
     wait_until_exited(system, watched, timeout)
 }
 
+#[cfg(windows)]
 fn collect_watched_pids(
     system: &System,
     roots: &[Pid],
@@ -283,8 +319,8 @@ fn collect_watched_pids(
     watched
 }
 
+#[cfg(windows)]
 fn terminate_trees(system: &System, roots: &[Pid], watched: &HashMap<Pid, u64>) {
-    #[cfg(windows)]
     for root in roots {
         let _ = super::portable::hidden_command("taskkill")
             .args(["/T", "/F", "/PID", &root.as_u32().to_string()])
@@ -292,8 +328,6 @@ fn terminate_trees(system: &System, roots: &[Pid], watched: &HashMap<Pid, u64>) 
             .stderr(Stdio::null())
             .status();
     }
-    #[cfg(not(windows))]
-    let _ = roots;
     for &pid in watched.keys() {
         if let Some(process) = system.process(pid) {
             let _ = process.kill();
@@ -301,6 +335,7 @@ fn terminate_trees(system: &System, roots: &[Pid], watched: &HashMap<Pid, u64>) 
     }
 }
 
+#[cfg(windows)]
 fn wait_until_exited(
     system: &mut System,
     watched: HashMap<Pid, u64>,
@@ -350,6 +385,7 @@ pub(crate) fn is_previous_sidecar_name(executable_name: &str, candidate_name: &s
     }
 }
 
+#[cfg(any(windows, test))]
 fn is_same_install_previous(executable: &Path, candidate: &Path) -> bool {
     let (Some(exe_dir), Some(cand_dir)) = (executable.parent(), candidate.parent()) else {
         return false;
@@ -366,21 +402,25 @@ fn is_same_install_previous(executable: &Path, candidate: &Path) -> bool {
     is_previous_sidecar_name(exe_name, cand_name)
 }
 
+#[cfg(any(windows, test))]
 fn is_same_install_current(executable: &Path, candidate: &Path) -> bool {
     comparable_path(executable) == comparable_path(candidate)
 }
 
+#[cfg(any(windows, test))]
 fn is_same_install_image(executable: &Path, candidate: &Path) -> bool {
     is_same_install_current(executable, candidate)
         || is_same_install_previous(executable, candidate)
 }
 
+#[cfg(any(windows, test))]
 fn is_child_helper(cmd: &[OsString]) -> bool {
     cmd.get(1)
         .and_then(|arg| arg.to_str())
         .is_some_and(|arg| CHILD_HELPER_SWITCHES.contains(&arg))
 }
 
+#[cfg(any(windows, test))]
 fn comparable_path(path: &Path) -> String {
     let raw = path.to_string_lossy();
     if cfg!(windows) {

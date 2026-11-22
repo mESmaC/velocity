@@ -28,7 +28,8 @@ pub(crate) fn requirements(catalog: &SkillPackCatalogEntry) -> Vec<String> {
 }
 
 fn optional_tools() -> Vec<String> {
-    let folders: Vec<_> = std::env::var_os("PATH")
+    let folders: Vec<_> = velocity_acp::client::search_path()
+        .or_else(|| std::env::var_os("PATH"))
         .map(|paths| std::env::split_paths(&paths).collect())
         .unwrap_or_default();
     let extensions = launcher_extensions();
@@ -69,7 +70,7 @@ fn launcher_extensions() -> Vec<String> {
 }
 
 fn probe(program: &str, label: &str, minimum: u32) -> String {
-    let version = command_version(program);
+    let version = probe_version(program);
     let found = version
         .as_deref()
         .and_then(|text| {
@@ -86,8 +87,24 @@ fn probe(program: &str, label: &str, minimum: u32) -> String {
         version.as_deref().unwrap_or("not found")
     )
 }
+
+fn probe_version(program: &str) -> Option<String> {
+    if let Some(version) = command_version(program) {
+        return Some(version);
+    }
+    #[cfg(not(windows))]
+    if program == "python" {
+        return command_version("python3");
+    }
+    None
+}
+
 fn command_version(program: &str) -> Option<String> {
-    let mut command = crate::process::hidden_command(program);
+    let resolved = velocity_acp::client::find_program(std::ffi::OsStr::new(program));
+    let mut command = crate::process::hidden_command(resolved);
+    if let Some(path) = velocity_acp::client::search_path() {
+        command.env("PATH", path);
+    }
     command.arg("--version");
     let output = command.output().ok()?;
     output
