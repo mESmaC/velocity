@@ -31,6 +31,7 @@ impl Reproduction {
         let source = read_source(&script)?;
         let working_directory = ReproductionDirectory::new(&directory)?;
         let mut command = crate::command::hidden_command(&self.program);
+        crate::command::clean_toolchain_env(&mut command);
         command
             .current_dir(working_directory.path())
             .args(&self.arguments)
@@ -48,6 +49,9 @@ impl Reproduction {
         }
         let stdout = String::from_utf8(output.stdout).map_err(invalid_utf8)?;
         let stderr = String::from_utf8(output.stderr).map_err(invalid_utf8)?;
+        if let Some(detail) = detect_setup_failure(&stdout, &stderr) {
+            return Err(ScoutIssueError::SetupFailed(detail));
+        }
         self.attachment(&source, &output.status.to_string(), &stdout, &stderr)
     }
 
@@ -156,4 +160,200 @@ pub(crate) fn fenced(value: &str) -> String {
 
 fn invalid_utf8(error: std::string::FromUtf8Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
+}
+
+/// Distinguishes package or environment setup failures (such as Go `FAIL <pkg> [setup failed]`
+/// or `//go:embed` missing-file errors) from genuine failing bug reproductions (#643).
+pub(crate) fn detect_setup_failure(stdout: &str, stderr: &str) -> Option<String> {
+    let mut reasons = Vec::new();
+    for line in stderr.lines().chain(stdout.lines()) {
+        if is_go_setup_failed_line(line) {
+            reasons.push(line.trim().to_owned());
+        }
+    }
+    if reasons.is_empty() && !has_go_test_failure(stdout, stderr) {
+        for line in stderr.lines().chain(stdout.lines()) {
+            if is_go_embed_missing_line(line) || is_go_missing_module_line(line) {
+                reasons.push(line.trim().to_owned());
+            }
+        }
+    }
+    if reasons.is_empty() {
+        return None;
+    }
+    reasons.dedup();
+    let summary = reasons.into_iter().take(4).collect::<Vec<_>>().join(" | ");
+    let details = diagnostic_excerpt(stdout, stderr);
+    if details.is_empty() {
+        Some(summary)
+    } else {
+        Some(format!("{summary}\n{details}"))
+    }
+}
+
+fn is_go_setup_failed_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let Some(rest) = trimmed.strip_prefix("FAIL") else {
+        return false;
+    };
+    rest.starts_with(char::is_whitespace) && rest.ends_with("[setup failed]")
+}
+
+fn is_go_embed_missing_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let Some((_, after_go)) = trimmed.split_once(".go:") else {
+        return false;
+    };
+    after_go.contains(": pattern ") && after_go.ends_with(": no matching files found")
+}
+
+fn is_go_missing_module_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed == "go: go.mod file not found in current directory or any parent directory"
+        || trimmed
+            .starts_with("go: go.mod file not found in current directory or any parent directory;")
+}
+
+fn has_go_test_failure(stdout: &str, stderr: &str) -> bool {
+    stdout
+        .lines()
+        .chain(stderr.lines())
+        .any(|line| line.trim_start().starts_with("--- FAIL:"))
+}
+
+fn diagnostic_excerpt(stdout: &str, stderr: &str) -> String {
+    let mut combined = String::new();
+    let stderr = stderr.trim();
+    let stdout = stdout.trim();
+    if !stderr.is_empty() {
+        combined.push_str(stderr);
+    }
+    if !stdout.is_empty() {
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str(stdout);
+    }
+    velocity_core::text_budget::preview(&combined, 1_500)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_go_setup_and_embed_failures_while_accepting_real_test_failures() {
+        // Risk (#643): scout_file must refuse Go package setup failures (such as missing
+        // //go:embed SQL migrations) rather than publishing them as reproduction evidence,
+        // while still accepting genuine failing Go tests and script assertions.
+        let setup_stdout = "FAIL\tcollapse.sh/server [setup failed]\nFAIL\n";
+        let setup_stderr = "# collapse.sh/server/internal/meters\ninternal\\meters\\store.go:12:12: pattern migrations/*.sql: no matching files found\n";
+        let detected = detect_setup_failure(setup_stdout, setup_stderr);
+        assert!(
+            detected
+                .as_deref()
+                .is_some_and(|message| message.contains("[setup failed]")
+                    && message.contains("pattern migrations/*.sql: no matching files found")),
+            "expected setup failure detection, got {detected:?}"
+        );
+
+        assert!(detect_setup_failure("", setup_stderr).is_some());
+        assert!(
+            detect_setup_failure(
+                "",
+                "go: go.mod file not found in current directory or any parent directory; see 'go help modules'\n"
+            )
+            .is_some()
+        );
+
+        let real_go_failure = "=== RUN   TestC9ReadOnlyRouteContract\n\
+            --- PASS: TestC9ReadOnlyRouteContract (0.04s)\n\
+            === RUN   TestScoutMCPRepositoryListCap\n\
+                zz_scout_repository_list_cap_test.go:52: MCP returned 50 of 51 repositories\n\
+            --- FAIL: TestScoutMCPRepositoryListCap (0.08s)\n\
+            FAIL\n\
+            FAIL\tcollapse.sh/server\t0.512s\n";
+        assert_eq!(detect_setup_failure(real_go_failure, ""), None);
+
+        let embed_assertion_test = "--- FAIL: TestEmbedPatternError (0.00s)\n\
+            \tembed_test.go:18: got main.go:3:12: pattern migrations/*.sql: no matching files found\n\
+            FAIL\texample.com/t\t0.02s\n";
+        assert_eq!(detect_setup_failure(embed_assertion_test, ""), None);
+
+        assert_eq!(
+            detect_setup_failure("", "AssertionError: expected 51 repositories, got 50\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn reproduction_run_refuses_setup_failure_output() -> Result<(), Box<dyn std::error::Error>> {
+        // Risk (#643): executing a failing script that only reports Go [setup failed] must
+        // return ScoutIssueError::SetupFailed instead of producing an issue attachment.
+        let workspace = tempfile::tempdir()?;
+        #[cfg(windows)]
+        let (program, arguments, script_name, contents) = (
+            PathBuf::from("cmd"),
+            vec!["/D".to_owned(), "/C".to_owned()],
+            "setup_fail.cmd",
+            "@echo off\r\n>&2 echo main.go:3:12: pattern migrations/*.sql: no matching files found\r\necho FAIL\texample.com/t [setup failed]\r\nexit /b 1\r\n",
+        );
+        #[cfg(not(windows))]
+        let (program, arguments, script_name, contents) = (
+            PathBuf::from("sh"),
+            Vec::new(),
+            "setup_fail.sh",
+            "#!/bin/sh\necho 'main.go:3:12: pattern migrations/*.sql: no matching files found' >&2\nprintf 'FAIL\\texample.com/t [setup failed]\\n'\nexit 1\n",
+        );
+        std::fs::write(workspace.path().join(script_name), contents)?;
+        let reproduction = Reproduction {
+            program,
+            arguments,
+            script: PathBuf::from(script_name),
+            script_arguments: Vec::new(),
+        };
+        let outcome = reproduction.run(workspace.path());
+        assert!(
+            matches!(outcome, Err(ScoutIssueError::SetupFailed(ref detail)) if detail.contains("[setup failed]")),
+            "expected SetupFailed, got {:?}",
+            outcome.err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reproduction_run_uses_non_verbatim_paths_and_accepts_real_failure()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Risk (#643): scout_file must pass non-verbatim paths for short Windows checkouts
+        // (so Go //go:embed and similar tools see workspace files) and accept real failures.
+        let workspace = tempfile::tempdir()?;
+        #[cfg(windows)]
+        let (program, arguments, script_name, contents) = (
+            PathBuf::from("cmd"),
+            vec!["/D".to_owned(), "/C".to_owned()],
+            "real_fail.cmd",
+            "@echo off\r\nif \"%CD:~0,4%\"==\"\\\\?\\\" exit /b 0\r\nset \"SCRIPT=%~f0\"\r\nif \"%SCRIPT:~0,4%\"==\"\\\\?\\\" exit /b 0\r\necho assertion failed: expected 51 repositories, got 50\r\nexit /b 1\r\n",
+        );
+        #[cfg(not(windows))]
+        let (program, arguments, script_name, contents) = (
+            PathBuf::from("sh"),
+            Vec::new(),
+            "real_fail.sh",
+            "#!/bin/sh\necho 'assertion failed: expected 51 repositories, got 50'\nexit 1\n",
+        );
+        std::fs::write(workspace.path().join(script_name), contents)?;
+        let reproduction = Reproduction {
+            program,
+            arguments,
+            script: PathBuf::from(script_name),
+            script_arguments: Vec::new(),
+        };
+        let evidence = reproduction.run(workspace.path())?;
+        assert!(
+            evidence
+                .attachment
+                .contains("assertion failed: expected 51 repositories, got 50")
+        );
+        Ok(())
+    }
 }

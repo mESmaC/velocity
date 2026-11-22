@@ -10,9 +10,12 @@ pub const GH_PROGRAM_ENV: &str = "VELOCITY_GH";
 /// Marker files inside Velocity's managed agent command folder (`velocity-rosen::agent_run`).
 const AGENT_SHIM_MARKERS: &[&str] = &["velocity-program", "rosen-program"];
 
+/// Agent-session variable that blocks direct `git`/`gh` calls in agent shells (#563, #581).
+const BLOCK_VCS_ENV: &str = "VELOCITY_BLOCK_GIT_GH";
+
 /// Agent-session variables removed from `gh` children that Velocity starts so the real `gh`
 /// never inherits Rosen or VCS-refusal markers (#581).
-const STRIPPED_GH_ENV_VARS: &[&str] = &["VELOCITY_BLOCK_GIT_GH", "ROSEN_CHANGE", "ROSEN_ENDPOINT"];
+const STRIPPED_GH_ENV_VARS: &[&str] = &[BLOCK_VCS_ENV, "ROSEN_CHANGE", "ROSEN_ENDPOINT"];
 
 static APP_GH: OnceLock<Option<PathBuf>> = OnceLock::new();
 
@@ -38,13 +41,21 @@ pub(crate) fn gh_command() -> Command {
         .map(PathBuf::into_os_string)
         .unwrap_or_else(|| OsString::from("gh"));
     let mut command = hidden_command(program);
-    if let Some(clean_path) = cleaned_path_from(std::env::var_os("PATH").as_deref()) {
-        command.env("PATH", clean_path);
-    }
+    clean_toolchain_env(&mut command);
     for name in STRIPPED_GH_ENV_VARS {
         command.env_remove(name);
     }
     command
+}
+
+/// Removes Velocity's agent shim folders from `PATH` and drops `VELOCITY_BLOCK_GIT_GH` so
+/// scout reproduction scripts and reference drivers reach host toolchains just like queued
+/// `velocity-run` commands (#563, #643).
+pub(crate) fn clean_toolchain_env(command: &mut Command) {
+    if let Some(clean_path) = cleaned_path_from(std::env::var_os("PATH").as_deref()) {
+        command.env("PATH", clean_path);
+    }
+    command.env_remove(BLOCK_VCS_ENV);
 }
 
 /// `gh <arguments>`, counted against the caller like every `GitHubCommand` call (SPEC.md

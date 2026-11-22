@@ -284,7 +284,7 @@ fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "scout_file",
-            "description": "File one finding. Velocity runs the reproduction (it must exit with a failing status), attaches the script and its output, and refuses duplicates of open or closed issues. publish false previews the issue; publish true files it. When the finding waits on other issues, name them in blocked_by: they become issue dependencies and dispatch starts the issue when they close. Retired skip labels such as needs-owner and on-hold are refused.",
+            "description": "File one finding. Velocity runs the reproduction (it must exit with a failing status and must not fail package or environment setup such as Go [setup failed]), attaches the script and its output, and refuses duplicates of open or closed issues. publish false previews the issue; publish true files it. When the finding waits on other issues, name them in blocked_by: they become issue dependencies and dispatch starts the issue when they close. Retired skip labels such as needs-owner and on-hold are refused.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

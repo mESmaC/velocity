@@ -63,6 +63,7 @@ fn run_driver(
     standard_input.write_all(input.as_bytes())?;
     standard_input.rewind()?;
     let mut command = crate::command::hidden_command(&driver.program);
+    crate::command::clean_toolchain_env(&mut command);
     command
         .current_dir(working.path())
         .args(&driver.arguments)

@@ -28,6 +28,10 @@ pub enum ScoutIssueError {
     Json(#[from] serde_json::Error),
     #[error("The reproducer did not exit with a failing status; no issue was filed")]
     NotReproduced,
+    #[error(
+        "The reproducer failed during package or environment setup rather than reproducing the bug; no issue was filed: {0}"
+    )]
+    SetupFailed(String),
     #[error("Open or closed issues changed; inspect the inventory and assess duplicates again")]
     StaleReview,
 }
