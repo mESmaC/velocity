@@ -8,10 +8,12 @@ Each unreverted, uncovered per-platform failure starts a fix-forward thread nami
 It needs no thread, agent session or window.
 
 **The look.**
-Ninety seconds after start and every three minutes, Velocity reads the newest 50 workflow runs on the project's base branch in its GitHub repository, and the commit statuses on that branch's tip.
+Ninety seconds after start and every three minutes, Velocity reads the newest 50 workflow runs on the project's base branch in its GitHub repository, and the commit statuses and check runs on that branch's tip (#652).
 A run counts when GitHub started it for a base commit: its event is `push` or `schedule`.
 A dispatched run reports to whoever asked for it (#508), and a pull request's run is not on the base.
 A commit status counts as a workflow named for its context, except `velocity/integration`, which is Velocity's own integration build.
+A standalone GitHub App check run on that commit counts as a workflow keyed by its app and check name, keeping the newest check run when more than one shares that key (#652).
+Check runs published by GitHub Actions itself are skipped here because `/actions/runs` already tracks them and excludes dispatched or pull-request runs (#652).
 
 | Run or status | What it says |
 |---|---|
@@ -26,7 +28,7 @@ GitHub reports a job that hits its `timeout-minutes` as `cancelled`, so for canc
 A job failed when it concluded `failure` or `timed_out`, or when it concluded `cancelled` and timed out; a job cancelled because another failed or because a newer push superseded it did not.
 A cancelled job counts as timed out when its check run has an annotation matching `has exceeded the maximum execution time`, or, if annotations cannot be read, when no newer run of the same workflow exists on the branch and the job ran at least as long as its `timeout-minutes` read from the workflow file at that commit.
 For each workflow, Velocity reads the jobs of its newest failed run and of any newer in-progress runs (up to five per workflow), in addition to any newer cancelled runs checked for timeouts (#587).
-A failed run with no failed job, and a failed status, is one failure named for the workflow.
+A failed run with no failed job, a failed check run, and a failed status each count as one failure named for the workflow.
 If a newer run's matching job is still queued or running, Velocity waits for that job to finish before starting or reopening a repair, while still showing the base as failing until the job passes (#587).
 
 **The fix-forward thread.**

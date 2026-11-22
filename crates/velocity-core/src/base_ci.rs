@@ -13,6 +13,12 @@ use serde::{Deserialize, Serialize};
 /// Velocity's own build, which already has its fix-forward path, so it is not CI.
 pub const INTEGRATION_CONTEXT: &str = "velocity/integration";
 
+/// The GitHub App slug used by GitHub Actions check runs (#652).
+pub const GITHUB_ACTIONS_APP_SLUG: &str = "github-actions";
+
+/// The GitHub App ID used by GitHub Actions on github.com (#652).
+pub const GITHUB_ACTIONS_APP_ID: u64 = 15_368;
+
 /// Substring GitHub writes in a check-run annotation when a job exceeds `timeout-minutes` (#584).
 pub const TIMEOUT_ANNOTATION_NEEDLE: &str = "has exceeded the maximum execution time";
 
@@ -305,18 +311,182 @@ pub fn cancelled_candidates(runs: &[RunCandidateInput<'_>]) -> Vec<CancelledCand
     candidates
 }
 
-/// One workflow run on the base branch, or one commit status on its tip.
+/// One workflow run on the base branch, or one commit status or check run on its tip.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BaseRun {
-    /// The workflow's name, or the status's context.
+    /// The workflow's name, the status's context, or `<app> · <check>` for a check run.
     pub workflow: String,
-    /// GitHub's run ID, which grows with each new run. A status has 0.
+    /// GitHub's run ID, which grows with each new run. A status or standalone check run has 0.
     pub run: u64,
     pub commit: String,
     pub url: String,
     pub state: RunState,
-    /// What a status says about itself. A run's jobs and log say it instead.
+    /// What a status or check run says about itself. An Actions run's jobs and log say it instead.
     pub detail: String,
+}
+
+/// One GitHub check run on the base branch's tip commit (#652).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CheckRunInput {
+    pub id: u64,
+    pub name: String,
+    pub head_sha: String,
+    pub status: Option<String>,
+    pub conclusion: Option<String>,
+    pub app_id: Option<u64>,
+    pub app_slug: Option<String>,
+    pub app_name: Option<String>,
+    pub html_url: Option<String>,
+    pub details_url: Option<String>,
+    pub output_title: Option<String>,
+    pub output_summary: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+/// Whether `check` is a check-run record published by GitHub Actions itself (#652).
+///
+/// GitHub Actions jobs already arrive through `/actions/runs` and `/actions/runs/{id}/jobs`,
+/// so skipping their check-run records prevents duplicate failures and keeps dispatched or
+/// pull-request Actions runs out of base CI.
+pub fn is_actions_check_run(check: &CheckRunInput, actions_job_ids: &BTreeSet<u64>) -> bool {
+    if check.id != 0 && actions_job_ids.contains(&check.id) {
+        return true;
+    }
+    if let Some(slug) = check
+        .app_slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if slug.eq_ignore_ascii_case(GITHUB_ACTIONS_APP_SLUG) {
+            return true;
+        }
+    } else if check.app_id == Some(GITHUB_ACTIONS_APP_ID) {
+        return true;
+    }
+    check
+        .html_url
+        .as_deref()
+        .is_some_and(|url| url.contains("/actions/runs/"))
+}
+
+/// Stable workflow key for a standalone GitHub App check run, scoped to its app and name (#652).
+pub fn check_run_workflow(check: &CheckRunInput) -> Option<String> {
+    let name = check.name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    match check_run_app_label(check) {
+        Some(app) if !app.eq_ignore_ascii_case(name) => Some(format!("{app} · {name}")),
+        _ => Some(name.to_owned()),
+    }
+}
+
+fn check_run_app_label(check: &CheckRunInput) -> Option<String> {
+    if let Some(slug) = check
+        .app_slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(slug.to_owned());
+    }
+    if let Some(name) = check
+        .app_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(name.to_owned());
+    }
+    check.app_id.map(|id| format!("app-{id}"))
+}
+
+fn check_run_detail(check: &CheckRunInput) -> String {
+    let title = check
+        .output_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let summary = check
+        .output_summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (title, summary) {
+        (Some(title), Some(summary)) if title != summary => format!("{title}: {summary}"),
+        (Some(title), _) => title.to_owned(),
+        (None, Some(summary)) => summary.to_owned(),
+        (None, None) => String::new(),
+    }
+}
+
+fn check_run_order_key(check: &CheckRunInput, index: usize) -> (u64, &str, usize) {
+    let timestamp = check
+        .completed_at
+        .as_deref()
+        .or(check.started_at.as_deref())
+        .unwrap_or("");
+    (check.id, timestamp, index)
+}
+
+/// Converts standalone GitHub App check runs on the base tip into [`BaseRun`] records (#652).
+///
+/// GitHub Actions check runs are omitted because `/actions/runs` already tracks them. When
+/// multiple check runs share the same `(app, name)`, only the newest check run is kept.
+pub fn check_runs_to_base_runs(
+    checks: &[CheckRunInput],
+    tip_sha: &str,
+    commit_page: &str,
+    actions_job_ids: &BTreeSet<u64>,
+) -> Vec<BaseRun> {
+    let mut latest: BTreeMap<String, (usize, &CheckRunInput)> = BTreeMap::new();
+    for (index, check) in checks.iter().enumerate() {
+        if is_actions_check_run(check, actions_job_ids) {
+            continue;
+        }
+        let Some(workflow) = check_run_workflow(check) else {
+            continue;
+        };
+        match latest.entry(workflow) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert((index, check));
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                let (current_index, current) = *entry.get();
+                if check_run_order_key(check, index) > check_run_order_key(current, current_index) {
+                    entry.insert((index, check));
+                }
+            }
+        }
+    }
+    latest
+        .into_iter()
+        .map(|(workflow, (_, check))| {
+            let commit = if check.head_sha.trim().is_empty() {
+                tip_sha.to_owned()
+            } else {
+                check.head_sha.clone()
+            };
+            let url = check
+                .html_url
+                .as_deref()
+                .or(check.details_url.as_deref())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(commit_page)
+                .to_owned();
+            BaseRun {
+                workflow,
+                run: 0,
+                commit,
+                url,
+                state: run_state(check.status.as_deref(), check.conclusion.as_deref()),
+                detail: check_run_detail(check),
+            }
+        })
+        .collect()
 }
 
 /// A job that failed, with the first step that failed in it.
@@ -2704,5 +2874,170 @@ test collapse_link::collapse_link_and_unlink_round_trip_with_live_server has bee
             effective_base_ci_source(false, IssueHost::GitHub, Some(BaseCiSource::GitHub), false),
             BaseCiSource::Rosen
         );
+    }
+
+    // Risk (#652): a GitHub App check run with no Actions run or commit status must surface
+    // as failing and start one repair, a later pass from the same app with the same name must
+    // settle it (while a different app with the same name must not), and an Actions job's own
+    // check-run record must never produce a duplicate failure or second repair.
+    #[test]
+    fn standalone_github_app_check_runs_start_settle_and_skip_actions_duplicates() {
+        let commit_a = "a".repeat(40);
+        let commit_b = "b".repeat(40);
+        let commit_page_a = format!("https://github.com/mESmaC/velocity/commit/{commit_a}");
+        let commit_page_b = format!("https://github.com/mESmaC/velocity/commit/{commit_b}");
+
+        // 1. Standalone failed check from an external GitHub App (no Actions runs, no statuses).
+        let failed_check = CheckRunInput {
+            id: 501,
+            name: "macOS tests".into(),
+            head_sha: commit_a.clone(),
+            status: Some("completed".into()),
+            conclusion: Some("failure".into()),
+            app_id: Some(24),
+            app_slug: Some("external-ci".into()),
+            html_url: Some("https://github.com/mESmaC/velocity/runs/501".into()),
+            output_title: Some("macOS suite failed".into()),
+            output_summary: Some("1 failing test".into()),
+            ..CheckRunInput::default()
+        };
+        let runs_a =
+            check_runs_to_base_runs(&[failed_check], &commit_a, &commit_page_a, &BTreeSet::new());
+        let verdict_a = evaluate_jobs(&runs_a, &BTreeMap::new());
+        let view_a = view_for_verdict(&verdict_a);
+        assert_eq!(view_a.state, BaseCiState::Failed);
+        assert_eq!(view_a.commit.as_deref(), Some(commit_a.as_str()));
+        assert_eq!(view_a.failing, vec!["external-ci · macOS tests"]);
+        let first_plan = plan_for_verdict(&[], &verdict_a);
+        assert_eq!(first_plan.start.len(), 1);
+        assert_eq!(first_plan.start[0].workflow, "external-ci · macOS tests");
+        assert_eq!(
+            first_plan.start[0].detail,
+            "macOS suite failed: 1 failing test"
+        );
+
+        // Polling again while the repair is active starts no second repair.
+        let open = [OpenRepair {
+            workflow: first_plan.start[0].workflow.clone(),
+            job: first_plan.start[0].jobs[0].job.clone(),
+            commit: commit_a.clone(),
+            run: 0,
+            thread: 42,
+            thread_state: RepairThreadState::Active,
+            ..OpenRepair::default()
+        }];
+        let repeat_plan = plan_for_verdict(&open, &verdict_a);
+        assert!(repeat_plan.start.is_empty());
+        assert!(repeat_plan.closed.is_empty());
+
+        // 2. A passing check with the same name from a DIFFERENT app does not settle the repair.
+        let other_app_pass = CheckRunInput {
+            id: 600,
+            name: "macOS tests".into(),
+            head_sha: commit_b.clone(),
+            status: Some("completed".into()),
+            conclusion: Some("success".into()),
+            app_id: Some(99),
+            app_slug: Some("other-ci".into()),
+            ..CheckRunInput::default()
+        };
+        let other_runs = check_runs_to_base_runs(
+            &[other_app_pass],
+            &commit_b,
+            &commit_page_b,
+            &BTreeSet::new(),
+        );
+        let other_verdict = evaluate_jobs(&other_runs, &BTreeMap::new());
+        assert!(plan_for_verdict(&open, &other_verdict).closed.is_empty());
+
+        // 3. A later passing check from the SAME app with the SAME name settles the repair.
+        let same_app_pass = CheckRunInput {
+            id: 601,
+            name: "macOS tests".into(),
+            head_sha: commit_b.clone(),
+            status: Some("completed".into()),
+            conclusion: Some("success".into()),
+            app_id: Some(24),
+            app_slug: Some("external-ci".into()),
+            ..CheckRunInput::default()
+        };
+        let passed_runs = check_runs_to_base_runs(
+            &[same_app_pass],
+            &commit_b,
+            &commit_page_b,
+            &BTreeSet::new(),
+        );
+        let passed_verdict = evaluate_jobs(&passed_runs, &BTreeMap::new());
+        let settled_plan = plan_for_verdict(&open, &passed_verdict);
+        assert_eq!(settled_plan.closed, vec!["external-ci · macOS tests"]);
+        assert!(settled_plan.start.is_empty());
+        let passed_view = view_for_verdict(&passed_verdict);
+        assert_eq!(passed_view.state, BaseCiState::Green);
+        assert_eq!(passed_view.commit.as_deref(), Some(commit_b.as_str()));
+
+        // 4. An Actions job's check-run record never produces a second repair alongside its
+        // Actions workflow run, whether identified by app slug, app id, URL or job id.
+        let actions_run = BaseRun {
+            commit: commit_a.clone(),
+            ..run("CI", 77, RunState::Failed)
+        };
+        let mut actions_jobs = BTreeMap::new();
+        actions_jobs.insert(
+            77,
+            vec![RunJob::Failed(FailedJob {
+                id: 9001,
+                ..failed_job("macOS tests")
+            })],
+        );
+        let actions_job_ids = BTreeSet::from([9001]);
+        let duplicate_checks = [
+            CheckRunInput {
+                id: 9001,
+                name: "macOS tests".into(),
+                head_sha: commit_a.clone(),
+                status: Some("completed".into()),
+                conclusion: Some("failure".into()),
+                app_id: Some(GITHUB_ACTIONS_APP_ID),
+                app_slug: Some(GITHUB_ACTIONS_APP_SLUG.into()),
+                html_url: Some(
+                    "https://github.com/mESmaC/velocity/actions/runs/77/job/9001".into(),
+                ),
+                ..CheckRunInput::default()
+            },
+            CheckRunInput {
+                id: 9002,
+                name: "Linux tests".into(),
+                head_sha: commit_a.clone(),
+                status: Some("completed".into()),
+                conclusion: Some("failure".into()),
+                app_id: Some(GITHUB_ACTIONS_APP_ID),
+                ..CheckRunInput::default()
+            },
+            CheckRunInput {
+                id: 9003,
+                name: "Dispatched job".into(),
+                head_sha: commit_a.clone(),
+                status: Some("completed".into()),
+                conclusion: Some("failure".into()),
+                html_url: Some(
+                    "https://github.com/mESmaC/velocity/actions/runs/88/job/9003".into(),
+                ),
+                ..CheckRunInput::default()
+            },
+        ];
+        let mut combined_runs = vec![actions_run];
+        combined_runs.extend(check_runs_to_base_runs(
+            &duplicate_checks,
+            &commit_a,
+            &commit_page_a,
+            &actions_job_ids,
+        ));
+        let actions_verdict = evaluate_jobs(&combined_runs, &actions_jobs);
+        let actions_plan = plan_for_verdict(&[], &actions_verdict);
+        assert_eq!(actions_plan.start.len(), 1);
+        assert_eq!(actions_plan.start[0].workflow, "CI");
+        assert_eq!(actions_plan.start[0].run, 77);
+        assert_eq!(actions_plan.start[0].jobs.len(), 1);
+        assert_eq!(actions_plan.start[0].jobs[0].job, "macOS tests");
     }
 }

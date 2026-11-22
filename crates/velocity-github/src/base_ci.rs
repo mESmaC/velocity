@@ -1,16 +1,16 @@
-//! GitHub's side of the base's CI (SPEC.md F5 "Rosen · Base CI", #507): the workflow runs
-//! on a Rosen project's mirrored base branch, the commit statuses on its tip, and a failed
-//! run's failed jobs and their log. `velocity_core::base_ci` decides what they mean.
-//! Everything is REST through `gh`, which keeps working when a swarm has spent the GraphQL
-//! budget.
+//! GitHub's side of the base's CI (SPEC.md F5 "Rosen · Base CI", #507, #652): the workflow runs
+//! on a Rosen project's mirrored base branch, the commit statuses and standalone GitHub App check
+//! runs on its tip, and a failed run's failed jobs and their log. `velocity_core::base_ci`
+//! decides what they mean. Everything is REST through `gh`, which keeps working when a swarm has
+//! spent the GraphQL budget.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 
 use serde::Deserialize;
 use velocity_core::base_ci::{
-    self, BaseRun, CancelledJobEvidence, FailedJob, Failure, JobState, RunCandidateInput, RunJob,
-    RunState,
+    self, BaseRun, CancelledJobEvidence, CheckRunInput, FailedJob, Failure, JobState,
+    RunCandidateInput, RunJob, RunState,
 };
 
 use crate::GitHubCommandError;
@@ -27,6 +27,10 @@ const MAX_CANCELLED_CHECKS_PER_WORKFLOW: usize = 5;
 const MAX_RUNNING_CHECKS_PER_WORKFLOW: usize = 5;
 /// Cap on cancelled jobs whose check-run annotations are read in one run (#584).
 const MAXIMUM_ANNOTATED_JOBS: usize = 30;
+/// How many check runs each page of the tip commit's check-runs endpoint reads (#652).
+const CHECK_RUNS_PER_PAGE: usize = 100;
+/// Cap on check-run pages read for the base tip commit in one look (#652).
+const MAX_CHECK_RUN_PAGES: usize = 5;
 
 /// The `gh` transport for the repository a Rosen project's base is mirrored to.
 pub struct BaseCiWatch {
@@ -95,7 +99,17 @@ impl BaseCiWatch {
         let mut run_jobs =
             self.promote_timed_out_runs(&mut runs, &cancelled_ids, &workflow_paths)?;
         self.inspect_relevant_runs(&runs, &workflow_paths, &mut run_jobs)?;
-        runs.extend(self.statuses(branch)?);
+        let (tip_sha, status_runs) = self.statuses(branch)?;
+        runs.extend(status_runs);
+        let actions_job_ids: BTreeSet<u64> = run_jobs
+            .values()
+            .flatten()
+            .filter_map(|job| match job {
+                RunJob::Failed(failed) if failed.id != 0 => Some(failed.id),
+                _ => None,
+            })
+            .collect();
+        runs.extend(self.check_runs(branch, &tip_sha, &actions_job_ids)?);
         Ok(BaseRunSnapshot { runs, run_jobs })
     }
 
@@ -177,9 +191,9 @@ impl BaseCiWatch {
         Ok(())
     }
 
-    /// The tip's commit statuses, which is how CI other than GitHub Actions reports.
-    /// GitHub's combined status holds each context's newest status.
-    fn statuses(&self, branch: &str) -> Result<Vec<BaseRun>, GitHubCommandError> {
+    /// The tip's commit statuses, which is how legacy CI other than GitHub Actions reports.
+    /// GitHub's combined status holds each context's newest status and the tip commit SHA.
+    fn statuses(&self, branch: &str) -> Result<(String, Vec<BaseRun>), GitHubCommandError> {
         #[derive(Deserialize)]
         struct Combined {
             sha: String,
@@ -203,7 +217,7 @@ impl BaseCiWatch {
             self.client.repository(),
             combined.sha
         );
-        Ok(combined
+        let runs = combined
             .statuses
             .into_iter()
             .filter(|status| status.context != base_ci::INTEGRATION_CONTEXT)
@@ -215,7 +229,51 @@ impl BaseCiWatch {
                 state: base_ci::status_state(&status.state),
                 detail: status.description.unwrap_or_default(),
             })
-            .collect())
+            .collect();
+        Ok((combined.sha, runs))
+    }
+
+    /// Standalone GitHub App check runs on the base branch's tip commit (#652).
+    /// GitHub Actions check runs are excluded because `/actions/runs` already tracks them.
+    fn check_runs(
+        &self,
+        branch: &str,
+        tip_sha: &str,
+        actions_job_ids: &BTreeSet<u64>,
+    ) -> Result<Vec<BaseRun>, GitHubCommandError> {
+        let reference = if tip_sha.trim().is_empty() {
+            format!("heads/{}", encoded(branch, true))
+        } else {
+            encoded(tip_sha.trim(), false)
+        };
+        let base_path = format!("/commits/{reference}/check-runs?per_page={CHECK_RUNS_PER_PAGE}");
+        let mut checks = Vec::new();
+        for page in 1..=MAX_CHECK_RUN_PAGES {
+            let path = if page == 1 {
+                base_path.clone()
+            } else {
+                format!("{base_path}&page={page}")
+            };
+            let response: CheckRunsResponse = self.client.read(&path)?;
+            let received = response.check_runs.len();
+            checks.extend(response.check_runs.into_iter().map(ApiCheckRun::into_input));
+            if received < CHECK_RUNS_PER_PAGE
+                || (response.total_count > 0 && checks.len() >= response.total_count)
+            {
+                break;
+            }
+        }
+        let commit_page = format!(
+            "https://github.com/{}/commit/{}",
+            self.client.repository(),
+            tip_sha
+        );
+        Ok(base_ci::check_runs_to_base_runs(
+            &checks,
+            tip_sha,
+            &commit_page,
+            actions_job_ids,
+        ))
     }
 
     fn inspect_run_jobs(
@@ -442,6 +500,87 @@ fn failed_job(job: WorkflowJob, timed_out: bool) -> FailedJob {
     }
 }
 
+#[derive(Deserialize)]
+struct CheckRunsResponse {
+    #[serde(default)]
+    total_count: usize,
+    #[serde(default)]
+    check_runs: Vec<ApiCheckRun>,
+}
+
+#[derive(Deserialize)]
+struct ApiCheckRun {
+    #[serde(default)]
+    id: u64,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    head_sha: String,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    conclusion: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+    #[serde(default)]
+    details_url: Option<String>,
+    #[serde(default)]
+    started_at: Option<String>,
+    #[serde(default)]
+    completed_at: Option<String>,
+    #[serde(default)]
+    app: Option<ApiCheckRunApp>,
+    #[serde(default)]
+    output: Option<ApiCheckRunOutput>,
+}
+
+#[derive(Deserialize)]
+struct ApiCheckRunApp {
+    #[serde(default)]
+    id: Option<u64>,
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ApiCheckRunOutput {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+}
+
+impl ApiCheckRun {
+    fn into_input(self) -> CheckRunInput {
+        let (app_id, app_slug, app_name) = match self.app {
+            Some(app) => (app.id, app.slug, app.name),
+            None => (None, None, None),
+        };
+        let (output_title, output_summary) = match self.output {
+            Some(output) => (output.title, output.summary),
+            None => (None, None),
+        };
+        CheckRunInput {
+            id: self.id,
+            name: self.name,
+            head_sha: self.head_sha,
+            status: self.status,
+            conclusion: self.conclusion,
+            app_id,
+            app_slug,
+            app_name,
+            html_url: self.html_url,
+            details_url: self.details_url,
+            output_title,
+            output_summary,
+            started_at: self.started_at,
+            completed_at: self.completed_at,
+        }
+    }
+}
+
 /// Percent-encodes `text` for a URL. A branch name may hold `/`, which stays as it is in a
 /// path and is encoded in a query value.
 pub(crate) fn encoded(text: &str, path: bool) -> String {
@@ -457,4 +596,60 @@ pub(crate) fn encoded(text: &str, path: bool) -> String {
         }
     }
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use velocity_core::base_ci::{self, RunState};
+
+    use super::{ApiCheckRun, CheckRunsResponse};
+
+    // Risk (#652): the check-runs transport decoder must deserialize minimal GitHub App
+    // check-run payloads (without optional URL or output fields) and pass them through to
+    // base CI while excluding GitHub Actions check runs.
+    #[test]
+    fn check_runs_response_decodes_standalone_and_skips_actions_checks()
+    -> Result<(), serde_json::Error> {
+        let commit = "a".repeat(40);
+        let payload = format!(
+            r#"{{
+                "total_count": 2,
+                "check_runs": [
+                    {{
+                        "head_sha": "{commit}",
+                        "app": {{"id": 24, "slug": "external-ci"}},
+                        "name": "macOS tests",
+                        "status": "completed",
+                        "conclusion": "failure"
+                    }},
+                    {{
+                        "id": 9001,
+                        "head_sha": "{commit}",
+                        "app": {{"id": 15368, "slug": "github-actions"}},
+                        "name": "macOS tests",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "html_url": "https://github.com/mESmaC/velocity/actions/runs/77/job/9001"
+                    }}
+                ]
+            }}"#
+        );
+        let decoded: CheckRunsResponse = serde_json::from_str(&payload)?;
+        let inputs: Vec<_> = decoded
+            .check_runs
+            .into_iter()
+            .map(ApiCheckRun::into_input)
+            .collect();
+        let commit_page = format!("https://github.com/mESmaC/velocity/commit/{commit}");
+        let runs =
+            base_ci::check_runs_to_base_runs(&inputs, &commit, &commit_page, &BTreeSet::new());
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].workflow, "external-ci · macOS tests");
+        assert_eq!(runs[0].state, RunState::Failed);
+        assert_eq!(runs[0].commit, commit);
+        assert_eq!(runs[0].url, commit_page);
+        Ok(())
+    }
 }
