@@ -42,7 +42,9 @@ export function issueKey(repository: string, number: number) {
 
 export function completion(row: WorkRow): string | number | null | undefined {
   if (row.item?.status === 'green') return row.item.green_at ?? null;
-  if (row.kind === 'task' && row.task.state === 'done' && !row.item)
+  // A Claimed projection can exist before a thread gets a Rosen change ID; manual
+  // completion still applies until an active linked change drives the Work state (#639).
+  if (row.kind === 'task' && row.task.state === 'done' && !row.item?.change)
     return row.task.completed_at ?? null;
   return undefined;
 }
