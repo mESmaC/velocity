@@ -593,16 +593,56 @@ jobs:
             gh release create $env:TAG @flags
             if ($LASTEXITCODE -ne 0) { throw "Could not create the release" }
           }
-          # Collapse pins the indexer archive by its checksum. When graph-indexer.yml has
-          # already attached the pair to this release, the published pair is kept (#518).
+          # Collapse pins each indexer archive by its checksum. Never replace an already-published
+          # archive; when its checksum is missing, compute and upload it from the published bytes
+          # rather than the rebuilt archive, matching graph-indexer.yml (#518, #648).
           $published = @(gh release view $env:TAG --json assets --jq '.assets[].name')
           if ($LASTEXITCODE -ne 0) { throw "Could not list the release's downloads" }
-          $indexer = @(Get-ChildItem dist -File -Filter 'velocity-graph-*')
-          if ($indexer -and -not ($indexer | Where-Object { $published -notcontains $_.Name })) {
-            $indexer | Remove-Item
+          $indexerArchives = @(Get-ChildItem dist -File -Filter 'velocity-graph-*' | Where-Object { $_.Name -notlike '*.sha256' })
+          foreach ($archive in $indexerArchives) {
+            $checksumName = "$($archive.Name).sha256"
+            $checksumPath = Join-Path $archive.DirectoryName $checksumName
+            if ($published -ccontains $archive.Name) {
+              Remove-Item -LiteralPath $archive.FullName
+              if ($published -ccontains $checksumName) {
+                if (Test-Path -LiteralPath $checksumPath) {
+                  Remove-Item -LiteralPath $checksumPath
+                }
+              } else {
+                $publishedDir = New-Item -ItemType Directory -Path (Join-Path ([IO.Path]::GetTempPath()) "velocity-graph-$([guid]::NewGuid().ToString('N'))")
+                try {
+                  gh release download $env:TAG --pattern $archive.Name --dir $publishedDir.FullName --clobber
+                  if ($LASTEXITCODE -ne 0) { throw "Could not download published $($archive.Name)" }
+                  $downloaded = Join-Path $publishedDir.FullName $archive.Name
+                  $digest = (Get-FileHash -LiteralPath $downloaded -Algorithm SHA256).Hash.ToLowerInvariant()
+                  Set-Content -LiteralPath $checksumPath -Encoding utf8NoBOM -NoNewline -Value "$digest  $($archive.Name)`n"
+                } finally {
+                  Remove-Item -LiteralPath $publishedDir.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                gh release upload $env:TAG $checksumPath
+                if ($LASTEXITCODE -ne 0) { throw "Could not upload $checksumName" }
+                Remove-Item -LiteralPath $checksumPath
+              }
+            } else {
+              gh release upload $env:TAG $archive.FullName
+              if ($LASTEXITCODE -ne 0) { throw "Could not upload $($archive.Name)" }
+              Remove-Item -LiteralPath $archive.FullName
+              if (Test-Path -LiteralPath $checksumPath) {
+                if ($published -ccontains $checksumName) {
+                  gh release upload $env:TAG $checksumPath --clobber
+                } else {
+                  gh release upload $env:TAG $checksumPath
+                }
+                if ($LASTEXITCODE -ne 0) { throw "Could not upload $checksumName" }
+                Remove-Item -LiteralPath $checksumPath
+              }
+            }
           }
-          gh release upload $env:TAG (Get-ChildItem dist -File).FullName --clobber
-          if ($LASTEXITCODE -ne 0) { throw "Could not upload the downloads" }
+          $remaining = @(Get-ChildItem dist -File)
+          if ($remaining) {
+            gh release upload $env:TAG $remaining.FullName --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Could not upload the downloads" }
+          }
           # If this tag started as a draft or unsigned local release, promote it cleanly
           # now that signed downloads are uploaded (#521).
           if ($exists) {
