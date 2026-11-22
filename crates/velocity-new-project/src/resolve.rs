@@ -86,6 +86,15 @@ fn mirror_url(mirror: &ProjectMirror) -> Result<Option<String>, NewProjectError>
     Ok(Some(format!("{host}{}.git", repository.full_name())))
 }
 
+/// Validates a Create destination folder before provisioning a Collapse repository (#661).
+pub fn validate_collapse_create_folder(path: &str) -> Result<PathBuf, NewProjectError> {
+    let folder = absolute_folder(path)?;
+    validate_project_root(&folder)?;
+    let _ = folder_name(&folder)?;
+    velocity_rosen::project::validate_create_folder(&folder, true)?;
+    Ok(folder)
+}
+
 /// Validates the Collapse repository name and destination folder before calling Collapse (#575).
 pub fn validate_open_collapse(
     repository: &str,

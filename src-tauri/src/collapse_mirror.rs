@@ -180,9 +180,10 @@ pub(crate) async fn prepare_new_project(
     else {
         return Ok(None);
     };
-    let folder = Path::new(path.trim());
-    // Refuse a folder or GitHub repository Create would refuse before anything exists on Collapse.
-    velocity_new_project::validate_project_root(folder).map_err(|error| error.to_string())?;
+    // Refuse a folder, existing rosen.toml or GitHub repository Create would refuse before
+    // anything exists on Collapse (#661).
+    let folder = velocity_new_project::validate_collapse_create_folder(path)
+        .map_err(|error| error.to_string())?;
     let parsed_github = match github_repository.as_deref() {
         Some(github) => velocity_new_project::parse_github_repository(github)
             .map_err(|error| error.to_string())?
@@ -200,7 +201,7 @@ pub(crate) async fn prepare_new_project(
     };
     let (owner, name) = match typed.split_once('/') {
         Some((owner, name)) => (Some(owner.to_owned()), name.to_owned()),
-        None if typed.is_empty() => (None, folder_repository_name(folder)?),
+        None if typed.is_empty() => (None, folder_repository_name(&folder)?),
         None => (None, typed.clone()),
     };
     let provisioned = velocity_collapse::provision_mirror(

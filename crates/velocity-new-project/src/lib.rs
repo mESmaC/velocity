@@ -18,4 +18,6 @@ pub use request::{
     CreatedProject, NewProjectDefaults, NewProjectRequest, OpenProjectRequest,
     ProjectLocationRequest, ProjectMirror, new_project_defaults, projects_directory,
 };
-pub use resolve::{parse_github_repository, validate_open_collapse};
+pub use resolve::{
+    parse_github_repository, validate_collapse_create_folder, validate_open_collapse,
+};
