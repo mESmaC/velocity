@@ -181,8 +181,8 @@ async fn check(server: &ProjectServer, change: &str, root: &Path) -> BindingsVer
         Ok(false) => return BindingsVerdict::Current,
         Err(error) => return BindingsVerdict::Unchecked(error.to_string()),
     }
-    let target = agent_run::project_target(root);
-    tokio::task::spawn_blocking(move || bindings_check::check_staged(&folder, &target))
+    let targets = agent_run::project_targets(root);
+    tokio::task::spawn_blocking(move || bindings_check::check_staged(&folder, &targets))
         .await
         .unwrap_or_else(|error| BindingsVerdict::Unchecked(error.to_string()))
 }

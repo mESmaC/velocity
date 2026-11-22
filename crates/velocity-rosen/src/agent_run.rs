@@ -45,8 +45,10 @@ const GH_REFUSAL: &str = "Agents do not call gh directly. Use AIRC issue tools (
 pub(crate) const LIGHT_SLOTS: usize = 2;
 /// What a light run may use: two Cargo jobs plus the linker of a debug build.
 pub(crate) const LIGHT_MEMORY: u64 = 3 << 30;
-/// The shared target folder beside a Rosen project's workspaces.
+/// The shared target folder prefix beside a Rosen project's workspaces.
 const PROJECT_TARGET: &str = ".velocity-agent-target";
+/// Per-target lock file held while a light Rust run uses a pooled target directory.
+pub(crate) const LIGHT_RUN_LOCK: &str = ".velocity-light-run.lock";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentRun {
@@ -598,8 +600,9 @@ fn execute_generator_light(
     execution: &GeneratorExecution,
     passthrough: &[String],
 ) -> io::Result<ExitStatus> {
-    let target = light_target(workspace_root);
-    let _turn = light_turn(&target, workspace_root, workspace_root)?;
+    let targets = light_targets(workspace_root);
+    let turn = light_turn(&targets, workspace_root, workspace_root)?;
+    let target = turn.target();
     match execution {
         GeneratorExecution::Direct {
             env,
@@ -610,7 +613,7 @@ fn execute_generator_light(
                 rosen,
                 rosen_arguments,
                 OsStr::new(program),
-                &target,
+                target,
                 passthrough,
             )?;
             for (key, value) in env {
@@ -624,7 +627,7 @@ fn execute_generator_light(
                 rosen,
                 rosen_arguments,
                 OsStr::new(shell),
-                &target,
+                target,
                 passthrough,
             )?
             .args(flag)
@@ -800,57 +803,73 @@ fn run_light(
         .ancestors()
         .find(|path| path.join(".rosen").exists() || path.join(".git").exists())
         .unwrap_or(&directory);
-    let target = light_target(root);
-    let _turn = light_turn(&target, root, &directory)?;
-    light_command(rosen, rosen_arguments, program, &target, passthrough)?
+    let targets = light_targets(root);
+    let turn = light_turn(&targets, root, &directory)?;
+    light_command(rosen, rosen_arguments, program, turn.target(), passthrough)?
         .args(arguments)
         .status()
 }
 
-/// Velocity's own light run (#503): `program` in `directory`, building into `target`, with
-/// what it printed. It waits and runs like an agent's (blocking).
+/// Velocity's own light run (#503): `program` in `directory`, building into the first free
+/// target folder in `targets` (preferring one matching `directory`), with what it printed.
+/// It waits and runs like an agent's (blocking).
 pub(crate) fn light_output(
     directory: &Path,
-    target: &Path,
+    targets: &[PathBuf],
     program: &str,
     arguments: &[&str],
 ) -> io::Result<Output> {
     let rosen = crate::server::program_folder("rosen")
         .map(|folder| folder.join(executable_file("rosen")))
         .ok_or_else(|| io::Error::other("the rosen program was not found"))?;
-    let _turn = light_turn(target, directory, directory)?;
+    let turn = light_turn(targets, directory, directory)?;
     let passthrough = in_process_passthrough();
-    light_command(&rosen, &[], OsStr::new(program), target, &passthrough)?
-        .args(arguments)
-        .current_dir(directory)
-        .stdin(Stdio::null())
-        .output()
+    light_command(
+        &rosen,
+        &[],
+        OsStr::new(program),
+        turn.target(),
+        &passthrough,
+    )?
+    .args(arguments)
+    .current_dir(directory)
+    .stdin(Stdio::null())
+    .output()
 }
 
-/// What a light run holds until it ends: its project's target folder and a machine slot.
+/// What a light run holds until it ends: one of its project's target folders and a machine slot.
 struct LightTurn {
     _project: File,
     _slot: File,
+    target: PathBuf,
 }
 
-/// Waits for the target folder, a slot and memory, in that order, then prepares the shared
-/// target folder for `workspace_root`.
-fn light_turn(target: &Path, workspace_root: &Path, directory: &Path) -> io::Result<LightTurn> {
-    std::fs::create_dir_all(target)?;
+impl LightTurn {
+    fn target(&self) -> &Path {
+        &self.target
+    }
+}
+
+/// Waits for a free target folder in `targets` (preferring one warm for `workspace_root`),
+/// a slot and memory, in that order, then prepares that target folder for `workspace_root`.
+fn light_turn(
+    targets: &[PathBuf],
+    workspace_root: &Path,
+    directory: &Path,
+) -> io::Result<LightTurn> {
     let started = Instant::now();
+    let identity = crate::light_target::workspace_identity(workspace_root);
     // Cargo locks a target folder for a whole build, so runs that share one wait here
     // rather than in a machine slot.
-    let project = locked_with_timeout(
-        &target.join(".velocity-light-run.lock"),
-        started,
-        DEFAULT_WAIT_TIMEOUT,
-    )?;
+    let (target, project) =
+        lock_light_target_with_timeout(targets, &identity, started, DEFAULT_WAIT_TIMEOUT)?;
     let slot = light_slot(started, DEFAULT_WAIT_TIMEOUT)?;
     wait_for_memory(started, DEFAULT_WAIT_TIMEOUT)?;
-    crate::light_target::prepare(target, workspace_root, directory)?;
+    crate::light_target::prepare(&target, workspace_root, directory)?;
     Ok(LightTurn {
         _project: project,
         _slot: slot,
+        target,
     })
 }
 
@@ -895,21 +914,37 @@ pub(crate) fn toolchain_path() -> io::Result<OsString> {
     toolchain_path_from(&path)
 }
 
-/// One target folder per Rosen project, beside its workspaces: registry and git
-/// dependencies build once, while switching workspaces invalidates local crate
-/// fingerprints and build-script outputs so Cargo cannot reuse another workspace's
-/// compiled crates (#527). Elsewhere the workspace keeps its own.
-pub(crate) fn light_target(root: &Path) -> PathBuf {
+/// Target folder pool for a light run in `root`: up to `LIGHT_SLOTS` pooled folders beside
+/// a Rosen project's workspaces so concurrent agents on the same project can run in
+/// parallel while keeping registry and git dependencies warm and invalidating local crate
+/// fingerprints only when a folder switches workspaces (#527, #682). Elsewhere the
+/// workspace keeps its own single target folder.
+pub(crate) fn light_targets(root: &Path) -> Vec<PathBuf> {
     match root.parent() {
-        Some(project) if root.join(".rosen").exists() => project_target(project),
-        _ => root.join("target").join("agent-check"),
+        Some(project) if root.join(".rosen").exists() => project_targets(project),
+        _ => vec![root.join("target").join("agent-check")],
     }
 }
 
-/// The light runs' shared target folder for the Rosen project whose workspaces lie in
-/// `project_root`.
+/// The primary shared light-run target folder for the Rosen project whose workspaces lie
+/// in `project_root`.
 pub fn project_target(project_root: &Path) -> PathBuf {
     project_root.join(PROJECT_TARGET)
+}
+
+/// The pool of up to `LIGHT_SLOTS` shared light-run target folders beside a Rosen
+/// project's workspaces (#682). Slot 0 keeps `.velocity-agent-target`.
+pub fn project_targets(project_root: &Path) -> Vec<PathBuf> {
+    (0..LIGHT_SLOTS)
+        .map(|slot| project_root.join(project_target_name(slot)))
+        .collect()
+}
+
+fn project_target_name(slot: usize) -> String {
+    match slot {
+        0 => PROJECT_TARGET.to_owned(),
+        _ => format!("{PROJECT_TARGET}-{slot}"),
+    }
 }
 
 fn wait_for_memory(started: Instant, timeout: Duration) -> io::Result<()> {
@@ -1097,16 +1132,63 @@ pub(crate) fn try_lock_file(path: &Path) -> io::Result<Option<File>> {
     }
 }
 
-fn locked_with_timeout(path: &Path, started: Instant, timeout: Duration) -> io::Result<File> {
-    wait_for_light_resource(
-        started,
-        timeout,
-        &format!(
+/// Ranks `targets` by workspace affinity (matching `.velocity-last-workspace` first, then
+/// unclaimed, then least recently used) and locks the first free target without blocking
+/// (#682).
+pub(crate) fn try_lock_light_target(
+    targets: &[PathBuf],
+    workspace_identity: &str,
+) -> io::Result<Option<(PathBuf, File)>> {
+    let ranked = crate::light_target::rank_targets(targets, workspace_identity);
+    for target in ranked {
+        std::fs::create_dir_all(&target)?;
+        if let Some(lock) = try_lock_file(&target.join(LIGHT_RUN_LOCK))? {
+            return Ok(Some((target, lock)));
+        }
+    }
+    Ok(None)
+}
+
+/// Counts how many target directories in `targets` currently have a held light-run lock
+/// without blocking or creating missing folders.
+pub(crate) fn busy_light_targets(targets: &[PathBuf]) -> usize {
+    targets
+        .iter()
+        .filter(|target| {
+            let lock = target.join(LIGHT_RUN_LOCK);
+            lock.exists() && matches!(try_lock_file(&lock), Ok(None))
+        })
+        .count()
+}
+
+pub(crate) fn light_target_wait_reason(targets: &[PathBuf]) -> String {
+    match targets {
+        [single] => format!(
             "waiting for the project's shared Rust target lock ({})",
-            path.display()
+            single.join(LIGHT_RUN_LOCK).display()
         ),
-        || try_lock_file(path),
-    )
+        _ => format!(
+            "waiting for a free project shared Rust target lock ({} targets)",
+            targets.len()
+        ),
+    }
+}
+
+fn lock_light_target_with_timeout(
+    targets: &[PathBuf],
+    workspace_identity: &str,
+    started: Instant,
+    timeout: Duration,
+) -> io::Result<(PathBuf, File)> {
+    if targets.is_empty() {
+        return Err(io::Error::other(
+            "no light Rust target directory configured",
+        ));
+    }
+    let reason = light_target_wait_reason(targets);
+    wait_for_light_resource(started, timeout, &reason, || {
+        try_lock_light_target(targets, workspace_identity)
+    })
 }
 
 fn wait_for_light_resource<T>(
@@ -1209,26 +1291,87 @@ mod tests {
     }
 
     #[test]
-    fn locked_times_out_when_lock_is_held() -> std::io::Result<()> {
-        // Risk (#548): the shim's project target lock wait must time out with a clear
-        // message instead of blocking forever.
-        let dir = tempfile::tempdir()?;
-        let lock_path = dir.path().join(".velocity-light-run.lock");
-        let _holder = super::try_lock_file(&lock_path)?
-            .ok_or_else(|| std::io::Error::other("expected fresh lock to succeed"))?;
-        let error = match super::locked_with_timeout(
-            &lock_path,
+    fn locked_times_out_when_all_pooled_targets_are_held() -> std::io::Result<()> {
+        // Risk (#548, #682): the shim's project target lock wait must allow up to
+        // LIGHT_SLOTS concurrent runs on the same project and time out with a clear
+        // message instead of blocking forever when every pooled target is busy.
+        let project = tempfile::tempdir()?;
+        let workspace_a = project.path().join("issue-a");
+        let workspace_b = project.path().join("issue-b");
+        std::fs::create_dir_all(workspace_a.join(".rosen"))?;
+        std::fs::create_dir_all(workspace_b.join(".rosen"))?;
+
+        let targets = super::light_targets(&workspace_a);
+        assert_eq!(targets.len(), super::LIGHT_SLOTS);
+        assert_eq!(
+            targets[0].file_name().and_then(|name| name.to_str()),
+            Some(".velocity-agent-target")
+        );
+        assert_eq!(
+            targets[1].file_name().and_then(|name| name.to_str()),
+            Some(".velocity-agent-target-1")
+        );
+
+        let identity_a = crate::light_target::workspace_identity(&workspace_a);
+        let identity_b = crate::light_target::workspace_identity(&workspace_b);
+        let (target_a, holder_a) = super::try_lock_light_target(&targets, &identity_a)?
+            .ok_or_else(|| std::io::Error::other("expected first pooled target"))?;
+        let (target_b, holder_b) = super::try_lock_light_target(&targets, &identity_b)?
+            .ok_or_else(|| std::io::Error::other("expected second pooled target concurrently"))?;
+        assert_ne!(target_a, target_b);
+        assert_eq!(super::busy_light_targets(&targets), super::LIGHT_SLOTS);
+
+        let error = match super::lock_light_target_with_timeout(
+            &targets,
+            &identity_a,
             std::time::Instant::now(),
             std::time::Duration::from_millis(60),
         ) {
-            Ok(_) => return Err(std::io::Error::other("expected timeout while lock is held")),
+            Ok(_) => {
+                return Err(std::io::Error::other(
+                    "expected timeout while all pooled targets are held",
+                ));
+            }
             Err(error) => error,
         };
+        drop((holder_a, holder_b));
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
         assert!(
             error.to_string().contains("shared Rust target lock"),
             "{error}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn target_pool_prefers_workspace_affinity_and_falls_back_when_busy() -> std::io::Result<()> {
+        // Risk (#682): back-to-back runs from the same workspace must prefer the pooled
+        // target already warmed for it (keeping local fingerprints intact) while falling
+        // back to another free target whenever the affine target is locked.
+        let project = tempfile::tempdir()?;
+        let workspace_a = project.path().join("issue-a");
+        let workspace_b = project.path().join("issue-b");
+        std::fs::create_dir_all(workspace_a.join(".rosen"))?;
+        std::fs::create_dir_all(workspace_b.join(".rosen"))?;
+
+        let targets = super::light_targets(&workspace_a);
+        let identity_a = crate::light_target::workspace_identity(&workspace_a);
+        let identity_b = crate::light_target::workspace_identity(&workspace_b);
+        std::fs::create_dir_all(&targets[0])?;
+        std::fs::create_dir_all(&targets[1])?;
+        std::fs::write(targets[0].join(".velocity-last-workspace"), &identity_a)?;
+        std::fs::write(targets[1].join(".velocity-last-workspace"), &identity_b)?;
+
+        let (chosen_b, lock_b) = super::try_lock_light_target(&targets, &identity_b)?
+            .ok_or_else(|| std::io::Error::other("expected affine target for workspace B"))?;
+        assert_eq!(chosen_b, targets[1]);
+
+        // While workspace B holds targets[1], another request with B's identity falls
+        // back to targets[0] instead of blocking.
+        let (fallback, _lock_fallback) = super::try_lock_light_target(&targets, &identity_b)?
+            .ok_or_else(|| std::io::Error::other("expected fallback target when affine is busy"))?;
+        assert_eq!(fallback, targets[0]);
+        drop(lock_b);
         Ok(())
     }
 

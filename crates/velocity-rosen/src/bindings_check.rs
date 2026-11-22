@@ -5,7 +5,7 @@
 //! of its own beside the project's workspaces: the folder keeps its build from one change
 //! to the next, so only what a change touched compiles.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use velocity_core::rosen_checker::{BINDINGS, BINDINGS_EXPORTER};
@@ -48,9 +48,9 @@ pub async fn stage(
     Ok(merge.conflicts.is_empty())
 }
 
-/// Brings `folder` to the staged merge result and checks its bindings, building into
-/// `target` (blocking).
-pub fn check_staged(folder: &Path, target: &Path) -> BindingsVerdict {
+/// Brings `folder` to the staged merge result and checks its bindings, building into the
+/// first free target directory in `targets` (blocking).
+pub fn check_staged(folder: &Path, targets: &[PathBuf]) -> BindingsVerdict {
     if let Err(error) = checker::apply_staged(folder) {
         return BindingsVerdict::Unchecked(error.to_string());
     }
@@ -59,7 +59,7 @@ pub fn check_staged(folder: &Path, target: &Path) -> BindingsVerdict {
     }
     let bindings = folder.join(BINDINGS);
     let committed = unix_text(&bindings);
-    let output = match agent_run::light_output(folder, target, "cargo", CHECK) {
+    let output = match agent_run::light_output(folder, targets, "cargo", CHECK) {
         Ok(output) => output,
         Err(error) => return BindingsVerdict::Unchecked(error.to_string()),
     };

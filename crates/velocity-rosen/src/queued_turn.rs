@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 use velocity_core::queued_runs::QueuedRunClass;
 
 use crate::agent_run::{
-    AgentRun, LIGHT_MEMORY, LIGHT_SLOTS, busy_light_slots, light_target, try_light_slot,
-    try_lock_file,
+    AgentRun, LIGHT_MEMORY, LIGHT_SLOTS, busy_light_slots, busy_light_targets, light_targets,
+    try_light_slot, try_lock_light_target,
 };
 
 pub const HELD_ENV: &str = rosen_client::run_queue::HELD_ENV;
@@ -379,18 +379,26 @@ fn estimate_utility(session_pending_ahead: usize) -> QueueEstimate {
     )
 }
 
+fn project_target_busy_reason(target_count: usize) -> String {
+    if target_count <= 1 {
+        "waiting for the project's shared Rust target lock".to_owned()
+    } else {
+        format!("waiting for a free project shared Rust target lock ({target_count} targets)")
+    }
+}
+
 fn estimate_light(
     queue: Option<&RunQueue>,
     worktree: &Path,
     session_pending_ahead: usize,
 ) -> QueueEstimate {
-    let target = light_target(worktree);
-    let project_lock = target.join(".velocity-light-run.lock");
-    let project_busy = project_lock.exists() && matches!(try_lock_file(&project_lock), Ok(None));
+    let targets = light_targets(worktree);
+    let busy_targets = busy_light_targets(&targets);
+    let project_busy = !targets.is_empty() && busy_targets >= targets.len();
     let busy_slots = busy_light_slots();
     let memory_blocked = queue.is_some_and(|queue| !queue.memory_headroom().fits(LIGHT_MEMORY));
     let reason = if project_busy {
-        Some("waiting for the project's shared Rust target lock".to_owned())
+        Some(project_target_busy_reason(targets.len()))
     } else if busy_slots >= LIGHT_SLOTS {
         Some(format!(
             "waiting for a free light Rust slot ({LIGHT_SLOTS} slots)"
@@ -607,18 +615,23 @@ fn acquire_light(
     cancelled: &impl Fn() -> bool,
     on_wait: &impl Fn(&str),
 ) -> Result<QueuedTurn, QueuedTurnError> {
-    let target = light_target(worktree);
-    std::fs::create_dir_all(&target)?;
+    let targets = light_targets(worktree);
+    if targets.is_empty() {
+        return Err(QueuedTurnError::Io(io::Error::other(
+            "no light Rust target directory configured",
+        )));
+    }
+    let identity = crate::light_target::workspace_identity(worktree);
     let started = Instant::now();
-    let project_lock = target.join(".velocity-light-run.lock");
-    let project = wait_step(
+    let target_reason = project_target_busy_reason(targets.len());
+    let (target, project) = wait_step(
         queue,
         started,
         timeout,
         cancelled,
         on_wait,
-        "waiting for the project's shared Rust target lock",
-        || try_lock_file(&project_lock),
+        &target_reason,
+        || try_lock_light_target(&targets, &identity),
     )?;
     let slot = wait_step(
         queue,
@@ -866,6 +879,46 @@ mod tests {
         first.clear();
         assert!(!first.is_active());
         assert!(first.estimate().is_none());
+        Ok(())
+    }
+
+    // Risk (#682): holding one pooled project target lock must not report a project target
+    // wait while another target in the project's pool is free; only when every pooled
+    // target is locked should estimate_light report a target-lock wait.
+    #[test]
+    fn estimate_light_reports_project_busy_only_when_all_pooled_targets_are_held()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let project = tempfile::tempdir()?;
+        let workspace = project.path().join("issue-682");
+        std::fs::create_dir_all(workspace.join(".rosen"))?;
+
+        let targets = light_targets(&workspace);
+        assert_eq!(targets.len(), LIGHT_SLOTS);
+        let identity = crate::light_target::workspace_identity(&workspace);
+
+        let (_first_target, first_lock) =
+            try_lock_light_target(&targets, &identity)?.ok_or("expected first pooled target")?;
+        let one_busy = estimate_light(None, &workspace, 0);
+        assert!(
+            !one_busy
+                .queue_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("shared Rust target lock")),
+            "one held pooled target must not block the project: {one_busy:?}"
+        );
+
+        let (_second_target, second_lock) =
+            try_lock_light_target(&targets, &identity)?.ok_or("expected second pooled target")?;
+        let all_busy = estimate_light(None, &workspace, 0);
+        drop((first_lock, second_lock));
+        assert!(
+            all_busy
+                .queue_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("shared Rust target lock")),
+            "holding every pooled target must report a target-lock wait: {all_busy:?}"
+        );
+        assert!(all_busy.estimated_wait_seconds > 0);
         Ok(())
     }
 }

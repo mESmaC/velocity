@@ -1,17 +1,19 @@
-//! Keeps the shared light-run Cargo target folder free of stale local crate fingerprints
-//! when different workspaces of a project take turns building into it (#527).
+//! Keeps pooled light-run Cargo target folders free of stale local crate fingerprints
+//! when different workspaces of a project take turns building into them (#527, #682).
 //!
 //! Cargo hashes workspace members by workspace-relative path and checks source mtimes
 //! against the fingerprint's timestamp, so a newer build from Workspace A causes
 //! Workspace B (whose edited or untouched sources have older mtimes) to silently link
 //! Workspace A's compiled crate. While holding `.velocity-light-run.lock`, we record
-//! which workspace last built into the target folder and drop `.fingerprint/<pkg>-*` and
+//! which workspace last built into that target folder and drop `.fingerprint/<pkg>-*` and
 //! `build/<pkg>-*` for local packages whenever the workspace changes, keeping registry
 //! and git dependency artifacts warm.
 
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::time::SystemTime;
 
 use serde::Deserialize;
 use toml_edit::{DocumentMut, Item, Value};
@@ -34,11 +36,16 @@ pub(crate) fn prepare(target: &Path, workspace_root: &Path, directory: &Path) ->
     let identity = workspace_identity(workspace_root);
     let marker = target.join(LAST_WORKSPACE_MARKER);
     if std::fs::read_to_string(&marker).ok().as_deref() == Some(identity.as_str()) {
+        touch_marker(&marker);
         return Ok(());
     }
     // Clear the marker before invalidating so an interrupted cleanup never leaves the
-    // target directory appearing fresh for any workspace on the next run.
-    remove_file_if_exists(&marker)?;
+    // target directory appearing fresh for any workspace on the next run. Overwriting in
+    // place (rather than unlinking) avoids Windows delete-pending sharing errors when
+    // another process reads the marker for pool affinity ranking (#682).
+    if marker.exists() {
+        std::fs::write(&marker, "")?;
+    }
     let packages = collect_local_packages(workspace_root, directory);
     if packages.is_empty() {
         return Ok(());
@@ -48,7 +55,75 @@ pub(crate) fn prepare(target: &Path, workspace_root: &Path, directory: &Path) ->
     std::fs::write(&marker, identity)
 }
 
-fn workspace_identity(workspace_root: &Path) -> String {
+/// Orders candidate target directories for `workspace_identity` (#682):
+/// 1. Directories whose `.velocity-last-workspace` already matches the caller (newest first)
+///    so back-to-back runs keep local crate fingerprints warm.
+/// 2. Unclaimed or empty-marker directories (in slot order) to avoid evicting another
+///    workspace's warm target.
+/// 3. Other workspaces' directories, least recently used first (by marker mtime).
+pub(crate) fn rank_targets(targets: &[PathBuf], workspace_identity: &str) -> Vec<PathBuf> {
+    if targets.len() <= 1 {
+        return targets.to_vec();
+    }
+    let mut ranked: Vec<(usize, TargetSlotKind)> = targets
+        .iter()
+        .enumerate()
+        .map(|(index, target)| (index, inspect_target(target, workspace_identity)))
+        .collect();
+    ranked.sort_by(compare_candidates);
+    ranked
+        .into_iter()
+        .map(|(index, _)| targets[index].clone())
+        .collect()
+}
+
+enum TargetSlotKind {
+    AffinityMatch(Option<SystemTime>),
+    Unclaimed,
+    OtherWorkspace(Option<SystemTime>),
+}
+
+fn inspect_target(target: &Path, workspace_identity: &str) -> TargetSlotKind {
+    let marker = target.join(LAST_WORKSPACE_MARKER);
+    let Ok(contents) = std::fs::read_to_string(&marker) else {
+        return TargetSlotKind::Unclaimed;
+    };
+    if contents.trim().is_empty() {
+        return TargetSlotKind::Unclaimed;
+    }
+    let modified = std::fs::metadata(&marker)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok());
+    if contents == workspace_identity {
+        TargetSlotKind::AffinityMatch(modified)
+    } else {
+        TargetSlotKind::OtherWorkspace(modified)
+    }
+}
+
+fn compare_candidates(left: &(usize, TargetSlotKind), right: &(usize, TargetSlotKind)) -> Ordering {
+    match (&left.1, &right.1) {
+        (TargetSlotKind::AffinityMatch(left_time), TargetSlotKind::AffinityMatch(right_time)) => {
+            right_time.cmp(left_time).then_with(|| left.0.cmp(&right.0))
+        }
+        (TargetSlotKind::AffinityMatch(_), _) => Ordering::Less,
+        (_, TargetSlotKind::AffinityMatch(_)) => Ordering::Greater,
+        (TargetSlotKind::Unclaimed, TargetSlotKind::Unclaimed) => left.0.cmp(&right.0),
+        (TargetSlotKind::Unclaimed, TargetSlotKind::OtherWorkspace(_)) => Ordering::Less,
+        (TargetSlotKind::OtherWorkspace(_), TargetSlotKind::Unclaimed) => Ordering::Greater,
+        (TargetSlotKind::OtherWorkspace(left_time), TargetSlotKind::OtherWorkspace(right_time)) => {
+            left_time.cmp(right_time).then_with(|| left.0.cmp(&right.0))
+        }
+    }
+}
+
+fn touch_marker(marker: &Path) {
+    if let Ok(file) = std::fs::OpenOptions::new().write(true).open(marker) {
+        let _ = file.set_modified(SystemTime::now());
+    }
+}
+
+pub(crate) fn workspace_identity(workspace_root: &Path) -> String {
     let canonical =
         std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
     match rosen_change_id(workspace_root) {
@@ -544,6 +619,75 @@ edition = "2024"
         let packages = collect_local_packages(&root, &root);
         assert!(packages.contains("tauri-demo"));
         assert!(packages.contains("helper-lib"));
+        Ok(())
+    }
+
+    // Risk (#682): pooling targets only avoids local-crate fingerprint thrashing when a
+    // caller prefers its own matching target, then an unclaimed target, then the least
+    // recently used other workspace's target.
+    #[test]
+    fn rank_targets_prefers_affinity_then_unclaimed_then_lru() -> Result<(), Box<dyn Error>> {
+        use std::time::{Duration, SystemTime};
+
+        let scratch = tempdir()?;
+        let workspace_a = scratch.path().join("issue-a");
+        let workspace_b = scratch.path().join("issue-b");
+        let workspace_c = scratch.path().join("issue-c");
+        seed_workspace(&workspace_a, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")?;
+        seed_workspace(&workspace_b, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")?;
+        seed_workspace(&workspace_c, "cccccccccccccccccccccccccccccccc")?;
+
+        let target_0 = scratch.path().join(".velocity-agent-target");
+        let target_1 = scratch.path().join(".velocity-agent-target-1");
+        let targets = vec![target_0.clone(), target_1.clone()];
+
+        let id_a = super::workspace_identity(&workspace_a);
+        let id_b = super::workspace_identity(&workspace_b);
+        let id_c = super::workspace_identity(&workspace_c);
+
+        // Fresh project: slot 0 first.
+        assert_eq!(
+            super::rank_targets(&targets, &id_a),
+            vec![target_0.clone(), target_1.clone()]
+        );
+
+        // After A uses slot 0, B prefers unclaimed slot 1 rather than clobbering A.
+        prepare(&target_0, &workspace_a, &workspace_a)?;
+        assert_eq!(
+            super::rank_targets(&targets, &id_a),
+            vec![target_0.clone(), target_1.clone()]
+        );
+        assert_eq!(
+            super::rank_targets(&targets, &id_b),
+            vec![target_1.clone(), target_0.clone()]
+        );
+
+        // After B uses slot 1, each workspace prefers its own warm slot.
+        prepare(&target_1, &workspace_b, &workspace_b)?;
+        assert_eq!(
+            super::rank_targets(&targets, &id_a),
+            vec![target_0.clone(), target_1.clone()]
+        );
+        assert_eq!(
+            super::rank_targets(&targets, &id_b),
+            vec![target_1.clone(), target_0.clone()]
+        );
+
+        // With explicit marker mtimes (slot 0 newer than slot 1), workspace C evicts LRU slot 1.
+        let now = SystemTime::now();
+        let older = now.checked_sub(Duration::from_secs(120)).unwrap_or(now);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(target_0.join(LAST_WORKSPACE_MARKER))?
+            .set_modified(now)?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(target_1.join(LAST_WORKSPACE_MARKER))?
+            .set_modified(older)?;
+        assert_eq!(
+            super::rank_targets(&targets, &id_c),
+            vec![target_1, target_0]
+        );
         Ok(())
     }
 }
