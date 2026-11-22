@@ -35,3 +35,16 @@ trace	switch	699	limit	false	100	false	false
 trace	switch	700	failed	false	100	true	true
 trace	setup	100	failed	false	100	false	false
 trace	setup	700	failed	false	100	true	true
+idle_nudge	before_deadline	2199	1000	1200	live	true	false	false	-	false
+idle_nudge	empty_history	2200	1000	1200	live	true	false	false	-	true
+idle_nudge	delivered_result	2200	1000	1200	live	true	false	false	delivered	true
+idle_nudge	undelivered_result	2200	1000	1200	live	true	false	false	undelivered	false
+idle_nudge	mixed_history	2200	1000	1200	live	true	false	false	delivered,undelivered	false
+idle_nudge	all_delivered	2200	1000	1200	live	true	false	false	delivered,delivered	true
+idle_nudge	dispatch_delivered	1300	1000	300	live	true	false	false	delivered	true
+idle_nudge	dispatch_undelivered	1300	1000	300	live	true	false	false	undelivered	false
+idle_nudge	already_nudged	2200	1000	1200	live	true	true	false	delivered	false
+idle_nudge	other_exempt	2200	1000	1200	live	true	false	true	delivered	false
+idle_nudge	not_idle	2200	1000	1200	live	false	false	false	delivered	false
+idle_nudge	parked	2200	1000	1200	parked	true	false	false	delivered	false
+idle_nudge	build_queue	2200	1000	1200	queue	true	false	false	delivered	false

@@ -582,8 +582,9 @@ mod trace_fixtures {
     use velocity_core::agent_activity::{StallAction, stall_action};
     use velocity_store::{AgentActivity, ProjectItem, Settings, ThreadItem, ThreadState};
 
-    // Recovery must reset grace, PRs must protect claims, and a completed release
-    // must not repeat. Exercise the actual supervisor, not just deadline guards.
+    // Recovery must reset grace, PRs must protect claims, a completed release must not
+    // repeat, and an undelivered queued-run result must exempt an idle-working thread from
+    // an idle nudge (#536, #666). Exercise the actual supervisor, not just deadline guards.
     #[test]
     fn lean_supervision_trace() -> Result<(), Box<dyn std::error::Error>> {
         let settings = Settings::default().agents;
@@ -591,56 +592,146 @@ mod trace_fixtures {
         let mut trace = "";
         for line in include_str!("../../../proofs/fixtures/agent-activity.tsv").lines() {
             let fields: Vec<_> = line.split('\t').collect();
-            if fields[0] == "stall" {
-                check_stall(&fields)?;
-                continue;
+            match fields[0] {
+                "stall" => check_stall(&fields)?,
+                "idle_nudge" => check_idle_nudge(&fields, &settings)?,
+                "trace" => {
+                    if trace != fields[1] {
+                        trace = fields[1];
+                        thread = ThreadItem::new(1, "Fixture".into());
+                    }
+                    check_trace_step(&mut thread, trace, line, &fields, &settings)?;
+                }
+                _ => return Err(format!("Unknown fixture row: {line}").into()),
             }
-            if trace != fields[1] {
-                trace = fields[1];
-                thread = ThreadItem::new(1, "Fixture".into());
-            }
-            let now = fields[2].parse()?;
-            apply_status(&mut thread, fields[3]);
-            thread.pull_request_number = fields[4].parse::<bool>()?.then_some(1);
-            checkpoint_unavailable(&mut thread, now);
-            let expected_since = match fields[5] {
-                "none" => None,
-                value => Some(value.parse()?),
-            };
+        }
+        Ok(())
+    }
+
+    fn check_trace_step(
+        thread: &mut ThreadItem,
+        trace: &str,
+        line: &str,
+        fields: &[&str],
+        settings: &velocity_store::AgentSettings,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let now = fields[2].parse()?;
+        apply_status(thread, fields[3]);
+        thread.pull_request_number = fields[4].parse::<bool>()?.then_some(1);
+        checkpoint_unavailable(thread, now);
+        let expected_since = match fields[5] {
+            "none" => None,
+            value => Some(value.parse()?),
+        };
+        assert_eq!(
+            thread.supervision.unavailable_since, expected_since,
+            "{line}"
+        );
+        // The "setup" trace failed before a worktree or session existed (#212):
+        // decide through the supervisor's own lookup, as the native timer does.
+        let setup_failed = trace == "setup";
+        thread.worktree_path = (!setup_failed).then(|| r"C:\velocity-wt\fixture".into());
+        let mut project = ProjectItem::new(1, "Fixture".into(), r"C:\fixture".into());
+        project.spec_locked = true;
+        project.threads.push(thread.clone());
+        let supervised = supervised_thread(&project, thread.id)?;
+        let action = decide(
+            &supervised,
+            settings,
+            now,
+            !setup_failed,
+            fields[3] == "queue",
+        );
+        assert_eq!(
+            action == Action::Release,
+            fields[6].parse::<bool>()?,
+            "{line}"
+        );
+        if action == Action::Release {
+            thread.supervision.released = true;
+        }
+        assert_eq!(
+            thread.supervision.released,
+            fields[7].parse::<bool>()?,
+            "{line}"
+        );
+        Ok(())
+    }
+
+    fn check_idle_nudge(
+        fields: &[&str],
+        settings: &velocity_store::AgentSettings,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use super::{decide_with_turn, idle_working_timeout_minutes};
+
+        let (now, since, timeout): (u64, u64, u64) =
+            (fields[2].parse()?, fields[3].parse()?, fields[4].parse()?);
+        let status = fields[5];
+        let (idle_working, nudged, other_exempt, expected_due): (bool, bool, bool, bool) = (
+            fields[6].parse()?,
+            fields[7].parse()?,
+            fields[8].parse()?,
+            fields[10].parse()?,
+        );
+        let mut thread = ThreadItem::new(1, "Fixture".into());
+        apply_status(&mut thread, status);
+        if matches!(status, "live" | "queue") && idle_working {
+            thread.activity = AgentActivity::Idle;
+        }
+        thread.worktree_path = Some(r"Z:\velocity-work\velocity\fixture".into());
+        thread.started_by_dispatch = timeout == u64::from(settings.stall_timeout_minutes) * 60;
+        assert_eq!(
+            idle_working_timeout_minutes(&thread, settings) * 60,
+            timeout
+        );
+        thread.supervision.started = since;
+        thread.supervision.last_update = since;
+        thread.supervision.idle_nudged = nudged;
+        if other_exempt {
+            thread.dependency_wait = Some("waiting".into());
+        }
+        thread.queued_run_history = parse_run_history(fields[9])?;
+        let queued_build = status == "queue";
+        for live in [true, false] {
+            let action = decide_with_turn(&thread, settings, now, live, queued_build, false);
             assert_eq!(
-                thread.supervision.unavailable_since, expected_since,
-                "{line}"
-            );
-            // The "setup" trace failed before a worktree or session existed (#212):
-            // decide through the supervisor's own lookup, as the native timer does.
-            let setup_failed = trace == "setup";
-            thread.worktree_path = (!setup_failed).then(|| r"C:elocity-wtixture".into());
-            let mut project = ProjectItem::new(1, "Fixture".into(), r"C:ixture".into());
-            project.spec_locked = true;
-            project.threads.push(thread.clone());
-            let supervised = supervised_thread(&project, thread.id)?;
-            let action = decide(
-                &supervised,
-                &settings,
-                now,
-                !setup_failed,
-                fields[3] == "queue",
-            );
-            assert_eq!(
-                action == Action::Release,
-                fields[6].parse::<bool>()?,
-                "{line}"
-            );
-            if action == Action::Release {
-                thread.supervision.released = true;
-            }
-            assert_eq!(
-                thread.supervision.released,
-                fields[7].parse::<bool>()?,
-                "{line}"
+                action == Action::IdleNudge,
+                expected_due,
+                "live={live} {}",
+                fields.join("\t")
             );
         }
         Ok(())
+    }
+
+    fn parse_run_history(
+        encoded: &str,
+    ) -> Result<Vec<velocity_core::queued_runs::QueuedRunRecord>, Box<dyn std::error::Error>> {
+        use velocity_core::queued_runs::{QueuedRunClass, QueuedRunPhase, QueuedRunRecord};
+
+        if encoded == "-" {
+            return Ok(Vec::new());
+        }
+        encoded
+            .split(',')
+            .enumerate()
+            .map(|(index, entry)| {
+                let mut record = QueuedRunRecord::new(
+                    format!("velocity-run-{index}"),
+                    "cargo".into(),
+                    vec!["check".into()],
+                    None,
+                    QueuedRunClass::Build,
+                );
+                record.phase = QueuedRunPhase::Completed;
+                record.delivered = match entry {
+                    "delivered" => true,
+                    "undelivered" => false,
+                    _ => return Err("Invalid queued_run_history fixture".into()),
+                };
+                Ok(record)
+            })
+            .collect()
     }
 
     fn apply_status(thread: &mut ThreadItem, status: &str) {

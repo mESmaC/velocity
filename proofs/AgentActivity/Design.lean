@@ -14,11 +14,39 @@ inductive Status where
   | live | failed | atLimit | parked | buildQueue | closed
   deriving DecidableEq, Repr
 
+structure QueuedRun where
+  delivered : Bool := false
+  deriving DecidableEq, Repr
+
 structure Observation where
   time : Nat
   status : Status
   pullRequest : Bool := false
+  queued_run_history : List QueuedRun := []
   deriving Repr
+
+-- SPEC.md §2.2 (#516, #536, #544): an idle-working thread is exempt from an idle
+-- nudge whenever any finished queued-run result in its history is still undelivered.
+def hasUndeliveredRun (runs : List QueuedRun) : Bool := runs.any (fun run => !run.delivered)
+def idleExempt (observation : Observation) (otherExempt : Bool) : Bool :=
+  observation.status != .live || otherExempt || hasUndeliveredRun observation.queued_run_history
+def idleNudgeDue (observation : Observation) (since timeout : Nat)
+    (idleWorking nudged otherExempt : Bool) : Bool :=
+  idleWorking && !nudged && !idleExempt observation otherExempt &&
+    decide (0 < since) && decide (timeout ≤ observation.time - since)
+def IdleNudgeEligible (observation : Observation) (since timeout : Nat)
+    (idleWorking nudged otherExempt : Bool) : Prop :=
+  idleWorking = true ∧ nudged = false ∧ observation.status = .live ∧
+  otherExempt = false ∧ (∀ run ∈ observation.queued_run_history, run.delivered = true) ∧
+  0 < since ∧ timeout ≤ observation.time - since
+-- Unit cost per idle-nudge prompt dispatched on an observation.
+def idleNudgeCost (observation : Observation) (since timeout : Nat)
+    (idleWorking nudged otherExempt : Bool) : Nat :=
+  if idleNudgeDue observation since timeout idleWorking nudged otherExempt then 1 else 0
+-- Idle-nudge alternatives: policies dispatching at least one nudge when §2.2 eligible.
+def CoversIdleNudge (observation : Observation) (since timeout : Nat)
+    (idleWorking nudged otherExempt : Bool) (nudges : Nat) : Prop :=
+  IdleNudgeEligible observation since timeout idleWorking nudged otherExempt → 1 ≤ nudges
 
 def unavailable (observation : Observation) : Bool :=
   observation.status == .failed || observation.status == .atLimit
@@ -98,10 +126,28 @@ lemma suffix_start (history : List Observation) : intervalStart history = suffix
       simp [intervalStart, suffixStart, available,
         List.getLast?_cons, induction]
 
+lemma hasUndeliveredRun_false (runs : List QueuedRun) :
+    hasUndeliveredRun runs = false ↔ ∀ run ∈ runs, run.delivered = true := by
+  induction runs with
+  | nil => simp [hasUndeliveredRun]
+  | cons head rest ih =>
+    simp only [hasUndeliveredRun] at ih ⊢
+    cases h : head.delivered <;> simp [h, ih]
+
+lemma idleNudgeDue_iff (observation : Observation) (since timeout : Nat)
+    (idleWorking nudged otherExempt : Bool) :
+    idleNudgeDue observation since timeout idleWorking nudged otherExempt = true ↔
+      IdleNudgeEligible observation since timeout idleWorking nudged otherExempt := by
+  cases idleWorking <;> cases nudged <;> cases otherExempt <;>
+    cases status : observation.status <;>
+    simp [idleNudgeDue, idleExempt, IdleNudgeEligible, status, hasUndeliveredRun_false, and_assoc]
+
 -- Safety and liveness over every finite trace, including recovery and PR changes:
 -- the current tick releases iff it is due and no earlier tick released. A live
 -- current observation can never be due; a dead unprotected interval releases
 -- on its first observed deadline. No assumption excludes failed/limited traces.
+-- Idle-working supervision nudges iff §2.2 eligibility holds, including the
+-- undelivered queued-run result exemption (#536, #666).
 theorem correct (history : List Observation) (observation : Observation) (grace : Nat) :
     (run (observation :: history) grace).since = suffixStart (observation :: history) ∧
     (run (observation :: history) grace).released = everDue (observation :: history) grace ∧
@@ -110,27 +156,44 @@ theorem correct (history : List Observation) (observation : Observation) (grace 
     (due (observation :: history) grace = true ↔
       unavailable observation = true ∧ claimProtected observation = false ∧
       ∃ start, suffixStart (observation :: history) = some start ∧
-        grace ≤ observation.time - start) := by
+        grace ≤ observation.time - start) ∧
+    (∀ since timeout idleWorking nudged otherExempt,
+      idleNudgeDue observation since timeout idleWorking nudged otherExempt = true ↔
+        IdleNudgeEligible observation since timeout idleWorking nudged otherExempt) := by
   rw [← suffix_start]
   have prior := trace_invariant history grace
   have current := trace_invariant (observation :: history) grace
-  refine ⟨current.1, current.2.1, ?_, ?_⟩
+  refine ⟨current.1, current.2.1, ?_, ?_, ?_⟩
   · simp only [run, tick, prior.1, prior.2.1, checkpoint]
     change (_ + (if due (observation :: history) grace && !everDue history grace then 1 else 0) = _ + 1) ↔ _
     cases due (observation :: history) grace <;> cases everDue history grace <;> simp
   · cases start : intervalStart (observation :: history) <;> simp [due, releaseDue, start, and_assoc]
+  · intro since timeout idleWorking nudged otherExempt
+    exact idleNudgeDue_iff observation since timeout idleWorking nudged otherExempt
 
 -- Unit cost per release command across a whole ownership epoch, not per tick.
 -- Arbitrarily many observations cannot dispatch duplicate release commands.
+-- Idle-nudge cost is 0 whenever exempt (including undelivered queued-run results)
+-- or already nudged, and at most 1 otherwise.
 theorem cost_bound (history : List Observation) (grace : Nat) :
-    (run history grace).commands ≤ 1 := by
-  rw [(trace_invariant history grace).2.2]
-  split <;> omega
+    (run history grace).commands ≤ 1 ∧
+    (∀ observation since timeout idleWorking nudged otherExempt,
+      idleNudgeCost observation since timeout idleWorking nudged otherExempt ≤
+        if idleExempt observation otherExempt || nudged then 0 else 1) := by
+  constructor
+  · rw [(trace_invariant history grace).2.2]
+    split <;> omega
+  · intro observation since timeout idleWorking nudged otherExempt
+    unfold idleNudgeCost idleNudgeDue
+    cases idleExempt observation otherExempt <;> cases nudged <;> simp
+    split <;> omega
 
 -- Alternatives are time-indexed release schedules that retain claims during
 -- the required grace interval of a continuously failed, unprotected agent.
 -- Cost is response latency from failure, in seconds. Any such schedule's first
 -- (or any) release has latency at least ours; eventual schedules are included.
+-- For idle-working supervision, any alternative satisfying `CoversIdleNudge`
+-- spends at least `idleNudgeCost` prompts.
 theorem optimal (history : List Observation) (observation : Observation) (start grace : Nat)
     (interval : intervalStart (observation :: history) = some start)
     (unavailableNow : unavailable observation = true)
@@ -141,8 +204,11 @@ theorem optimal (history : List Observation) (observation : Observation) (start 
     (safe : ∀ elapsed, elapsed < grace → alternative elapsed = false)
     (elapsed : Nat) (releases : alternative elapsed = true) :
     (run (observation :: history) grace).commands = (run history grace).commands + 1 ∧
-    observation.time - start ≤ elapsed := by
-  constructor
+    observation.time - start ≤ elapsed ∧
+    (∀ idleObs since timeout idleWorking nudged otherExempt (altNudges : Nat),
+      CoversIdleNudge idleObs since timeout idleWorking nudged otherExempt altNudges →
+      idleNudgeCost idleObs since timeout idleWorking nudged otherExempt ≤ altNudges) := by
+  refine ⟨?_, ?_, ?_⟩
   · apply (correct history observation grace).2.2.1.mpr
     exact ⟨by simp [due, releaseDue, interval, unavailableNow, unprotectedNow, deadline], held⟩
   · have lower : grace ≤ elapsed := by
@@ -150,6 +216,12 @@ theorem optimal (history : List Observation) (observation : Observation) (start 
       have := safe elapsed (Nat.lt_of_not_ge early)
       simp_all
     omega
+  · intro idleObs since timeout idleWorking nudged otherExempt altNudges covers
+    unfold idleNudgeCost
+    split
+    · rename_i dueNow
+      exact covers ((idleNudgeDue_iff idleObs since timeout idleWorking nudged otherExempt).mp dueNow)
+    · exact Nat.zero_le altNudges
 
 #print axioms correct
 #print axioms cost_bound
@@ -194,6 +266,30 @@ def traces : List (String × List Observation) := [
   -- with no worktree and no live session.
   ("setup", [{time := 100, status := .failed}, {time := 700, status := .failed}])]
 
+def runHistoryName (runs : List QueuedRun) : String :=
+  if runs.isEmpty then "-"
+  else String.intercalate "," (runs.map fun run => if run.delivered then "delivered" else "undelivered")
+def idleNudgeRow (name : String) (observation : Observation) (since timeout : Nat)
+    (idleWorking nudged otherExempt : Bool) : String :=
+  let dueNow := idleNudgeDue observation since timeout idleWorking nudged otherExempt
+  s!"idle_nudge\t{name}\t{observation.time}\t{since}\t{timeout}\t{statusName observation.status}\t{idleWorking}\t{nudged}\t{otherExempt}\t{runHistoryName observation.queued_run_history}\t{dueNow}\n"
+def idleNudgeCases : List (String × Observation × Nat × Nat × Bool × Bool × Bool) := [
+  ("before_deadline", {time := 2199, status := .live}, 1000, 1200, true, false, false),
+  ("empty_history", {time := 2200, status := .live}, 1000, 1200, true, false, false),
+  ("delivered_result", {time := 2200, status := .live, queued_run_history := [{delivered := true}]}, 1000, 1200, true, false, false),
+  ("undelivered_result", {time := 2200, status := .live, queued_run_history := [{delivered := false}]}, 1000, 1200, true, false, false),
+  ("mixed_history", {time := 2200, status := .live, queued_run_history := [{delivered := true}, {delivered := false}]}, 1000, 1200, true, false, false),
+  ("all_delivered", {time := 2200, status := .live, queued_run_history := [{delivered := true}, {delivered := true}]}, 1000, 1200, true, false, false),
+  ("dispatch_delivered", {time := 1300, status := .live, queued_run_history := [{delivered := true}]}, 1000, 300, true, false, false),
+  ("dispatch_undelivered", {time := 1300, status := .live, queued_run_history := [{delivered := false}]}, 1000, 300, true, false, false),
+  ("already_nudged", {time := 2200, status := .live, queued_run_history := [{delivered := true}]}, 1000, 1200, true, true, false),
+  ("other_exempt", {time := 2200, status := .live, queued_run_history := [{delivered := true}]}, 1000, 1200, true, false, true),
+  ("not_idle", {time := 2200, status := .live, queued_run_history := [{delivered := true}]}, 1000, 1200, false, false, false),
+  ("parked", {time := 2200, status := .parked, queued_run_history := [{delivered := true}]}, 1000, 1200, true, false, false),
+  ("build_queue", {time := 2200, status := .buildQueue, queued_run_history := [{delivered := true}]}, 1000, 1200, true, false, false)]
+def idleNudgeRows : String := String.join <| idleNudgeCases.map
+  fun (name, obs, since, timeout, idleWorking, nudged, otherExempt) =>
+    idleNudgeRow name obs since timeout idleWorking nudged otherExempt
 #eval IO.FS.writeFile "fixtures/agent-activity.tsv"
-  (stallRows ++ String.join (traces.map fun (name, observations) => traceRows name observations))
+  (stallRows ++ String.join (traces.map fun (name, observations) => traceRows name observations) ++ idleNudgeRows)
 end AgentActivity
