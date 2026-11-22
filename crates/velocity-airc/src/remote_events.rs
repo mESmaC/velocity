@@ -110,14 +110,47 @@ impl RemoteEventCache {
         }
     }
 
+    fn nick_change(&self, nick: &str) -> Option<&String> {
+        (!matches!(nick, "" | "velocity" | "you"))
+            .then(|| self.nick_changes.get(nick))
+            .flatten()
+    }
+
+    fn claim_change(&self, claim: &crate::Claim) -> Option<&String> {
+        self.checkouts
+            .get(&claim.member)
+            .or_else(|| self.nick_change(&claim.nick))
+    }
+
     /// Attaches the active Rosen change ID to change-related AIRC entries that did not
     /// carry one directly from Rosen (#532).
     fn attach_change(&self, record: &mut Entry) {
+        if record.kind == "refused" {
+            let holder = record
+                .claim
+                .as_ref()
+                .and_then(|claim| claim.change.as_ref().or_else(|| self.claim_change(claim)))
+                .cloned();
+            if record.change.is_none() {
+                // Retain the requester's change when available; fall back to the held
+                // claim's change when the requester has no registered checkout (#679).
+                record.change = self
+                    .nick_change(&record.nick)
+                    .cloned()
+                    .or_else(|| holder.clone());
+            }
+            if let Some(claim) = &mut record.claim
+                && claim.change.is_none()
+            {
+                claim.change = holder;
+            }
+            return;
+        }
         if record.change.is_none() && is_change_related(&record.kind) {
             let resolved = record
                 .claim
                 .as_ref()
-                .and_then(|claim| self.checkouts.get(&claim.member))
+                .and_then(|claim| self.claim_change(claim))
                 .or_else(|| {
                     record
                         .dependency
@@ -129,11 +162,7 @@ impl RemoteEventCache {
                         .then(|| self.checkouts.get(&record.member))
                         .flatten()
                 })
-                .or_else(|| {
-                    (!matches!(record.nick.as_str(), "" | "velocity" | "you"))
-                        .then(|| self.nick_changes.get(&record.nick))
-                        .flatten()
-                });
+                .or_else(|| self.nick_change(&record.nick));
             record.change = resolved.cloned();
         }
         if let Some(claim) = &mut record.claim
@@ -293,6 +322,7 @@ pub(crate) fn channel_entry(event: ChannelEvent) -> Result<Vec<Entry>, Error> {
                 ),
             );
             record.time.clear();
+            record.claim = Some(claim(&holder, Vec::new(), None));
             vec![record]
         }
         ChannelEvent::Released { pieces } => pieces
@@ -568,7 +598,7 @@ impl Remote {
     /// Returns a cached routed and localized snapshot of the channel for the current tip (#555).
     pub(crate) fn snapshot(&self) -> Result<Arc<Vec<Entry>>, Error> {
         let state = self.sync_cache()?;
-        let (mut records, change_members, snapshot_tip) = {
+        let (mut records, routing_state, snapshot_tip) = {
             let cache = state
                 .cache
                 .lock()
@@ -585,12 +615,13 @@ impl Remote {
                 record.change_id().is_some()
                     || (record.change.is_none() && is_change_related(&record.kind))
             });
-            let members = needs_routing.then(|| cache.change_members.clone());
-            (slice, members, cache.tip)
+            let routing_state =
+                needs_routing.then(|| (cache.change_members.clone(), cache.checkouts.clone()));
+            (slice, routing_state, cache.tip)
         };
-        if let Some(change_members) = change_members {
+        if let Some((change_members, checkouts)) = routing_state {
             records = self.run(move |client| async move {
-                route_project_entries(&client, &change_members, &mut records).await?;
+                route_project_entries(&client, &change_members, &checkouts, &mut records).await?;
                 Ok(records)
             })?;
         }
@@ -1248,66 +1279,159 @@ fn target_project_event(event: &Event, nick: &str, records: &mut [Entry]) {
     }
 }
 
+struct ProjectRouting {
+    nicks: BTreeMap<String, String>,
+    owners: BTreeMap<String, String>,
+    owner_changes: BTreeMap<String, String>,
+    member_changes: BTreeMap<String, String>,
+}
+
+impl ProjectRouting {
+    fn build(
+        members: &[Member],
+        changes: &[(String, String)],
+        change_members: &BTreeMap<String, String>,
+        checkouts: &BTreeMap<String, String>,
+    ) -> Self {
+        let mut nicks = BTreeMap::new();
+        for (change, member_id) in change_members {
+            if let Some(member) = members.iter().find(|member| &member.member == member_id) {
+                nicks.insert(change.clone(), member.nick.clone());
+            }
+        }
+        let mut owner_changes = BTreeMap::new();
+        for (id, owner) in changes {
+            nicks.entry(id.clone()).or_insert_with(|| owner.clone());
+            owner_changes.insert(owner.clone(), id.clone());
+            if let Some(nick) = nicks.get(id) {
+                owner_changes.insert(nick.clone(), id.clone());
+            }
+        }
+        let mut member_changes = checkouts.clone();
+        for member in members {
+            if let Some(change) = checkouts.get(&member.member) {
+                owner_changes
+                    .entry(member.nick.clone())
+                    .or_insert_with(|| change.clone());
+            }
+            if let Some(change) = owner_changes.get(&member.nick) {
+                member_changes
+                    .entry(member.member.clone())
+                    .or_insert_with(|| change.clone());
+            }
+        }
+        let owners = changes
+            .iter()
+            .filter_map(|(id, owner)| nicks.get(id).map(|nick| (owner.clone(), nick.clone())))
+            .collect();
+        Self {
+            nicks,
+            owners,
+            owner_changes,
+            member_changes,
+        }
+    }
+
+    fn owner_change(&self, nick: &str) -> Option<&String> {
+        (!matches!(nick, "" | "velocity" | "you"))
+            .then(|| self.owner_changes.get(nick))
+            .flatten()
+    }
+
+    fn claim_change(&self, claim: &crate::Claim) -> Option<String> {
+        claim
+            .change
+            .as_ref()
+            .or_else(|| self.member_changes.get(&claim.member))
+            .or_else(|| self.owner_change(&claim.nick))
+            .cloned()
+    }
+
+    fn apply(&self, records: &mut [Entry]) {
+        for record in records {
+            self.resolve_record_change(record);
+            let Some(nick) = record.change_id().and_then(|change| self.nicks.get(change)) else {
+                continue;
+            };
+            if record.payload.is_some() || record.kind == "checkout" {
+                record.nick = nick.clone();
+            }
+            match record.kind.as_str() {
+                "conflict" | "rebased" => record.to.push(nick.clone()),
+                "claim" if record.claim.is_none() => route_overlap(record, nick, &self.owners),
+                _ => {}
+            }
+        }
+    }
+
+    fn resolve_record_change(&self, record: &mut Entry) {
+        if record.kind == "refused" {
+            let requester = self.owner_change(&record.nick).cloned();
+            let holder = record
+                .claim
+                .as_ref()
+                .and_then(|claim| self.claim_change(claim));
+            let used_holder_fallback = record.change.is_some()
+                && record.change.as_deref()
+                    == record
+                        .claim
+                        .as_ref()
+                        .and_then(|claim| claim.change.as_deref());
+            if record.change.is_none() {
+                record.change = requester.or_else(|| holder.clone());
+            } else if used_holder_fallback && requester.is_some() {
+                // Prefer requester attribution when Rosen reports an active change
+                // for the requester after the cache fell back to the holder (#679).
+                record.change = requester;
+            }
+            if let Some(claim) = &mut record.claim
+                && claim.change.is_none()
+            {
+                claim.change = holder;
+            }
+            return;
+        }
+        if record.change.is_none() && is_change_related(&record.kind) {
+            let resolved = self.owner_change(&record.nick).cloned().or_else(|| {
+                record
+                    .claim
+                    .as_ref()
+                    .and_then(|claim| self.claim_change(claim))
+            });
+            if let Some(change) = resolved {
+                record.change = Some(change.clone());
+                if let Some(claim) = &mut record.claim
+                    && claim.change.is_none()
+                {
+                    claim.change = Some(change);
+                }
+            }
+        }
+    }
+}
+
 // Rosen's change owner is the full workspace name; the channel nick can be
 // shortened or suffixed. Join them by the server's registered change/member IDs.
 async fn route_project_entries(
     client: &Client,
     change_members: &BTreeMap<String, String>,
+    checkouts: &BTreeMap<String, String>,
     records: &mut [Entry],
 ) -> Result<(), Error> {
     let (members, changes) = tokio::try_join!(
         client.channel_presence(),
         client.change_list(crate::remote::wire(serde_json::json!({}))?),
     )?;
-    let mut nicks = BTreeMap::new();
-    for (change, member_id) in change_members {
-        if let Some(member) = members.iter().find(|member| &member.member == member_id) {
-            nicks.insert(change.clone(), member.nick.clone());
-        }
-    }
-    let mut owner_changes = BTreeMap::new();
-    for change in &changes {
-        let id = change.change.id.to_string();
-        let owner = change.change.owner.to_string();
-        nicks.entry(id.clone()).or_insert_with(|| owner.clone());
-        owner_changes.insert(owner, id.clone());
-        if let Some(nick) = nicks.get(&id) {
-            owner_changes.insert(nick.clone(), id);
-        }
-    }
-    let owners: BTreeMap<_, _> = changes
+    let change_owners: Vec<(String, String)> = changes
         .iter()
-        .filter_map(|change| {
-            nicks
-                .get(&change.change.id.to_string())
-                .map(|nick| (change.change.owner.to_string(), nick.clone()))
+        .map(|change| {
+            (
+                change.change.id.to_string(),
+                change.change.owner.to_string(),
+            )
         })
         .collect();
-    for record in records {
-        if record.change.is_none()
-            && is_change_related(&record.kind)
-            && !matches!(record.nick.as_str(), "" | "velocity" | "you")
-            && let Some(change) = owner_changes.get(&record.nick)
-        {
-            record.change = Some(change.clone());
-            if let Some(claim) = &mut record.claim
-                && claim.change.is_none()
-            {
-                claim.change = Some(change.clone());
-            }
-        }
-        let Some(nick) = record.change_id().and_then(|change| nicks.get(change)) else {
-            continue;
-        };
-        if record.payload.is_some() || record.kind == "checkout" {
-            record.nick = nick.clone();
-        }
-        match record.kind.as_str() {
-            "conflict" | "rebased" => record.to.push(nick.clone()),
-            "claim" if record.claim.is_none() => route_overlap(record, nick, &owners),
-            _ => {}
-        }
-    }
+    ProjectRouting::build(&members, &change_owners, change_members, checkouts).apply(records);
     Ok(())
 }
 
@@ -1509,6 +1633,185 @@ mod tests {
             Some("zznnsxswabcdefghijklmnopqrstuvwx")
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    fn test_member(member: &str, nick: &str) -> rosen_client::protocol::channel::Member {
+        rosen_client::protocol::channel::Member {
+            member: member.into(),
+            nick: nick.into(),
+            machine: "velocity".into(),
+            mode: rosen_client::protocol::channel::MessageMode::Open,
+            joined_at: 1_700_000_000_000,
+            left_at: None,
+        }
+    }
+
+    fn test_checkout(sequence: u64, member: &str, nick: &str, change: &str) -> crate::Entry {
+        let mut entry = crate::channel::entry(&[], "checkout", member, nick, "thread workspace");
+        entry.sequence = sequence;
+        entry.change = Some(change.into());
+        entry.checkout = Some(crate::waits::Checkout::rosen(
+            "repo".into(),
+            "ws".into(),
+            Some(change.into()),
+            "master".into(),
+        ));
+        entry
+    }
+
+    fn test_refused_entry(
+        sequence: u64,
+        requester_nick: &str,
+        holder_member: &str,
+        holder_nick: &str,
+    ) -> Result<crate::Entry, Box<dyn std::error::Error>> {
+        let mut entries =
+            super::channel_entry(rosen_client::protocol::channel::ChannelEvent::Refused {
+                nick: requester_nick.into(),
+                holder: rosen_client::protocol::channel::PieceClaim {
+                    piece: "issue:679".into(),
+                    member: holder_member.into(),
+                    nick: holder_nick.into(),
+                    task: "Fix remote refused change fallback".into(),
+                    branch: String::new(),
+                    since: 1_700_000_000_000,
+                },
+            })?;
+        let mut record = entries.pop().ok_or("expected refused entry")?;
+        record.sequence = sequence;
+        Ok(record)
+    }
+
+    // Risk (#679): a remote `ChannelEvent::Refused` from a requester without a Rosen
+    // checkout (such as a joined coordinator) must fall back to the holder's registered
+    // change ID in both the incremental cache and project routing.
+    #[test]
+    fn remote_refused_falls_back_to_holder_change_when_requester_has_none()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::collections::BTreeMap;
+
+        let holder_change = "zrqrpzzruukpynwnvyporzrwpxplrvqq";
+        let holder_member = "0123456789abcdef/claim-owner-50";
+        let mut cache = super::RemoteEventCache::default();
+        let holder_checkout = test_checkout(1, holder_member, "claim-owner-50", holder_change);
+        let coordinator_join = super::member_entry(
+            &test_member("0123456789abcdef/coordinator", "coordinator"),
+            "join",
+        );
+        let refused = test_refused_entry(3, "coordinator", holder_member, "claim-owner-50")?;
+        cache.push_all(vec![holder_checkout, coordinator_join, refused], Vec::new());
+
+        let cached = cache.entries.last().ok_or("missing cached refused entry")?;
+        assert_eq!(cached.nick, "coordinator");
+        assert_eq!(cached.change.as_deref(), Some(holder_change));
+        assert_eq!(
+            cached
+                .claim
+                .as_ref()
+                .and_then(|claim| claim.change.as_deref()),
+            Some(holder_change)
+        );
+
+        let mut uncached = vec![test_refused_entry(
+            4,
+            "coordinator",
+            holder_member,
+            "claim-owner-50",
+        )?];
+        let members = vec![
+            test_member(holder_member, "claim-owner-50"),
+            test_member("0123456789abcdef/coordinator", "coordinator"),
+        ];
+        let changes = vec![(holder_change.into(), "claim-owner-50".into())];
+        super::ProjectRouting::build(&members, &changes, &BTreeMap::new(), &BTreeMap::new())
+            .apply(&mut uncached);
+        assert_eq!(uncached[0].nick, "coordinator");
+        assert_eq!(uncached[0].change.as_deref(), Some(holder_change));
+        assert_eq!(
+            uncached[0]
+                .claim
+                .as_ref()
+                .and_then(|claim| claim.change.as_deref()),
+            Some(holder_change)
+        );
+        Ok(())
+    }
+
+    // Risk (#679): adding holder fallback for remote `ChannelEvent::Refused` must never
+    // replace the requester's own change attribution when the requester has a checkout
+    // or active Rosen change.
+    #[test]
+    fn remote_refused_retains_requester_change_when_available()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::collections::BTreeMap;
+
+        let holder_change = "zrqrpzzruukpynwnvyporzrwpxplrvqq";
+        let requester_change = "kmnopqrstuvwxzabcdefghijklmnopqr";
+        let holder_member = "0123456789abcdef/claim-owner-50";
+        let requester_member = "0123456789abcdef/requester-51";
+        fn claim_change(entry: &crate::Entry) -> Option<&str> {
+            entry
+                .claim
+                .as_ref()
+                .and_then(|claim| claim.change.as_deref())
+        }
+
+        let mut cache = super::RemoteEventCache::default();
+        cache.push_all(
+            vec![
+                test_checkout(1, holder_member, "claim-owner-50", holder_change),
+                test_checkout(2, requester_member, "requester-51", requester_change),
+                test_refused_entry(3, "requester-51", holder_member, "claim-owner-50")?,
+            ],
+            Vec::new(),
+        );
+        let cached = cache.entries.last().ok_or("missing cached refused entry")?;
+        assert_eq!(cached.nick, "requester-51");
+        assert_eq!(cached.change.as_deref(), Some(requester_change));
+        assert_eq!(claim_change(cached), Some(holder_change));
+
+        // When the cache only saw the holder's checkout and fell back to the holder,
+        // project routing still restores requester attribution from Rosen's live changes.
+        let mut fallback_cache = super::RemoteEventCache::default();
+        fallback_cache.push_all(
+            vec![
+                test_checkout(1, holder_member, "claim-owner-50", holder_change),
+                test_refused_entry(2, "requester-51", holder_member, "claim-owner-50")?,
+            ],
+            Vec::new(),
+        );
+        let mut routed = fallback_cache.entries.clone();
+        let members = vec![
+            test_member(holder_member, "claim-owner-50"),
+            test_member(requester_member, "requester-51"),
+        ];
+        let changes = vec![
+            (holder_change.into(), "claim-owner-50".into()),
+            (requester_change.into(), "requester-51".into()),
+        ];
+        super::ProjectRouting::build(
+            &members,
+            &changes,
+            &fallback_cache.change_members,
+            &fallback_cache.checkouts,
+        )
+        .apply(&mut routed);
+        let entry = routed.last().ok_or("missing routed refused entry")?;
+        assert_eq!(entry.nick, "requester-51");
+        assert_eq!(entry.change.as_deref(), Some(requester_change));
+        assert_eq!(claim_change(entry), Some(holder_change));
+
+        let mut uncached = vec![test_refused_entry(
+            3,
+            "requester-51",
+            holder_member,
+            "claim-owner-50",
+        )?];
+        super::ProjectRouting::build(&members, &changes, &BTreeMap::new(), &BTreeMap::new())
+            .apply(&mut uncached);
+        assert_eq!(uncached[0].change.as_deref(), Some(requester_change));
+        assert_eq!(claim_change(&uncached[0]), Some(holder_change));
         Ok(())
     }
 }
