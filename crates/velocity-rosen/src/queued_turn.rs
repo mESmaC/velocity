@@ -9,9 +9,11 @@ use std::fmt;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use rosen_client::run_queue::{Entry, POLL, RunClass, RunQueue, Turn};
+use rosen_client::run_queue::{Entry, POLL, RunClass, RunQueue, Turn, Waiter};
 use serde::{Deserialize, Serialize};
 use velocity_core::queued_runs::QueuedRunClass;
 
@@ -56,6 +58,71 @@ pub struct QueuedTurnRequest<'a> {
     pub command_line: &'a str,
     pub queue_override: Option<&'a Path>,
     pub timeout: Duration,
+}
+
+/// Live handle to an ordinary run's waiting ticket in Rosen's machine run queue (#665).
+///
+/// Lets `run_status` inspect the ticket's actual place ahead in line via `Waiter::ahead`
+/// without extending the underlying `Waiter` file lock past turn acquisition or exit.
+#[derive(Clone)]
+pub struct QueueTicket {
+    queue: RunQueue,
+    class: QueuedRunClass,
+    active: Arc<AtomicBool>,
+    waiter: Arc<Mutex<Option<Waiter>>>,
+}
+
+impl QueueTicket {
+    fn new(queue: RunQueue, class: QueuedRunClass, waiter: Waiter) -> Self {
+        Self {
+            queue,
+            class,
+            active: Arc::new(AtomicBool::new(true)),
+            waiter: Arc::new(Mutex::new(Some(waiter))),
+        }
+    }
+
+    /// Whether this run still holds its waiting ticket in Rosen's machine run queue.
+    pub fn is_active(&self) -> bool {
+        self.active.load(Ordering::Acquire)
+    }
+
+    /// Estimates queue position and wait from this ticket's own place in line, excluding
+    /// the ticket itself and any later waiters. Returns `None` once the ticket has left
+    /// the waiting line.
+    pub fn estimate(&self) -> Option<QueueEstimate> {
+        if !self.is_active() {
+            return None;
+        }
+        let guard = self.waiter.lock().unwrap_or_else(PoisonError::into_inner);
+        let waiter = guard.as_ref()?;
+        let entries = waiter.ahead().unwrap_or_default();
+        let waiter_reason = waiter.waiting_for();
+        Some(estimate_ordinary_entries(
+            &self.queue,
+            self.class,
+            &entries,
+            0,
+            waiter_reason,
+        ))
+    }
+
+    fn clear(&self) {
+        self.active.store(false, Ordering::Release);
+        let _ = self
+            .waiter
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+    }
+}
+
+struct ClearTicketOnDrop(QueueTicket);
+
+impl Drop for ClearTicketOnDrop {
+    fn drop(&mut self) {
+        self.0.clear();
+    }
 }
 
 /// Live queue position and estimated wait for a queued command (#536).
@@ -189,20 +256,65 @@ pub fn estimate(
     }
 }
 
+fn ordinary_per_run_seconds(class: QueuedRunClass) -> u64 {
+    match class {
+        QueuedRunClass::Verify => ORDINARY_VERIFY_ESTIMATE_SECS,
+        QueuedRunClass::Build | QueuedRunClass::Landing => ORDINARY_BUILD_ESTIMATE_SECS,
+    }
+}
+
+fn ordinary_queue_reason(
+    target_class: RunClass,
+    running_higher: usize,
+    running_same: usize,
+    slots: usize,
+    waiting_ahead: usize,
+    memory_blocked: bool,
+) -> Option<String> {
+    if running_higher > 0 {
+        Some("yielding to more important runs".to_owned())
+    } else if running_same >= slots {
+        Some(format!("waiting for a free {} slot", target_class.name()))
+    } else if waiting_ahead > 0 {
+        Some(format!(
+            "{waiting_ahead} queued {} ahead in `{}` queue",
+            if waiting_ahead == 1 { "run" } else { "runs" },
+            target_class.name()
+        ))
+    } else if memory_blocked {
+        Some("waiting for memory headroom above Rosen's reserve".to_owned())
+    } else {
+        None
+    }
+}
+
 fn estimate_ordinary(
     queue: Option<&RunQueue>,
     class: QueuedRunClass,
     session_pending_ahead: usize,
 ) -> QueueEstimate {
-    let target_class = run_class(class);
-    let per_run = match class {
-        QueuedRunClass::Verify => ORDINARY_VERIFY_ESTIMATE_SECS,
-        QueuedRunClass::Build | QueuedRunClass::Landing => ORDINARY_BUILD_ESTIMATE_SECS,
-    };
     let Some(queue) = queue else {
-        return build_estimate(session_pending_ahead, 0, 1, per_run, None);
+        return build_estimate(
+            session_pending_ahead,
+            0,
+            1,
+            ordinary_per_run_seconds(class),
+            None,
+        );
     };
     let entries = queue.line().unwrap_or_default();
+    estimate_ordinary_entries(queue, class, &entries, session_pending_ahead, None)
+}
+
+fn estimate_ordinary_entries(
+    queue: &RunQueue,
+    class: QueuedRunClass,
+    entries: &[Entry],
+    session_pending_ahead: usize,
+    waiter_reason: Option<String>,
+) -> QueueEstimate {
+    let target_class = run_class(class);
+    let per_run = ordinary_per_run_seconds(class);
     let slots = usize::try_from(queue.slots(target_class))
         .unwrap_or(1)
         .max(1);
@@ -220,21 +332,16 @@ fn estimate_ordinary(
         .count()
         .saturating_add(session_pending_ahead);
     let memory_blocked = !queue.memory_headroom().fits(target_class.budget().memory);
-    let reason = if running_higher > 0 {
-        Some("yielding to more important runs".to_owned())
-    } else if running_same >= slots {
-        Some(format!("waiting for a free {} slot", target_class.name()))
-    } else if waiting_ahead > 0 {
-        Some(format!(
-            "{waiting_ahead} queued {} ahead in `{}` queue",
-            if waiting_ahead == 1 { "run" } else { "runs" },
-            target_class.name()
-        ))
-    } else if memory_blocked {
-        Some("waiting for memory headroom above Rosen's reserve".to_owned())
-    } else {
-        None
-    };
+    let reason = waiter_reason.or_else(|| {
+        ordinary_queue_reason(
+            target_class,
+            running_higher,
+            running_same,
+            slots,
+            waiting_ahead,
+            memory_blocked,
+        )
+    });
     let blocking = if running_higher > 0 {
         running_higher.max(slots)
     } else if memory_blocked && running_same < slots {
@@ -364,6 +471,17 @@ pub fn acquire_with_progress(
     cancelled: impl Fn() -> bool,
     on_wait: impl Fn(&str),
 ) -> Result<QueuedTurn, QueuedTurnError> {
+    acquire_with_ticket(request, cancelled, on_wait, |_| {})
+}
+
+/// Like [`acquire_with_progress`], also publishing the live Rosen [`QueueTicket`] as soon
+/// as an ordinary run joins Rosen's machine run queue (#665).
+pub fn acquire_with_ticket(
+    request: &QueuedTurnRequest<'_>,
+    cancelled: impl Fn() -> bool,
+    on_wait: impl Fn(&str),
+    on_ticket: impl Fn(QueueTicket),
+) -> Result<QueuedTurn, QueuedTurnError> {
     let queue = match request.queue_override {
         Some(path) => RunQueue::at(path),
         None => RunQueue::machine()?,
@@ -377,11 +495,12 @@ pub fn acquire_with_progress(
             );
             acquire_rosen(
                 &queue,
-                run_class(request.class),
+                request.class,
                 &note,
                 request.timeout,
                 &cancelled,
                 &on_wait,
+                &on_ticket,
             )
         }
         AgentRun::RustUtility => acquire_utility(&queue, request.timeout, &cancelled, &on_wait),
@@ -406,32 +525,48 @@ fn report_wait(last_reason: &mut String, reason: &str, on_wait: &impl Fn(&str)) 
 
 fn acquire_rosen(
     queue: &RunQueue,
-    class: RunClass,
+    class: QueuedRunClass,
     note: &str,
     timeout: Duration,
     cancelled: &impl Fn() -> bool,
     on_wait: &impl Fn(&str),
+    on_ticket: &impl Fn(QueueTicket),
 ) -> Result<QueuedTurn, QueuedTurnError> {
-    let waiter = queue.wait(class, note)?;
+    let target_class = run_class(class);
+    let waiter = queue.wait(target_class, note)?;
+    let ticket = QueueTicket::new(queue.clone(), class, waiter);
+    let _clear = ClearTicketOnDrop(ticket.clone());
+    on_ticket(ticket.clone());
     let started = Instant::now();
     let mut last_reason = String::new();
     loop {
         if cancelled() {
             return Err(QueuedTurnError::Cancelled);
         }
-        if let Some(turn) = waiter.try_start()? {
+        let attempt = {
+            let guard = ticket.waiter.lock().unwrap_or_else(PoisonError::into_inner);
+            match guard.as_ref() {
+                Some(waiter) => waiter.try_start()?,
+                None => None,
+            }
+        };
+        if let Some(turn) = attempt {
+            ticket.clear();
             return Ok(QueuedTurn::Rosen(turn));
         }
-        let reason = waiter
-            .waiting_for()
-            .unwrap_or_else(|| format!("waiting for a `{}` run-queue turn", class.name()));
+        let waiting_for = {
+            let guard = ticket.waiter.lock().unwrap_or_else(PoisonError::into_inner);
+            guard.as_ref().and_then(Waiter::waiting_for)
+        };
+        let reason = waiting_for
+            .clone()
+            .unwrap_or_else(|| format!("waiting for a `{}` run-queue turn", target_class.name()));
         report_wait(&mut last_reason, &reason, on_wait);
         if started.elapsed() >= timeout {
             let waited = started.elapsed();
-            let waiting_for = waiter.waiting_for();
-            drop(waiter);
+            ticket.clear();
             return Err(QueuedTurnError::TimedOut(Box::new(
-                QueueTimeoutReport::read(queue, class.name(), waited, waiting_for),
+                QueueTimeoutReport::read(queue, target_class.name(), waited, waiting_for),
             )));
         }
         std::thread::sleep(POLL);
@@ -668,6 +803,69 @@ mod tests {
                 .is_some_and(|reason| reason.contains("build slot")),
             "{estimated:?}"
         );
+        Ok(())
+    }
+
+    // Risk (#665): status for an ordinary run already holding a Rosen waiting ticket must
+    // report its ticket's actual place via `Waiter::ahead`, without counting itself or later
+    // same-class waiters ahead of it.
+    #[test]
+    fn ticket_estimate_excludes_self_and_later_waiters() -> Result<(), Box<dyn std::error::Error>> {
+        let queue_dir = tempfile::tempdir()?;
+        let queue = RunQueue::at(queue_dir.path());
+        queue.set_slots(RunClass::Build, Some(1))?;
+
+        let first = QueueTicket::new(
+            queue.clone(),
+            QueuedRunClass::Build,
+            queue.wait(RunClass::Build, "first run")?,
+        );
+        let first_alone = first.estimate().ok_or("expected active ticket estimate")?;
+        assert_eq!(
+            first_alone.position, 1,
+            "the only waiting ticket must not count itself ahead: {first_alone:?}"
+        );
+
+        let second = QueueTicket::new(
+            queue.clone(),
+            QueuedRunClass::Build,
+            queue.wait(RunClass::Build, "second run")?,
+        );
+        let first_with_later = first.estimate().ok_or("expected active ticket estimate")?;
+        let second_behind = second.estimate().ok_or("expected active ticket estimate")?;
+        assert_eq!(
+            first_with_later.position, 1,
+            "a later same-class waiter must not inflate an earlier ticket's position: {first_with_later:?}"
+        );
+        assert_eq!(
+            second_behind.position, 2,
+            "the second same-class waiter must see one ticket ahead: {second_behind:?}"
+        );
+
+        let higher = QueueTicket::new(
+            queue.clone(),
+            QueuedRunClass::Landing,
+            queue.wait(RunClass::Landing, "landing check")?,
+        );
+        assert_eq!(
+            higher.estimate().map(|item| item.position),
+            Some(1),
+            "higher-priority landing ticket precedes build waiters"
+        );
+        assert_eq!(
+            first.estimate().map(|item| item.position),
+            Some(2),
+            "first build ticket must count the higher-priority landing ticket ahead"
+        );
+        assert_eq!(
+            second.estimate().map(|item| item.position),
+            Some(3),
+            "second build ticket must count both landing and first build ahead"
+        );
+
+        first.clear();
+        assert!(!first.is_active());
+        assert!(first.estimate().is_none());
         Ok(())
     }
 }

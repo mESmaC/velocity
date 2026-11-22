@@ -17,7 +17,7 @@ use velocity_core::queued_runs::{QueuedRunPhase, QueuedRunRecord};
 use velocity_rosen::agent_run::{AgentRun, BLOCK_VCS_ENV, toolchain_path_from};
 use velocity_rosen::queued_turn::{
     DEFAULT_WAIT_TIMEOUT, HELD_ENV, QUEUE_ENV, QueueTimeoutReport, QueuedTurn, QueuedTurnError,
-    QueuedTurnRequest, THREAD_VARIABLES, acquire_with_progress, workspace_head,
+    QueuedTurnRequest, THREAD_VARIABLES, acquire_with_ticket, workspace_head,
 };
 use velocity_rosen::registered_generator::{
     GeneratorExecution, GeneratorGuard, RegisteredGenerator, begin_guard, finish_guard,
@@ -368,7 +368,8 @@ impl QueuedRun {
         let queue_override = launch.env_value(QUEUE_ENV).map(PathBuf::from);
         let cancelled = stop.clone();
         let progress_sink = sink.clone();
-        tokio::task::spawn_blocking(move || {
+        let ticket_sink = sink.clone();
+        let result = tokio::task::spawn_blocking(move || {
             let request = QueuedTurnRequest {
                 policy,
                 class,
@@ -378,14 +379,16 @@ impl QueuedRun {
                 queue_override: queue_override.as_deref(),
                 timeout: DEFAULT_WAIT_TIMEOUT,
             };
-            acquire_with_progress(
+            acquire_with_ticket(
                 &request,
                 move || cancelled.is_cancelled(),
                 move |reason| progress_sink.set_queue_reason(reason),
+                move |ticket| ticket_sink.set_ticket(ticket),
             )
         })
-        .await
-        .map_err(|error| QueuedTurnError::Io(io::Error::other(error)))?
+        .await;
+        sink.clear_ticket();
+        result.map_err(|error| QueuedTurnError::Io(io::Error::other(error)))?
     }
 
     fn build_command(

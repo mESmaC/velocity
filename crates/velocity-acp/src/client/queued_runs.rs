@@ -18,11 +18,12 @@ use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use velocity_core::queued_runs::{
-    MAX_RUN_HISTORY, QueuedRunPhase, QueuedRunRecord, continue_after_restart_prompt,
-    lost_runs_prompt, lost_runs_prompt_with_results, restarted_runs_notice,
+    MAX_RUN_HISTORY, QueuedRunClass, QueuedRunPhase, QueuedRunRecord,
+    continue_after_restart_prompt, lost_runs_prompt, lost_runs_prompt_with_results,
+    restarted_runs_notice,
 };
 use velocity_rosen::agent_run::{AgentRun, BLOCK_VCS_ENV};
-use velocity_rosen::queued_turn::{QUEUE_ENV, QueueEstimate, estimate};
+use velocity_rosen::queued_turn::{QUEUE_ENV, QueueEstimate, QueueTicket, estimate};
 use velocity_rosen::registered_generator::{
     BASE_CONFIG_TIMEOUT, RegisteredGenerator, is_workspace_root, load_base_commands,
 };
@@ -375,6 +376,7 @@ impl RunResults {
 struct TrackedRun {
     record: QueuedRunRecord,
     policy: Option<AgentRun>,
+    ticket: Option<QueueTicket>,
     cancel: Option<CancellationToken>,
     cancelled_by_user: Arc<AtomicBool>,
 }
@@ -391,6 +393,7 @@ impl RunRegistry {
             .map(|record| TrackedRun {
                 record,
                 policy: None,
+                ticket: None,
                 cancel: None,
                 cancelled_by_user: Arc::new(AtomicBool::new(false)),
             })
@@ -408,17 +411,33 @@ impl RunRegistry {
         if let Some(existing) = self.runs.iter_mut().find(|run| run.record.id == record.id) {
             existing.record = record;
             existing.policy = Some(policy);
+            existing.ticket = None;
             existing.cancel = Some(cancel);
             existing.cancelled_by_user = Arc::clone(&cancelled_by_user);
         } else {
             self.runs.push(TrackedRun {
                 record,
                 policy: Some(policy),
+                ticket: None,
                 cancel: Some(cancel),
                 cancelled_by_user: Arc::clone(&cancelled_by_user),
             });
         }
         cancelled_by_user
+    }
+
+    fn set_ticket(&mut self, run_id: &str, ticket: QueueTicket) {
+        if let Some(entry) = self.runs.iter_mut().find(|run| run.record.id == run_id)
+            && !entry.record.phase.is_terminal()
+        {
+            entry.ticket = Some(ticket);
+        }
+    }
+
+    fn clear_ticket(&mut self, run_id: &str) {
+        if let Some(entry) = self.runs.iter_mut().find(|run| run.record.id == run_id) {
+            entry.ticket = None;
+        }
     }
 
     fn update_record(
@@ -434,11 +453,13 @@ impl RunRegistry {
     fn finish(&mut self, record: QueuedRunRecord) {
         if let Some(existing) = self.runs.iter_mut().find(|run| run.record.id == record.id) {
             existing.record = record;
+            existing.ticket = None;
             existing.cancel = None;
         } else {
             self.runs.push(TrackedRun {
                 record,
                 policy: None,
+                ticket: None,
                 cancel: None,
                 cancelled_by_user: Arc::new(AtomicBool::new(false)),
             });
@@ -462,28 +483,32 @@ impl RunRegistry {
             .is_some_and(|run| run.record.delivered)
     }
 
-    fn pending_count_before(&self, run_id: Option<&str>) -> usize {
+    fn pending_count_before(
+        &self,
+        run_id: Option<&str>,
+        target_policy: AgentRun,
+        target_class: QueuedRunClass,
+    ) -> usize {
         let mut count = 0;
         for run in &self.runs {
             if run_id.is_some_and(|id| id == run.record.id) {
                 break;
             }
-            if matches!(
-                run.record.phase,
-                QueuedRunPhase::WaitingForTurnEnd | QueuedRunPhase::Queued
-            ) {
+            if counts_as_session_pending_ahead(run, target_policy, target_class) {
                 count += 1;
             }
         }
         count
     }
 
-    fn snapshot(&self, run_id: &str) -> Option<(QueuedRunRecord, Option<AgentRun>, usize)> {
-        let pending_ahead = self.pending_count_before(Some(run_id));
+    fn snapshot(
+        &self,
+        run_id: &str,
+    ) -> Option<(QueuedRunRecord, Option<AgentRun>, Option<QueueTicket>)> {
         self.runs
             .iter()
             .find(|run| run.record.id == run_id)
-            .map(|run| (run.record.clone(), run.policy, pending_ahead))
+            .map(|run| (run.record.clone(), run.policy, run.ticket.clone()))
     }
 
     fn all_records(&self) -> Vec<QueuedRunRecord> {
@@ -513,6 +538,7 @@ impl RunRegistry {
             return Ok((entry.record.clone(), false));
         }
         entry.cancelled_by_user.store(true, Ordering::Release);
+        entry.ticket = None;
         if let Some(cancel) = entry.cancel.take() {
             cancel.cancel();
         }
@@ -585,12 +611,25 @@ impl RunStatusSink {
         }
     }
 
-    pub(super) fn set_running(&self, change: Option<String>, head: Option<String>) {
-        let updated = self
-            .registry
+    pub(super) fn set_ticket(&self, ticket: QueueTicket) {
+        self.registry
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .update_record(&self.run_id, |record| {
+            .set_ticket(&self.run_id, ticket);
+    }
+
+    pub(super) fn clear_ticket(&self) {
+        self.registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear_ticket(&self.run_id);
+    }
+
+    pub(super) fn set_running(&self, change: Option<String>, head: Option<String>) {
+        let updated = {
+            let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
+            registry.clear_ticket(&self.run_id);
+            registry.update_record(&self.run_id, |record| {
                 if !record.phase.is_terminal() {
                     record.phase = QueuedRunPhase::Running;
                     record.queue_reason = None;
@@ -601,7 +640,8 @@ impl RunStatusSink {
                         record.head = head;
                     }
                 }
-            });
+            })
+        };
         if let Some(record) = updated {
             let _ = self.events.send(QueueEvent::Updated(record));
         }
@@ -843,7 +883,7 @@ impl QueueHost {
             .registry
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .pending_count_before(None);
+            .pending_count_before(None, policy, command.run_class());
         let estimated = self.estimate_queue(policy, command.run_class(), pending_ahead);
         let run = QueuedRun::new(command, &self.worktree, &self.launch)
             .map_err(|error| error.to_string())?;
@@ -935,7 +975,7 @@ impl QueueHost {
         let Some(run_id) = query.run_id else {
             return Ok(self.list_runs_json());
         };
-        let Some((record, policy, pending_ahead)) = self
+        let Some((record, policy, ticket)) = self
             .registry
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -947,17 +987,28 @@ impl QueueHost {
             record.phase,
             QueuedRunPhase::WaitingForTurnEnd | QueuedRunPhase::Queued
         ) {
-            let resolved_policy = match policy {
-                Some(policy) => Some(policy),
-                None => {
-                    let command = RunCommand::from_record(&record);
-                    self.command_policy(&command)
-                        .await
-                        .ok()
-                        .map(|(resolved, _)| resolved)
-                }
-            };
-            resolved_policy.map(|policy| self.estimate_queue(policy, record.class, pending_ahead))
+            if let Some(estimate) = ticket.as_ref().and_then(QueueTicket::estimate) {
+                Some(estimate)
+            } else {
+                let resolved_policy = match policy {
+                    Some(policy) => Some(policy),
+                    None => {
+                        let command = RunCommand::from_record(&record);
+                        self.command_policy(&command)
+                            .await
+                            .ok()
+                            .map(|(resolved, _)| resolved)
+                    }
+                };
+                resolved_policy.map(|policy| {
+                    let pending_ahead = self
+                        .registry
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .pending_count_before(Some(&run_id), policy, record.class);
+                    self.estimate_queue(policy, record.class, pending_ahead)
+                })
+            }
         } else {
             None
         };
@@ -1047,6 +1098,44 @@ impl QueueHost {
             let _ = store.persist_finished(record.clone()).await;
         }
         Ok(cancel_reply(&record, cancelled))
+    }
+}
+
+fn counts_as_session_pending_ahead(
+    run: &TrackedRun,
+    target_policy: AgentRun,
+    target_class: QueuedRunClass,
+) -> bool {
+    if !matches!(
+        run.record.phase,
+        QueuedRunPhase::WaitingForTurnEnd | QueuedRunPhase::Queued
+    ) {
+        return false;
+    }
+    match target_policy {
+        AgentRun::Ordinary => {
+            // Ordinary runs that already hold a live Rosen waiting ticket are already counted
+            // in `RunQueue::line()`, so counting them again here would double-count them (#665).
+            if run.ticket.as_ref().is_some_and(QueueTicket::is_active) {
+                return false;
+            }
+            let same_queue = run.policy.is_none_or(|policy| policy == AgentRun::Ordinary);
+            same_queue && class_rank(run.record.class) <= class_rank(target_class)
+        }
+        AgentRun::RustUtility
+        | AgentRun::RustCheck
+        | AgentRun::Bindings
+        | AgentRun::RegisteredGenerator => {
+            run.policy.is_none_or(|policy| policy != AgentRun::Ordinary)
+        }
+    }
+}
+
+fn class_rank(class: QueuedRunClass) -> u8 {
+    match class {
+        QueuedRunClass::Landing => 0,
+        QueuedRunClass::Build => 1,
+        QueuedRunClass::Verify => 2,
     }
 }
 
@@ -1445,6 +1534,29 @@ mod tests {
         RunResults,
         Arc<Mutex<RunRegistry>>,
     )> {
+        spawn_test_host_with_launch(
+            worktree,
+            AgentLaunch::new(PathBuf::from("agent")),
+            restored,
+            history,
+            persistence,
+        )
+        .await
+    }
+
+    async fn spawn_test_host_with_launch(
+        worktree: &Path,
+        launch: AgentLaunch,
+        restored: Vec<QueuedRunRecord>,
+        history: Vec<QueuedRunRecord>,
+        persistence: Option<QueuedRunStore>,
+    ) -> io::Result<(
+        u16,
+        CancellationToken,
+        JoinHandle<()>,
+        RunResults,
+        Arc<Mutex<RunRegistry>>,
+    )> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let port = listener.local_addr()?.port();
         let (events, receiver) = unbounded_channel();
@@ -1456,7 +1568,7 @@ mod tests {
             token: "test-token".into(),
             rosen: PathBuf::from("rosen"),
             worktree: worktree.to_path_buf(),
-            launch: AgentLaunch::new(PathBuf::from("agent")),
+            launch,
             graph_context: None,
             stop: stop.clone(),
             events,
@@ -1635,6 +1747,124 @@ mod tests {
         let _ = restarted_worker.await;
         remove_log_files(&history);
         let _ = std::fs::remove_dir_all(&worktree);
+        Ok(())
+    }
+
+    async fn wait_for_active_ticket(
+        registry: &Arc<Mutex<RunRegistry>>,
+        run_id: &str,
+    ) -> Result<(), String> {
+        for _ in 0..100 {
+            let active = registry
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .snapshot(run_id)
+                .and_then(|(_, _, ticket)| ticket)
+                .is_some_and(|ticket| ticket.is_active());
+            if active {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Err(format!("timed out waiting for Rosen ticket on {run_id}"))
+    }
+
+    async fn queue_position(port: u16, run_id: &str) -> Result<Option<u64>, String> {
+        let status = call_tool(
+            port,
+            queued_run_tool::request_run_status,
+            json!({ "run_id": run_id }),
+        )
+        .await?;
+        Ok(status["queue_position"].as_u64())
+    }
+
+    fn make_busy_build_queue(root: &Path) -> io::Result<(PathBuf, PathBuf, std::fs::File)> {
+        let worktree = root.join("worktree");
+        let queue_dir = root.join("queue");
+        std::fs::create_dir_all(&worktree)?;
+        std::fs::create_dir_all(&queue_dir)?;
+        std::fs::write(queue_dir.join("slots"), "build=1\n")?;
+        let holder = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(queue_dir.join("run-build.lock"))?;
+        holder.lock()?;
+        Ok((worktree, queue_dir, holder))
+    }
+
+    async fn enqueue_ordinary(port: u16, label: &str) -> Result<(String, Option<u64>), String> {
+        let accepted = call_tool(
+            port,
+            queued_run_tool::request_queued_run,
+            json!({ "program": "echo", "arguments": [label] }),
+        )
+        .await?;
+        let run_id = accepted["run_id"]
+            .as_str()
+            .ok_or_else(|| format!("missing run_id for {label}"))?
+            .to_owned();
+        Ok((run_id, accepted["queue_position"].as_u64()))
+    }
+
+    // Risk (#665): status for an ordinary run already holding a Rosen waiting ticket must
+    // report its ticket's actual place without counting itself or later same-class waiters,
+    // and submission estimates must include waiting-for-turn-end runs without double-counting
+    // session runs that already hold Rosen tickets.
+    #[tokio::test]
+    async fn ordinary_run_status_uses_ticket_position_and_avoids_double_counting()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "velocity-665-queue-position-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let (worktree, queue_dir, holder) = make_busy_build_queue(&root)?;
+        let mut launch = AgentLaunch::new(PathBuf::from("agent"));
+        launch.set_env(QUEUE_ENV, queue_dir.to_string_lossy().as_ref());
+        let (port, stop, worker, results, registry) =
+            spawn_test_host_with_launch(&worktree, launch, Vec::new(), Vec::new(), None).await?;
+
+        let (first_id, first_pos) = enqueue_ordinary(port, "first").await?;
+        assert_eq!(first_pos, Some(1));
+
+        results.release();
+        wait_for_active_ticket(&registry, &first_id).await?;
+        assert_eq!(queue_position(port, &first_id).await?, Some(1));
+
+        let (second_id, second_pos) = enqueue_ordinary(port, "second").await?;
+        assert_eq!(second_pos, Some(2));
+        let (third_id, third_pos) = enqueue_ordinary(port, "third").await?;
+        assert_eq!(third_pos, Some(3));
+
+        results.release();
+        wait_for_active_ticket(&registry, &second_id).await?;
+        wait_for_active_ticket(&registry, &third_id).await?;
+        assert_eq!(queue_position(port, &first_id).await?, Some(1));
+        let mut later_positions = vec![
+            queue_position(port, &second_id).await?,
+            queue_position(port, &third_id).await?,
+        ];
+        later_positions.sort();
+        assert_eq!(later_positions, vec![Some(2), Some(3)]);
+
+        for run_id in [&first_id, &second_id, &third_id] {
+            let _ = call_tool(
+                port,
+                queued_run_tool::request_run_cancel,
+                json!({ "run_id": run_id }),
+            )
+            .await;
+        }
+        let records = registry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .all_records();
+        stop.cancel();
+        let _ = worker.await;
+        drop(holder);
+        remove_log_files(&records);
+        let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }
 }
