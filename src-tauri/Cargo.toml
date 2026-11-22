@@ -59,5 +59,8 @@ velocity-threads.workspace = true
 velocity-updates = { workspace = true, features = ["bindings"] }
 velocity-interview.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Data_Xml_Dom", "UI_Notifications"] }
+
 [lints]
 workspace = true

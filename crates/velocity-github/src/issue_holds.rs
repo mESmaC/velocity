@@ -350,6 +350,14 @@ impl IssueClient {
         Ok(())
     }
 
+    /// Relabels an issue with `needs-owner` on an explicit owner action from project health (#616).
+    pub fn mark_needs_owner(&self, number: u32) -> Result<(), GitHubCommandError> {
+        self.label_issue(number, "needs-owner")?;
+        crate::issue_cache::invalidate(self.host(), self.repository());
+        crate::issue_cache::invalidate_discussion(self.host(), self.repository(), number);
+        Ok(())
+    }
+
     /// Migrates a legacy retired-hold issue (e.g. `needs-owner`) that is a `Tracking:`
     /// checklist issue to the `tracking` label (#617).
     pub fn migrate_tracking_hold(&self, number: u32) -> Result<bool, GitHubCommandError> {

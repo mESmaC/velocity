@@ -390,6 +390,7 @@ pub(crate) fn remove_thread_record(
         .position(|record| record.id == thread)
         .ok_or(ThreadError::UnknownThread { project, thread })?;
     let removed = item.threads.remove(position);
+    crate::continuous_dispatch::retain_deleted_thread_attempt_result(item, &removed);
     crate::rosen_issue::retain_deleted_thread(item, &removed);
     crate::rosen_work::remove_thread(item, thread);
     for later in &mut item.threads {

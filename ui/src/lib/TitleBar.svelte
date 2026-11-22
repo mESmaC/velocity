@@ -21,6 +21,7 @@
   let collapseForwarding = $state<ProjectHealthItem | null>(null);
   let collapseIssuesImport = $state<ProjectHealthItem | null>(null);
   let hostSourceChange = $state<ProjectHealthItem | null>(null);
+  let dispatchIdle = $state<ProjectHealthItem | null>(null);
   const activeCollapseForwarding = $derived(
     layout?.project_identifier != null ? collapseForwarding : null,
   );
@@ -29,6 +30,9 @@
   );
   const activeHostSourceChange = $derived(
     layout?.project_identifier != null ? hostSourceChange : null,
+  );
+  const activeDispatchIdle = $derived(
+    layout?.project_identifier != null ? dispatchIdle : null,
   );
 </script>
 
@@ -110,6 +114,7 @@
             onForwardingWarning={(item) => (collapseForwarding = item)}
             onIssuesImportWarning={(item) => (collapseIssuesImport = item)}
             onHostSourceChangeWarning={(item) => (hostSourceChange = item)}
+            onDispatchIdleWarning={(item) => (dispatchIdle = item)}
           />
         {/if}
       </div>
@@ -147,5 +152,7 @@
     collapseForwarding={activeCollapseForwarding}
     collapseIssuesImport={activeCollapseIssuesImport}
     hostSourceChange={activeHostSourceChange}
+    dispatchIdle={activeDispatchIdle}
+    {send}
   />
 </div>

@@ -20,6 +20,7 @@ mod collapse_cutover;
 mod collapse_issue_sync;
 mod collapse_mirror;
 mod continuous_dispatch;
+mod desktop_notifications;
 mod diagnostics;
 pub mod duty;
 mod github_requests;
@@ -132,6 +133,7 @@ fn bindings() -> Builder<tauri::Wry> {
         diagnostics::log_window_error,
         performance::get_performance_diagnostics,
         process_memory::get_process_memory,
+        project_health::act_on_dispatch_idle_issue,
         project_health::copy_github_issue_to_collapse,
         project_health::dismiss_host_issue_problem,
         project_health::get_project_health,

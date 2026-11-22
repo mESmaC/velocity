@@ -5,7 +5,10 @@
     rosenMirrorCommands,
   } from './ipc';
   import type {
+    BlockedDispatchIssue,
     CollapseMirrorHealth,
+    DispatchIdleIssueAction,
+    LayoutAction,
     MirrorBehind,
     MirrorDivergence,
     MirrorState,
@@ -22,6 +25,8 @@
     collapseForwarding = null,
     collapseIssuesImport = null,
     hostSourceChange = null,
+    dispatchIdle = null,
+    send,
   }: {
     state: MirrorState | null;
     // The project's base trails its mirror while a catch-up is pending (#520).
@@ -39,6 +44,9 @@
     collapseIssuesImport?: ProjectHealthItem | null;
     // Non-owner change to effective issue host or base CI source (#613).
     hostSourceChange?: ProjectHealthItem | null;
+    // Free agent slots idle for 30+ min with every open issue blocked (#616).
+    dispatchIdle?: ProjectHealthItem | null;
+    send?: (action: LayoutAction) => void;
   } = $props();
 
   let running = $state('');
@@ -49,11 +57,14 @@
   let importActionLabel = $state<string | null>(null);
   let resolvingHostChange = $state(false);
   let hostChangeError = $state('');
+  let idleActionBusy = $state<Record<number, DispatchIdleIssueAction>>({});
+  let idleActionError = $state<Record<number, string>>({});
 
   $effect(() => {
     void project;
     void collapseIssuesImport;
     void hostSourceChange;
+    void dispatchIdle;
     if (!collapseIssuesImport) {
       importError = '';
       importActionUrl = null;
@@ -62,7 +73,45 @@
     if (!hostSourceChange) {
       hostChangeError = '';
     }
+    if (!dispatchIdle) {
+      idleActionBusy = {};
+      idleActionError = {};
+    }
   });
+
+  async function runIdleIssueAction(
+    issue: BlockedDispatchIssue,
+    action: DispatchIdleIssueAction,
+  ) {
+    const target = project;
+    if (target === null || idleActionBusy[issue.number]) return;
+    idleActionBusy = { ...idleActionBusy, [issue.number]: action };
+    const nextErrors = { ...idleActionError };
+    delete nextErrors[issue.number];
+    idleActionError = nextErrors;
+    try {
+      await projectHealthCommands.actOnDispatchIdleIssue(
+        target,
+        issue.repository,
+        issue.number,
+        action,
+      );
+    } catch (reason) {
+      if (target === project) {
+        idleActionError = {
+          ...idleActionError,
+          [issue.number]:
+            reason instanceof Error ? reason.message : String(reason),
+        };
+      }
+    } finally {
+      if (target === project) {
+        const nextBusy = { ...idleActionBusy };
+        delete nextBusy[issue.number];
+        idleActionBusy = nextBusy;
+      }
+    }
+  }
 
   async function resolveHostSourceChange(switchBack: boolean) {
     const target = project;
@@ -209,6 +258,94 @@
       </div>
     {/if}
     {#if error}<p role="alert">{error}</p>{/if}
+  </section>
+{/if}
+{#if dispatchIdle && dispatchIdle.dispatch_idle}
+  {@const blockedIssues = dispatchIdle.dispatch_idle.blocked_issues ?? []}
+  <section class="mirror-status" role="status" aria-label="Idle agent slots">
+    <strong>{dispatchIdle.signal}</strong>
+    <span>{dispatchIdle.action}</span>
+    {#if blockedIssues.length > 0 && project !== null}
+      <ul class="idle-issues">
+        {#each blockedIssues as issue (issue.number)}
+          {@const issueUrl = safeExternalUrl(issue.issue_url)}
+          {@const busy = idleActionBusy[issue.number]}
+          <li class="idle-issue-row">
+            <div class="idle-issue-copy">
+              <span class="idle-issue-headline" title={issue.title}>
+                <b>#{issue.number}</b>
+                {issue.reason}
+              </span>
+              {#if issue.last_attempt_result}
+                <pre
+                  class="idle-issue-result">Last attempt: {issue.last_attempt_result}</pre>
+              {/if}
+              {#if idleActionError[issue.number]}
+                <p role="alert">{idleActionError[issue.number]}</p>
+              {/if}
+            </div>
+            <div class="idle-issue-actions">
+              {#if issue.can_lift_hold}
+                <button
+                  type="button"
+                  class="mini"
+                  disabled={Boolean(busy)}
+                  onclick={() => void runIdleIssueAction(issue, 'lift_hold')}
+                  >{busy === 'lift_hold' ? 'Lifting…' : 'Lift hold'}</button
+                >
+              {/if}
+              {#if issue.can_retry_attempt}
+                <button
+                  type="button"
+                  class="mini"
+                  disabled={Boolean(busy)}
+                  onclick={() =>
+                    void runIdleIssueAction(issue, 'retry_attempt')}
+                  >{busy === 'retry_attempt'
+                    ? 'Clearing…'
+                    : 'Try again'}</button
+                >
+              {/if}
+              {#if issue.can_mark_needs_owner}
+                <button
+                  type="button"
+                  class="mini"
+                  disabled={Boolean(busy)}
+                  onclick={() =>
+                    void runIdleIssueAction(issue, 'mark_needs_owner')}
+                  >{busy === 'mark_needs_owner'
+                    ? 'Labelling…'
+                    : 'Needs owner'}</button
+                >
+              {/if}
+              {#if issue.last_attempt_thread && send}
+                {@const attemptThread = issue.last_attempt_thread}
+                <button
+                  type="button"
+                  class="mini"
+                  onclick={() => send({ OpenThread: attemptThread })}
+                  >Open thread</button
+                >
+              {/if}
+              {#if issueUrl}
+                <a
+                  class="mini"
+                  href={issueUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onclick={(event) => {
+                    event.preventDefault();
+                    void collapseCommands.openPage(issueUrl);
+                  }}>Open #{issue.number} ↗</a
+                >
+              {/if}
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {:else if dispatchIdle.detail}
+      <pre>{dispatchIdle.detail}</pre>
+    {/if}
   </section>
 {/if}
 {#if hostSourceChange}
@@ -415,5 +552,49 @@
   }
   p {
     margin: var(--worktrees-zero);
+  }
+  .idle-issues {
+    display: grid;
+    gap: var(--sp-2);
+    max-height: 168px;
+    margin: var(--sp-3) 0 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+  }
+  .idle-issue-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2) var(--sp-4);
+    padding: var(--sp-2) var(--sp-3);
+    border: 1px solid var(--line-dim);
+    border-radius: var(--r-sm);
+    background: var(--card);
+  }
+  .idle-issue-copy {
+    display: grid;
+    gap: var(--sp-1);
+    min-width: 0;
+    flex: 1;
+  }
+  .idle-issue-headline {
+    color: var(--text-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .idle-issue-headline b {
+    color: var(--text);
+    font-weight: var(--fw-semibold);
+  }
+  .idle-issue-result {
+    font-size: var(--fs-xs);
+    color: var(--muted);
+  }
+  .idle-issue-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2);
   }
 </style>

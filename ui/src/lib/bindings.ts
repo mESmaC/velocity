@@ -158,6 +158,12 @@ export const commands = {
 	getPerformanceDiagnostics: () => __TAURI_INVOKE<PerformanceDiagnostics>("get_performance_diagnostics"),
 	getProcessMemory: () => __TAURI_INVOKE<ProcessMemory[]>("get_process_memory"),
 	/**
+	 *  `act_on_dispatch_idle_issue` (§3.1): runs a one-click owner unblock action on a blocked
+	 *  issue from the dispatch-idle alert (`retry_attempt`, `mark_needs_owner`, or `lift_hold`),
+	 *  refreshes the dispatch health view, and returns the updated view (#616).
+	 */
+	actOnDispatchIdleIssue: (projectIdentifier: number, repository: string, issueNumber: number, action: DispatchIdleIssueAction) => __TAURI_INVOKE<ProjectHealthView_Serialize>("act_on_dispatch_idle_issue", { projectIdentifier, repository, issueNumber, action }),
+	/**
 	 *  `copy_github_issue_to_collapse` (§3.1): re-runs Collapse's idempotent GitHub issue
 	 *  import to bring a missing GitHub issue onto Collapse with its original number, then
 	 *  immediately retries pending land comments, closes or reverts for that issue (#614).
@@ -798,6 +804,50 @@ export type BaseStatus_Serialize = {
 	culprit: string | null,
 	revert: string | null,
 };
+
+/**  One blocked issue named in the dispatch-idle alert with its unblock actions (#616). */
+export type BlockedDispatchIssue = BlockedDispatchIssue_Serialize | BlockedDispatchIssue_Deserialize;
+
+/**  One blocked issue named in the dispatch-idle alert with its unblock actions (#616). */
+export type BlockedDispatchIssue_Deserialize = {
+	number: number,
+	repository: string,
+	title: string,
+	kind: BlockedIssueKind,
+	/**  Human-readable reason the issue was skipped (for a hold, the hold's reason). */
+	reason: string,
+	/**  Validated `https://collapse.sh/...` or `https://github.com/...` URL to open the issue. */
+	issue_url?: string | null,
+	/**  For `BlockedIssueKind::Attempted`, what the last attempt produced. */
+	last_attempt_result?: string | null,
+	/**  Optional thread identifier from the last attempt so the owner can inspect it. */
+	last_attempt_thread?: string | null,
+	can_lift_hold?: boolean,
+	can_retry_attempt?: boolean,
+	can_mark_needs_owner?: boolean,
+};
+
+/**  One blocked issue named in the dispatch-idle alert with its unblock actions (#616). */
+export type BlockedDispatchIssue_Serialize = {
+	number: number,
+	repository: string,
+	title: string,
+	kind: BlockedIssueKind,
+	/**  Human-readable reason the issue was skipped (for a hold, the hold's reason). */
+	reason: string,
+	/**  Validated `https://collapse.sh/...` or `https://github.com/...` URL to open the issue. */
+	issue_url?: string,
+	/**  For `BlockedIssueKind::Attempted`, what the last attempt produced. */
+	last_attempt_result?: string,
+	/**  Optional thread identifier from the last attempt so the owner can inspect it. */
+	last_attempt_thread?: string,
+	can_lift_hold: boolean,
+	can_retry_attempt: boolean,
+	can_mark_needs_owner: boolean,
+};
+
+/**  Why an open issue is currently blocked from continuous dispatch (#616). */
+export type BlockedIssueKind = "needs_owner" | "hold" | "attempted" | "other";
 
 export type BoardCard = BoardCard_Serialize | BoardCard_Deserialize;
 
@@ -1605,6 +1655,40 @@ export type DispatchAttempt_Serialize = {
 	number: number,
 	updated_at: string,
 };
+
+/**  Structured payload attached to a `DispatchIdle` health item (#616). */
+export type DispatchIdleAlert = DispatchIdleAlert_Serialize | DispatchIdleAlert_Deserialize;
+
+/**  Structured payload attached to a `DispatchIdle` health item (#616). */
+export type DispatchIdleAlert_Deserialize = {
+	busy: number,
+	slots: number,
+	/**  Decimal Unix milliseconds when this idle spell began. */
+	idle_since_ms: string,
+	/**  Total seconds slots have been idle in this spell. */
+	idle_seconds: number,
+	blocked_issues?: BlockedDispatchIssue_Deserialize[],
+};
+
+/**  Structured payload attached to a `DispatchIdle` health item (#616). */
+export type DispatchIdleAlert_Serialize = {
+	busy: number,
+	slots: number,
+	/**  Decimal Unix milliseconds when this idle spell began. */
+	idle_since_ms: string,
+	/**  Total seconds slots have been idle in this spell. */
+	idle_seconds: number,
+	blocked_issues: BlockedDispatchIssue_Serialize[],
+};
+
+/**  One-click owner action on a blocked issue inside a dispatch-idle alert (#616). */
+export type DispatchIdleIssueAction = 
+/**  Clear the stored dispatch attempt record so continuous dispatch retries the issue. */
+"retry_attempt" | 
+/**  Relabel the issue with `needs-owner`. */
+"mark_needs_owner" | 
+/**  Lift the person hold on the issue so it returns to dispatch. */
+"lift_hold";
 
 export type DispatchPreview = DispatchPreview_Serialize | DispatchPreview_Deserialize;
 
@@ -4378,6 +4462,39 @@ export type ProjectHealthChanged_Serialize = {
 	view: ProjectHealthView_Serialize,
 };
 
+/**  One persisted project-health history record so past idle spells remain visible (#616). */
+export type ProjectHealthHistoryEntry = ProjectHealthHistoryEntry_Serialize | ProjectHealthHistoryEntry_Deserialize;
+
+/**  One persisted project-health history record so past idle spells remain visible (#616). */
+export type ProjectHealthHistoryEntry_Deserialize = {
+	id: string,
+	kind: HealthSignalKind,
+	severity: HealthSeverity,
+	summary: string,
+	detail?: string | null,
+	/**  Decimal Unix milliseconds when the spell started. */
+	started_at_ms: string,
+	/**  Decimal Unix milliseconds when the spell ended (`None` while still active). */
+	ended_at_ms?: string | null,
+	/**  Elapsed idle duration in seconds. */
+	duration_seconds?: number,
+};
+
+/**  One persisted project-health history record so past idle spells remain visible (#616). */
+export type ProjectHealthHistoryEntry_Serialize = {
+	id: string,
+	kind: HealthSignalKind,
+	severity: HealthSeverity,
+	summary: string,
+	detail?: string,
+	/**  Decimal Unix milliseconds when the spell started. */
+	started_at_ms: string,
+	/**  Decimal Unix milliseconds when the spell ended (`None` while still active). */
+	ended_at_ms?: string,
+	/**  Elapsed idle duration in seconds. */
+	duration_seconds: number,
+};
+
 /**  One active health signal on a project, with the automatic action taken and when (#509). */
 export type ProjectHealthItem = ProjectHealthItem_Serialize | ProjectHealthItem_Deserialize;
 
@@ -4403,6 +4520,8 @@ export type ProjectHealthItem_Deserialize = {
 	host_switch_back?: HostSwitchBack | null,
 	/**  Optional Copy from GitHub / Dismiss metadata for missing or mismatched host issues (#614). */
 	host_issue_action?: HostIssueAction | null,
+	/**  Optional structured blocked-issue list and unblock actions for `DispatchIdle` (#616). */
+	dispatch_idle?: DispatchIdleAlert_Deserialize | null,
 	/**  Decimal Unix milliseconds when Velocity last acted or updated this signal. */
 	acted_at_ms: string,
 };
@@ -4429,23 +4548,27 @@ export type ProjectHealthItem_Serialize = {
 	host_switch_back?: HostSwitchBack,
 	/**  Optional Copy from GitHub / Dismiss metadata for missing or mismatched host issues (#614). */
 	host_issue_action?: HostIssueAction,
+	/**  Optional structured blocked-issue list and unblock actions for `DispatchIdle` (#616). */
+	dispatch_idle?: DispatchIdleAlert_Serialize,
 	/**  Decimal Unix milliseconds when Velocity last acted or updated this signal. */
 	acted_at_ms: string,
 };
 
-/**  All active health signals for one project, shown on the project health strip (#509). */
+/**  All active health signals and recorded health history for one project (#509, #616). */
 export type ProjectHealthView = ProjectHealthView_Serialize | ProjectHealthView_Deserialize;
 
-/**  All active health signals for one project, shown on the project health strip (#509). */
+/**  All active health signals and recorded health history for one project (#509, #616). */
 export type ProjectHealthView_Deserialize = {
 	project_identifier: number,
 	items: ProjectHealthItem_Deserialize[],
+	history?: ProjectHealthHistoryEntry_Deserialize[],
 };
 
-/**  All active health signals for one project, shown on the project health strip (#509). */
+/**  All active health signals and recorded health history for one project (#509, #616). */
 export type ProjectHealthView_Serialize = {
 	project_identifier: number,
 	items: ProjectHealthItem_Serialize[],
+	history: ProjectHealthHistoryEntry_Serialize[],
 };
 
 export type ProjectItem = ProjectItem_Serialize | ProjectItem_Deserialize;

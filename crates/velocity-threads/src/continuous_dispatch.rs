@@ -2,13 +2,15 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{BTreeMap, HashSet};
+use velocity_core::collapse::{IssueHost, allowed_downstream_setup_page, issue_page};
 use velocity_core::issue_dependencies::{IssueReference, referenced_blockers_in_text};
 use velocity_core::issue_holds::{
-    BLOCKED_UPSTREAM_LABEL, TRACKING_LABEL, has_label, is_person_hold_label, parse_checklist,
-    parse_person_hold, parse_upstream_target,
+    BLOCKED_UPSTREAM_LABEL, HOLD_LABEL, TRACKING_LABEL, has_label, is_person_hold_label,
+    parse_checklist, parse_explicit_person_hold, parse_person_hold, parse_upstream_target,
 };
+use velocity_core::project_health::{BlockedDispatchIssue, BlockedIssueKind};
 use velocity_github::{GitHubIssue, IssueClient, IssueState};
-use velocity_store::continuous_dispatch::{available_task, busy_count};
+use velocity_store::continuous_dispatch::{available_task, busy_count, thread_attempt_summary};
 use velocity_store::issues::{ThreadIssue, issue_thread, issue_thread_label};
 use velocity_store::rosen_work::IssueVersion;
 use velocity_store::{
@@ -422,6 +424,191 @@ pub fn issue_skip_reason_in_projects(
         });
     }
     None
+}
+
+/// Builds a structured blocked-issue entry with one-click owner unblock metadata for the
+/// dispatch-idle alert (#616). Returns `None` for `Tracking` issues, which are never shown
+/// as blocked (#617).
+pub fn blocked_dispatch_issue(
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    skipped: &SkippedIssue,
+) -> Option<BlockedDispatchIssue> {
+    if skipped.category == SkipCategory::Tracking {
+        return None;
+    }
+    let issue_url = validated_issue_url(repository, issue);
+    if has_label(&issue.labels, HOLD_LABEL) {
+        return Some(blocked_hold_issue(repository, issue, skipped, issue_url));
+    }
+    if skipped.category == SkipCategory::NeedsOwner {
+        return Some(blocked_needs_owner_issue(
+            repository, issue, skipped, issue_url,
+        ));
+    }
+    if skipped.category == SkipCategory::Attempted
+        && skipped.reason == "already attempted at this version"
+    {
+        let (last_attempt_result, last_attempt_thread) =
+            last_attempt_outcome(project, repository, issue.number);
+        return Some(BlockedDispatchIssue {
+            number: issue.number,
+            repository: repository.to_owned(),
+            title: issue.title.clone(),
+            kind: BlockedIssueKind::Attempted,
+            reason: skipped.reason.clone(),
+            issue_url,
+            last_attempt_result: Some(last_attempt_result),
+            last_attempt_thread: last_attempt_thread.map(|id| id.to_string()),
+            can_lift_hold: false,
+            can_retry_attempt: true,
+            can_mark_needs_owner: true,
+        });
+    }
+    let kind = if has_label(&issue.labels, "spec-question") {
+        BlockedIssueKind::NeedsOwner
+    } else {
+        BlockedIssueKind::Other
+    };
+    Some(BlockedDispatchIssue {
+        number: issue.number,
+        repository: repository.to_owned(),
+        title: issue.title.clone(),
+        kind,
+        reason: skipped.reason.clone(),
+        issue_url,
+        last_attempt_result: None,
+        last_attempt_thread: None,
+        can_lift_hold: false,
+        can_retry_attempt: false,
+        can_mark_needs_owner: false,
+    })
+}
+
+fn blocked_hold_issue(
+    repository: &str,
+    issue: &GitHubIssue,
+    skipped: &SkippedIssue,
+    issue_url: Option<String>,
+) -> BlockedDispatchIssue {
+    let reason = match parse_person_hold(&issue.body, &issue.labels) {
+        Some(hold) if !hold.reason.trim().is_empty() => {
+            if has_label(&issue.labels, "needs-owner") {
+                format!("hold (needs-owner): {}", hold.reason.trim())
+            } else {
+                format!("hold: {}", hold.reason.trim())
+            }
+        }
+        _ => format!("hold: {}", skipped.reason),
+    };
+    BlockedDispatchIssue {
+        number: issue.number,
+        repository: repository.to_owned(),
+        title: issue.title.clone(),
+        kind: BlockedIssueKind::Hold,
+        reason,
+        issue_url,
+        last_attempt_result: None,
+        last_attempt_thread: None,
+        can_lift_hold: true,
+        can_retry_attempt: false,
+        can_mark_needs_owner: false,
+    }
+}
+
+fn blocked_needs_owner_issue(
+    repository: &str,
+    issue: &GitHubIssue,
+    skipped: &SkippedIssue,
+    issue_url: Option<String>,
+) -> BlockedDispatchIssue {
+    let is_needs_owner = has_label(&issue.labels, "needs-owner");
+    let explicit_hold = parse_explicit_person_hold(&issue.body);
+    if is_needs_owner && explicit_hold.is_none() {
+        return BlockedDispatchIssue {
+            number: issue.number,
+            repository: repository.to_owned(),
+            title: issue.title.clone(),
+            kind: BlockedIssueKind::NeedsOwner,
+            reason: "needs-owner".into(),
+            issue_url,
+            last_attempt_result: None,
+            last_attempt_thread: None,
+            can_lift_hold: false,
+            can_retry_attempt: false,
+            can_mark_needs_owner: false,
+        };
+    }
+    let reason = explicit_hold
+        .map(|hold| format!("hold: {}", hold.reason.trim()))
+        .unwrap_or_else(|| skipped.reason.clone());
+    BlockedDispatchIssue {
+        number: issue.number,
+        repository: repository.to_owned(),
+        title: issue.title.clone(),
+        kind: if is_needs_owner {
+            BlockedIssueKind::NeedsOwner
+        } else {
+            BlockedIssueKind::Hold
+        },
+        reason,
+        issue_url,
+        last_attempt_result: None,
+        last_attempt_thread: None,
+        can_lift_hold: true,
+        can_retry_attempt: false,
+        can_mark_needs_owner: false,
+    }
+}
+
+fn validated_issue_url(repository: &str, issue: &GitHubIssue) -> Option<String> {
+    if let Some(url) = allowed_downstream_setup_page(&issue.url) {
+        return Some(url);
+    }
+    match issue.host {
+        IssueHost::Collapse => issue_page(repository, issue.number),
+        IssueHost::GitHub => allowed_downstream_setup_page(&format!(
+            "https://github.com/{repository}/issues/{}",
+            issue.number
+        )),
+    }
+}
+
+fn last_attempt_outcome(
+    project: &ProjectItem,
+    repository: &str,
+    number: u32,
+) -> (String, Option<u32>) {
+    let attempt =
+        project.continuous_dispatch.attempts.iter().find(|entry| {
+            entry.number == number && entry.repository.eq_ignore_ascii_case(repository)
+        });
+    let thread = attempt
+        .and_then(|entry| entry.thread_id)
+        .and_then(|id| project.threads.iter().find(|thread| thread.id == id))
+        .or_else(|| {
+            project.threads.iter().rev().find(|thread| {
+                thread.issue.as_ref().is_some_and(|assigned| {
+                    assigned.number == number
+                        && assigned.repository.eq_ignore_ascii_case(repository)
+                })
+            })
+        });
+    if let Some(thread) = thread {
+        return (thread_attempt_summary(thread), Some(thread.id));
+    }
+    if let Some(result) = attempt
+        .and_then(|entry| entry.last_result.as_deref())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        return (result.to_owned(), attempt.and_then(|entry| entry.thread_id));
+    }
+    (
+        "Previous attempt finished without updating the issue".into(),
+        attempt.and_then(|entry| entry.thread_id),
+    )
 }
 
 /// Formats skipped issues for the project health strip and `velocity.log` (#509, #617),
@@ -1605,6 +1792,8 @@ mod tests {
                 updated_at: issue_418.updated_at.clone(),
                 attempted_at: Some(1_000),
                 open_referenced_blockers: vec!["#419".into()],
+                thread_id: None,
+                last_result: None,
             },
         );
         // While #419 is still open, attempt stays.
@@ -1694,5 +1883,84 @@ mod tests {
         );
         assert!(landed_idle.clear.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn blocked_dispatch_issue_classifies_needs_owner_hold_and_attempted_with_result() {
+        let repo = "mESmaC/velocity";
+        let mut project = ProjectItem::new(1, "velocity".into(), r"Z:\velocity".into());
+        project.spec_locked = true;
+        project.continuous_dispatch.slots = 3;
+
+        // #478: needs-owner -> open issue only.
+        let mut issue_478 = sample_issue(478);
+        issue_478.labels = vec!["needs-owner".into()];
+        issue_478.url = "https://collapse.sh/mESmaC/velocity/issues/478".into();
+        let skipped_478 = issue_skip_reason(&project, repo, &issue_478, &HashSet::new(), 1_000);
+        let blocked_478 = skipped_478
+            .as_ref()
+            .and_then(|skip| blocked_dispatch_issue(&project, repo, &issue_478, skip));
+        assert!(blocked_478.is_some());
+        if let Some(entry) = blocked_478 {
+            assert_eq!(entry.kind, BlockedIssueKind::NeedsOwner);
+            assert_eq!(entry.reason, "needs-owner");
+            assert_eq!(
+                entry.issue_url.as_deref(),
+                Some("https://collapse.sh/mESmaC/velocity/issues/478")
+            );
+            assert!(!entry.can_lift_hold);
+        }
+
+        // #438: both hold and needs-owner -> shows hold reason and offers Lift hold + Open.
+        let mut issue_438 = sample_issue(438);
+        issue_438.labels = vec!["hold".into(), "needs-owner".into()];
+        issue_438.body =
+            "Hold: Waiting on physical hardware\nRelease when: Hardware arrives".into();
+        let skipped_438 = issue_skip_reason(&project, repo, &issue_438, &HashSet::new(), 1_000);
+        let blocked_438 = skipped_438
+            .as_ref()
+            .and_then(|skip| blocked_dispatch_issue(&project, repo, &issue_438, skip));
+        assert!(blocked_438.is_some());
+        if let Some(entry) = blocked_438 {
+            assert_eq!(entry.kind, BlockedIssueKind::Hold);
+            assert!(entry.reason.contains("Waiting on physical hardware"));
+            assert!(entry.can_lift_hold);
+            assert!(entry.issue_url.is_some());
+        }
+
+        // #417: already attempted at this version -> shows last attempt result + Try again + Needs owner.
+        let issue_417 = sample_issue(417);
+        let mut attempt = velocity_store::continuous_dispatch::DispatchAttempt::new(
+            repo.into(),
+            417,
+            issue_417.updated_at.clone(),
+        );
+        attempt.last_result = Some("No change: waited on #421".into());
+        project.continuous_dispatch.attempts.push(attempt);
+        let skipped_417 = issue_skip_reason(&project, repo, &issue_417, &HashSet::new(), 1_000);
+        let blocked_417 = skipped_417
+            .as_ref()
+            .and_then(|skip| blocked_dispatch_issue(&project, repo, &issue_417, skip));
+        assert!(blocked_417.is_some());
+        if let Some(entry) = blocked_417 {
+            assert_eq!(entry.kind, BlockedIssueKind::Attempted);
+            assert!(entry.can_retry_attempt);
+            assert!(entry.can_mark_needs_owner);
+            assert_eq!(
+                entry.last_attempt_result.as_deref(),
+                Some("No change: waited on #421")
+            );
+        }
+
+        // Tracking issues are excluded from blocked issues (#617).
+        let mut tracking = sample_issue(500);
+        tracking.labels = vec!["tracking".into()];
+        let skipped_tracking = issue_skip_reason(&project, repo, &tracking, &HashSet::new(), 1_000);
+        assert!(
+            skipped_tracking
+                .as_ref()
+                .and_then(|skip| blocked_dispatch_issue(&project, repo, &tracking, skip))
+                .is_none()
+        );
     }
 }

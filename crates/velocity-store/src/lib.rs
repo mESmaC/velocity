@@ -1433,6 +1433,11 @@ pub struct ProjectItem {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[specta(skip)]
     pub retried_release_runs: Vec<u64>,
+    /// Persisted project health history (including idle-slot spells and their durations)
+    /// so past idle time stays visible afterwards and across restarts (#616).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[specta(skip)]
+    pub health_history: Vec<velocity_core::project_health::ProjectHealthHistoryEntry>,
 }
 
 /// The New project dialog's interview choices, kept until the spec interview
@@ -1509,6 +1514,7 @@ impl ProjectItem {
             host_issue_problems: BTreeMap::new(),
             rosen_mirror_divergence: None,
             retried_release_runs: Vec::new(),
+            health_history: Vec::new(),
         }
     }
 
@@ -1966,6 +1972,33 @@ impl StateStore {
             }
         }
         Ok(self.settings())
+    }
+
+    /// Records or updates one entry in `project`'s persisted health history, newest first (#616).
+    pub fn record_project_health_history(
+        &mut self,
+        project: u32,
+        entry: velocity_core::project_health::ProjectHealthHistoryEntry,
+    ) -> Result<(), StoreError> {
+        let mut next = self.state.clone();
+        let Some(item) = next.projects.iter_mut().find(|item| item.id == project) else {
+            return Ok(());
+        };
+        if let Some(existing) = item
+            .health_history
+            .iter_mut()
+            .find(|existing| existing.id == entry.id)
+        {
+            if *existing == entry {
+                return Ok(());
+            }
+            *existing = entry;
+        } else {
+            item.health_history.insert(0, entry);
+            item.health_history
+                .truncate(velocity_core::project_health::HEALTH_HISTORY_LIMIT);
+        }
+        self.commit(next)
     }
 
     pub fn save_if_changed(&mut self) -> Result<bool, StoreError> {

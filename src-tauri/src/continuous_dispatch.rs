@@ -13,6 +13,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
+use velocity_core::project_health::BlockedDispatchIssue;
 use velocity_github::{
     DependencyGraph, ExternalIssueState, GitHubIssue, IssueClient, IssueHost, IssueState,
     REMOTE_PROGRESS_WINDOW_SECONDS,
@@ -25,9 +26,10 @@ use velocity_store::issues::ThreadIssue;
 use velocity_store::{ProjectItem, TaskAttribution, VersionControl};
 use velocity_threads::continuous_dispatch::{
     AttemptClearReason, DispatchView, DispatchWork, SkippedIssue, attempts_to_clear,
-    dispatchable_issue_in_projects, dispatchable_task, integration_notice, issue_number_from_piece,
-    issue_skip_reason_in_projects, open_referenced_blockers_for_issue, ordered_work_in_projects,
-    plan_task, stale_claim_reason, stalled_landed_issues, uncovered_base_notice,
+    blocked_dispatch_issue, dispatchable_issue_in_projects, dispatchable_task, integration_notice,
+    issue_number_from_piece, issue_skip_reason_in_projects, open_referenced_blockers_for_issue,
+    ordered_work_in_projects, plan_task, stale_claim_reason, stalled_landed_issues,
+    uncovered_base_notice,
 };
 
 #[derive(Clone, Default)]
@@ -237,13 +239,18 @@ pub(crate) fn integration_idle(application: &AppHandle, identifier: u32) -> Resu
 /// When continuous dispatch last started a task or issue for each project, in Unix seconds (#509).
 type LastDispatched = Mutex<BTreeMap<u32, u64>>;
 
-/// Project-level continuous dispatch state for project health checks (#509).
+/// Projects whose cached backlog should be refreshed on the next monitor pass (for example
+/// right after the owner lifts a hold or relabels an issue from project health, #616).
+type ForceBacklogRefresh = Mutex<HashSet<u32>>;
+
+/// Project-level continuous dispatch state for project health checks (#509, #616).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DispatchHealthSnapshot {
     pub backlog_error: Option<String>,
     pub open_issues: usize,
     pub ready_count: usize,
     pub skipped: Vec<SkippedIssue>,
+    pub blocked_issues: Vec<BlockedDispatchIssue>,
     pub stale_released: Vec<(u32, String)>,
     pub stalled_landed: Vec<u32>,
     pub last_dispatched_secs: Option<u64>,
@@ -288,14 +295,13 @@ pub(crate) fn health_snapshot(
     let issues_known = backlog.error.is_none();
     let stalled_landed = stalled_landed_issues(project, &backlog.repository, &backlog.issues, now);
     let restart_waits = restart_wait::waits_for_project(application, identifier);
-    let skipped = if issues_known {
-        backlog
-            .issues
-            .iter()
-            .filter_map(|issue| {
-                if let Some(wait) = restart_waits.get(&issue.number) {
-                    return Some(wait.skipped());
-                }
+    let mut skipped = Vec::new();
+    let mut blocked_issues = Vec::new();
+    if issues_known {
+        for issue in &backlog.issues {
+            let reason = if let Some(wait) = restart_waits.get(&issue.number) {
+                Some(wait.skipped())
+            } else {
                 issue_skip_reason_in_projects(
                     &store.state().projects,
                     project,
@@ -304,11 +310,17 @@ pub(crate) fn health_snapshot(
                     &claimed,
                     now,
                 )
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+            };
+            if let Some(skip) = reason {
+                if let Some(blocked) =
+                    blocked_dispatch_issue(project, &backlog.repository, issue, &skip)
+                {
+                    blocked_issues.push(blocked);
+                }
+                skipped.push(skip);
+            }
+        }
+    }
     include_overlap_waits(project, &backlog.repository, &mut claimed);
     include_launch_holds(project, &backlog.repository, &mut claimed);
     include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
@@ -328,18 +340,45 @@ pub(crate) fn health_snapshot(
         open_issues: backlog.issues.len(),
         ready_count,
         skipped,
+        blocked_issues,
         stale_released,
         stalled_landed,
         last_dispatched_secs,
     })
 }
 
+/// Replaces one cached backlog issue in place and schedules an immediate backlog refresh
+/// on the next monitor tick so owner unblock actions take effect right away (#616).
+pub(crate) fn update_cached_issue_and_refresh(
+    application: &AppHandle,
+    identifier: u32,
+    issue: GitHubIssue,
+) {
+    if let Some(backlogs) = application.try_state::<Backlogs>()
+        && let Ok(mut backlogs) = lock(backlogs.inner(), "dispatch backlog")
+        && let Some(backlog) = backlogs.get_mut(&identifier)
+        && let Some(slot) = backlog
+            .issues
+            .iter_mut()
+            .find(|existing| existing.number == issue.number)
+    {
+        *slot = issue;
+    }
+    if let Some(forced) = application.try_state::<ForceBacklogRefresh>()
+        && let Ok(mut forced) = lock(forced.inner(), "backlog refresh")
+    {
+        forced.insert(identifier);
+    }
+}
+
 fn record_dispatched(application: &AppHandle, identifier: u32) {
+    let now = unix_seconds();
     if let Some(times) = application.try_state::<LastDispatched>()
         && let Ok(mut times) = lock(times.inner(), "last dispatched")
     {
-        times.insert(identifier, unix_seconds());
+        times.insert(identifier, now);
     }
+    crate::project_health::notify_dispatched(application, identifier, now);
 }
 
 pub fn initialize(application: &AppHandle) {
@@ -347,6 +386,7 @@ pub fn initialize(application: &AppHandle) {
     application.manage(Dependencies::default());
     application.manage(IntegrationRecords::default());
     application.manage(LastDispatched::default());
+    application.manage(ForceBacklogRefresh::default());
     reopened_land::initialize(application);
     restart_wait::initialize(application);
     // Without its executable or data folder Velocity cannot start a bounded review; a
@@ -1166,9 +1206,14 @@ fn refresh_backlog(
         IssueHost::Collapse => COLLAPSE_CURSOR_REFRESH,
         IssueHost::GitHub => GITHUB_BACKLOG_REFRESH,
     };
-    if reader
-        .refreshed
-        .is_none_or(|time| time.elapsed() >= interval)
+    let force_refresh = application
+        .try_state::<ForceBacklogRefresh>()
+        .and_then(|forced| lock(forced.inner(), "backlog refresh").ok())
+        .is_some_and(|mut forced| forced.remove(&project));
+    if force_refresh
+        || reader
+            .refreshed
+            .is_none_or(|time| time.elapsed() >= interval)
     {
         // Failed reads also back off: an unavailable API must not be hammered every tick.
         reader.refreshed = Some(Instant::now());

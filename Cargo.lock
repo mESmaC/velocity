@@ -6725,6 +6725,7 @@ dependencies = [
  "velocity-store",
  "velocity-threads",
  "velocity-updates",
+ "windows",
 ]
 
 [[package]]

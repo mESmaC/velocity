@@ -23,12 +23,14 @@ use velocity_core::collapse::{
     downstream_settings_page,
 };
 use velocity_core::project_health::{
-    AIRC_ISSUE_FAILURE_TTL_SECONDS, DISPATCH_IDLE_LIMIT_SECONDS, HOST_SOURCE_CHANGED_KEY,
-    HealthSeverity, HealthSignalKind, INTEGRATION_UNCOVERED_LANDS, INTEGRATION_UNCOVERED_SECONDS,
-    MIRROR_BEHIND_LIMIT_SECONDS, POST_LAND_STALL_LIMIT_SECONDS, ProjectHealthItem,
-    ProjectHealthView, REVIEW_STUCK_LIMIT_SECONDS, ReopenedLandedNotice,
-    airc_issue_tool_failure_item, format_duration, format_stopped_check_detail,
-    host_issue_problem_item, host_source_change_item, reopened_already_landed_item, short_commit,
+    AIRC_ISSUE_FAILURE_TTL_SECONDS, DISPATCH_IDLE_KEY, DispatchIdleIssueAction, DispatchIdleSample,
+    DispatchIdleTracker, HOST_SOURCE_CHANGED_KEY, HealthSeverity, HealthSignalKind,
+    INTEGRATION_UNCOVERED_LANDS, INTEGRATION_UNCOVERED_SECONDS, MIRROR_BEHIND_LIMIT_SECONDS,
+    POST_LAND_STALL_LIMIT_SECONDS, ProjectHealthHistoryEntry, ProjectHealthItem, ProjectHealthView,
+    REVIEW_STUCK_LIMIT_SECONDS, ReopenedLandedNotice, airc_issue_tool_failure_item,
+    dispatch_idle_item, dispatch_idle_notification_text, format_duration,
+    format_stopped_check_detail, host_issue_problem_item, host_source_change_item,
+    reopened_already_landed_item, short_commit,
 };
 use velocity_core::release::{
     ManifestLag, RefusedGateRecovery, is_beta_release_tag, plan_refused_gate_recovery,
@@ -84,9 +86,7 @@ struct ProjectHealthTracker {
     review_seen_secs: HashMap<(u32, u64), u64>,
     review_checked: HashMap<(u32, u64), ReviewAttempt>,
     recent_actions: BTreeMap<String, RecentAction>,
-    free_slot_since: Option<u64>,
-    last_seen_dispatch: Option<u64>,
-    last_logged_skip: Option<String>,
+    dispatch_idle: DispatchIdleTracker,
     parked: BTreeMap<u32, ParkedRecord>,
     stopped_check: Option<StoppedCheckRecord>,
     acted_times: HashMap<String, (String, String, u64)>,
@@ -209,7 +209,9 @@ pub fn get_project_health(application: AppHandle, project_identifier: u32) -> Pr
                 .unwrap_or_default()
         })
         .unwrap_or_default();
+    let mut history = Vec::new();
     if let Some(project) = persisted_project(&application, project_identifier) {
+        history = project.health_history.clone();
         if !items.iter().any(|item| item.key == COLLAPSE_FORWARDING_KEY)
             && let Some(item) = check_collapse_forwarding(&application, &project, unix_millis())
         {
@@ -234,7 +236,82 @@ pub fn get_project_health(application: AppHandle, project_identifier: u32) -> Pr
     ProjectHealthView {
         project_identifier,
         items,
+        history,
     }
+}
+
+/// `act_on_dispatch_idle_issue` (§3.1): runs a one-click owner unblock action on a blocked
+/// issue from the dispatch-idle alert (`retry_attempt`, `mark_needs_owner`, or `lift_hold`),
+/// refreshes the dispatch health view, and returns the updated view (#616).
+#[tauri::command]
+#[specta::specta]
+pub async fn act_on_dispatch_idle_issue(
+    application: AppHandle,
+    project_identifier: u32,
+    repository: String,
+    issue_number: u32,
+    action: DispatchIdleIssueAction,
+) -> Result<ProjectHealthView, String> {
+    let project =
+        persisted_project(&application, project_identifier).ok_or("The project was removed")?;
+    let repo = repository.trim().to_owned();
+    if repo.is_empty() {
+        return Err("Missing issue repository".into());
+    }
+    let toast_message =
+        run_dispatch_idle_issue_action(&application, &project, repo, issue_number, action).await?;
+    refresh_dispatch_idle_view(&application, project_identifier);
+    crate::diagnostics::record(SOURCE, &toast_message);
+    let _ = crate::collapse_mirror::toast(&application, toast_message);
+    Ok(get_project_health(application, project_identifier))
+}
+
+async fn run_dispatch_idle_issue_action(
+    application: &AppHandle,
+    project: &ProjectItem,
+    repository: String,
+    issue_number: u32,
+    action: DispatchIdleIssueAction,
+) -> Result<String, String> {
+    let project_id = project.id;
+    let project_name = project.name.clone();
+    if action == DispatchIdleIssueAction::RetryAttempt {
+        crate::state::try_with_store(application, move |store| {
+            store
+                .clear_dispatch_attempt(project_id, &repository, issue_number)
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        })
+        .await?;
+        return Ok(format!(
+            "{project_name}: cleared attempt record for #{issue_number}; continuous dispatch will try again"
+        ));
+    }
+    let host = project.effective_issue_host();
+    let repo_dir = Path::new(&project.repository_path).to_path_buf();
+    let fresh = tauri::async_runtime::spawn_blocking(move || {
+        let client = IssueClient::for_host(&repo_dir, host, &repository)
+            .map_err(|error| error.to_string())?;
+        match action {
+            DispatchIdleIssueAction::MarkNeedsOwner => client.mark_needs_owner(issue_number),
+            DispatchIdleIssueAction::LiftHold => client.release_person_hold(issue_number),
+            DispatchIdleIssueAction::RetryAttempt => Ok(()),
+        }
+        .map_err(|error| error.to_string())?;
+        client.get(issue_number).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    crate::continuous_dispatch::update_cached_issue_and_refresh(application, project_id, fresh);
+    Ok(match action {
+        DispatchIdleIssueAction::MarkNeedsOwner => {
+            format!("{project_name}: labelled #{issue_number} needs-owner")
+        }
+        DispatchIdleIssueAction::LiftHold => {
+            format!("{project_name}: lifted hold on #{issue_number}")
+        }
+        DispatchIdleIssueAction::RetryAttempt => String::new(),
+    })
 }
 
 /// `copy_github_issue_to_collapse` (§3.1): re-runs Collapse's idempotent GitHub issue
@@ -2809,8 +2886,9 @@ fn record_recent_review_action(
     );
 }
 
-/// Signal 7: Slots free and ready/open issues, but nothing dispatched for 10 min (#509, #617).
-/// `tracking` issues alone are never dispatched and not shown as blocked.
+/// Signal 7: Slots free and open non-tracking issues, with nothing dispatched (#509, #616, #617).
+/// Logs to `velocity.log` after 10 min; raises the title-bar health alert, one-shot desktop
+/// notification, and persisted health history entry once per idle spell after 30 min.
 fn check_dispatch_idle(
     application: &AppHandle,
     project: &ProjectItem,
@@ -2827,43 +2905,47 @@ fn check_dispatch_idle(
         || !groups.blocked_upstream.is_empty();
     let has_candidates =
         dispatch.ready_count > 0 || has_non_tracking || dispatch.backlog_error.is_some();
-    if !has_free_slot || !has_candidates {
-        with_tracker(application, project.id, |tracker| {
-            tracker.free_slot_since = None;
-            tracker.last_logged_skip = None;
-        });
-        return None;
-    }
-    let since = with_tracker(application, project.id, |tracker| {
-        if dispatch.last_dispatched_secs != tracker.last_seen_dispatch {
-            tracker.last_seen_dispatch = dispatch.last_dispatched_secs;
-            tracker.free_slot_since = Some(now);
-            tracker.last_logged_skip = None;
-        }
-        *tracker.free_slot_since.get_or_insert(now)
+    let detail = if has_free_slot && has_candidates {
+        dispatch_idle_detail(project, dispatch)
+    } else {
+        String::new()
+    };
+    let observation = with_tracker(application, project.id, |tracker| {
+        tracker.dispatch_idle.observe(DispatchIdleSample {
+            now_secs: now,
+            has_free_slot,
+            has_candidates,
+            last_dispatched_secs: dispatch.last_dispatched_secs,
+            busy,
+            slots,
+            detail: &detail,
+        })
     });
-    let waited = now.saturating_sub(since);
-    if waited < DISPATCH_IDLE_LIMIT_SECONDS {
-        return None;
+    if let Some(entry) = observation.history_update {
+        persist_health_history(application, project.id, entry);
     }
-    let detail = dispatch_idle_detail(project, dispatch);
-    let should_log = with_tracker(application, project.id, |tracker| {
-        if tracker.last_logged_skip.as_deref() == Some(detail.as_str()) {
-            false
-        } else {
-            tracker.last_logged_skip = Some(detail.clone());
-            true
-        }
-    });
-    if should_log {
-        crate::diagnostics::record(
-            SOURCE,
-            &format!(
-                "{}: slots free ({busy}/{slots}) for {} with nothing dispatched · {detail}",
-                project.name,
-                format_duration(waited)
-            ),
+    if observation.should_log {
+        log_dispatch_idle(
+            application,
+            project,
+            busy,
+            slots,
+            now,
+            observation.active_alert,
+            &detail,
         );
+    }
+    let active = observation.active_alert?;
+    if observation.raise_notification {
+        let (title, body) = dispatch_idle_notification_text(
+            &project.name,
+            busy,
+            slots,
+            active.idle_seconds,
+            &dispatch.blocked_issues,
+            &detail,
+        );
+        crate::desktop_notifications::send(title, body);
     }
     let upstream_only = dispatch.ready_count == 0
         && dispatch.backlog_error.is_none()
@@ -2875,21 +2957,120 @@ fn check_dispatch_idle(
     } else {
         HealthSeverity::Warning
     };
-    let action = dispatch_idle_action(&groups);
-    Some(
-        ProjectHealthItem::new(
-            "dispatch-idle",
-            HealthSignalKind::DispatchIdle,
-            severity,
-            format!(
-                "Slots free ({busy}/{slots}) for {} with nothing dispatched",
-                format_duration(waited)
-            ),
-            action,
-            now_ms,
-        )
-        .with_detail(Some(detail)),
-    )
+    Some(dispatch_idle_item(
+        severity,
+        busy,
+        slots,
+        active,
+        dispatch_idle_action(&groups),
+        detail,
+        dispatch.blocked_issues.clone(),
+        now_ms,
+    ))
+}
+
+fn log_dispatch_idle(
+    application: &AppHandle,
+    project: &ProjectItem,
+    busy: u32,
+    slots: u32,
+    now: u64,
+    active_alert: Option<velocity_core::project_health::DispatchIdleActive>,
+    detail: &str,
+) {
+    let waited = active_alert
+        .map(|active| active.idle_seconds)
+        .unwrap_or_else(|| {
+            with_tracker(application, project.id, |tracker| {
+                tracker
+                    .dispatch_idle
+                    .idle_since_secs
+                    .map_or(0, |since| now.saturating_sub(since))
+            })
+        });
+    crate::diagnostics::record(
+        SOURCE,
+        &format!(
+            "{}: slots free ({busy}/{slots}) for {} with nothing dispatched · {detail}",
+            project.name,
+            format_duration(waited)
+        ),
+    );
+}
+
+/// Immediately clears an active dispatch-idle alert and finalizes its persisted history entry
+/// as soon as continuous or manual dispatch starts work on `project` (#616).
+pub(crate) fn notify_dispatched(application: &AppHandle, project: u32, now_secs: u64) {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let (history_entry, updated_items) = {
+        let mut reg = registry(&managed);
+        let history_entry = reg
+            .projects
+            .entry(project)
+            .or_default()
+            .dispatch_idle
+            .record_dispatched(now_secs);
+        let list = reg.views.entry(project).or_default();
+        let before = list.len();
+        list.retain(|item| item.key != DISPATCH_IDLE_KEY);
+        let updated = (list.len() != before || history_entry.is_some()).then(|| list.clone());
+        (history_entry, updated)
+    };
+    if let Some(entry) = history_entry {
+        persist_health_history(application, project, entry);
+    }
+    if let Some(items) = updated_items {
+        emit_view(application, project, items);
+    }
+}
+
+/// Rebuilds the active `DispatchIdle` item immediately after an owner unblock action (#616).
+fn refresh_dispatch_idle_view(application: &AppHandle, project_id: u32) {
+    let Some(project) = persisted_project(application, project_id) else {
+        return;
+    };
+    let now_ms = unix_millis();
+    let now = now_ms / 1000;
+    let dispatch = crate::continuous_dispatch::health_snapshot(application, project_id, now)
+        .unwrap_or_default();
+    let next = check_dispatch_idle(application, &project, &dispatch, now, now_ms);
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let updated = {
+        let mut reg = registry(&managed);
+        let list = reg.views.entry(project_id).or_default();
+        match next {
+            Some(item) => {
+                upsert_item(list, item);
+                Some(list.clone())
+            }
+            None => {
+                let before = list.len();
+                list.retain(|item| item.key != DISPATCH_IDLE_KEY);
+                (list.len() != before).then(|| list.clone())
+            }
+        }
+    };
+    if let Some(items) = updated {
+        emit_view(application, project_id, items);
+    }
+}
+
+fn persist_health_history(application: &AppHandle, project: u32, entry: ProjectHealthHistoryEntry) {
+    let Some(store_state) = application.try_state::<crate::state::ManagedStateStore>() else {
+        return;
+    };
+    if let Ok(mut store) = crate::threads::lock(store_state.inner(), "persisted state")
+        && let Err(error) = store.record_project_health_history(project, entry)
+    {
+        crate::diagnostics::record(
+            SOURCE,
+            &format!("Project {project}: could not save health history: {error}"),
+        );
+    }
 }
 
 fn dispatch_idle_action(
@@ -3724,9 +3905,13 @@ fn upsert_item(list: &mut Vec<ProjectHealthItem>, item: ProjectHealthItem) {
 }
 
 fn emit_view(application: &AppHandle, project: u32, items: Vec<ProjectHealthItem>) {
+    let history = persisted_project(application, project)
+        .map(|item| item.health_history)
+        .unwrap_or_default();
     let view = ProjectHealthView {
         project_identifier: project,
         items,
+        history,
     };
     if let Err(error) = (ProjectHealthChanged { view }).emit(application) {
         eprintln!("Could not publish project health for project {project}: {error}");

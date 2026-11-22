@@ -5,28 +5,33 @@
     collapseCommands,
     onProjectHealth,
     projectHealthCommands,
+    type BlockedDispatchIssue,
+    type DispatchIdleIssueAction,
     type HealthSeverity,
     type LayoutAction,
+    type ProjectHealthHistoryEntry,
     type ProjectHealthItem,
   } from './ipc';
 
-  // Project health notifications (#509). A bell in the title bar counts the active
-  // signals and lists them in a dropdown. A signal that appears or changes while the
-  // project is open also pops out under the bell for a few seconds. Signals already
-  // active when a project loads only set the badge, so switching projects doesn't
-  // replay old pop-outs.
+  // Project health notifications (#509, #616). A bell in the title bar counts the active
+  // signals and lists them in a dropdown alongside persisted health history. A signal that
+  // appears or changes while the project is open also pops out under the bell for a few
+  // seconds. Signals already active when a project loads only set the badge, so switching
+  // projects doesn't replay old pop-outs.
   let {
     project = null,
     send,
     onForwardingWarning,
     onIssuesImportWarning,
     onHostSourceChangeWarning,
+    onDispatchIdleWarning,
   }: {
     project: number | null;
     send: (action: LayoutAction) => void;
     onForwardingWarning?: (item: ProjectHealthItem | null) => void;
     onIssuesImportWarning?: (item: ProjectHealthItem | null) => void;
     onHostSourceChangeWarning?: (item: ProjectHealthItem | null) => void;
+    onDispatchIdleWarning?: (item: ProjectHealthItem | null) => void;
   } = $props();
 
   const POPOUT_MS = 8000;
@@ -38,6 +43,7 @@
   };
 
   let items = $state.raw<ProjectHealthItem[]>([]);
+  let history = $state.raw<ProjectHealthHistoryEntry[]>([]);
   let popouts = $state.raw<ProjectHealthItem[]>([]);
   let menu = $state<HTMLElement>();
   let importingIssues = $state(false);
@@ -49,6 +55,8 @@
   let copyingIssueNumber = $state<number | null>(null);
   let dismissingIssueNumber = $state<number | null>(null);
   let hostIssueError = $state<Record<number, string>>({});
+  let idleActionBusy = $state<Record<number, DispatchIdleIssueAction>>({});
+  let idleActionError = $state<Record<number, string>>({});
   // What each signal said when last shown. The timestamp is left out, so a check
   // that re-confirms the same signal doesn't pop it out again.
   let seen = new Map<string, string>();
@@ -62,8 +70,12 @@
     ),
   );
 
+  // DispatchIdle pops out strictly once per idle spell (keyed by idle_since_ms) rather
+  // than re-popping every tick as its duration advances (#616).
   const fingerprint = (item: ProjectHealthItem) =>
-    `${item.severity}|${item.signal}|${item.action}|${item.action_url ?? ''}|${item.host_switch_back?.button_label ?? ''}|${item.host_switch_back?.can_switch_back ?? ''}|${item.host_issue_action?.issue_number ?? ''}|${item.host_issue_action?.can_copy_from_github ?? ''}`;
+    item.kind === 'DispatchIdle'
+      ? `DispatchIdle|${item.dispatch_idle?.idle_since_ms ?? item.acted_at_ms}`
+      : `${item.severity}|${item.signal}|${item.action}|${item.action_url ?? ''}|${item.host_switch_back?.button_label ?? ''}|${item.host_switch_back?.can_switch_back ?? ''}|${item.host_issue_action?.issue_number ?? ''}|${item.host_issue_action?.can_copy_from_github ?? ''}`;
 
   function safeExternalUrl(url: string | null | undefined): string | null {
     if (!url) return null;
@@ -93,9 +105,20 @@
     if (!hostChangeItem) {
       hostChangeError = '';
     }
+    const dispatchIdleItem =
+      next.find((item) => item.kind === 'DispatchIdle') ?? null;
+    onDispatchIdleWarning?.(dispatchIdleItem);
+    if (!dispatchIdleItem) {
+      idleActionBusy = {};
+      idleActionError = {};
+    }
   }
 
-  function receive(next: ProjectHealthItem[], announce: boolean) {
+  function receive(
+    next: ProjectHealthItem[],
+    nextHistory: ProjectHealthHistoryEntry[],
+    announce: boolean,
+  ) {
     const menuOpen = menu?.matches(':popover-open') ?? false;
     const fresh =
       announce && !menuOpen
@@ -103,6 +126,7 @@
         : [];
     seen = new Map(next.map((item) => [item.key, fingerprint(item)]));
     items = next;
+    history = nextHistory;
     publishHeaderWarnings(next);
     const live = new Set(next.map((item) => item.key));
     const freshKeys = new Set(fresh.map((item) => item.key));
@@ -187,7 +211,7 @@
         switchBack,
       );
       if (id === currentProject && view.project_identifier === id) {
-        receive(view.items, false);
+        receive(view.items, view.history ?? [], false);
       }
     } catch (reason) {
       if (id === currentProject) {
@@ -196,6 +220,43 @@
       }
     } finally {
       if (id === currentProject) resolvingHostChange = false;
+    }
+  }
+
+  async function runIdleIssueAction(
+    issue: BlockedDispatchIssue,
+    action: DispatchIdleIssueAction,
+  ) {
+    const id = currentProject;
+    if (id === null || idleActionBusy[issue.number]) return;
+    idleActionBusy = { ...idleActionBusy, [issue.number]: action };
+    const nextErrors = { ...idleActionError };
+    delete nextErrors[issue.number];
+    idleActionError = nextErrors;
+    try {
+      const view = await projectHealthCommands.actOnDispatchIdleIssue(
+        id,
+        issue.repository,
+        issue.number,
+        action,
+      );
+      if (id === currentProject && view.project_identifier === id) {
+        receive(view.items, view.history ?? [], false);
+      }
+    } catch (reason) {
+      if (id === currentProject) {
+        idleActionError = {
+          ...idleActionError,
+          [issue.number]:
+            reason instanceof Error ? reason.message : String(reason),
+        };
+      }
+    } finally {
+      if (id === currentProject) {
+        const nextBusy = { ...idleActionBusy };
+        delete nextBusy[issue.number];
+        idleActionBusy = nextBusy;
+      }
     }
   }
 
@@ -212,7 +273,7 @@
         issueNumber,
       );
       if (id === currentProject && view.project_identifier === id) {
-        receive(view.items, false);
+        receive(view.items, view.history ?? [], false);
       }
     } catch (reason) {
       if (id === currentProject) {
@@ -240,7 +301,7 @@
         issueNumber,
       );
       if (id === currentProject && view.project_identifier === id) {
-        receive(view.items, false);
+        receive(view.items, view.history ?? [], false);
       }
     } catch (reason) {
       if (id === currentProject) {
@@ -258,6 +319,7 @@
   $effect(() => {
     const id = currentProject;
     items = [];
+    history = [];
     seen = new Map();
     importingIssues = false;
     importIssuesError = '';
@@ -268,6 +330,8 @@
     copyingIssueNumber = null;
     dismissingIssueNumber = null;
     hostIssueError = {};
+    idleActionBusy = {};
+    idleActionError = {};
     clearPopouts();
     publishHeaderWarnings([]);
     if (id === null) return;
@@ -278,7 +342,7 @@
       .get(id)
       .then((view) => {
         if (stopped || loaded || view.project_identifier !== id) return;
-        receive(view.items, false);
+        receive(view.items, view.history ?? [], false);
         loaded = true;
       })
       .catch(() => {
@@ -286,7 +350,11 @@
       });
     const listening = onProjectHealth((event) => {
       if (stopped || event.payload.view.project_identifier !== id) return;
-      receive(event.payload.view.items, loaded);
+      receive(
+        event.payload.view.items,
+        event.payload.view.history ?? [],
+        loaded,
+      );
       loaded = true;
     });
     return () => {
@@ -303,6 +371,17 @@
       hour: '2-digit',
       minute: '2-digit',
     });
+  }
+
+  function formatHistoryWindow(
+    startedAtMs: string,
+    endedAtMs: string | null | undefined,
+  ): string {
+    const start = formatWhen(startedAtMs);
+    if (!start) return '';
+    if (!endedAtMs) return `since ${start}`;
+    const end = formatWhen(endedAtMs);
+    return end ? `${start} – ${end}` : start;
   }
 
   const summary = $derived(
@@ -328,8 +407,88 @@
       {/if}
     </div>
     <div class="health-action">{item.action}</div>
-    {#if item.detail && !popout}
+    {#if item.detail && !popout && !(item.kind === 'DispatchIdle' && (item.dispatch_idle?.blocked_issues?.length ?? 0) > 0)}
       <div class="health-detail">{item.detail}</div>
+    {/if}
+    {#if item.kind === 'DispatchIdle' && item.dispatch_idle && (item.dispatch_idle.blocked_issues?.length ?? 0) > 0 && !popout && currentProject !== null}
+      {@const blockedIssues = item.dispatch_idle.blocked_issues ?? []}
+      <ul class="health-blocked-list">
+        {#each blockedIssues as issue (issue.number)}
+          {@const issueUrl = safeExternalUrl(issue.issue_url)}
+          {@const busy = idleActionBusy[issue.number]}
+          <li class="health-blocked-row">
+            <div class="health-blocked-summary">
+              <strong class="health-blocked-num">#{issue.number}</strong>
+              <span class="health-blocked-reason" title={issue.title}
+                >{issue.reason}</span
+              >
+            </div>
+            {#if issue.last_attempt_result}
+              <div class="health-detail">
+                Last attempt: {issue.last_attempt_result}
+              </div>
+            {/if}
+            <div class="health-actions">
+              {#if issue.can_lift_hold}
+                <button
+                  class="mini health-open"
+                  type="button"
+                  disabled={Boolean(busy)}
+                  onclick={() => void runIdleIssueAction(issue, 'lift_hold')}
+                  >{busy === 'lift_hold' ? 'Lifting…' : 'Lift hold'}</button
+                >
+              {/if}
+              {#if issue.can_retry_attempt}
+                <button
+                  class="mini health-open"
+                  type="button"
+                  disabled={Boolean(busy)}
+                  onclick={() =>
+                    void runIdleIssueAction(issue, 'retry_attempt')}
+                  >{busy === 'retry_attempt'
+                    ? 'Clearing…'
+                    : 'Try again'}</button
+                >
+              {/if}
+              {#if issue.can_mark_needs_owner}
+                <button
+                  class="mini health-open"
+                  type="button"
+                  disabled={Boolean(busy)}
+                  onclick={() =>
+                    void runIdleIssueAction(issue, 'mark_needs_owner')}
+                  >{busy === 'mark_needs_owner'
+                    ? 'Labelling…'
+                    : 'Needs owner'}</button
+                >
+              {/if}
+              {#if issue.last_attempt_thread}
+                {@const attemptThread = issue.last_attempt_thread}
+                <button
+                  class="mini health-open"
+                  type="button"
+                  onclick={() => openThread(attemptThread)}>Open thread</button
+                >
+              {/if}
+              {#if issueUrl}
+                <a
+                  class="mini health-open"
+                  href={issueUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onclick={(event) => openActionUrl(event, issueUrl)}
+                  >Open #{issue.number} ↗</a
+                >
+              {/if}
+            </div>
+            {#if idleActionError[issue.number]}
+              <div class="health-detail" role="alert">
+                {idleActionError[issue.number]}
+              </div>
+            {/if}
+          </li>
+        {/each}
+      </ul>
     {/if}
     {#if item.thread_identifier}
       {@const threadId = item.thread_identifier}
@@ -466,6 +625,32 @@
   {:else}
     <p class="health-empty">All clear. Velocity reports problems here.</p>
   {/each}
+  {#if history.length > 0}
+    <div class="health-menu-head health-history-head">History</div>
+    {#each history as entry (entry.id)}
+      <div class="health-row health-history-row" data-severity={entry.severity}>
+        <span class="health-dot" aria-hidden="true"></span>
+        <div class="health-body">
+          <div class="health-headline">
+            <strong class="health-signal">{entry.summary}</strong>
+            {#if formatHistoryWindow(entry.started_at_ms, entry.ended_at_ms)}
+              <span
+                class="health-when"
+                title={new Date(Number(entry.started_at_ms)).toLocaleString()}
+                >{formatHistoryWindow(
+                  entry.started_at_ms,
+                  entry.ended_at_ms,
+                )}</span
+              >
+            {/if}
+          </div>
+          {#if entry.detail}
+            <div class="health-detail">{entry.detail}</div>
+          {/if}
+        </div>
+      </div>
+    {/each}
+  {/if}
 </div>
 
 {#if popouts.length > 0}
@@ -685,5 +870,44 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--sp-2);
+  }
+  .health-blocked-list {
+    display: grid;
+    gap: var(--sp-3);
+    margin: var(--sp-2) 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .health-blocked-row {
+    display: grid;
+    gap: var(--sp-1);
+    padding: var(--sp-3);
+    border: 1px solid var(--line-dim);
+    border-radius: var(--r-sm);
+    background: var(--card);
+  }
+  .health-blocked-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--sp-2);
+  }
+  .health-blocked-num {
+    color: var(--text);
+    font-weight: var(--fw-semibold);
+    font-variant-numeric: tabular-nums;
+  }
+  .health-blocked-reason {
+    color: var(--text-2);
+    overflow-wrap: anywhere;
+  }
+  .health-history-head {
+    margin-top: var(--sp-2);
+    border-top: 1px solid var(--line-dim);
+    padding-top: var(--sp-3);
+  }
+  .health-history-row .health-signal {
+    color: var(--text-2);
+    font-weight: var(--fw-medium);
   }
 </style>

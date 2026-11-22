@@ -279,6 +279,15 @@ pub struct DispatchAttempt {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[specta(skip)]
     pub open_referenced_blockers: Vec<String>,
+    /// Thread identifier created for this attempt, when known (#616).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub thread_id: Option<u32>,
+    /// Concise summary of what the last attempt produced, preserved even if its thread is
+    /// later deleted (#616).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub last_result: Option<String>,
 }
 
 impl DispatchAttempt {
@@ -289,7 +298,102 @@ impl DispatchAttempt {
             updated_at,
             attempted_at: None,
             open_referenced_blockers: Vec::new(),
+            thread_id: None,
+            last_result: None,
         }
+    }
+}
+
+/// Condenses a multi-line attempt outcome into one short line for project health (#616).
+pub fn summarize_attempt_result(text: &str) -> String {
+    let first = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    let collapsed: String = first.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = collapsed.chars();
+    let prefix: String = chars.by_ref().take(180).collect();
+    if chars.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
+}
+
+/// Preserves the last attempt's outcome on `DispatchAttempt` before a thread is removed (#616).
+pub(crate) fn retain_deleted_thread_attempt_result(
+    project: &mut ProjectItem,
+    removed: &crate::ThreadItem,
+) {
+    let Some(issue) = removed.issue.as_ref() else {
+        return;
+    };
+    let summary = thread_attempt_summary(removed);
+    if let Some(attempt) = project
+        .continuous_dispatch
+        .attempts
+        .iter_mut()
+        .find(|entry| {
+            entry.number == issue.number && entry.repository.eq_ignore_ascii_case(&issue.repository)
+        })
+    {
+        if attempt.last_result.is_none() {
+            attempt.last_result = Some(summary);
+        }
+        if attempt.thread_id == Some(removed.id) {
+            attempt.thread_id = None;
+        }
+    }
+}
+
+/// Summarises a thread's outcome for an "already attempted at this version" issue (#616).
+pub fn thread_attempt_summary(thread: &crate::ThreadItem) -> String {
+    if let Some(reason) = thread.no_change_reason.as_deref() {
+        let short = summarize_attempt_result(reason);
+        if !short.is_empty() {
+            return format!("No change: {short}");
+        }
+        return "Ended with no change".into();
+    }
+    if let Some(reason) = thread.kept_work_reason.as_deref() {
+        let short = summarize_attempt_result(reason);
+        if !short.is_empty() {
+            return short;
+        }
+    }
+    if let Some(refusal) = thread.rosen_land_refusal.as_deref() {
+        let short = summarize_attempt_result(refusal);
+        if !short.is_empty() {
+            return format!("Land refused: {short}");
+        }
+    }
+    if let Some(status) = thread.rosen_resolution_status.as_ref() {
+        let short = summarize_attempt_result(&status.status);
+        if !short.is_empty() {
+            return short;
+        }
+    }
+    match thread.state {
+        ThreadState::Error => {
+            let short = summarize_attempt_result(&no_change_reason(thread));
+            if !short.is_empty() && short != "The agent left no final message." {
+                format!("Stopped with error: {short}")
+            } else {
+                "Stopped with error".into()
+            }
+        }
+        ThreadState::Done => {
+            let short = summarize_attempt_result(&no_change_reason(thread));
+            if !short.is_empty() && short != "The agent left no final message." {
+                format!("Finished without landing: {short}")
+            } else {
+                "Finished without landing".into()
+            }
+        }
+        ThreadState::Closed => "Thread closed without landing".into(),
+        ThreadState::Merged => "Change landed".into(),
+        _ => "Previous attempt finished".into(),
     }
 }
 
@@ -1114,6 +1218,8 @@ impl StateStore {
             updated_at,
             attempted_at: Some(attempted_at),
             open_referenced_blockers,
+            thread_id: Some(identifier),
+            last_result: None,
         };
         if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
             mark_dispatch(item, selected, identifier);
@@ -1125,6 +1231,16 @@ impl StateStore {
         }
         self.commit(next)?;
         Ok(identifier)
+    }
+
+    /// Clears a single issue's stored dispatch attempt record so continuous dispatch retries it (#616).
+    pub fn clear_dispatch_attempt(
+        &mut self,
+        project: u32,
+        repository: &str,
+        number: u32,
+    ) -> Result<bool, ThreadError> {
+        self.reconcile_dispatch_attempts(project, repository, &[number], &BTreeMap::new())
     }
 
     /// Removes stored dispatch attempts for `numbers` in `repository`, plus records any newly
@@ -1354,6 +1470,23 @@ impl StateStore {
                         attempt.number != issue.number
                             || !attempt.repository.eq_ignore_ascii_case(&issue.repository)
                     });
+                } else if let Some(issue) = &item.threads[index].issue {
+                    let summary = summarize_attempt_result(
+                        item.threads[index]
+                            .kept_work_reason
+                            .as_deref()
+                            .unwrap_or(""),
+                    );
+                    if !summary.is_empty()
+                        && let Some(attempt) =
+                            item.continuous_dispatch.attempts.iter_mut().find(|entry| {
+                                entry.number == issue.number
+                                    && entry.repository.eq_ignore_ascii_case(&issue.repository)
+                            })
+                    {
+                        attempt.last_result = Some(summary);
+                        attempt.thread_id = Some(identifier);
+                    }
                 }
                 crate::rosen_work::remove_thread(item, identifier);
                 Ok((true, ()))
@@ -1396,6 +1529,7 @@ impl StateStore {
                 crate::rosen::drop_pending_deliveries(thread);
                 let reason = dispatch_end_reason(thread);
                 thread.no_change_reason = Some(reason.clone());
+                let attempt_issue = thread.issue.clone();
                 if thread.started_by_dispatch {
                     if let (Some(issue), Some(change)) = (&thread.issue, &thread.rosen_change) {
                         item.continuous_dispatch.no_change_reports.insert(
@@ -1404,7 +1538,7 @@ impl StateStore {
                                 issue: issue.clone(),
                                 change: change.clone(),
                                 nick,
-                                reason,
+                                reason: reason.clone(),
                             },
                         );
                     }
@@ -1419,6 +1553,19 @@ impl StateStore {
                             task.assigned_thread_id = None;
                             task.state = TaskState::Todo;
                         }
+                    }
+                }
+                if let Some(issue) = attempt_issue {
+                    let short = summarize_attempt_result(&reason);
+                    if !short.is_empty()
+                        && let Some(attempt) =
+                            item.continuous_dispatch.attempts.iter_mut().find(|entry| {
+                                entry.number == issue.number
+                                    && entry.repository.eq_ignore_ascii_case(&issue.repository)
+                            })
+                    {
+                        attempt.last_result = Some(format!("No change: {short}"));
+                        attempt.thread_id = Some(identifier);
                     }
                 }
                 if !item.continuous_dispatch.cleanup.contains(&identifier) {
@@ -2066,6 +2213,73 @@ mod tests {
             &[418],
             &BTreeMap::new(),
         )?);
+        drop(loaded);
+
+        let reloaded = StateStore::load_or_default(&directory)?;
+        assert!(
+            reloaded
+                .project(1)
+                .ok_or("missing project")?
+                .continuous_dispatch
+                .attempts
+                .is_empty()
+        );
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn health_history_and_attempt_result_survive_save_and_load()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Risk (#616): project health idle-spell history and dispatch attempt outcomes must
+        // survive save/load and clear cleanly when the owner clicks "Try again".
+        let (directory, mut store) = legacy_store()?;
+        store.set_continuous_dispatch(1, 2, false)?;
+        let thread_id = store.record_continuous_dispatch_with_blockers(
+            1,
+            crate::threads::NewThread {
+                title: "#417: Retry test".into(),
+                branch_name: "issue-417".into(),
+                worktree_path: directory.display().to_string(),
+                role: velocity_core::tool_policy::ThreadRole::Builder,
+                provider: crate::ProviderKind::Codex,
+                model_name: "gpt".into(),
+                effort: crate::EffortLevel::Medium,
+                preferred_speed: crate::SpeedMode::Regular,
+                model_supports_fast: false,
+            },
+            ThreadIssue::new("mESmaC/velocity".into(), 417),
+            "2026-11-22T03:00:00Z".into(),
+            None,
+            Vec::new(),
+            1_700_000_000,
+        )?;
+        assert!(thread_id > 0);
+        store.record_project_health_history(
+            1,
+            velocity_core::project_health::ProjectHealthHistoryEntry {
+                id: "dispatch-idle:1700000000".into(),
+                kind: velocity_core::project_health::HealthSignalKind::DispatchIdle,
+                severity: velocity_core::project_health::HealthSeverity::Warning,
+                summary: "Slots were idle (0/2) for 2 h with nothing dispatched".into(),
+                detail: Some("#417 (already attempted at this version)".into()),
+                started_at_ms: "1700000000000".into(),
+                ended_at_ms: Some("1700007200000".into()),
+                duration_seconds: 7_200,
+            },
+        )?;
+        drop(store);
+
+        let mut loaded = StateStore::load_or_default(&directory)?;
+        let project = loaded.project(1).ok_or("missing project")?;
+        assert_eq!(project.health_history.len(), 1);
+        assert_eq!(project.health_history[0].duration_seconds, 7_200);
+        assert_eq!(
+            project.continuous_dispatch.attempts[0].thread_id,
+            Some(thread_id)
+        );
+
+        assert!(loaded.clear_dispatch_attempt(1, "mESmaC/velocity", 417)?);
         drop(loaded);
 
         let reloaded = StateStore::load_or_default(&directory)?;

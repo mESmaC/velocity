@@ -313,6 +313,11 @@ async fn dispatch_selected_issue(
         (plan.launch, thread)
     };
     let snapshot = crate::threads::start_planned(&application, plan, thread)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    crate::project_health::notify_dispatched(&application, project_identifier, now);
     report(update_links(&application, false));
     Ok(snapshot)
 }
