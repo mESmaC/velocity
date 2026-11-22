@@ -201,6 +201,9 @@ pub struct IssuePanelSnapshot {
     pub revision: u32,
     pub project_identifier: Option<u32>,
     pub repository: Option<String>,
+    /// Which issue host (`github` or `collapse`) backs the currently shown rows (#590).
+    #[serde(default)]
+    pub host: velocity_core::collapse::IssueHost,
     pub loading: bool,
     pub rows: Vec<IssuePanelRow>,
     pub error: Option<String>,
@@ -211,9 +214,10 @@ pub struct IssuePanelSnapshot {
 }
 
 impl IssuePanelSnapshot {
-    pub fn select(&mut self, project: Option<u32>) {
-        if self.project_identifier != project {
+    pub fn select(&mut self, project: Option<u32>, host: velocity_core::collapse::IssueHost) {
+        if self.project_identifier != project || self.host != host {
             self.project_identifier = project;
+            self.host = host;
             self.repository = None;
             self.rows.clear();
             self.expanded.clear();

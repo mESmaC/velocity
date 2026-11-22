@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use velocity_acp::client::{QUEUED_RUN_PORT_ENV, QUEUED_RUN_TOKEN_ENV, request_queued_run};
 use velocity_github::mcp_stdio::{ReviewDiffRequest, ToolServer, review_diff_tool};
-use velocity_github::{IssueClient, ParkedOutcome, ScoutServer, read_scout_reports};
+use velocity_github::{IssueClient, IssueHost, ParkedOutcome, ScoutServer, read_scout_reports};
 use velocity_rosen::ProjectServer;
 use velocity_rosen::change_details::{self, ReviewTrees};
 use velocity_rosen::review_swarm::{self, LandedChange};
@@ -25,6 +25,8 @@ pub(crate) struct SwarmLaunch {
     pub target: Option<LandedChange>,
     pub workspace: PathBuf,
     pub change: String,
+    #[serde(default)]
+    pub issue_host: IssueHost,
     pub repository: Option<String>,
     #[serde(default)]
     pub source_issue: Option<velocity_store::issues::ThreadIssue>,
@@ -114,9 +116,9 @@ impl ReviewSwarmServer {
         let client = launch
             .repository
             .as_deref()
-            .ok_or_else(|| "This project has no GitHub repository for findings".to_owned())
+            .ok_or_else(|| "This project has no issue repository for findings".to_owned())
             .and_then(|repository| {
-                IssueClient::for_repository(&launch.workspace, repository)
+                IssueClient::for_host(&launch.workspace, launch.issue_host, repository)
                     .map_err(|error| error.to_string())
             });
         let scout = ScoutServer::new(client, launch.nickname.clone(), Some(launch.report.clone()));
@@ -189,9 +191,10 @@ impl ReviewSwarmServer {
             .launch
             .repository
             .as_deref()
-            .ok_or("The project has no GitHub repository")?;
-        let client = IssueClient::for_repository(&self.launch.workspace, repository)
-            .map_err(|error| error.to_string())?;
+            .ok_or("The project has no issue repository")?;
+        let client =
+            IssueClient::for_host(&self.launch.workspace, self.launch.issue_host, repository)
+                .map_err(|error| error.to_string())?;
         match request {
             NoChangeReview::List { offset } => {
                 let issues = client
@@ -589,13 +592,22 @@ impl SwarmLaunch {
             .project_root()
             .map_err(|error| error.to_string())?;
         let basename = format!("{}-{nickname}", roster.project.id);
-        let repository = roster.project.github_remote.clone().or_else(|| {
-            velocity_github::IssueClient::discover(std::path::Path::new(
-                &roster.project.repository_path,
-            ))
-            .ok()
-            .map(|client| client.repository().to_owned())
-        });
+        let issue_host = roster.project.effective_issue_host();
+        let repository = roster
+            .project
+            .issue_host_repository()
+            .map(|(_, repository)| repository)
+            .or_else(|| {
+                (issue_host == IssueHost::GitHub)
+                    .then(|| {
+                        velocity_github::IssueClient::discover(std::path::Path::new(
+                            &roster.project.repository_path,
+                        ))
+                        .ok()
+                        .map(|client| client.repository().to_owned())
+                    })
+                    .flatten()
+            });
         Ok(Self {
             app_data: runner.app_data.clone(),
             project: roster.project.id,
@@ -611,6 +623,7 @@ impl SwarmLaunch {
             target,
             workspace: root.join(format!("review-{}", roster.scouts[index].nickname)),
             change: String::new(),
+            issue_host,
             repository,
             report: runner.reports.join(format!("{basename}-issues.jsonl")),
             completion: runner.reports.join(format!("{basename}-complete.json")),

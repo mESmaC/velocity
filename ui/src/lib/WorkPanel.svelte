@@ -196,6 +196,7 @@
     <WorkIssueRow
       issue={row}
       {project}
+      host={panel?.host ?? 'github'}
       expanded={expanded.has(row.key)}
       {blocked}
       {send}
@@ -310,7 +311,11 @@
           >Refresh issues</button
         >
       {:else if !panel || panel.loading}
-        <p class="empty" role="status">Loading GitHub issues…</p>
+        <p class="empty" role="status">
+          {panel?.host === 'collapse'
+            ? 'Loading Collapse issues…'
+            : 'Loading issues…'}
+        </p>
       {:else if !groups.questions.length && !groups.holds.length && !groups.active.length && !groups.done.length}
         <p class="empty">No work yet.</p>
       {/if}

@@ -58,11 +58,12 @@ struct BlockerRepositoryEntry {
     repository: LinkedRepository,
 }
 
-/// A blocker GitHub confirmed, ready to link.
+/// A blocker confirmed by the issue host, ready to link.
 pub(crate) struct ResolvedBlocker {
     /// `#12` in this repository and `owner/name#12` elsewhere.
     pub(crate) name: String,
     id: String,
+    reference: IssueReference,
 }
 
 /// `Waits for #12, owner/name#40 …`, the line a comment gains for the links it made.
@@ -224,12 +225,24 @@ impl IssueClient {
         Ok((dependent.id, linked))
     }
 
-    /// Reads each blocker's GitHub ID, so a blocker that does not exist is refused
+    /// Reads each blocker's host identifier, so a blocker that does not exist is refused
     /// before anything is written.
     pub(crate) fn resolve_blockers(
         &self,
         blockers: &[IssueReference],
     ) -> Result<Vec<ResolvedBlocker>, GitHubCommandError> {
+        if let IssueBackend::Collapse(collapse) = &self.backend {
+            let names = collapse.validate_blockers(blockers)?;
+            return Ok(blockers
+                .iter()
+                .zip(names)
+                .map(|(blocker, name)| ResolvedBlocker {
+                    name,
+                    id: String::new(),
+                    reference: blocker.clone(),
+                })
+                .collect());
+        }
         let transport = self.github_transport()?;
         blockers
             .iter()
@@ -250,17 +263,40 @@ impl IssueClient {
                         "/data/repository/issue",
                     )
                     .map_err(|error| unreadable(error.to_string()))?;
-                Ok(ResolvedBlocker { name, id: found.id })
+                Ok(ResolvedBlocker {
+                    name,
+                    id: found.id,
+                    reference: blocker.clone(),
+                })
             })
             .collect()
     }
 
-    /// Links resolved blockers to the issue with GitHub ID `subject`.
+    /// Links resolved blockers to the issue with host identifier `subject`.
     pub(crate) fn add_blocked_by(
         &self,
         subject: &str,
         blockers: &[ResolvedBlocker],
     ) -> Result<(), GitHubCommandError> {
+        if let IssueBackend::Collapse(collapse) = &self.backend {
+            if blockers.is_empty() {
+                return Ok(());
+            }
+            let number = subject
+                .rsplit_once('#')
+                .and_then(|(_, value)| value.parse::<u32>().ok())
+                .filter(|number| *number > 0)
+                .ok_or_else(|| {
+                    GitHubCommandError::Invalid(format!(
+                        "Could not parse Collapse issue number from `{subject}`"
+                    ))
+                })?;
+            for blocker in blockers {
+                collapse.add_dependency(number, &blocker.reference)?;
+            }
+            let _ = collapse.read_issue(number);
+            return Ok(());
+        }
         let transport = self.github_transport()?;
         for blocker in blockers {
             let _: IssueId = transport.graphql_at(

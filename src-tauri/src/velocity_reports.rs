@@ -10,7 +10,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use velocity_airc::Entry;
 use velocity_github::{
-    IssueClient,
+    IssueClient, IssueHost,
     velocity_reports::{self, DiscoveryReport, ReportRepository, ReportedDiscoveries},
 };
 use velocity_store::ProjectItem;
@@ -66,8 +66,18 @@ fn destination_projects(projects: &[ProjectItem]) -> BTreeMap<ReportRepository, 
         .filter_map(|destination| {
             let repository = destination.repository();
             let project = projects.iter().find(|project| {
+                if project
+                    .collapse_repository
+                    .as_deref()
+                    .is_some_and(|remote| remote.eq_ignore_ascii_case(repository))
+                {
+                    return true;
+                }
                 if let Some(remote) = project.github_remote.as_deref() {
                     return remote.eq_ignore_ascii_case(repository);
+                }
+                if project.effective_issue_host() == IssueHost::Collapse {
+                    return false;
                 }
                 let leaf = repository.rsplit('/').next().unwrap_or(repository);
                 let directory = Path::new(&project.repository_path);
@@ -82,8 +92,8 @@ fn destination_projects(projects: &[ProjectItem]) -> BTreeMap<ReportRepository, 
 }
 
 /// Reports the project's marked discoveries after its cursor, in order. Each one is marked
-/// pending before GitHub is asked and recorded as soon as it answers, so an attempt cut off in
-/// between is matched to the issue it opened on the next pass rather than filed again.
+/// pending before the issue host is asked and recorded as soon as it answers, so an attempt
+/// cut off in between is matched to the issue it opened on the next pass rather than filed again.
 fn report_project(
     app_data: &Path,
     project: &ProjectItem,
@@ -109,8 +119,17 @@ fn report_project(
         saved.save(app_data).map_err(|error| error.to_string())?;
         let report =
             DiscoveryReport::new(title, &entry.text, &entry.nick, &project.name, &entry.time);
-        let target = destinations.get(&repository);
-        let outcome = velocity_reports::report_to(
+        let target = destinations.get(&repository).copied();
+        let (host, target_repository) = match target {
+            Some(dest) => (
+                dest.effective_issue_host(),
+                dest.issue_host_repository().map(|(_, repo)| repo),
+            ),
+            None => (project.effective_issue_host(), None),
+        };
+        let outcome = velocity_reports::report_to_host(
+            host,
+            target_repository.as_deref(),
             repository,
             &report,
             &saved.recent,
@@ -120,7 +139,13 @@ fn report_project(
         .map_err(|error| error.to_string())?;
         // Before the report is recorded: a failed link leaves it pending, and the retry
         // finds the issue it already opened and links again (#511).
-        link_blockers(repository, outcome.issue(), &report)?;
+        link_blockers(
+            host,
+            target_repository.as_deref(),
+            repository,
+            outcome.issue(),
+            &report,
+        )?;
         let reports = saved.projects.entry(project.id).or_default();
         reports.record_issue(repository, entry.sequence, outcome.issue());
         saved.remember(repository, outcome.issue(), report);
@@ -135,20 +160,28 @@ fn report_project(
 }
 
 /// Links the blockers a discovery declares to the issue it was reported on. A blocker
-/// GitHub refuses, such as an issue that does not exist, is logged and left out so the
-/// project's later reports still go through.
+/// refused by the issue host, such as an issue that does not exist, is logged and left out
+/// so the project's later reports still go through.
 fn link_blockers(
+    host: IssueHost,
+    repository_override: Option<&str>,
     repository: ReportRepository,
     issue: u32,
     report: &DiscoveryReport,
 ) -> Result<(), String> {
-    let refused = velocity_reports::link_declared_blockers(repository, issue, report)
-        .map_err(|error| error.to_string())?;
+    let refused = velocity_reports::link_declared_blockers_on(
+        host,
+        repository_override,
+        repository,
+        issue,
+        report,
+    )
+    .map_err(|error| error.to_string())?;
     if !refused.is_empty() {
+        let dest = repository_override.unwrap_or_else(|| repository.repository());
         eprintln!(
-            "Discovery issue reports: GitHub refused to link {} as blockers of {}#{issue}",
+            "Discovery issue reports: refused to link {} as blockers of {dest}#{issue}",
             refused.join(", "),
-            repository.repository(),
         );
     }
     Ok(())

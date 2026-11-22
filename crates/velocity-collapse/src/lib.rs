@@ -33,6 +33,7 @@ pub use downstream::{DownstreamSetup, set_downstream};
 pub use git_credential::{
     MIN_PROACTIVE_AUTH_GIT_VERSION, PROACTIVE_AUTH_KEY, ProactiveAuthStatus, check_proactive_auth,
     checkout_repository, clone_repository, ensure_proactive_auth, ensure_remote_tag,
+    resolve_remote_tag_commit,
 };
 pub use health::{RepositoryActivity, repository_activity, repository_downstream};
 pub use post_land::{RepositoryPostLand, repository_post_land};

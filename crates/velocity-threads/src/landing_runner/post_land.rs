@@ -722,22 +722,25 @@ fn failure_report(batch: &Batch, failed: &FailedCheck) -> String {
     }
 }
 
-/// Returns `true` when at least one commit in `commits` has no green `velocity/integration`
-/// status on GitHub yet, so this machine should verify it (#519).
+/// Returns `true` when at least one commit in `commits` has no green integration
+/// status on the project's issue host yet, so this machine should verify it (#519, #590).
 async fn needs_remote_verification(
     project: &ProjectItem,
     commits: &[String],
 ) -> Result<bool, String> {
     let directory = PathBuf::from(&project.repository_path);
-    let remote = project.github_remote.clone();
+    let host = project.effective_issue_host();
+    let remote = project.issue_host_repository().map(|(_, repo)| repo);
     let commits = commits.to_vec();
     tokio::task::spawn_blocking(move || {
-        let client = match remote.as_deref() {
-            Some(remote) => velocity_github::IssueClient::for_repository(&directory, remote),
-            None if directory.join(".git").exists() => {
+        let client = match (host, remote.as_deref()) {
+            (host, Some(remote)) => {
+                velocity_github::IssueClient::for_host(&directory, host, remote)
+            }
+            (velocity_github::IssueHost::GitHub, None) if directory.join(".git").exists() => {
                 velocity_github::IssueClient::discover(&directory)
             }
-            None => return Ok(true),
+            _ => return Ok(true),
         }
         .map_err(|error| error.to_string())?;
         for commit in &commits {

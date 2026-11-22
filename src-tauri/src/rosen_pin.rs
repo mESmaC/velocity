@@ -15,6 +15,7 @@ use velocity_collapse::releases::{
 use velocity_core::rosen_pin::{
     PostLandSnapshot, PostLandState, RosenCommit, RosenPin, merge_post_land_states, short_commit,
 };
+use velocity_github::IssueHost;
 use velocity_github::rosen_pin::{IssueLook, PinIssue, ReleaseLook, RosenPinWatch};
 use velocity_github::velocity_reports::VELOCITY_REPOSITORY;
 
@@ -36,10 +37,19 @@ const FIRST_LOOK: Duration = Duration::from_secs(2 * 60);
 /// has its issue within minutes at about ten requests a look.
 const LOOK_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
-/// What the looks remember between them. Nothing is saved: a restart only asks GitHub again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VelocityPinTarget {
+    host: IssueHost,
+    repository: String,
+    collapse_repository: Option<String>,
+}
+
+/// What the looks remember between them. Nothing is saved: a restart only asks again.
 #[derive(Default)]
 struct Watch {
-    /// The signed-in account may push to Velocity's repository.
+    /// The target host/repository whose maintainer permission was checked.
+    target: Option<VelocityPinTarget>,
+    /// The signed-in account may maintain Velocity's repository.
     maintainer: bool,
     /// The pinned Rosen release already found on Rosen.
     known_release: Option<String>,
@@ -57,29 +67,53 @@ pub fn initialize(application: &AppHandle) {
         let mut watch = Watch::default();
         std::thread::sleep(FIRST_LOOK);
         loop {
-            if has_velocity_project(&application) {
-                look(&application, &mut watch);
+            if let Some(target) = velocity_pin_target(&application) {
+                look(&application, &mut watch, &target);
             }
             std::thread::sleep(LOOK_INTERVAL);
         }
     });
 }
 
-/// Whether this machine has the Rosen project whose repository is Velocity's own, as the
-/// owner's does (the same test as local builds, F1).
-fn has_velocity_project(application: &AppHandle) -> bool {
-    let Some(store) = application.try_state::<ManagedStateStore>() else {
-        return false;
-    };
-    let Ok(store) = store.lock() else {
-        return false;
-    };
-    store.state().projects.iter().any(|project| {
+/// Whether this machine has the Rosen project whose repository is Velocity's own, and which
+/// issue host (`GitHub` or `Collapse`) backs it (#513, #590).
+fn velocity_pin_target(application: &AppHandle) -> Option<VelocityPinTarget> {
+    let store = application.try_state::<ManagedStateStore>()?;
+    let store = store.lock().ok()?;
+    let projects = &store.state().projects;
+    let velocity = projects.iter().find(|project| {
         project.rosen_in_use()
-            && project
-                .github_remote
+            && (project
+                .collapse_repository
                 .as_deref()
                 .is_some_and(|remote| remote.eq_ignore_ascii_case(VELOCITY_REPOSITORY))
+                || project
+                    .github_remote
+                    .as_deref()
+                    .is_some_and(|remote| remote.eq_ignore_ascii_case(VELOCITY_REPOSITORY)))
+    })?;
+    let host = velocity.effective_issue_host();
+    let repository = velocity
+        .issue_host_repository()
+        .map(|(_, repository)| repository)
+        .unwrap_or_else(|| VELOCITY_REPOSITORY.to_owned());
+    let collapse_repository = projects.iter().find_map(|project| {
+        if !project.rosen_in_use() {
+            return None;
+        }
+        let candidate = match host {
+            IssueHost::Collapse => project.collapse_repository.as_deref(),
+            IssueHost::GitHub => project.github_remote.as_deref(),
+        }?;
+        velocity_github::graph_indexer_pin::COLLAPSE_REPOSITORIES
+            .iter()
+            .any(|known| candidate.eq_ignore_ascii_case(known))
+            .then(|| candidate.to_owned())
+    });
+    Some(VelocityPinTarget {
+        host,
+        repository,
+        collapse_repository,
     })
 }
 
@@ -88,8 +122,8 @@ struct ObservedLook {
     release: Result<ReleaseLook, String>,
 }
 
-fn look(application: &AppHandle, watch: &mut Watch) {
-    let (done, failures) = match observe(application, watch) {
+fn look(application: &AppHandle, watch: &mut Watch, target: &VelocityPinTarget) {
+    let (done, failures) = match observe(application, watch, target) {
         Ok(Some(ObservedLook { issue, release })) => {
             let mut done = Vec::new();
             let mut failures = Vec::new();
@@ -128,12 +162,20 @@ fn look(application: &AppHandle, watch: &mut Watch) {
 
 /// One look, or `None` when the signed-in account does not maintain Velocity's repository.
 /// Builds and publishes the pinned Rosen release from source to Collapse without touching
-/// GitHub's release workflow (#561, #593).
+/// GitHub's release workflow (#561, #593, #590).
 fn observe(
     application: &AppHandle,
     watch: &mut Watch,
+    target: &VelocityPinTarget,
 ) -> Result<Option<ObservedLook>, velocity_github::GitHubCommandError> {
-    let client = RosenPinWatch::new(VELOCITY_REPOSITORY)?;
+    if watch.target.as_ref() != Some(target) {
+        watch.target = Some(target.clone());
+        watch.maintainer = false;
+    }
+    let mut client = RosenPinWatch::for_host(target.host, &target.repository)?;
+    if let Some(collapse_repo) = target.collapse_repository.as_deref() {
+        client = client.with_collapse_repository(collapse_repo);
+    }
     if !watch.maintainer {
         watch.maintainer = client.can_maintain()?;
     }
@@ -142,7 +184,12 @@ fn observe(
     }
     let (pin, issue) =
         client.look_issue_with_post_land(|pin, ahead| read_post_land(application, pin, ahead))?;
-    let release = publish_collapse_rosen_release(application, &pin, watch.known_release.as_deref());
+    let release = publish_collapse_rosen_release(
+        application,
+        target.host,
+        &pin,
+        watch.known_release.as_deref(),
+    );
     Ok(Some(ObservedLook { issue, release }))
 }
 
@@ -150,6 +197,7 @@ fn observe(
 /// Collapse Rosen repository when `pin.release_to_publish()` is missing or incomplete (#593).
 fn publish_collapse_rosen_release(
     application: &AppHandle,
+    host: IssueHost,
     pin: &RosenPin,
     known: Option<&str>,
 ) -> Result<ReleaseLook, String> {
@@ -187,7 +235,10 @@ fn publish_collapse_rosen_release(
         "No Collapse release token is available; save one in Settings → Collapse → Release credentials",
     )?;
     let git_url = format!("{}/{}/{}.git", collapse_releases::API_HOST, owner, name);
-    let source_url = format!("https://github.com/{}.git", pin.repository);
+    let source_url = match host {
+        IssueHost::Collapse => git_url.clone(),
+        IssueHost::GitHub => format!("https://github.com/{}.git", pin.repository),
+    };
     let out_dir = app_data.join("rosen-pin-release").join(tag);
     if out_dir.exists() {
         let _ = std::fs::remove_dir_all(&out_dir);

@@ -10,11 +10,14 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+use velocity_collapse::issues::UpdateIssueRequest;
+use velocity_core::collapse::IssueHost;
 use velocity_core::rosen_pin::{
     self, CheckRun, CiState, GreenSource, LandedIssue, OpenIssue, PinBump, PinBumpStep, PinVerdict,
     PostLandState, RosenCommit, RosenPin,
 };
 
+use crate::collapse_issues::CollapseIssueTransport;
 use crate::gh_command::{GitHubCommand, GitHubCommandError};
 
 /// Where Collapse's issues live. Its open issues are read with Velocity's for the ones
@@ -76,40 +79,78 @@ enum Ahead {
     },
 }
 
-/// The `gh` transport for the repository that holds the pin and the pin-bump issue.
+enum WatchTransport {
+    GitHub(GitHubCommand),
+    Collapse(CollapseIssueTransport),
+}
+
+/// The issue-host transport for the repository that holds the pin and the pin-bump issue.
 pub struct RosenPinWatch {
-    command: GitHubCommand,
+    transport: WatchTransport,
     velocity: String,
+    collapse_repository: String,
 }
 
 impl RosenPinWatch {
-    /// `velocity` is the `owner/name` of the repository whose `Cargo.toml` pins Rosen.
+    /// `velocity` is the `owner/name` of the repository whose `Cargo.toml` pins Rosen (GitHub).
     #[track_caller]
     pub fn new(velocity: &str) -> Result<Self, GitHubCommandError> {
-        let name = crate::RepositoryName::parse(velocity)
-            .map_err(|error| GitHubCommandError::Invalid(error.to_string()))?;
+        Self::for_host(IssueHost::GitHub, velocity)
+    }
+
+    /// Constructs a Rosen pin watcher backed by `host` (`GitHub` or `Collapse`) (#590).
+    #[track_caller]
+    pub fn for_host(host: IssueHost, velocity: &str) -> Result<Self, GitHubCommandError> {
+        let (transport, full_name) = match host {
+            IssueHost::GitHub => {
+                let name = crate::RepositoryName::parse(velocity)
+                    .map_err(|error| GitHubCommandError::Invalid(error.to_string()))?;
+                let full_name = name.full_name();
+                (
+                    WatchTransport::GitHub(GitHubCommand::for_repository(&name)),
+                    full_name,
+                )
+            }
+            IssueHost::Collapse => {
+                let collapse = CollapseIssueTransport::for_repository(velocity)?;
+                let full_name = collapse.repository().to_owned();
+                (WatchTransport::Collapse(collapse), full_name)
+            }
+        };
         Ok(Self {
-            command: GitHubCommand::for_repository(&name),
-            velocity: name.full_name(),
+            transport,
+            velocity: full_name,
+            collapse_repository: COLLAPSE_REPOSITORY.to_owned(),
         })
     }
 
-    /// Whether the signed-in account may push to the repository. Only its maintainers keep
+    /// Overrides the Collapse repository read for open issues that reference landed Rosen issues.
+    pub fn with_collapse_repository(mut self, repository: &str) -> Self {
+        self.collapse_repository = repository.to_owned();
+        self
+    }
+
+    /// Whether the signed-in account may maintain the repository. Only its maintainers keep
     /// the issue, so a copy of Velocity that merely cloned the repository files nothing.
     pub fn can_maintain(&self) -> Result<bool, GitHubCommandError> {
-        #[derive(Deserialize)]
-        struct Permissions {
-            #[serde(default)]
-            push: bool,
+        match &self.transport {
+            WatchTransport::Collapse(collapse) => Ok(collapse.can_maintain()?.unwrap_or(false)),
+            WatchTransport::GitHub(command) => {
+                #[derive(Deserialize)]
+                struct Permissions {
+                    #[serde(default)]
+                    push: bool,
+                }
+                #[derive(Deserialize)]
+                struct RepoPermissions {
+                    #[serde(default)]
+                    permissions: Option<Permissions>,
+                }
+                let endpoint = format!("repos/{}", self.velocity);
+                let repo: RepoPermissions = command.read(&["api", &endpoint])?;
+                Ok(repo.permissions.is_some_and(|perm| perm.push))
+            }
         }
-        #[derive(Deserialize)]
-        struct RepoPermissions {
-            #[serde(default)]
-            permissions: Option<Permissions>,
-        }
-        let endpoint = format!("repos/{}", self.velocity);
-        let repo: RepoPermissions = self.command.read(&["api", &endpoint])?;
-        Ok(repo.permissions.is_some_and(|perm| perm.push))
     }
 
     /// Brings the pin-bump issue and the pinned Rosen release up to date. `known_release`
@@ -181,9 +222,16 @@ impl RosenPinWatch {
         path: &str,
         commit: Option<&str>,
     ) -> Result<String, GitHubCommandError> {
-        let reference = commit.map_or_else(String::new, |commit| format!("?ref={commit}"));
-        let endpoint = format!("repos/{repository}/contents/{path}{reference}");
-        self.command.text(&["api", "-H", RAW_CONTENT, &endpoint])
+        match &self.transport {
+            WatchTransport::Collapse(_) => CollapseIssueTransport::for_repository(repository)?
+                .read_raw_file(path, commit)?
+                .ok_or_else(|| GitHubCommandError::Missing(format!("{repository}:{path}"))),
+            WatchTransport::GitHub(command) => {
+                let reference = commit.map_or_else(String::new, |commit| format!("?ref={commit}"));
+                let endpoint = format!("repos/{repository}/contents/{path}{reference}");
+                command.text(&["api", "-H", RAW_CONTENT, &endpoint])
+            }
+        }
     }
 
     fn ahead(
@@ -192,9 +240,7 @@ impl RosenPinWatch {
         read_post_land: impl FnOnce(&RosenPin, &[RosenCommit]) -> BTreeMap<String, PostLandState>,
     ) -> Result<Ahead, GitHubCommandError> {
         let rosen = &pin.repository;
-        let endpoint = format!("repos/{rosen}/commits?per_page=100");
-        let commits: Vec<ApiCommit> = self.command.read(&["api", &endpoint])?;
-        let commits: Vec<RosenCommit> = commits.into_iter().map(ApiCommit::into_commit).collect();
+        let commits = self.recent_commits(rosen)?;
         let (ahead, found) = rosen_pin::commits_ahead(&commits, &pin.revision);
         let Some(newest) = ahead.first() else {
             return Ok(Ahead::Nothing);
@@ -213,7 +259,10 @@ impl RosenPinWatch {
             if matches!(rosen_state, PostLandState::Failed) {
                 continue;
             }
-            let github_state = self.ci_state(rosen, &commit.commit)?;
+            let github_state = match &self.transport {
+                WatchTransport::Collapse(_) => CiState::NotRun,
+                WatchTransport::GitHub(_) => self.ci_state(rosen, &commit.commit)?,
+            };
             if let PinVerdict::Green(green_source) =
                 rosen_pin::pin_verdict(rosen_state, github_state)
             {
@@ -227,6 +276,21 @@ impl RosenPinWatch {
         Ok(Ahead::NoGreenCommit)
     }
 
+    fn recent_commits(&self, repository: &str) -> Result<Vec<RosenCommit>, GitHubCommandError> {
+        match &self.transport {
+            WatchTransport::Collapse(_) => Ok(CollapseIssueTransport::for_repository(repository)?
+                .read_history_commits(100)?
+                .into_iter()
+                .map(|(commit, message)| RosenCommit { commit, message })
+                .collect()),
+            WatchTransport::GitHub(command) => {
+                let endpoint = format!("repos/{repository}/commits?per_page=100");
+                let commits: Vec<ApiCommit> = command.read(&["api", &endpoint])?;
+                Ok(commits.into_iter().map(ApiCommit::into_commit).collect())
+            }
+        }
+    }
+
     /// Whether `descendant` has `ancestor` in its history.
     fn contains(
         &self,
@@ -234,25 +298,36 @@ impl RosenPinWatch {
         descendant: &str,
         ancestor: &str,
     ) -> Result<bool, GitHubCommandError> {
-        #[derive(Deserialize)]
-        struct Comparison {
-            status: String,
+        match &self.transport {
+            WatchTransport::Collapse(_) => {
+                CollapseIssueTransport::for_repository(repository)?.commit_mirrored(ancestor)
+            }
+            WatchTransport::GitHub(command) => {
+                #[derive(Deserialize)]
+                struct Comparison {
+                    status: String,
+                }
+                let endpoint =
+                    format!("repos/{repository}/compare/{ancestor}...{descendant}?per_page=1");
+                let comparison: Comparison = command.read(&["api", &endpoint])?;
+                Ok(comparison.status == "ahead")
+            }
         }
-        let endpoint = format!("repos/{repository}/compare/{ancestor}...{descendant}?per_page=1");
-        let comparison: Comparison = self.command.read(&["api", &endpoint])?;
-        Ok(comparison.status == "ahead")
     }
 
     fn ci_state(&self, repository: &str, commit: &str) -> Result<CiState, GitHubCommandError> {
+        let WatchTransport::GitHub(command) = &self.transport else {
+            return Ok(CiState::NotRun);
+        };
         let commit_endpoint = format!("repos/{repository}/commits/{commit}");
         let runs_endpoint = format!("{commit_endpoint}/check-runs?per_page=100");
-        let runs: CheckRunsResponse = self.command.read(&["api", &runs_endpoint])?;
+        let runs: CheckRunsResponse = command.read(&["api", &runs_endpoint])?;
         let workflow_runs_endpoint =
             format!("repos/{repository}/actions/runs?head_sha={commit}&per_page=100");
         let workflow_runs: WorkflowRunsResponse =
-            self.command.read(&["api", &workflow_runs_endpoint])?;
+            command.read(&["api", &workflow_runs_endpoint])?;
         let status_endpoint = format!("{commit_endpoint}/status?per_page=100");
-        let combined: CombinedStatus = self.command.read(&["api", &status_endpoint])?;
+        let combined: CombinedStatus = command.read(&["api", &status_endpoint])?;
         let runs: Vec<CheckRun<'_>> = runs
             .check_runs
             .iter()
@@ -302,9 +377,9 @@ impl RosenPinWatch {
         let mut unread = Vec::new();
         // Without a landed Rosen issue no open issue can name one, so nothing more is read.
         if !numbers.is_empty() {
-            match self.open_issues(COLLAPSE_REPOSITORY)? {
+            match self.open_issues(&self.collapse_repository)? {
                 Some(collapse) => issues.extend(collapse),
-                None => unread.push(COLLAPSE_REPOSITORY.to_owned()),
+                None => unread.push(self.collapse_repository.clone()),
             }
         }
         let titles = self.issue_titles(&rosen, numbers.iter().copied())?;
@@ -325,78 +400,123 @@ impl RosenPinWatch {
     }
 
     /// Each numbered issue's title, empty for a number that is no issue of `repository`.
-    /// The recently updated issues come in one request, which usually has every issue a
-    /// recent commit names; the rest are read one by one.
+    /// On Collapse this uses one batch read; on GitHub the recently updated issues come in one
+    /// request and any remaining numbers are read one by one.
     fn issue_titles(
         &self,
         repository: &str,
         numbers: impl Iterator<Item = u32>,
     ) -> Result<BTreeMap<u32, String>, GitHubCommandError> {
-        let mut numbers = numbers.peekable();
-        if numbers.peek().is_none() {
+        let wanted: Vec<u32> = numbers.collect();
+        if wanted.is_empty() {
             return Ok(BTreeMap::new());
         }
-        let issues = format!("repos/{repository}/issues");
-        let recent_endpoint =
-            format!("{issues}?state=all&sort=updated&direction=desc&per_page=100");
-        let recent: Vec<Titled> = self.command.read(&["api", &recent_endpoint])?;
-        let recent: BTreeMap<u32, String> = recent
-            .into_iter()
-            .map(|issue| (issue.number, issue.title))
-            .collect();
-        numbers
-            .map(|number| {
-                if let Some(title) = recent.get(&number) {
-                    return Ok((number, title.clone()));
-                }
-                let endpoint = format!("{issues}/{number}");
-                match self.command.read::<Titled>(&["api", &endpoint]) {
-                    Ok(issue) => Ok((number, issue.title)),
-                    Err(error) if not_found(&error) => Ok((number, String::new())),
-                    Err(error) => Err(error),
-                }
-            })
-            .collect()
+        match &self.transport {
+            WatchTransport::Collapse(_) => {
+                let collapse = CollapseIssueTransport::for_repository(repository)?;
+                let found: BTreeMap<u32, String> = match collapse.get_batch(&wanted) {
+                    Ok(issues) => issues
+                        .into_iter()
+                        .map(|issue| (issue.number, issue.title))
+                        .collect(),
+                    Err(error) if not_found(&error) => BTreeMap::new(),
+                    Err(error) => return Err(error),
+                };
+                Ok(wanted
+                    .into_iter()
+                    .map(|number| {
+                        let title = found.get(&number).cloned().unwrap_or_default();
+                        (number, title)
+                    })
+                    .collect())
+            }
+            WatchTransport::GitHub(command) => {
+                let issues = format!("repos/{repository}/issues");
+                let recent_endpoint =
+                    format!("{issues}?state=all&sort=updated&direction=desc&per_page=100");
+                let recent: Vec<Titled> = command.read(&["api", &recent_endpoint])?;
+                let recent: BTreeMap<u32, String> = recent
+                    .into_iter()
+                    .map(|issue| (issue.number, issue.title))
+                    .collect();
+                wanted
+                    .into_iter()
+                    .map(|number| {
+                        if let Some(title) = recent.get(&number) {
+                            return Ok((number, title.clone()));
+                        }
+                        let endpoint = format!("{issues}/{number}");
+                        match command.read::<Titled>(&["api", &endpoint]) {
+                            Ok(issue) => Ok((number, issue.title)),
+                            Err(error) if not_found(&error) => Ok((number, String::new())),
+                            Err(error) => Err(error),
+                        }
+                    })
+                    .collect()
+            }
+        }
     }
 
     /// The repository's open issues without its pull requests, or `None` when the signed-in
     /// account cannot read the repository. Reuses the shared open-issues cache when fresh (#556).
     fn open_issues(&self, repository: &str) -> Result<Option<Vec<OpenIssue>>, GitHubCommandError> {
-        if let Some(cached) = crate::issue_cache::get_fresh(
-            crate::IssueHost::GitHub,
-            repository,
-            crate::OPEN_ISSUES_REFRESH,
-        ) {
-            return Ok(Some(
-                cached
-                    .into_iter()
-                    .map(|issue| OpenIssue {
-                        repository: repository.to_owned(),
-                        number: issue.number,
-                        title: issue.title,
-                        body: issue.body,
-                    })
-                    .collect(),
-            ));
+        match &self.transport {
+            WatchTransport::Collapse(_) => {
+                let collapse = CollapseIssueTransport::for_repository(repository)?;
+                match collapse.open_issues() {
+                    Ok(issues) => Ok(Some(
+                        issues
+                            .into_iter()
+                            .map(|issue| OpenIssue {
+                                repository: repository.to_owned(),
+                                number: issue.number,
+                                title: issue.title,
+                                body: issue.body,
+                            })
+                            .collect(),
+                    )),
+                    Err(error) if not_found(&error) => Ok(None),
+                    Err(error) => Err(error),
+                }
+            }
+            WatchTransport::GitHub(command) => {
+                if let Some(cached) = crate::issue_cache::get_fresh(
+                    crate::IssueHost::GitHub,
+                    repository,
+                    crate::OPEN_ISSUES_REFRESH,
+                ) {
+                    return Ok(Some(
+                        cached
+                            .into_iter()
+                            .map(|issue| OpenIssue {
+                                repository: repository.to_owned(),
+                                number: issue.number,
+                                title: issue.title,
+                                body: issue.body,
+                            })
+                            .collect(),
+                    ));
+                }
+                let endpoint = format!("repos/{repository}/issues?state=open&per_page=100");
+                let listed = match command.get_paginated::<Listed>(&endpoint) {
+                    Ok(listed) => listed,
+                    Err(error) if not_found(&error) => return Ok(None),
+                    Err(error) => return Err(error),
+                };
+                Ok(Some(
+                    listed
+                        .into_iter()
+                        .filter(|issue| issue.pull_request.is_none())
+                        .map(|issue| OpenIssue {
+                            repository: repository.to_owned(),
+                            number: issue.number,
+                            title: issue.title,
+                            body: issue.body.unwrap_or_default(),
+                        })
+                        .collect(),
+                ))
+            }
         }
-        let endpoint = format!("repos/{repository}/issues?state=open&per_page=100");
-        let listed = match self.command.get_paginated::<Listed>(&endpoint) {
-            Ok(listed) => listed,
-            Err(error) if not_found(&error) => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        Ok(Some(
-            listed
-                .into_iter()
-                .filter(|issue| issue.pull_request.is_none())
-                .map(|issue| OpenIssue {
-                    repository: repository.to_owned(),
-                    number: issue.number,
-                    title: issue.title,
-                    body: issue.body.unwrap_or_default(),
-                })
-                .collect(),
-        ))
     }
 
     /// Opens or rewrites the one pin-bump issue and closes the others.
@@ -406,19 +526,13 @@ impl RosenPinWatch {
         bump: &PinBump,
     ) -> Result<(PinIssue, Vec<u32>), GitHubCommandError> {
         let plan = rosen_pin::plan(open, bump);
-        let text = json!({"title": bump.title(), "body": bump.body()});
-        let issues = format!("repos/{}/issues", self.velocity);
         let (kept, issue) = match plan.step {
             PinBumpStep::Open => {
-                let opened: Numbered = self.command.api("POST", &issues, &text)?;
-                crate::issue_cache::invalidate(crate::IssueHost::GitHub, &self.velocity);
-                (opened.number, PinIssue::Opened(opened.number))
+                let number = self.create_pin_issue(&bump.title(), &bump.body())?;
+                (number, PinIssue::Opened(number))
             }
             PinBumpStep::Rewrite(number) => {
-                let _: Value = self
-                    .command
-                    .api("PATCH", &format!("{issues}/{number}"), &text)?;
-                crate::issue_cache::invalidate(crate::IssueHost::GitHub, &self.velocity);
+                self.rewrite_pin_issue(number, &bump.title(), &bump.body())?;
                 (number, PinIssue::Rewritten(number))
             }
             PinBumpStep::Keep(number) => (number, PinIssue::Kept(number)),
@@ -437,6 +551,49 @@ impl RosenPinWatch {
         Ok((issue, [plan.finished, plan.duplicates].concat()))
     }
 
+    fn create_pin_issue(&self, title: &str, body: &str) -> Result<u32, GitHubCommandError> {
+        match &self.transport {
+            WatchTransport::Collapse(collapse) => {
+                Ok(collapse.create_issue(title, body, &[], &[])?.number)
+            }
+            WatchTransport::GitHub(command) => {
+                let issues = format!("repos/{}/issues", self.velocity);
+                let opened: Numbered =
+                    command.api("POST", &issues, &json!({"title": title, "body": body}))?;
+                crate::issue_cache::invalidate(crate::IssueHost::GitHub, &self.velocity);
+                Ok(opened.number)
+            }
+        }
+    }
+
+    fn rewrite_pin_issue(
+        &self,
+        number: u32,
+        title: &str,
+        body: &str,
+    ) -> Result<(), GitHubCommandError> {
+        match &self.transport {
+            WatchTransport::Collapse(collapse) => {
+                collapse.update_issue(
+                    number,
+                    UpdateIssueRequest {
+                        title: Some(title.to_owned()),
+                        body: Some(body.to_owned()),
+                        ..Default::default()
+                    },
+                )?;
+                Ok(())
+            }
+            WatchTransport::GitHub(command) => {
+                let endpoint = format!("repos/{}/issues/{number}", self.velocity);
+                let _: Value =
+                    command.api("PATCH", &endpoint, &json!({"title": title, "body": body}))?;
+                crate::issue_cache::invalidate(crate::IssueHost::GitHub, &self.velocity);
+                Ok(())
+            }
+        }
+    }
+
     /// While no bump is due, only the oldest open pin-bump issue stays for its follow-through.
     fn close_surplus(&self, open: &[OpenIssue]) -> Result<Vec<u32>, GitHubCommandError> {
         let Some((kept, surplus)) = rosen_pin::oldest_and_surplus(open) else {
@@ -450,19 +607,27 @@ impl RosenPinWatch {
 
     /// Comment first, state second: a failure never leaves a closed issue without its reason.
     fn close(&self, number: u32, reason: &str, comment: &str) -> Result<(), GitHubCommandError> {
-        let issue = format!("repos/{}/issues/{number}", self.velocity);
-        let _: Value = self.command.api(
-            "POST",
-            &format!("{issue}/comments"),
-            &json!({"body": comment}),
-        )?;
-        let _: Value = self.command.api(
-            "PATCH",
-            &issue,
-            &json!({"state": "closed", "state_reason": reason}),
-        )?;
-        crate::issue_cache::invalidate(crate::IssueHost::GitHub, &self.velocity);
-        Ok(())
+        match &self.transport {
+            WatchTransport::Collapse(collapse) => {
+                collapse.close_issue(number, reason, comment)?;
+                Ok(())
+            }
+            WatchTransport::GitHub(command) => {
+                let issue = format!("repos/{}/issues/{number}", self.velocity);
+                let _: Value = command.api(
+                    "POST",
+                    &format!("{issue}/comments"),
+                    &json!({"body": comment}),
+                )?;
+                let _: Value = command.api(
+                    "PATCH",
+                    &issue,
+                    &json!({"state": "closed", "state_reason": reason}),
+                )?;
+                crate::issue_cache::invalidate(crate::IssueHost::GitHub, &self.velocity);
+                Ok(())
+            }
+        }
     }
 
     /// Publishes the Rosen release the pin names when Rosen has none by that tag. The
@@ -473,6 +638,9 @@ impl RosenPinWatch {
         pin: &RosenPin,
         known: Option<&str>,
     ) -> Result<ReleaseLook, GitHubCommandError> {
+        let WatchTransport::GitHub(command) = &self.transport else {
+            return Ok(ReleaseLook::default());
+        };
         let Some(tag) = pin.release_to_publish() else {
             return Ok(ReleaseLook::default());
         };
@@ -484,10 +652,7 @@ impl RosenPinWatch {
             return Ok(found(false));
         }
         let releases = format!("repos/{}/releases", pin.repository);
-        match self
-            .command
-            .read::<Value>(&["api", &format!("{releases}/tags/{tag}")])
-        {
+        match command.read::<Value>(&["api", &format!("{releases}/tags/{tag}")]) {
             Ok(_) => return Ok(found(false)),
             Err(error) if !not_found(&error) => return Err(error),
             Err(_) => {}
@@ -498,7 +663,7 @@ impl RosenPinWatch {
              binaries that Velocity's release workflow downloads for this commit.",
             self.velocity, pin.revision
         );
-        let _: Value = self.command.api(
+        let _: Value = command.api(
             "POST",
             &releases,
             &json!({

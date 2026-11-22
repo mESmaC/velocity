@@ -548,6 +548,46 @@ fn push_tag_inside(
     }
 }
 
+/// Resolves `refs/tags/<tag>` on a Collapse HTTPS git remote to its peeled commit SHA
+/// without cloning or contacting GitHub (#590). Returns `Ok(None)` when the tag is absent.
+pub fn resolve_remote_tag_commit(
+    mirror_url: &str,
+    tag: &str,
+) -> Result<Option<String>, CollapseError> {
+    if mirror_url.contains(['\n', '\r', '\0']) || tag.contains(['\n', '\r', '\0']) {
+        return Err(CollapseError::Git(
+            "Collapse tag query received an invalid URL or tag".into(),
+        ));
+    }
+    let exact = format!("refs/tags/{tag}");
+    let peeled = format!("{exact}^{{}}");
+    let output = collapse_git()
+        .args(["ls-remote", "--tags", "--", mirror_url, &exact, &peeled])
+        .output()
+        .map_err(|error| CollapseError::Git(format!("Could not run git ls-remote: {error}")))?;
+    if !output.status.success() {
+        return Err(CollapseError::Git(format!(
+            "Could not read tag {tag} from {mirror_url}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let mut direct = None;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Some((sha, reference)) = line.split_once('\t') else {
+            continue;
+        };
+        let sha = sha.trim();
+        let reference = reference.trim();
+        if reference == peeled {
+            return Ok(Some(sha.to_ascii_lowercase()));
+        }
+        if reference == exact {
+            direct = Some(sha.to_ascii_lowercase());
+        }
+    }
+    Ok(direct)
+}
+
 fn collapse_git() -> Command {
     let mut command = hidden_git();
     command.args([

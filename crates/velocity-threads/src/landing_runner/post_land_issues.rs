@@ -112,18 +112,18 @@ fn enqueue_failures(
         if pending.contains(failure.session) {
             continue;
         }
-        let repository = project_state
+        let (host, repository) = project_state
             .project
-            .github_remote
-            .clone()
-            .ok_or("Project has no GitHub remote for post-land failure issues")?;
+            .issue_host_repository()
+            .ok_or("Project has no issue repository for post-land failure issues")?;
         let mut report = FailureReport::new(
             failure.session,
             repository,
             failure.change.clone(),
             failure.commit.clone(),
             failure.output.clone(),
-        );
+        )
+        .with_host(host);
         if let Some(thread) = project_state
             .project
             .threads
@@ -141,6 +141,10 @@ fn publish_integrations(
     server: &ProjectServer,
     project_state: &LandingProject,
 ) -> Result<(), String> {
+    // Collapse projects report post-land green directly through Rosen's state feed (#590).
+    if project_state.project.effective_issue_host() == velocity_github::IssueHost::Collapse {
+        return Ok(());
+    }
     let Some(repository) = project_state.project.github_remote.as_deref() else {
         return Ok(());
     };

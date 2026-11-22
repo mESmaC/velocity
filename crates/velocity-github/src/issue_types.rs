@@ -1,11 +1,15 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use velocity_core::collapse::IssueHost;
 
-/// A GitHub account named on an issue or comment.
+/// An account or named token credited on an issue or comment (GitHub or Collapse).
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 pub struct GitHubActor {
     pub login: String,
 }
+
+/// Host-neutral alias for [`GitHubActor`] (#590).
+pub type IssueActor = GitHubActor;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -27,8 +31,8 @@ pub struct GitHubIssue {
     pub created_at: String,
     pub updated_at: String,
     pub closed_at: Option<String>,
-    /// Latest `ReopenedEvent` timestamp from GitHub's timeline, so a reopened issue is
-    /// recognized even before its previous completed work item is replaced (#602).
+    /// Latest reopen timestamp from the issue host's timeline/change feed, so a reopened
+    /// issue is recognized even before its previous completed work item is replaced (#602).
     #[serde(default)]
     pub reopened_at: Option<String>,
     #[serde(default)]
@@ -44,7 +48,13 @@ pub struct GitHubIssue {
     /// dispatch until the running copy contains a closed blocker's tooling land (#601).
     #[serde(default)]
     pub closed_blockers: Vec<String>,
+    /// Which issue host (`GitHub` or `Collapse`) produced this issue (#590).
+    #[serde(default)]
+    pub host: IssueHost,
 }
+
+/// Host-neutral alias for [`GitHubIssue`] (#590).
+pub type Issue = GitHubIssue;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 pub struct IssueMilestone {
@@ -69,6 +79,8 @@ impl GitHubIssue {
 /// issues. Filing refreshes it so a newly filed or edited issue is not missed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct IssueReviewToken {
+    #[serde(default)]
+    pub host: IssueHost,
     pub repository: String,
     pub issues: Vec<ReviewedIssue>,
 }
@@ -82,6 +94,8 @@ pub struct ReviewedIssue {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 pub struct IssueInventory {
+    #[serde(default)]
+    pub host: IssueHost,
     pub repository: String,
     pub issues: Vec<GitHubIssue>,
     pub review_token: IssueReviewToken,
@@ -89,6 +103,14 @@ pub struct IssueInventory {
 
 impl IssueInventory {
     pub(crate) fn new(
+        repository: String,
+        issues: Vec<GitHubIssue>,
+    ) -> Result<Self, crate::GitHubCommandError> {
+        Self::new_for_host(IssueHost::GitHub, repository, issues)
+    }
+
+    pub(crate) fn new_for_host(
+        host: IssueHost,
         repository: String,
         issues: Vec<GitHubIssue>,
     ) -> Result<Self, crate::GitHubCommandError> {
@@ -105,9 +127,11 @@ impl IssueInventory {
         reviewed.sort_by_key(|issue| issue.number);
         Ok(Self {
             review_token: IssueReviewToken {
+                host,
                 repository: repository.clone(),
                 issues: reviewed,
             },
+            host,
             repository,
             issues,
         })

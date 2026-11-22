@@ -12,7 +12,7 @@ use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use velocity_core::duty::DutyRole;
 use velocity_github::mcp_stdio::{self, ToolServer};
-use velocity_github::{IssueClient, ScoutServer};
+use velocity_github::{IssueClient, IssueHost, ScoutServer};
 use velocity_interview::Interviews;
 use velocity_rosen::mcp_latency::LatencyRecorder;
 use velocity_store::duty::ScoutRoster;
@@ -112,12 +112,42 @@ pub fn serve_scout_server() -> anyhow::Result<bool> {
     if arguments.first().map(String::as_str) != Some(SCOUT_SERVER_SWITCH) {
         return Ok(false);
     }
-    let [_, worktree, scout, report] = arguments.as_slice() else {
-        anyhow::bail!("Usage: {SCOUT_SERVER_SWITCH} <worktree> <scout> <report-file>");
+    let (worktree, scout, report, host_args) = match arguments.as_slice() {
+        [_, worktree, scout, report] => (worktree, scout, report, None),
+        [_, worktree, scout, report, host, repository] => (
+            worktree,
+            scout,
+            report,
+            Some((host.as_str(), repository.as_str())),
+        ),
+        _ => anyhow::bail!(
+            "Usage: {SCOUT_SERVER_SWITCH} <worktree> <scout> <report-file> [<host> <repository>]"
+        ),
     };
-    let client = IssueClient::discover(std::path::Path::new(worktree)).map_err(|error| {
-        format!("This project has no GitHub repository to file issues in ({error})")
-    });
+    let client = match host_args {
+        Some(("collapse", "")) => {
+            Err("This project has no Collapse repository to file issues in".to_owned())
+        }
+        Some(("collapse", repository)) => IssueClient::for_host(
+            std::path::Path::new(worktree),
+            IssueHost::Collapse,
+            repository,
+        )
+        .map_err(|error| {
+            format!("This project has no Collapse repository to file issues in ({error})")
+        }),
+        Some(("github", repository)) if !repository.is_empty() => IssueClient::for_host(
+            std::path::Path::new(worktree),
+            IssueHost::GitHub,
+            repository,
+        )
+        .map_err(|error| {
+            format!("This project has no GitHub repository to file issues in ({error})")
+        }),
+        _ => IssueClient::discover(std::path::Path::new(worktree)).map_err(|error| {
+            format!("This project has no GitHub repository to file issues in ({error})")
+        }),
+    };
     let mut server = TimedToolServer::new(ScoutServer::new(
         client,
         scout.clone(),

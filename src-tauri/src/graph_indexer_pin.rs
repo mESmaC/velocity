@@ -11,6 +11,7 @@ use velocity_collapse::releases as collapse_releases;
 use velocity_core::graph_indexer_pin::{
     ReleaseAssetCandidate, ReleaseCandidate, checksum_name, parse_sha256,
 };
+use velocity_github::IssueHost;
 use velocity_github::graph_indexer_pin::{
     COLLAPSE_REPOSITORIES, GraphIndexerPinWatch, GraphPinCache, IssueLook, PinIssue,
 };
@@ -22,11 +23,18 @@ use crate::state::ManagedStateStore;
 const FIRST_LOOK: Duration = Duration::from_secs(2 * 60 + 15);
 const LOOK_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
-/// What the looks remember between them. Nothing is saved: a restart checks GitHub again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CollapsePinTarget {
+    host: IssueHost,
+    velocity_repository: String,
+    collapse_repository: String,
+}
+
+/// What the looks remember between them. Nothing is saved: a restart checks again.
 #[derive(Default)]
 struct Watch {
-    /// Resolved Collapse GitHub `owner/name` repository that the signed-in account maintains.
-    collapse_repository: Option<String>,
+    /// Resolved Collapse issue-host target that the signed-in account maintains.
+    target: Option<CollapsePinTarget>,
     /// Cached immutable release metadata (parser/schema versions and SHA-256 assets).
     cache: GraphPinCache,
     /// The failure last written to the log, so a failure that repeats is written once.
@@ -52,9 +60,9 @@ pub fn initialize(application: &AppHandle) {
     });
 }
 
-/// Ordered Collapse GitHub repository candidates when this machine has a Rosen project for
-/// Velocity or Collapse. Empty when neither project is present.
-fn collapse_candidates(application: &AppHandle) -> Vec<String> {
+/// Ordered Collapse repository candidates with their configured issue host when this machine
+/// has a Rosen project for Velocity or Collapse. Empty when neither project is present (#590).
+fn collapse_candidates(application: &AppHandle) -> Vec<CollapsePinTarget> {
     let Some(store) = application.try_state::<ManagedStateStore>() else {
         return Vec::new();
     };
@@ -63,31 +71,65 @@ fn collapse_candidates(application: &AppHandle) -> Vec<String> {
     };
     let mut configured = Vec::new();
     let mut relevant = false;
+    let mut default_host = IssueHost::GitHub;
+    let mut velocity_repository = VELOCITY_REPOSITORY.to_owned();
     for project in &store.state().projects {
         if !project.rosen_in_use() {
             continue;
         }
-        let remote = project.github_remote.as_deref();
-        if remote.is_some_and(|repo| repo.eq_ignore_ascii_case(VELOCITY_REPOSITORY)) {
+        let is_velocity = project
+            .collapse_repository
+            .as_deref()
+            .is_some_and(|repo| repo.eq_ignore_ascii_case(VELOCITY_REPOSITORY))
+            || project
+                .github_remote
+                .as_deref()
+                .is_some_and(|repo| repo.eq_ignore_ascii_case(VELOCITY_REPOSITORY));
+        if is_velocity {
             relevant = true;
+            default_host = project.effective_issue_host();
+            if let Some((_, repo)) = project.issue_host_repository() {
+                velocity_repository = repo;
+            }
         }
-        let collapse_remote = remote.filter(|repo| {
-            is_collapse_repository(repo)
-                || project
-                    .collapse_repository
-                    .as_deref()
-                    .is_some_and(is_collapse_repository)
-        });
-        if let Some(repo) = collapse_remote {
+        let is_collapse = project
+            .collapse_repository
+            .as_deref()
+            .is_some_and(is_collapse_repository)
+            || project
+                .github_remote
+                .as_deref()
+                .is_some_and(is_collapse_repository);
+        if is_collapse {
             relevant = true;
-            push_unique(&mut configured, repo);
+            let host = project.effective_issue_host();
+            if let Some((_, repo)) = project.issue_host_repository() {
+                push_unique(
+                    &mut configured,
+                    CollapsePinTarget {
+                        host,
+                        velocity_repository: velocity_repository.clone(),
+                        collapse_repository: repo,
+                    },
+                );
+            }
         }
     }
     if !relevant {
         return Vec::new();
     }
+    for entry in &mut configured {
+        entry.velocity_repository = velocity_repository.clone();
+    }
     for default_repo in COLLAPSE_REPOSITORIES {
-        push_unique(&mut configured, default_repo);
+        push_unique(
+            &mut configured,
+            CollapsePinTarget {
+                host: default_host,
+                velocity_repository: velocity_repository.clone(),
+                collapse_repository: default_repo.to_owned(),
+            },
+        );
     }
     configured
 }
@@ -98,16 +140,18 @@ fn is_collapse_repository(repository: &str) -> bool {
         .any(|known| repository.eq_ignore_ascii_case(known))
 }
 
-fn push_unique(list: &mut Vec<String>, candidate: &str) {
-    if !list
-        .iter()
-        .any(|existing| existing.eq_ignore_ascii_case(candidate))
-    {
-        list.push(candidate.to_owned());
+fn push_unique(list: &mut Vec<CollapsePinTarget>, candidate: CollapsePinTarget) {
+    if !list.iter().any(|existing| {
+        existing.host == candidate.host
+            && existing
+                .collapse_repository
+                .eq_ignore_ascii_case(&candidate.collapse_repository)
+    }) {
+        list.push(candidate);
     }
 }
 
-fn look(watch: &mut Watch, candidates: &[String]) {
+fn look(watch: &mut Watch, candidates: &[CollapsePinTarget]) {
     let (done, failure) = match observe(watch, candidates) {
         Ok(Some((repository, look))) => (issue_notes(&repository, &look), None),
         Ok(None) => (Vec::new(), None),
@@ -128,15 +172,29 @@ fn look(watch: &mut Watch, candidates: &[String]) {
 /// One look, or `None` when the signed-in account does not maintain Collapse's repository.
 fn observe(
     watch: &mut Watch,
-    candidates: &[String],
+    candidates: &[CollapsePinTarget],
 ) -> Result<Option<(String, IssueLook)>, velocity_github::GitHubCommandError> {
-    let client = match watch.collapse_repository.as_deref() {
-        Some(collapse) => GraphIndexerPinWatch::new(VELOCITY_REPOSITORY, collapse)?,
+    if watch.target.as_ref().is_some_and(|saved| {
+        !candidates.iter().any(|candidate| {
+            candidate.host == saved.host
+                && candidate
+                    .collapse_repository
+                    .eq_ignore_ascii_case(&saved.collapse_repository)
+        })
+    }) {
+        watch.target = None;
+    }
+    let client = match watch.target.as_ref() {
+        Some(target) => GraphIndexerPinWatch::for_host(
+            target.host,
+            &target.velocity_repository,
+            &target.collapse_repository,
+        )?,
         None => {
-            let Some(client) = resolve_maintainer_client(candidates)? else {
+            let Some((target, client)) = resolve_maintainer_client(candidates)? else {
                 return Ok(None);
             };
-            watch.collapse_repository = Some(client.collapse_repository().to_owned());
+            watch.target = Some(target);
             client
         }
     };
@@ -211,12 +269,17 @@ fn read_collapse_sha256(release: &ReleaseCandidate, archive_name: &str) -> Optio
 }
 
 fn resolve_maintainer_client(
-    candidates: &[String],
-) -> Result<Option<GraphIndexerPinWatch>, velocity_github::GitHubCommandError> {
+    candidates: &[CollapsePinTarget],
+) -> Result<Option<(CollapsePinTarget, GraphIndexerPinWatch)>, velocity_github::GitHubCommandError>
+{
     for candidate in candidates {
-        let client = GraphIndexerPinWatch::new(VELOCITY_REPOSITORY, candidate)?;
+        let client = GraphIndexerPinWatch::for_host(
+            candidate.host,
+            &candidate.velocity_repository,
+            &candidate.collapse_repository,
+        )?;
         match client.can_maintain()? {
-            Some(true) => return Ok(Some(client)),
+            Some(true) => return Ok(Some((candidate.clone(), client))),
             Some(false) => return Ok(None),
             None => continue,
         }

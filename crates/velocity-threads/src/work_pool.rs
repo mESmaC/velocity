@@ -156,8 +156,7 @@ fn issue_pieces(
     mut issue_evidence: impl FnMut(&GitHubIssue),
 ) -> Result<Vec<WorkPiece>, WorkPoolError> {
     let mut pieces = Vec::new();
-    if IssueClient::has_origin(checkout)? {
-        let (repository, mut issues) = open_issues(checkout, issue_age)?;
+    if let Some((repository, mut issues)) = open_issues(project, checkout, issue_age)? {
         issues.sort_by(|left, right| {
             left.created_at
                 .cmp(&right.created_at)
@@ -219,15 +218,26 @@ fn holds_work(thread: &velocity_store::ThreadItem) -> bool {
     !thread.supervision.released && !matches!(thread.state, ThreadState::Merged | ThreadState::Done)
 }
 
-/// The checkout's repository and its open issues, no older than `issue_age`. Only open issues
-/// are read: the pool never shows a closed one, and the closed pages were most of the cost.
+/// The project's issue repository and its open issues, no older than `issue_age`. Only open
+/// issues are read: the pool never shows a closed one, and the closed pages were most of the cost.
 fn open_issues(
+    project: &ProjectItem,
     checkout: &Path,
     issue_age: Duration,
-) -> Result<(String, Vec<GitHubIssue>), WorkPoolError> {
-    let client = IssueClient::discover(checkout)?;
+) -> Result<Option<(String, Vec<GitHubIssue>)>, WorkPoolError> {
+    let host = project.effective_issue_host();
+    let client = match project.issue_host_repository() {
+        Some((host, repository)) => IssueClient::for_host(checkout, host, &repository)?,
+        None if host == velocity_github::IssueHost::GitHub
+            && checkout.join(".git").exists()
+            && IssueClient::has_origin(checkout)? =>
+        {
+            IssueClient::discover(checkout)?
+        }
+        None => return Ok(None),
+    };
     let issues = client.cached_open_issues(issue_age)?;
-    Ok((client.repository().to_owned(), issues))
+    Ok(Some((client.repository().to_owned(), issues)))
 }
 
 fn task_pieces(project: &ProjectItem) -> Vec<WorkPiece> {

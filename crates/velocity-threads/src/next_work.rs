@@ -411,11 +411,13 @@ fn read_project_issues(
     project: &ProjectItem,
 ) -> Result<Option<(String, Vec<GitHubIssue>)>, String> {
     let directory = Path::new(&project.repository_path);
-    let client = match project.github_remote.as_deref() {
-        Some(remote) => {
-            IssueClient::for_repository(directory, remote).map_err(|error| error.to_string())?
+    let host = project.effective_issue_host();
+    let client = match project.issue_host_repository() {
+        Some((host, remote)) => {
+            IssueClient::for_host(directory, host, &remote).map_err(|error| error.to_string())?
         }
-        None if directory.join(".git").exists()
+        None if host == velocity_github::IssueHost::GitHub
+            && directory.join(".git").exists()
             && IssueClient::has_origin(directory).unwrap_or(false) =>
         {
             IssueClient::discover(directory).map_err(|error| error.to_string())?

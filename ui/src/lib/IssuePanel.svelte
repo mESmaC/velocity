@@ -155,7 +155,9 @@
       message={panel?.project_identifier == null
         ? 'Select a project.'
         : panel.repository === ''
-          ? 'Local project · no GitHub remote.'
+          ? panel.host === 'collapse'
+            ? 'Local project · no Collapse repository.'
+            : 'Local project · no GitHub remote.'
           : 'No open issues.'}
     />
     {#each panel?.rows ?? [] as row, index (row.number)}
@@ -260,7 +262,9 @@
               type="button"
               onclick={() => act(row.number, 'open')}
               >{row.thread_identifier === null
-                ? 'Open on GitHub'
+                ? panel?.host === 'collapse'
+                  ? 'Open on Collapse'
+                  : 'Open on GitHub'
                 : 'Open thread'}</button
             >
           </div>

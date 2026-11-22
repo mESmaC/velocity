@@ -436,9 +436,16 @@ impl IssueClient {
         })
     }
 
-    /// GraphQL's issues connection excludes PRs and has no search-index delay or
-    /// 1,000-result search cap. Every open and closed page is included.
+    /// Every open and closed issue in the repository, excluding PRs (#589, #590).
     pub fn inventory(&self) -> Result<IssueInventory, GitHubCommandError> {
+        if let IssueBackend::Collapse(collapse) = &self.backend {
+            let issues = collapse.all_issues()?;
+            return IssueInventory::new_for_host(
+                IssueHost::Collapse,
+                collapse.repository().to_owned(),
+                issues,
+            );
+        }
         let transport = self.github_transport()?;
         let query = format!(
             "query($owner:String!,$name:String!,$cursor:String) {{
@@ -456,6 +463,13 @@ impl IssueClient {
     }
 
     pub(crate) fn label_identifiers(&self) -> Result<BTreeMap<String, String>, GitHubCommandError> {
+        if let IssueBackend::Collapse(collapse) = &self.backend {
+            return Ok(collapse
+                .label_names()?
+                .into_iter()
+                .map(|name| (name.clone(), name))
+                .collect());
+        }
         let transport = self.github_transport()?;
         #[derive(Deserialize)]
         struct RepositoryLabel {
@@ -481,6 +495,9 @@ impl IssueClient {
         body: &str,
         labels: &[String],
     ) -> Result<GitHubIssue, GitHubCommandError> {
+        if let IssueBackend::Collapse(collapse) = &self.backend {
+            return collapse.create_issue(title, body, labels, &[]);
+        }
         let transport = self.github_transport()?;
         let repository: serde_json::Value = transport.graphql_at(
             "query($owner:String!,$name:String!) { repository(owner:$owner,name:$name) { id } }",
@@ -537,6 +554,7 @@ impl IssueClient {
                 .rev()
                 .find_map(|event| event.created_at)
         });
+        node.issue.host = IssueHost::GitHub;
         Ok(node.issue)
     }
 

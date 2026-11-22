@@ -114,24 +114,38 @@ pub fn open_issue_discussion(
 ) -> Result<(), String> {
     let parsed =
         velocity_github::RepositoryName::parse(&repository).map_err(|error| error.to_string())?;
-    let host = selected_project(&application)?
-        .filter(|project| {
-            project
-                .remote
-                .as_deref()
-                .is_some_and(|remote| remote.eq_ignore_ascii_case(&parsed.full_name()))
-        })
-        .map(|project| project.host)
-        .unwrap_or(IssueHost::GitHub);
+    let full_name = parsed.full_name();
+    let host = resolve_repository_issue_host(&application, &full_name)?;
     let url = match host {
-        IssueHost::Collapse => velocity_core::collapse::issue_page(&parsed.full_name(), number)
+        IssueHost::Collapse => velocity_core::collapse::issue_page(&full_name, number)
             .ok_or("Invalid Collapse issue URL")?,
-        IssueHost::GitHub => format!("https://github.com/{}/issues/{number}", parsed.full_name()),
+        IssueHost::GitHub => format!("https://github.com/{full_name}/issues/{number}"),
     };
     application
         .opener()
         .open_url(url, None::<&str>)
         .map_err(|error| error.to_string())
+}
+
+fn resolve_repository_issue_host(
+    application: &AppHandle,
+    repository: &str,
+) -> Result<IssueHost, String> {
+    let store = application.state::<ManagedStateStore>();
+    let store = lock(store.inner(), "persisted state")?;
+    if let Some(active) = store.active_project()
+        && let Some((host, remote)) = active.issue_host_repository()
+        && remote.eq_ignore_ascii_case(repository)
+    {
+        return Ok(host);
+    }
+    if let Some(host) = store.state().projects.iter().find_map(|project| {
+        let (host, remote) = project.issue_host_repository()?;
+        remote.eq_ignore_ascii_case(repository).then_some(host)
+    }) {
+        return Ok(host);
+    }
+    Ok(IssueHost::GitHub)
 }
 
 #[tauri::command]
@@ -377,7 +391,7 @@ fn read_issue(
     let client = project.issue_client()?;
     if !client.repository().eq_ignore_ascii_case(repository) {
         return Err(velocity_github::GitHubCommandError::Invalid(
-            "The GitHub remote changed; refresh issues".into(),
+            "The issue repository changed; refresh issues".into(),
         ));
     }
     Ok((client.repository().to_owned(), client.get(number)?))
@@ -536,7 +550,13 @@ fn refresh(
     let selected_panel = {
         let panel = application.state::<IssuePanel>();
         let mut panel = lock(panel.inner(), "issues")?;
-        panel.select(project.as_ref().map(|project| project.identifier));
+        panel.select(
+            project.as_ref().map(|project| project.identifier),
+            project
+                .as_ref()
+                .map(|project| project.host)
+                .unwrap_or(IssueHost::GitHub),
+        );
         panel.clone()
     };
     IssuePanelChanged {
@@ -567,7 +587,8 @@ fn fetch_issues(
     reader: &mut IssueReader,
 ) -> Result<(String, Vec<velocity_github::IssuePanelRow>), String> {
     if project.remote.is_none()
-        && (!project.directory.join(".git").exists()
+        && (project.host == IssueHost::Collapse
+            || !project.directory.join(".git").exists()
             || !IssueClient::has_origin(&project.directory).map_err(|error| error.to_string())?)
     {
         *reader = IssueReader::default();

@@ -7,16 +7,22 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use velocity_core::collapse::IssueHost;
 
+use crate::collapse_issues::CollapseIssueTransport;
 use crate::gh_command::GitHubCommand;
 use crate::{GitHubCommandError, RepositoryName};
 
 const LABEL: &str = "post-land-failure";
+const LABEL_COLOR: &str = "d73a4a";
+const LABEL_DESCRIPTION: &str = "A confirmed post-land test failure; does not block landing";
 
 /// One confirmed failure waiting to reach the project's issue tracker.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FailureReport {
     pub session: i64,
+    #[serde(default)]
+    pub host: IssueHost,
     pub repository: String,
     pub change: String,
     pub commit: String,
@@ -36,6 +42,7 @@ impl FailureReport {
     ) -> Self {
         Self {
             session,
+            host: IssueHost::GitHub,
             repository,
             change,
             commit,
@@ -43,6 +50,11 @@ impl FailureReport {
             thread: None,
             thread_title: String::new(),
         }
+    }
+
+    pub fn with_host(mut self, host: IssueHost) -> Self {
+        self.host = host;
+        self
     }
 
     pub fn with_thread(mut self, identifier: u32, title: String) -> Self {
@@ -137,16 +149,63 @@ struct Comment {
 /// File one issue per culprit and command/status. Diagnostic output can contain timings
 /// and paths that vary between runs; repeated evidence belongs on that same open issue.
 pub fn publish(report: &FailureReport) -> Result<u32, GitHubCommandError> {
+    if report.host == IssueHost::Collapse {
+        return publish_on_collapse(report);
+    }
+    publish_on_github(report)
+}
+
+fn publish_on_collapse(report: &FailureReport) -> Result<u32, GitHubCommandError> {
+    let collapse = CollapseIssueTransport::for_repository(&report.repository)?;
+    let _lock = report_lock(&format!("collapse--{}", collapse.repository()))?;
+    let failure = failure_marker(report);
+    let occurrence = occurrence_marker(report);
+    let body = report.body(&failure, &occurrence);
+    let issues = collapse.open_issues_fresh()?;
+    if let Some(issue) = issues.into_iter().find(|issue| {
+        issue
+            .labels
+            .iter()
+            .any(|label| label.eq_ignore_ascii_case(LABEL))
+            && issue.body.lines().any(|line| line == failure)
+    }) {
+        comment_once_collapse(&collapse, issue.number, &issue.body, &body, &occurrence)?;
+        return Ok(issue.number);
+    }
+    collapse.ensure_label_with(LABEL, LABEL_COLOR, LABEL_DESCRIPTION)?;
+    let title = failure_title(report);
+    let created = collapse.create_issue(&title, &body, &[LABEL.to_owned()], &[])?;
+    Ok(created.number)
+}
+
+fn comment_once_collapse(
+    collapse: &CollapseIssueTransport,
+    number: u32,
+    issue_body: &str,
+    body: &str,
+    occurrence: &str,
+) -> Result<(), GitHubCommandError> {
+    if issue_body.lines().any(|line| line == occurrence) {
+        return Ok(());
+    }
+    let comments = collapse.issue_comments(number)?;
+    if !comments
+        .iter()
+        .any(|comment| comment.body.lines().any(|line| line == occurrence))
+    {
+        collapse.add_comment(number, body)?;
+    }
+    Ok(())
+}
+
+fn publish_on_github(report: &FailureReport) -> Result<u32, GitHubCommandError> {
     let repository = RepositoryName::parse(&report.repository)
         .map_err(|error| GitHubCommandError::Invalid(error.to_string()))?;
     let command = GitHubCommand::for_repository(&repository);
     let _lock = report_lock(&repository.full_name())?;
     let endpoint = format!("repos/{}", repository.full_name());
     let failure = failure_marker(report);
-    let occurrence = marker(
-        "occurrence",
-        &format!("{}:{}:{}", report.session, report.change, report.commit),
-    );
+    let occurrence = occurrence_marker(report);
     let issues: Vec<Vec<Issue>> = command.read(&[
         "api",
         "--paginate",
@@ -164,7 +223,25 @@ pub fn publish(report: &FailureReport) -> Result<u32, GitHubCommandError> {
         return Ok(issue.number);
     }
     ensure_label(&command, &endpoint)?;
-    let title: String = report
+    let title = failure_title(report);
+    let issue: Issue = command.api(
+        "POST",
+        &format!("{endpoint}/issues"),
+        &json!({"title":title,"body":body,"labels":[LABEL]}),
+    )?;
+    crate::issue_cache::invalidate(IssueHost::GitHub, &repository.full_name());
+    Ok(issue.number)
+}
+
+fn occurrence_marker(report: &FailureReport) -> String {
+    marker(
+        "occurrence",
+        &format!("{}:{}:{}", report.session, report.change, report.commit),
+    )
+}
+
+fn failure_title(report: &FailureReport) -> String {
+    let summary: String = report
         .output
         .lines()
         .next()
@@ -172,12 +249,7 @@ pub fn publish(report: &FailureReport) -> Result<u32, GitHubCommandError> {
         .chars()
         .take(180)
         .collect();
-    let issue: Issue = command.api(
-        "POST",
-        &format!("{endpoint}/issues"),
-        &json!({"title":format!("Post-land test failure: {title}"),"body":body,"labels":[LABEL]}),
-    )?;
-    Ok(issue.number)
+    format!("Post-land test failure: {summary}")
 }
 
 /// Two open projects may mirror the same repository. Serialise their read/create cycle

@@ -9,11 +9,13 @@ use std::io::Write;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use velocity_core::collapse::IssueHost;
 use velocity_core::issue_dependencies::{IssueReference, declared_blockers};
 
-use crate::GitHubIssue;
+use crate::collapse_issues::CollapseIssueTransport;
 use crate::command::gh;
 use crate::gh_command::GitHubCommandError;
+use crate::{GitHubIssue, IssueState};
 
 /// Where Velocity's own issues live.
 pub const VELOCITY_REPOSITORY: &str = "mESmaC/velocity";
@@ -204,7 +206,7 @@ impl ReportedDiscoveries {
     }
 }
 
-/// Files a discovery, or adds evidence to a matching open issue in its destination.
+/// Files a discovery, or adds evidence to a matching open issue in its destination on GitHub.
 pub fn report_to(
     destination: ReportRepository,
     report: &DiscoveryReport,
@@ -212,7 +214,39 @@ pub fn report_to(
     mentioned_paths: impl FnOnce(&[(&str, &str)]) -> Vec<BTreeSet<String>>,
     retry: bool,
 ) -> Result<ReportOutcome, GitHubCommandError> {
-    let repository = destination.repository();
+    report_to_host(
+        IssueHost::GitHub,
+        None,
+        destination,
+        report,
+        recent,
+        mentioned_paths,
+        retry,
+    )
+}
+
+/// Files a discovery, or adds evidence to a matching open issue in its destination on
+/// `host` (`GitHub` or `Collapse`) (#590).
+pub fn report_to_host(
+    host: IssueHost,
+    repository_override: Option<&str>,
+    destination: ReportRepository,
+    report: &DiscoveryReport,
+    recent: &[RecentDiscovery],
+    mentioned_paths: impl FnOnce(&[(&str, &str)]) -> Vec<BTreeSet<String>>,
+    retry: bool,
+) -> Result<ReportOutcome, GitHubCommandError> {
+    let repository = repository_override.unwrap_or_else(|| destination.repository());
+    if host == IssueHost::Collapse {
+        return report_to_collapse(
+            repository,
+            destination,
+            report,
+            recent,
+            mentioned_paths,
+            retry,
+        );
+    }
     let open = open_issues(repository)?;
     let body = issue_body(report);
     if retry && let Some(previous) = open.iter().find(|issue| issue.body == body) {
@@ -227,23 +261,74 @@ pub fn report_to(
     file_issue(repository, report, &body).map(ReportOutcome::Filed)
 }
 
+fn report_to_collapse(
+    repository: &str,
+    destination: ReportRepository,
+    report: &DiscoveryReport,
+    recent: &[RecentDiscovery],
+    mentioned_paths: impl FnOnce(&[(&str, &str)]) -> Vec<BTreeSet<String>>,
+    retry: bool,
+) -> Result<ReportOutcome, GitHubCommandError> {
+    let collapse = CollapseIssueTransport::for_repository(repository)?;
+    let open: Vec<OpenIssue> = collapse
+        .open_issues_fresh()?
+        .into_iter()
+        .map(|issue| OpenIssue {
+            number: issue.number,
+            title: issue.title,
+            body: issue.body,
+        })
+        .collect();
+    let body = issue_body(report);
+    if retry && let Some(previous) = open.iter().find(|issue| issue.body == body) {
+        return Ok(ReportOutcome::Filed(previous.number));
+    }
+    let candidates = matching_issues(destination, report, &open, recent, mentioned_paths);
+    for (number, _) in candidates {
+        let is_open = open.iter().any(|issue| issue.number == number)
+            || collapse
+                .read_issue(number)
+                .map(|issue| issue.state == IssueState::Open)?;
+        if is_open {
+            return join_collapse_issue(&collapse, number, report, retry);
+        }
+    }
+    collapse
+        .create_issue(&report.title, &body, &[], &[])
+        .map(|issue| ReportOutcome::Filed(issue.number))
+}
+
 /// Links the issues a discovery names on its `Blocked by:` lines to the issue it was
-/// reported on, as GitHub issue dependencies (#511). A bare `#12` is an issue of the
+/// reported on, as issue dependencies (#511). A bare `#12` is an issue of the
 /// destination repository. Links that exist are kept, so a retried report is safe.
-/// Returns the blockers GitHub refused, such as an issue that does not exist: those are
+/// Returns the blockers the host refused, such as an issue that does not exist: those are
 /// final, while any other failure is an error the next pass retries.
 pub fn link_declared_blockers(
     destination: ReportRepository,
     issue: u32,
     report: &DiscoveryReport,
 ) -> Result<Vec<String>, GitHubCommandError> {
-    let repository = destination.repository();
+    link_declared_blockers_on(IssueHost::GitHub, None, destination, issue, report)
+}
+
+/// Links the issues a discovery names on its `Blocked by:` lines on `host` (#590).
+pub fn link_declared_blockers_on(
+    host: IssueHost,
+    repository_override: Option<&str>,
+    destination: ReportRepository,
+    issue: u32,
+    report: &DiscoveryReport,
+) -> Result<Vec<String>, GitHubCommandError> {
+    let repository = repository_override.unwrap_or_else(|| destination.repository());
     let blockers: Vec<_> = declared_blockers(&report.text)
         .into_iter()
         .filter(|blocker| !blocker.is_issue(repository, repository, issue))
         .collect();
     if blockers.is_empty() {
         return Ok(Vec::new());
+    }
+    if host == IssueHost::Collapse {
+        return link_declared_blockers_collapse(repository, issue, &blockers);
     }
     let endpoint = format!("repos/{repository}/issues/{issue}/dependencies/blocked_by");
     let linked: HashSet<u64> = run(&["api", "--paginate", &endpoint, "--jq", ".[].id"])?
@@ -256,6 +341,44 @@ pub fn link_declared_blockers(
         match link_blocker(repository, &endpoint, &linked, &blocker) {
             Ok(true) => {}
             Ok(false) => refused.push(name),
+            Err(error) if is_refusal(&error) => refused.push(name),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(refused)
+}
+
+fn link_declared_blockers_collapse(
+    repository: &str,
+    issue: u32,
+    blockers: &[IssueReference],
+) -> Result<Vec<String>, GitHubCommandError> {
+    let collapse = CollapseIssueTransport::for_repository(repository)?;
+    let existing = collapse.read_issue(issue)?;
+    let linked: HashSet<(String, u32)> = existing
+        .open_blockers
+        .iter()
+        .chain(existing.closed_blockers.iter())
+        .filter_map(|item| IssueReference::parse(item))
+        .map(|reference| {
+            (
+                reference.repository_or(repository).to_ascii_lowercase(),
+                reference.number(),
+            )
+        })
+        .collect();
+    let mut refused = Vec::new();
+    for blocker in blockers {
+        let key = (
+            blocker.repository_or(repository).to_ascii_lowercase(),
+            blocker.number(),
+        );
+        if linked.contains(&key) {
+            continue;
+        }
+        let name = blocker.relative_to(repository);
+        match collapse.add_dependency(issue, blocker) {
+            Ok(()) => {}
             Err(error) if is_refusal(&error) => refused.push(name),
             Err(error) => return Err(error),
         }
@@ -367,6 +490,34 @@ fn recorded_second(time: &str) -> Option<i64> {
     time.parse::<jiff::Timestamp>()
         .ok()
         .map(|time| time.as_second())
+}
+
+fn join_collapse_issue(
+    collapse: &CollapseIssueTransport,
+    number: u32,
+    report: &DiscoveryReport,
+    retry: bool,
+) -> Result<ReportOutcome, GitHubCommandError> {
+    let evidence = quote(&report.text);
+    let body = format!(
+        "Also seen by `{}` in `{}` ({}):\n\n{evidence}",
+        report.nick, report.project, report.time
+    );
+    if retry {
+        let previous = format!(
+            "Seen again by `{}` in project `{}` ({}):\n\n{evidence}",
+            report.nick, report.project, report.time
+        );
+        let comments = collapse.issue_comments(number)?;
+        if comments
+            .iter()
+            .any(|comment| comment.body == body || comment.body == previous)
+        {
+            return Ok(ReportOutcome::Joined(number));
+        }
+    }
+    collapse.add_comment(number, &body)?;
+    Ok(ReportOutcome::Joined(number))
 }
 
 fn join_issue(

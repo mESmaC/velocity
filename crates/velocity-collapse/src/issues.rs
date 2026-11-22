@@ -236,6 +236,29 @@ pub struct DependencyTarget<'a> {
     pub number: u32,
 }
 
+/// One commit row returned by `GET /api/history/{owner}/{name}` (#590).
+#[derive(Clone, Debug, Deserialize)]
+pub struct CollapseHistoryLand {
+    pub commit: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub message: String,
+}
+
+/// One page returned by `GET /api/history/{owner}/{name}?page={page}` (#590).
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct CollapseHistoryPage {
+    #[serde(default)]
+    pub commit: String,
+    #[serde(default)]
+    pub page: usize,
+    #[serde(default)]
+    pub lands: Vec<CollapseHistoryLand>,
+    #[serde(default, rename = "hasNext")]
+    pub has_next: bool,
+}
+
 /// Reusable async REST client for Collapse C14 Issues.
 #[derive(Clone)]
 pub struct CollapseIssueApi {
@@ -540,6 +563,69 @@ impl CollapseIssueApi {
         }
         issue_success(response, "check mirrored commit", false).await?;
         Ok(true)
+    }
+
+    /// Reads a raw UTF-8 file from Collapse's codeview API
+    /// (`GET /api/code/{owner}/{name}/raw?path=...&ref=...`) (#590).
+    /// Returns `Ok(None)` when the repository, ref or path is not found.
+    pub async fn get_raw_file(
+        &self,
+        token: Option<&str>,
+        owner: &str,
+        name: &str,
+        file_path: &str,
+        reference: Option<&str>,
+    ) -> Result<Option<String>, CollapseError> {
+        let mut path = format!(
+            "/api/code/{}/{}/raw?path={}",
+            encode(owner),
+            encode(name),
+            encode(file_path)
+        );
+        if let Some(reference) = reference.filter(|value| !value.is_empty()) {
+            path.push_str("&ref=");
+            path.push_str(&encode(reference));
+        }
+        let mut builder = self
+            .client
+            .request(Method::GET, format!("{}{path}", self.base_url))
+            .header(ACCEPT, "text/plain, */*");
+        if let Some(bearer) = token.filter(|text| !text.is_empty()) {
+            builder = builder.bearer_auth(bearer);
+        }
+        let response = builder.send().await.map_err(failed)?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let text = issue_success(response, "read repository file", false)
+            .await?
+            .text()
+            .await
+            .map_err(failed)?;
+        Ok(Some(text))
+    }
+
+    /// Reads one page of default-branch history from Collapse
+    /// (`GET /api/history/{owner}/{name}?page={page}`) (#590).
+    pub async fn list_history(
+        &self,
+        token: Option<&str>,
+        owner: &str,
+        name: &str,
+        page: usize,
+    ) -> Result<CollapseHistoryPage, CollapseError> {
+        let page = page.max(1);
+        let path = format!(
+            "/api/history/{}/{}?page={page}",
+            encode(owner),
+            encode(name)
+        );
+        let response = self
+            .request(Method::GET, &path, token, None)
+            .send()
+            .await
+            .map_err(failed)?;
+        parse_json(response, "read repository history", false).await
     }
 
     async fn get_conditional<T: DeserializeOwned>(

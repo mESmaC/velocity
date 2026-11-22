@@ -4,6 +4,7 @@
   import {
     issueCommands,
     type IssueDiscussion,
+    type IssueHost,
     type LayoutAction,
   } from './ipc';
   import { rise } from './motion';
@@ -12,6 +13,7 @@
   let {
     issue,
     project,
+    host = 'github',
     expanded,
     blocked,
     send,
@@ -19,6 +21,7 @@
   }: {
     issue: WorkIssue;
     project: number;
+    host?: IssueHost;
     expanded: boolean;
     blocked: string | null;
     send: (action: LayoutAction) => void;
@@ -195,7 +198,9 @@
         <p class="issue-summary">{summary}</p>
       {/if}
       <button class="mini ghost" type="button" onclick={discussion}
-        >Open the GitHub discussion ↗</button
+        >{host === 'collapse'
+          ? 'Open on Collapse ↗'
+          : 'Open the GitHub discussion ↗'}</button
       >
       {#each details?.comments ?? [] as comment (comment.id)}
         <div class="agent-comment">

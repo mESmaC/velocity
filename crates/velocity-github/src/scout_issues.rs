@@ -97,7 +97,7 @@ impl IssueClient {
             .collect();
         let evidence = finding.reproduction.run(&self.directory)?;
         let body = finding.body(&evidence.attachment)?;
-        let filing_lock = filing_lock(&inventory.repository)?;
+        let filing_lock = filing_lock(&format!("{:?}:{}", self.host(), inventory.repository))?;
         let _filing = filing_lock
             .lock()
             .map_err(|error| ScoutIssueError::Invalid(error.to_string()))?;

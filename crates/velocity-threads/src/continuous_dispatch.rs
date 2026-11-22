@@ -737,6 +737,7 @@ mod tests {
             open_blocker_count: 0,
             open_blockers: Vec::new(),
             closed_blockers: Vec::new(),
+            host: velocity_github::IssueHost::GitHub,
         }
     }
 

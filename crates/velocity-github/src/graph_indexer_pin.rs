@@ -9,12 +9,15 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+use velocity_collapse::issues::UpdateIssueRequest;
+use velocity_core::collapse::IssueHost;
 use velocity_core::graph_indexer_pin::{
     self, CollapseGraphPin, DOCKERFILE_PATH, GraphPinBump, IndexerVersion, OpenIssue,
     PARSER_VERSION_PATH, PinBumpStep, PinReleaseHost, ReleaseAssetCandidate, ReleaseCandidate,
     SCHEMA_VERSION_PATH,
 };
 
+use crate::collapse_issues::CollapseIssueTransport;
 use crate::gh_command::{GitHubCommand, GitHubCommandError};
 
 /// Default Collapse GitHub repository candidates checked when no Collapse project remote is
@@ -52,26 +55,55 @@ pub struct IssueLook {
     pub closed: Vec<u32>,
 }
 
-/// The GitHub client for keeping Collapse's `velocity-graph` pin-bump issue current.
+enum WatchTransport {
+    GitHub(GitHubCommand),
+    Collapse(CollapseIssueTransport),
+}
+
+/// The issue-host client for keeping Collapse's `velocity-graph` pin-bump issue current.
 pub struct GraphIndexerPinWatch {
-    command: GitHubCommand,
+    transport: WatchTransport,
     velocity: String,
     collapse: String,
 }
 
 impl GraphIndexerPinWatch {
     /// `velocity` is Velocity's `owner/name` repository and `collapse` is Collapse's
-    /// `owner/name` repository where `ops/Dockerfile` and the pin-bump issue live.
+    /// `owner/name` repository where `ops/Dockerfile` and the pin-bump issue live (GitHub).
     #[track_caller]
     pub fn new(velocity: &str, collapse: &str) -> Result<Self, GitHubCommandError> {
+        Self::for_host(IssueHost::GitHub, velocity, collapse)
+    }
+
+    /// Constructs a Collapse indexer pin watcher backed by `host` (`GitHub` or `Collapse`) (#590).
+    #[track_caller]
+    pub fn for_host(
+        host: IssueHost,
+        velocity: &str,
+        collapse: &str,
+    ) -> Result<Self, GitHubCommandError> {
         let velocity = crate::RepositoryName::parse(velocity)
             .map_err(|error| GitHubCommandError::Invalid(error.to_string()))?;
-        let collapse = crate::RepositoryName::parse(collapse)
-            .map_err(|error| GitHubCommandError::Invalid(error.to_string()))?;
+        let (transport, collapse_name) = match host {
+            IssueHost::GitHub => {
+                let collapse = crate::RepositoryName::parse(collapse)
+                    .map_err(|error| GitHubCommandError::Invalid(error.to_string()))?;
+                let full_name = collapse.full_name();
+                (
+                    WatchTransport::GitHub(GitHubCommand::for_repository(&collapse)),
+                    full_name,
+                )
+            }
+            IssueHost::Collapse => {
+                let transport = CollapseIssueTransport::for_repository(collapse)?;
+                let full_name = transport.repository().to_owned();
+                (WatchTransport::Collapse(transport), full_name)
+            }
+        };
         Ok(Self {
-            command: GitHubCommand::for_repository(&collapse),
+            transport,
             velocity: velocity.full_name(),
-            collapse: collapse.full_name(),
+            collapse: collapse_name,
         })
     }
 
@@ -79,24 +111,29 @@ impl GraphIndexerPinWatch {
         &self.collapse
     }
 
-    /// Whether the signed-in account may push to Collapse's repository, or `None` when the
+    /// Whether the signed-in account may maintain Collapse's repository, or `None` when the
     /// repository does not exist or is invisible to the signed-in account.
     pub fn can_maintain(&self) -> Result<Option<bool>, GitHubCommandError> {
-        #[derive(Deserialize)]
-        struct Permissions {
-            #[serde(default)]
-            push: bool,
-        }
-        #[derive(Deserialize)]
-        struct RepoPermissions {
-            #[serde(default)]
-            permissions: Option<Permissions>,
-        }
-        let endpoint = format!("repos/{}", self.collapse);
-        match self.command.read::<RepoPermissions>(&["api", &endpoint]) {
-            Ok(repo) => Ok(Some(repo.permissions.is_some_and(|perm| perm.push))),
-            Err(error) if not_found(&error) => Ok(None),
-            Err(error) => Err(error),
+        match &self.transport {
+            WatchTransport::Collapse(collapse) => collapse.can_maintain(),
+            WatchTransport::GitHub(command) => {
+                #[derive(Deserialize)]
+                struct Permissions {
+                    #[serde(default)]
+                    push: bool,
+                }
+                #[derive(Deserialize)]
+                struct RepoPermissions {
+                    #[serde(default)]
+                    permissions: Option<Permissions>,
+                }
+                let endpoint = format!("repos/{}", self.collapse);
+                match command.read::<RepoPermissions>(&["api", &endpoint]) {
+                    Ok(repo) => Ok(Some(repo.permissions.is_some_and(|perm| perm.push))),
+                    Err(error) if not_found(&error) => Ok(None),
+                    Err(error) => Err(error),
+                }
+            }
         }
     }
 
@@ -119,12 +156,13 @@ impl GraphIndexerPinWatch {
         let velocity = pin.repository.as_deref().unwrap_or(&self.velocity);
         let open = self.open_issues()?;
         let collapse_releases = read_collapse_releases(velocity).unwrap_or_default();
-        let (release_host, releases) =
-            if graph_indexer_pin::latest_indexer_release(&collapse_releases).is_some() {
-                (PinReleaseHost::Collapse, collapse_releases)
-            } else {
-                (PinReleaseHost::GitHub, self.releases(velocity)?)
-            };
+        let (release_host, releases) = if matches!(self.transport, WatchTransport::Collapse(_))
+            || graph_indexer_pin::latest_indexer_release(&collapse_releases).is_some()
+        {
+            (PinReleaseHost::Collapse, collapse_releases)
+        } else {
+            (PinReleaseHost::GitHub, self.releases(velocity)?)
+        };
         let Some(latest) = graph_indexer_pin::latest_indexer_release(&releases) else {
             return Ok(IssueLook {
                 issue: PinIssue::Current,
@@ -205,14 +243,42 @@ impl GraphIndexerPinWatch {
         path: &str,
         reference: Option<&str>,
     ) -> Result<String, GitHubCommandError> {
-        let query = reference.map_or_else(String::new, |tag| format!("?ref={tag}"));
-        let endpoint = format!("repos/{repository}/contents/{path}{query}");
-        self.command.text(&["api", "-H", RAW_CONTENT, &endpoint])
+        match &self.transport {
+            WatchTransport::Collapse(_) => {
+                let transport = CollapseIssueTransport::for_repository(repository)?;
+                let resolved = match reference {
+                    Some(tag) if !velocity_core::release::is_full_commit(tag) => {
+                        let mirror_url = format!("{}/{repository}.git", transport.base_url());
+                        velocity_collapse::resolve_remote_tag_commit(&mirror_url, tag)
+                            .map_err(|error| GitHubCommandError::Invalid(error.to_string()))?
+                            .ok_or_else(|| {
+                                GitHubCommandError::Missing(format!(
+                                    "tag {tag} on Collapse repository {repository}"
+                                ))
+                            })?
+                    }
+                    Some(commit) => commit.to_owned(),
+                    None => String::new(),
+                };
+                let reference = (!resolved.is_empty()).then_some(resolved.as_str());
+                transport
+                    .read_raw_file(path, reference)?
+                    .ok_or_else(|| GitHubCommandError::Missing(format!("{repository}:{path}")))
+            }
+            WatchTransport::GitHub(command) => {
+                let query = reference.map_or_else(String::new, |tag| format!("?ref={tag}"));
+                let endpoint = format!("repos/{repository}/contents/{path}{query}");
+                command.text(&["api", "-H", RAW_CONTENT, &endpoint])
+            }
+        }
     }
 
     fn releases(&self, repository: &str) -> Result<Vec<ReleaseCandidate>, GitHubCommandError> {
+        let WatchTransport::GitHub(command) = &self.transport else {
+            return Ok(Vec::new());
+        };
         let endpoint = format!("repos/{repository}/releases?per_page=100");
-        let listed: Vec<ApiRelease> = self.command.read(&["api", &endpoint])?;
+        let listed: Vec<ApiRelease> = command.read(&["api", &endpoint])?;
         Ok(listed.into_iter().map(ApiRelease::into_candidate).collect())
     }
 
@@ -257,8 +323,13 @@ impl GraphIndexerPinWatch {
         if let Some(sha256) = cache.checksums.get(&asset_id) {
             return Ok(sha256.clone());
         }
+        let WatchTransport::GitHub(command) = &self.transport else {
+            return Err(GitHubCommandError::Missing(format!(
+                "a valid Collapse SHA-256 checksum for {archive_name}"
+            )));
+        };
         let endpoint = format!("repos/{repository}/releases/assets/{asset_id}");
-        let body = self.command.text(&["api", "-H", OCTET_STREAM, &endpoint])?;
+        let body = command.text(&["api", "-H", OCTET_STREAM, &endpoint])?;
         let sha256 = graph_indexer_pin::parse_sha256(&body, archive_name).ok_or_else(|| {
             GitHubCommandError::Missing(format!("a valid SHA-256 checksum for {archive_name}"))
         })?;
@@ -267,12 +338,9 @@ impl GraphIndexerPinWatch {
     }
 
     fn open_issues(&self) -> Result<Vec<OpenIssue>, GitHubCommandError> {
-        if let Some(cached) = crate::issue_cache::get_fresh(
-            crate::IssueHost::GitHub,
-            &self.collapse,
-            crate::OPEN_ISSUES_REFRESH,
-        ) {
-            return Ok(cached
+        match &self.transport {
+            WatchTransport::Collapse(collapse) => Ok(collapse
+                .open_issues()?
                 .into_iter()
                 .map(|issue| OpenIssue {
                     repository: self.collapse.clone(),
@@ -280,20 +348,37 @@ impl GraphIndexerPinWatch {
                     title: issue.title,
                     body: issue.body,
                 })
-                .collect());
+                .collect()),
+            WatchTransport::GitHub(command) => {
+                if let Some(cached) = crate::issue_cache::get_fresh(
+                    crate::IssueHost::GitHub,
+                    &self.collapse,
+                    crate::OPEN_ISSUES_REFRESH,
+                ) {
+                    return Ok(cached
+                        .into_iter()
+                        .map(|issue| OpenIssue {
+                            repository: self.collapse.clone(),
+                            number: issue.number,
+                            title: issue.title,
+                            body: issue.body,
+                        })
+                        .collect());
+                }
+                let endpoint = format!("repos/{}/issues?state=open&per_page=100", self.collapse);
+                let listed: Vec<Listed> = command.get_paginated(&endpoint)?;
+                Ok(listed
+                    .into_iter()
+                    .filter(|issue| issue.pull_request.is_none())
+                    .map(|issue| OpenIssue {
+                        repository: self.collapse.clone(),
+                        number: issue.number,
+                        title: issue.title,
+                        body: issue.body.unwrap_or_default(),
+                    })
+                    .collect())
+            }
         }
-        let endpoint = format!("repos/{}/issues?state=open&per_page=100", self.collapse);
-        let listed: Vec<Listed> = self.command.get_paginated(&endpoint)?;
-        Ok(listed
-            .into_iter()
-            .filter(|issue| issue.pull_request.is_none())
-            .map(|issue| OpenIssue {
-                repository: self.collapse.clone(),
-                number: issue.number,
-                title: issue.title,
-                body: issue.body.unwrap_or_default(),
-            })
-            .collect())
     }
 
     fn keep_one(
@@ -302,19 +387,13 @@ impl GraphIndexerPinWatch {
         bump: &GraphPinBump,
     ) -> Result<(PinIssue, Vec<u32>), GitHubCommandError> {
         let plan = graph_indexer_pin::plan(open, bump);
-        let text = json!({"title": bump.title(), "body": bump.body()});
-        let issues = format!("repos/{}/issues", self.collapse);
         let (kept, issue) = match plan.step {
             PinBumpStep::Open => {
-                let opened: Numbered = self.command.api("POST", &issues, &text)?;
-                crate::issue_cache::invalidate(crate::IssueHost::GitHub, &self.collapse);
-                (opened.number, PinIssue::Opened(opened.number))
+                let number = self.create_pin_issue(&bump.title(), &bump.body())?;
+                (number, PinIssue::Opened(number))
             }
             PinBumpStep::Rewrite(number) => {
-                let _: Value = self
-                    .command
-                    .api("PATCH", &format!("{issues}/{number}"), &text)?;
-                crate::issue_cache::invalidate(crate::IssueHost::GitHub, &self.collapse);
+                self.rewrite_pin_issue(number, &bump.title(), &bump.body())?;
                 (number, PinIssue::Rewritten(number))
             }
             PinBumpStep::Keep(number) => (number, PinIssue::Kept(number)),
@@ -333,6 +412,49 @@ impl GraphIndexerPinWatch {
         Ok((issue, [plan.finished, plan.duplicates].concat()))
     }
 
+    fn create_pin_issue(&self, title: &str, body: &str) -> Result<u32, GitHubCommandError> {
+        match &self.transport {
+            WatchTransport::Collapse(collapse) => {
+                Ok(collapse.create_issue(title, body, &[], &[])?.number)
+            }
+            WatchTransport::GitHub(command) => {
+                let issues = format!("repos/{}/issues", self.collapse);
+                let opened: Numbered =
+                    command.api("POST", &issues, &json!({"title": title, "body": body}))?;
+                crate::issue_cache::invalidate(crate::IssueHost::GitHub, &self.collapse);
+                Ok(opened.number)
+            }
+        }
+    }
+
+    fn rewrite_pin_issue(
+        &self,
+        number: u32,
+        title: &str,
+        body: &str,
+    ) -> Result<(), GitHubCommandError> {
+        match &self.transport {
+            WatchTransport::Collapse(collapse) => {
+                collapse.update_issue(
+                    number,
+                    UpdateIssueRequest {
+                        title: Some(title.to_owned()),
+                        body: Some(body.to_owned()),
+                        ..Default::default()
+                    },
+                )?;
+                Ok(())
+            }
+            WatchTransport::GitHub(command) => {
+                let endpoint = format!("repos/{}/issues/{number}", self.collapse);
+                let _: Value =
+                    command.api("PATCH", &endpoint, &json!({"title": title, "body": body}))?;
+                crate::issue_cache::invalidate(crate::IssueHost::GitHub, &self.collapse);
+                Ok(())
+            }
+        }
+    }
+
     fn close_surplus(&self, open: &[OpenIssue]) -> Result<Vec<u32>, GitHubCommandError> {
         let Some((kept, surplus)) = graph_indexer_pin::oldest_and_surplus(open) else {
             return Ok(Vec::new());
@@ -345,19 +467,27 @@ impl GraphIndexerPinWatch {
 
     /// Comment first, state second: a failure never leaves a closed issue without its reason.
     fn close(&self, number: u32, reason: &str, comment: &str) -> Result<(), GitHubCommandError> {
-        let issue = format!("repos/{}/issues/{number}", self.collapse);
-        let _: Value = self.command.api(
-            "POST",
-            &format!("{issue}/comments"),
-            &json!({"body": comment}),
-        )?;
-        let _: Value = self.command.api(
-            "PATCH",
-            &issue,
-            &json!({"state": "closed", "state_reason": reason}),
-        )?;
-        crate::issue_cache::invalidate(crate::IssueHost::GitHub, &self.collapse);
-        Ok(())
+        match &self.transport {
+            WatchTransport::Collapse(collapse) => {
+                collapse.close_issue(number, reason, comment)?;
+                Ok(())
+            }
+            WatchTransport::GitHub(command) => {
+                let issue = format!("repos/{}/issues/{number}", self.collapse);
+                let _: Value = command.api(
+                    "POST",
+                    &format!("{issue}/comments"),
+                    &json!({"body": comment}),
+                )?;
+                let _: Value = command.api(
+                    "PATCH",
+                    &issue,
+                    &json!({"state": "closed", "state_reason": reason}),
+                )?;
+                crate::issue_cache::invalidate(crate::IssueHost::GitHub, &self.collapse);
+                Ok(())
+            }
+        }
     }
 }
 

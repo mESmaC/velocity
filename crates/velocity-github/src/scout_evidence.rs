@@ -75,7 +75,7 @@ impl Reproduction {
         ));
         if attachment.len() > 56_000 {
             return Err(ScoutIssueError::Invalid(
-                "Evidence exceeds GitHub's issue body budget; use a smaller reproduction".into(),
+                "Evidence exceeds the issue body budget; use a smaller reproduction".into(),
             ));
         }
         Ok(FailureEvidence { attachment })

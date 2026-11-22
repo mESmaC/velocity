@@ -34,6 +34,10 @@ pub struct SweepPlan {
     pub bypass_modes: Vec<String>,
     /// The model, effort and speed the duty agent runs on (F7, F15).
     pub run_settings: RunSettings<String>,
+    /// Configured issue host (`github` or `collapse`) for the scout MCP server (#590).
+    pub issue_host: velocity_github::IssueHost,
+    /// Configured issue repository (`owner/name`) for the scout MCP server (#590).
+    pub issue_repository: Option<String>,
 }
 
 /// Plans `scout`'s sweep worktree at `base_ref` and its agent from the scout's own provider.
@@ -75,6 +79,10 @@ pub fn plan_duty_checkout(
         shared_target,
     );
     let (agent, bypass_modes) = agent_launch(settings, agent_item.provider)?;
+    let issue_host = project.effective_issue_host();
+    let issue_repository = project
+        .issue_host_repository()
+        .map(|(_, repository)| repository);
     Ok(SweepPlan {
         project: project.id,
         nickname: agent_item.nickname.clone(),
@@ -83,6 +91,8 @@ pub fn plan_duty_checkout(
         agent: with_compiler_cache(agent, preferences.share_build_cache),
         bypass_modes,
         run_settings: crate::titles::duty_run_settings(settings, agent_item, role_effort),
+        issue_host,
+        issue_repository,
     })
 }
 
@@ -98,13 +108,24 @@ pub fn sweep_session(
         .with_run_settings(plan.run_settings.clone());
     setup.role = velocity_core::tool_policy::ThreadRole::Scout;
     setup.usage_role = Some(Role::DutySweep);
-    let mut server = McpServerStdio::new("velocity-scout", scout_server).args(vec![
+    let mut args = vec![
         SCOUT_SERVER_SWITCH.to_owned(),
         worktree.display().to_string(),
         plan.nickname.clone(),
         report.display().to_string(),
-    ]);
-    if let Some(gh_program) = velocity_github::app_gh_program() {
+    ];
+    if plan.issue_host == velocity_github::IssueHost::Collapse || plan.issue_repository.is_some() {
+        let host = match plan.issue_host {
+            velocity_github::IssueHost::Collapse => "collapse",
+            velocity_github::IssueHost::GitHub => "github",
+        };
+        args.push(host.to_owned());
+        args.push(plan.issue_repository.clone().unwrap_or_default());
+    }
+    let mut server = McpServerStdio::new("velocity-scout", scout_server).args(args);
+    if plan.issue_host == velocity_github::IssueHost::GitHub
+        && let Some(gh_program) = velocity_github::app_gh_program()
+    {
         server = server.env(vec![EnvVariable::new(
             velocity_github::GH_PROGRAM_ENV,
             gh_program.to_string_lossy().into_owned(),

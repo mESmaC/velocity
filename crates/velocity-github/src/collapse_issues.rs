@@ -98,6 +98,144 @@ impl CollapseIssueTransport {
         &self.name
     }
 
+    pub(crate) fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Reads every open and closed issue in this repository (`state=all`), paginated (#590).
+    pub(crate) fn all_issues(&self) -> Result<Vec<GitHubIssue>, GitHubCommandError> {
+        let api = self.api()?;
+        let token = self.read_token()?;
+        let mut issues = Vec::new();
+        let mut offset = 0_usize;
+        loop {
+            let api = api.clone();
+            let token = token.clone();
+            let owner = self.owner.clone();
+            let name = self.name.clone();
+            let response = block_on_worker(async move {
+                api.list_issues(
+                    token.as_deref(),
+                    &owner,
+                    &name,
+                    Some("all"),
+                    None,
+                    MAX_LIST_LIMIT,
+                    offset,
+                    None,
+                )
+                .await
+            })
+            .map_err(from_collapse_error)?;
+            let Conditional::Modified { value, .. } = response else {
+                break;
+            };
+            let page_len = value.issues.len();
+            for raw in value.issues {
+                let reopened = self.with_cache(|cache| cache.reopened_at.get(&raw.number).cloned());
+                issues.push(convert_issue(&self.repository, &raw, reopened));
+            }
+            if page_len < MAX_LIST_LIMIT {
+                break;
+            }
+            offset += page_len;
+        }
+        Ok(issues)
+    }
+
+    /// Reads a raw UTF-8 file from Collapse's codeview API at `reference` (default branch
+    /// when `None`) without calling GitHub (#590).
+    pub(crate) fn read_raw_file(
+        &self,
+        path: &str,
+        reference: Option<&str>,
+    ) -> Result<Option<String>, GitHubCommandError> {
+        let api = self.api()?;
+        let token = self.read_code_token()?;
+        let owner = self.owner.clone();
+        let name = self.name.clone();
+        let path_owned = path.to_owned();
+        let reference_owned = reference.map(str::to_owned);
+        block_on_worker(async move {
+            api.get_raw_file(
+                token.as_deref(),
+                &owner,
+                &name,
+                &path_owned,
+                reference_owned.as_deref(),
+            )
+            .await
+        })
+        .map_err(from_collapse_error)
+    }
+
+    /// Reads up to `limit` newest commits on the repository's default branch from Collapse
+    /// without calling GitHub (#590).
+    pub(crate) fn read_history_commits(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(String, String)>, GitHubCommandError> {
+        let api = self.api()?;
+        let token = self.read_code_token()?;
+        let mut commits = Vec::new();
+        let mut page = 1_usize;
+        while commits.len() < limit {
+            let api = api.clone();
+            let token = token.clone();
+            let owner = self.owner.clone();
+            let name = self.name.clone();
+            let result = block_on_worker(async move {
+                api.list_history(token.as_deref(), &owner, &name, page)
+                    .await
+            })
+            .map_err(from_collapse_error)?;
+            if result.lands.is_empty() {
+                break;
+            }
+            for land in result.lands {
+                let message = if land.message.trim().is_empty() {
+                    land.title
+                } else {
+                    land.message
+                };
+                commits.push((land.commit, message));
+                if commits.len() >= limit {
+                    break;
+                }
+            }
+            if !result.has_next {
+                break;
+            }
+            page += 1;
+        }
+        Ok(commits)
+    }
+
+    /// Whether the connected Collapse account manages this repository and can write issues
+    /// (`Ok(None)` when the repository is not found on the account) (#590).
+    pub(crate) fn can_maintain(&self) -> Result<Option<bool>, GitHubCommandError> {
+        if self.explicit_token.is_some() {
+            return Ok(Some(true));
+        }
+        if self.read_token()?.is_none() {
+            return Ok(Some(false));
+        }
+        let credentials = match velocity_collapse::load_credentials() {
+            Ok(Some(credentials)) => credentials,
+            Ok(None) => return Ok(Some(false)),
+            Err(error) => return Err(from_collapse_error(error)),
+        };
+        let rows =
+            block_on_worker(
+                async move { velocity_collapse::repository_activity(&credentials).await },
+            )
+            .map_err(from_collapse_error)?;
+        let owned = rows.iter().any(|row| {
+            row.owner.eq_ignore_ascii_case(&self.owner) && row.name.eq_ignore_ascii_case(&self.name)
+        });
+        Ok(owned.then_some(true))
+    }
+
     /// Returns open issues by watching Collapse's edge cursor and syncing deltas via
     /// `GET .../issues/changes?after=<cursor>`.
     pub(crate) fn open_issues(&self) -> Result<Vec<GitHubIssue>, GitHubCommandError> {
@@ -417,6 +555,15 @@ impl CollapseIssueTransport {
     }
 
     pub(crate) fn ensure_label(&self, name: &str) -> Result<(), GitHubCommandError> {
+        self.ensure_label_with(name, "ededed", "")
+    }
+
+    pub(crate) fn ensure_label_with(
+        &self,
+        name: &str,
+        color: &str,
+        description: &str,
+    ) -> Result<(), GitHubCommandError> {
         let existing = self.label_names()?;
         if existing
             .iter()
@@ -429,9 +576,18 @@ impl CollapseIssueTransport {
         let owner = self.owner.clone();
         let repo = self.name.clone();
         let label_name = name.to_owned();
+        let label_color = color.to_owned();
+        let label_description = description.to_owned();
         let _ = block_on_worker(async move {
-            api.create_label(&token, &owner, &repo, &label_name, "ededed", "")
-                .await
+            api.create_label(
+                &token,
+                &owner,
+                &repo,
+                &label_name,
+                &label_color,
+                &label_description,
+            )
+            .await
         })
         .map_err(from_collapse_error)?;
         self.with_cache(|cache| {
@@ -816,6 +972,19 @@ impl CollapseIssueTransport {
         velocity_collapse::resolve_issues_token().map_err(from_collapse_error)
     }
 
+    fn read_code_token(&self) -> Result<Option<String>, GitHubCommandError> {
+        if let Some(token) = &self.explicit_token {
+            return Ok(Some(token.clone()));
+        }
+        if let Some(credentials) =
+            velocity_collapse::load_credentials().map_err(from_collapse_error)?
+            && !credentials.mcp_token.trim().is_empty()
+        {
+            return Ok(Some(credentials.mcp_token));
+        }
+        self.read_token()
+    }
+
     fn write_token(&self) -> Result<String, GitHubCommandError> {
         self.read_token()?.ok_or_else(|| {
             GitHubCommandError::Invalid(
@@ -915,6 +1084,7 @@ fn convert_issue(
         open_blocker_count,
         open_blockers,
         closed_blockers,
+        host: IssueHost::Collapse,
     }
 }
 

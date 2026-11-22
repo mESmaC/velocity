@@ -2532,6 +2532,8 @@ export type IssuePanelSnapshot_Deserialize = {
 	revision: number,
 	project_identifier?: number | null,
 	repository?: string | null,
+	/**  Which issue host (`github` or `collapse`) backs the currently shown rows (#590). */
+	host?: IssueHost,
 	loading: boolean,
 	rows: IssuePanelRow_Deserialize[],
 	error?: string | null,
@@ -2546,6 +2548,8 @@ export type IssuePanelSnapshot_Serialize = {
 	revision: number,
 	project_identifier: number | null,
 	repository: string | null,
+	/**  Which issue host (`github` or `collapse`) backs the currently shown rows (#590). */
+	host: IssueHost,
 	loading: boolean,
 	rows: IssuePanelRow_Serialize[],
 	error: string | null,
