@@ -1,6 +1,6 @@
 //! Runs the `preflight` checks for a Rosen change (#537) and delivers one pass/fail report.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -14,7 +14,7 @@ use agent_client_protocol::v1::schema::{
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 use velocity_core::preflight::{
-    ChangedFile, PreflightContext, PreflightPlan, StepOutcome, format_failure_summary,
+    ChangedFile, PreflightContext, PreflightPlan, StepOutcome, StepStatus, format_failure_summary,
     format_report, plan,
 };
 use velocity_core::queued_runs::{QueuedRunClass, QueuedRunPhase, QueuedRunRecord};
@@ -493,48 +493,28 @@ impl StepRunner<'_> {
         target: &Path,
     ) -> Result<Vec<StepOutcome>, Cancelled> {
         let mut outcomes = Vec::new();
-        let mut failed_crates = BTreeSet::new();
-        for package in &check_plan.clippy_crates {
-            let label = format!("cargo clippy -p {package} --all-targets");
-            let args = vec![
-                String::from("clippy"),
-                String::from("-p"),
-                package.clone(),
-                String::from("--all-targets"),
-                String::from("--"),
-                String::from("-D"),
-                String::from("warnings"),
-            ];
+        let mut clippy_failed = false;
+        if let Some((label, args)) = clippy_command(&check_plan.clippy_crates) {
             let outcome = self.light_outcome(&label, target, &args, None).await?;
-            if outcome.status == velocity_core::preflight::StepStatus::Failed {
-                failed_crates.insert(package.clone());
-            }
+            clippy_failed = outcome.status == StepStatus::Failed;
             outcomes.push(outcome);
         }
         if check_plan.check_bindings {
-            outcomes.push(
-                self.check_bindings(check_plan, target, &failed_crates)
-                    .await?,
-            );
+            outcomes.push(self.check_bindings(target, clippy_failed).await?);
         }
         Ok(outcomes)
     }
 
     async fn check_bindings(
         &mut self,
-        check_plan: &PreflightPlan,
         target: &Path,
-        failed_crates: &BTreeSet<String>,
+        clippy_failed: bool,
     ) -> Result<StepOutcome, Cancelled> {
         let label = "ui/src/lib/bindings.ts freshness";
-        if check_plan
-            .bindings_crate
-            .as_ref()
-            .is_some_and(|name| failed_crates.contains(name))
-        {
+        if clippy_failed {
             return Ok(StepOutcome::skipped(
                 label,
-                "skipped because the Tauri crate failed cargo clippy",
+                "skipped because cargo clippy failed",
             ));
         }
         // `export-bindings --check` overwrites bindings.ts before exiting non-zero; restore
@@ -905,6 +885,29 @@ fn to_strings(items: &[&str]) -> Vec<String> {
     items.iter().map(|item| (*item).to_owned()).collect()
 }
 
+/// Builds one `cargo clippy` command covering every touched crate so Cargo parses the
+/// workspace and checks shared dependencies once per light Rust turn (#655).
+fn clippy_command(crates: &[String]) -> Option<(String, Vec<String>)> {
+    if crates.is_empty() {
+        return None;
+    }
+    let mut args = Vec::with_capacity(crates.len() * 2 + 5);
+    args.push(String::from("clippy"));
+    let mut label = String::from("cargo clippy");
+    for package in crates {
+        args.push(String::from("-p"));
+        args.push(package.clone());
+        label.push_str(" -p ");
+        label.push_str(package);
+    }
+    args.push(String::from("--all-targets"));
+    args.push(String::from("--"));
+    args.push(String::from("-D"));
+    args.push(String::from("warnings"));
+    label.push_str(" --all-targets");
+    Some((label, args))
+}
+
 fn cancelled_result(id: ToolCallId, log: &Path) -> RunResult {
     RunResult::new(
         id,
@@ -1004,7 +1007,7 @@ fn is_diagnostic(line: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::overlap_outcome;
+    use super::{clippy_command, overlap_outcome};
     use velocity_core::preflight::{StepStatus, format_report};
 
     // Risk (#564): failing preflight on open-change shared symbols deadlocks concurrent
@@ -1022,5 +1025,53 @@ mod tests {
         let (passed, report) = format_report("qpxzxwup1234", 1, &[step], "preflight.log");
         assert!(passed);
         assert!(report.contains("[WARN] overlaps"));
+    }
+
+    // Risk (#655): running one cargo clippy process per touched crate multiplies Cargo
+    // startup and fingerprint work while holding the per-project light-run lock.
+    #[test]
+    fn clippy_command_combines_touched_crates_into_one_invocation() {
+        assert!(clippy_command(&[]).is_none());
+
+        assert_eq!(
+            clippy_command(&["velocity-acp".to_owned()]),
+            Some((
+                "cargo clippy -p velocity-acp --all-targets".to_owned(),
+                vec![
+                    "clippy".to_owned(),
+                    "-p".to_owned(),
+                    "velocity-acp".to_owned(),
+                    "--all-targets".to_owned(),
+                    "--".to_owned(),
+                    "-D".to_owned(),
+                    "warnings".to_owned(),
+                ],
+            ))
+        );
+
+        assert_eq!(
+            clippy_command(&[
+                "velocity-acp".to_owned(),
+                "velocity-core".to_owned(),
+                "velocity-rosen".to_owned(),
+            ]),
+            Some((
+                "cargo clippy -p velocity-acp -p velocity-core -p velocity-rosen --all-targets"
+                    .to_owned(),
+                vec![
+                    "clippy".to_owned(),
+                    "-p".to_owned(),
+                    "velocity-acp".to_owned(),
+                    "-p".to_owned(),
+                    "velocity-core".to_owned(),
+                    "-p".to_owned(),
+                    "velocity-rosen".to_owned(),
+                    "--all-targets".to_owned(),
+                    "--".to_owned(),
+                    "-D".to_owned(),
+                    "warnings".to_owned(),
+                ],
+            ))
+        );
     }
 }
