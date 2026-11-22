@@ -134,8 +134,8 @@ pub fn piece_branch_slug(piece: &WorkPiece) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChoiceDecision, ChoiceOutcome, LockReply, PostMergeDecision, choose_open_index,
-        decide_after_merge, resolve_attempt,
+        ChoiceDecision, ChoiceOutcome, LockReply, PostMergeDecision, WorkKey, WorkPiece, WorkPool,
+        choose_open_index, decide_after_merge, open_flags_for_pool, resolve_attempt,
     };
 
     fn parse_flags(raw: &str) -> Result<Vec<bool>, String> {
@@ -149,6 +149,27 @@ mod tests {
                 other => Err(format!("unexpected flag {other}")),
             })
             .collect()
+    }
+
+    fn check_work_item_identity(
+        number: &str,
+        claims: &str,
+        available: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (saved_owner, held_number) = claims.split_once(':').ok_or("missing claim separator")?;
+        let held = [format!("Issue: #{held_number}")].into_iter().collect();
+        let piece = WorkPiece::new(
+            WorkKey::issue("fixture/project", number.parse()?),
+            "Shared display title".into(),
+            String::new(),
+            saved_owner.parse::<bool>()?.then_some(7),
+        );
+        let pool = WorkPool::new(1, vec![piece]);
+        assert_eq!(
+            open_flags_for_pool(&pool, &held),
+            [available.parse::<bool>()?]
+        );
+        Ok(())
     }
 
     // A changed work-choice or keep_going decision could claim taken work, strand open
@@ -195,6 +216,7 @@ mod tests {
                     };
                     assert_eq!(decide_after_merge(fields[2].parse()?, &flags), expected);
                 }
+                "identity" => check_work_item_identity(fields[1], fields[2], fields[3])?,
                 "projected" => {
                     // Persisted store/inventory/claim checks run in velocity_threads::work_pool.
                     projected_rows += 1;

@@ -2,12 +2,17 @@ module
 public import Mathlib.Data.List.Basic
 public section
 
--- SPEC.md F14: histories are newest operation first. The channel's cross-process
--- lock serializes each read/decide/append transaction; disk durability is external.
+-- SPEC.md F14, Rosen-backed AIRC (#531). Histories are newest operation first.
+-- AIRC work items and Rosen exclusive paths use different ownership cells.
+-- Each key denotes an already resolved identity or path conflict class. Path
+-- parsing, overlap detection, and storage durability are outside this model.
 namespace ClaimLock
 abbrev Key := Nat
 abbrev Member := Nat
 abbrev State := Key -> Option Member
+
+def workItemKey (id : Nat) : Key := 2 * id
+def pathKey (id : Nat) : Key := 2 * id + 1
 
 inductive Operation where
   | claim (key : Key) (member : Member)
@@ -48,7 +53,10 @@ def Spec (history : List Operation) : Prop :=
   (forall member, run (.leave member :: history) = run history /\
       run (.fail member :: history) = run history) /\
   (forall key member, Not (run history key = some member) ->
-      run (.release key member :: history) = run history)
+      run (.release key member :: history) = run history) /\
+  (forall item path member,
+    run (.claim (workItemKey item) member :: history) (pathKey path) = run history (pathKey path) /\
+    run (.claim (pathKey path) member :: history) (workItemKey item) = run history (workItemKey item))
 
 lemma first_wins (history : List Operation) :
     forall key, run history key = (epoch history key).head? := by
@@ -77,15 +85,27 @@ lemma first_wins (history : List Operation) :
     | leave member => exact hypothesis query
     | fail member => exact hypothesis query
 
+lemma claim_preserves_other_key (history : List Operation) (target query : Key) (member : Member)
+    (different : query ≠ target) :
+    run (.claim target member :: history) query = run history query := by
+  by_cases free : run history target = none <;> simp [run, step, free, replace, different]
+
 theorem correct (history : List Operation) : Spec history := by
   refine And.intro (first_wins history) ?_
-  refine And.intro ?_ (And.intro ?_ ?_)
+  refine And.intro ?_ (And.intro ?_ (And.intro ?_ ?_))
   . intro key first second left right
     exact Option.some.inj (left.symm.trans right)
   . intro member
     exact And.intro rfl rfl
   . intro key member notOwner
     simp [run, step, notOwner]
+  . intro item path member
+    have distinct : workItemKey item ≠ pathKey path := by
+      intro equal
+      change 2 * item = 2 * path + 1 at equal
+      omega
+    exact ⟨claim_preserves_other_key history _ _ member distinct.symm,
+      claim_preserves_other_key history _ _ member distinct⟩
 
 inductive Access where
   | read (key : Key)
@@ -100,22 +120,23 @@ def accesses (state : State) : Operation -> List Access
   | .release key member => .read key :: if state key = some member then [.write key] else []
   | .leave _ | .fail _ => []
 
-def cost (history : List Operation) : Nat :=
+def ownershipCellCost (history : List Operation) : Nat :=
   match history with
   | [] => 0
-  | operation :: prior => cost prior + (accesses (run prior) operation).length
+  | operation :: prior => ownershipCellCost prior + (accesses (run prior) operation).length
 
 lemma step_bound (state : State) (operation : Operation) :
     (accesses state operation).length <= 2 := by
   cases operation <;> simp only [accesses]
   all_goals first | (split <;> simp) | simp
 
-theorem cost_bound (history : List Operation) : cost history <= 2 * history.length := by
+theorem cost_bound (history : List Operation) :
+    ownershipCellCost history <= 2 * history.length := by
   induction history with
-  | nil => simp [cost]
+  | nil => simp [ownershipCellCost]
   | cons operation prior hypothesis =>
     have bound := step_bound (run prior) operation
-    simp only [cost, List.length_cons]
+    simp only [ownershipCellCost, List.length_cons]
     omega
 
 -- Alternatives: serialized ownership-cell strategies with no hidden ownership
@@ -130,7 +151,7 @@ def RequiredAccesses (state : State) (operation : Operation) (trace : List Acces
       (state key = some member -> Access.write key ∈ trace)
   | .leave _ | .fail _ => True
 
-def Admissible (state : State) (operation : Operation)
+def SerializedOwnershipStrategy (state : State) (operation : Operation)
     (result : State) (trace : List Access) : Prop :=
   result = step state operation /\ RequiredAccesses state operation trace
 
@@ -167,7 +188,7 @@ lemma optimal_release (state : State) (key member : Nat) (trace : List Access)
 
 theorem optimal (history : List Operation) (operation : Operation)
     (result : State) (trace : List Access)
-    (alternative : Admissible (run history) operation result trace) :
+    (alternative : SerializedOwnershipStrategy (run history) operation result trace) :
     (accesses (run history) operation).length <= trace.length := by
   cases operation with
   | claim key member => exact optimal_claim _ key member trace alternative.2
@@ -187,7 +208,14 @@ def fixtureLine (holder : Option Member) (requester : Member) : String :=
   let label := holder.map toString |>.getD "-"
   s!"{label}\t{requester}\t{allowed holder requester}\n"
 
+def workItemFixtureLine (history : List Operation) (item requester : Nat) : String :=
+  s!"work-item\t{item}\t{requester}\t{allowed (run history (workItemKey item)) requester}\n"
+
 def fixtures : String :=
-  fixtureLine none 7 ++ fixtureLine (some 7) 7 ++ fixtureLine (some 8) 7
+  let first := Operation.claim (workItemKey 1) 7
+  let other := Operation.claim (workItemKey 2) 8
+  fixtureLine none 7 ++ fixtureLine (some 7) 7 ++ fixtureLine (some 8) 7 ++
+    workItemFixtureLine [] 1 7 ++ workItemFixtureLine [first] 1 8 ++
+    workItemFixtureLine [first] 2 8 ++ workItemFixtureLine [other, first] 1 7
 #eval IO.FS.writeFile "fixtures/claim-lock.tsv" fixtures
 end ClaimLock

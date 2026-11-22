@@ -697,14 +697,48 @@ mod tests {
     // A changed grant decision could give a second agent ownership of live work.
     #[test]
     fn lean_claim_decisions() -> Result<(), Box<dyn std::error::Error>> {
+        use super::{Channel, ClaimResult};
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "velocity-claim-fixture-{}-{stamp}",
+            std::process::id()
+        ));
+        let channel = Channel::open(&directory, "project")?;
+        channel.join("member-7", "member-7")?;
+        channel.join("member-8", "member-8")?;
         for line in include_str!("../../../proofs/fixtures/claim-lock.tsv").lines() {
             let fields: Vec<_> = line.split('\t').collect();
-            let holder = (fields[0] != "-").then_some(fields[0]);
-            assert_eq!(
-                super::may_claim(holder, fields[1]),
-                fields[2].parse::<bool>()?
-            );
+            match fields.as_slice() {
+                ["work-item", item, requester, allowed] => {
+                    let result = channel.claim_work_item(
+                        &format!("member-{requester}"),
+                        &format!("issue:{item}"),
+                        "Shared display title",
+                    )?;
+                    assert_eq!(
+                        matches!(result, ClaimResult::Granted { .. }),
+                        allowed.parse::<bool>()?
+                    );
+                    if let ClaimResult::Granted { claim } = result {
+                        let stored = serde_json::to_value(claim)?;
+                        assert!(stored.get("branch").is_none());
+                        assert!(stored.get("files").is_none());
+                    }
+                }
+                [holder, requester, allowed] => {
+                    let holder = (*holder != "-").then_some(*holder);
+                    assert_eq!(
+                        super::may_claim(holder, requester),
+                        allowed.parse::<bool>()?
+                    );
+                }
+                _ => return Err(format!("Malformed claim fixture: {line}").into()),
+            }
         }
+        std::fs::remove_dir_all(directory)?;
         Ok(())
     }
 

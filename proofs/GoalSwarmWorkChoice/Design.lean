@@ -67,13 +67,11 @@ def EligibleSlot (s : WorkSlot) : Prop :=
 def OpenProjected (slots : List WorkSlot) (index : Nat) : Prop :=
   exists slot, slots[index]? = some slot /\ EligibleSlot slot
 
--- Independent specification of SPEC.md F16 work choice with Rosen-projected availability:
--- 1. Slot eligibility matches the F16/F8 Rosen projection contract.
--- 2. Any claimed piece was projected-eligible in the pool and granted by the channel lock.
--- 3. Every earlier projected-eligible piece before a claimed piece lost a concurrent race.
--- 4. An agent leaves iff every projected-eligible piece is refused by concurrent claims.
--- 5. Single-step choice, refusal retry, and post-merge `keep_going` match projected eligibility.
+-- A branchless AIRC claim excludes its work-item key from the F16 board (#531).
+def unreserved (key : Nat) (savedOwner : Bool) (heldKeys : List Nat) : Bool :=
+  !savedOwner && !heldKeys.contains key
 def Spec (grants : Nat -> Bool) (slots : List WorkSlot) (attempted : Nat) (keepGoing : Bool) : Prop :=
+  (forall key owner held, unreserved key owner held = true <-> owner = false /\ key ∉ held) /\
   (forall s, projectedOpen s = true <-> EligibleSlot s) /\
   (forall index, runProjected grants slots = .claimed index -> OpenProjected slots index /\ grants index = true) /\
   (forall index prior, runProjected grants slots = .claimed index ->
@@ -152,7 +150,7 @@ theorem correct (grants : Nat -> Bool) (slots : List WorkSlot) (attempted : Nat)
     Spec grants slots attempted keepGoing := by
   have open_iff := openAt_projected slots; have claimed := runChoice_claimed (projectedBoard slots) grants
   have left_iff := runChoice_left (projectedBoard slots) grants; obtain ⟨claim_open, leave_iff⟩ := chooseOpen_spec (projectedBoard slots)
-  refine ⟨projectedOpen_iff, fun i h => ⟨(open_iff i).mp (claimed i h).1, (claimed i h).2.1⟩,
+  refine ⟨(by intro key owner held; cases owner <;> simp [unreserved]), projectedOpen_iff, fun i h => ⟨(open_iff i).mp (claimed i h).1, (claimed i h).2.1⟩,
           fun i p h lt op => (claimed i h).2.2 p lt ((open_iff p).mpr op), by simp only [runProjected, left_iff, open_iff],
           ⟨by simp only [chooseProjected, leave_iff, open_iff], rfl, ?_, ?_, (by intro off; subst off; rfl), ?_⟩⟩
   · simp only [resolveProjected, resolveAttempt, chooseProjected]; cases chooseOpen (projectedBoard slots) <;> simp
@@ -160,14 +158,14 @@ theorem correct (grants : Nat -> Bool) (slots : List WorkSlot) (attempted : Nat)
     subst eq; exact (open_iff _).mp (claim_open _ c)
   · simp only [decideAfterMergeProjected, decideAfterMerge, chooseProjected]; cases chooseOpen (projectedBoard slots) <;> simp
 
--- Cost model: unit-cost `airc_claim` lock transactions issued by the choosing agent.
+-- Cost model: one unit per AIRC work-item lock attempt; launch bookkeeping is external.
 def attempts (grants : Nat -> Bool) : List Bool -> List Nat
   | [] => [] | false :: rest => (attempts (fun k => grants (k + 1)) rest).map (· + 1)
   | true :: rest => 0 :: if grants 0 then [] else (attempts (fun k => grants (k + 1)) rest).map (· + 1)
 def openCount : List Bool -> Nat | [] => 0 | true :: r => 1 + openCount r | false :: r => openCount r
 def refusedCount (grants : Nat -> Bool) (board : List Bool) : Nat := ((attempts grants board).filter (fun i => !grants i)).length
 def cost (grants : Nat -> Bool) (board : List Bool) : Nat := (attempts grants board).length
-def projectedCost (grants : Nat -> Bool) (slots : List WorkSlot) : Nat := cost grants (projectedBoard slots)
+def workItemLockAttemptCost (grants : Nat -> Bool) (slots : List WorkSlot) : Nat := cost grants (projectedBoard slots)
 
 lemma cost_bound_board (grants : Nat -> Bool) (board : List Bool) :
     cost grants board <= openCount board /\ cost grants board <= refusedCount grants board + 1 := by
@@ -183,8 +181,8 @@ lemma cost_bound_board (grants : Nat -> Bool) (board : List Bool) :
       · rename_i lost; simp only [List.length_cons, List.length_map, List.filter_cons, lost, Bool.not_false, ↓reduceIte, List.filter_map, Function.comp_def]; exact ⟨by omega, by omega⟩
 
 theorem cost_bound (grants : Nat -> Bool) (slots : List WorkSlot) :
-    projectedCost grants slots <= openCount (projectedBoard slots) /\
-    projectedCost grants slots <= refusedCount grants (projectedBoard slots) + 1 :=
+    workItemLockAttemptCost grants slots <= openCount (projectedBoard slots) /\
+    workItemLockAttemptCost grants slots <= refusedCount grants (projectedBoard slots) + 1 :=
   cost_bound_board grants (projectedBoard slots)
 
 -- Alternatives: priority-respecting lock-verified strategies with no hidden contention
@@ -195,7 +193,7 @@ def RequiredProbes (slots : List WorkSlot) (result : SessionResult) (trace : Lis
   | .claimed index => index ∈ trace /\ forall prior, prior < index -> OpenProjected slots prior -> prior ∈ trace
   | .left => forall index, OpenProjected slots index -> index ∈ trace
 
-def Admissible (grants : Nat -> Bool) (slots : List WorkSlot) (result : SessionResult) (trace : List Nat) : Prop :=
+def PriorityLockStrategy (grants : Nat -> Bool) (slots : List WorkSlot) (result : SessionResult) (trace : List Nat) : Prop :=
   result = runProjected grants slots /\ RequiredProbes slots result trace
 
 lemma attempts_nodup (board : List Bool) (grants : Nat -> Bool) : (attempts grants board).Nodup := by
@@ -238,8 +236,8 @@ lemma nodup_length_le (xs ys : List Nat) (nodup : xs.Nodup) (subset : forall ite
     have := List.length_erase_of_mem head_in; have := List.length_pos_of_mem head_in; simp only [List.length_cons]; omega
 
 theorem optimal (grants : Nat -> Bool) (slots : List WorkSlot)
-    (result : SessionResult) (trace : List Nat) (alternative : Admissible grants slots result trace) :
-    projectedCost grants slots <= trace.length := by
+    (result : SessionResult) (trace : List Nat) (alternative : PriorityLockStrategy grants slots result trace) :
+    workItemLockAttemptCost grants slots <= trace.length := by
   rcases alternative with ⟨rfl, required⟩
   apply nodup_length_le (attempts grants (projectedBoard slots)) trace (attempts_nodup (projectedBoard slots) grants)
   intro item mem; obtain ⟨is_open, bound⟩ := attempts_in_required (projectedBoard slots) grants item mem
@@ -289,11 +287,14 @@ def projectedPools : List (List WorkSlot) := [
   [s .task true false false .landed, s .task true true false .reopened, s .task true false true .absent],
   [s .issue true false false .landed false true, s .issue true false false .landed true true, s .issue true false false .absent],
   [s .task true false false .landed, s .issue true false false .landed true true, s .task true false false .absent]]
+def identityRow (key : Nat) (owner : Bool) (held : Nat) : String :=
+  s!"identity\t{key}\t{owner}:{held}\t{unreserved key owner [held]}\n"
 def fixtures : String :=
   chooseRow [] ++ chooseRow [false, false] ++ chooseRow [true, false, true] ++ chooseRow [false, true, true] ++
   chooseRow [false, false, true] ++ attemptRow 0 .granted [false, true] ++ attemptRow 0 .refused [false, true, false] ++
   attemptRow 1 .refused [false, false, false] ++ mergeRow false [true, false] ++ mergeRow false [] ++
   mergeRow true [false, true] ++ mergeRow true [false, false] ++
-  String.join (projectedCases.map projectedRow) ++ String.join (projectedPools.map projectedChooseRow)
+  String.join (projectedCases.map projectedRow) ++ String.join (projectedPools.map projectedChooseRow) ++
+  identityRow 1 false 1 ++ identityRow 2 false 1 ++ identityRow 2 true 1
 #eval IO.FS.writeFile "fixtures/goal-swarm-work-choice.tsv" fixtures
 end GoalSwarmWorkChoice
