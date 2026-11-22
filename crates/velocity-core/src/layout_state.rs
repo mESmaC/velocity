@@ -1771,8 +1771,11 @@ impl LayoutState {
                     .flat_map(|group| group.rows)
                     .map(|row| row.identifier)
                     .collect();
-                return layout::alt_target(number, &visible)
-                    .and_then(|identifier| self.open_thread(identifier));
+                return match layout::alt_target(number, &visible) {
+                    Some(layout_catalog::DRAFT_ROW) => self.navigate(NavigationIntent::NewThread),
+                    Some(identifier) => self.open_thread(identifier),
+                    None => None,
+                };
             }
             NavigationIntent::NewThread => {
                 self.selected_thread = None;
@@ -2302,4 +2305,156 @@ fn strip_question_prefix(text: &str) -> Option<&str> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_with_stored_threads() -> LayoutState {
+        let mut state = LayoutState::default();
+        let data = LayoutData {
+            project_identifier: Some(1),
+            project_name: "velocity".into(),
+            threads: vec![
+                ThreadEntry::new(
+                    layout::LayoutRow::new(10, ThreadGroup::Working),
+                    "First thread".into(),
+                    "thinking".into(),
+                    NavigationView::Thread,
+                ),
+                ThreadEntry::new(
+                    layout::LayoutRow::new(20, ThreadGroup::Working),
+                    "Second thread".into(),
+                    "idle".into(),
+                    NavigationView::Thread,
+                ),
+            ],
+            ..LayoutData::default()
+        };
+        state.restore_project(data, None, String::new());
+        state
+    }
+
+    fn alt_digit(digit: usize) -> LayoutAction {
+        LayoutAction::Keyboard(KeyboardInput {
+            key: digit.to_string(),
+            code: format!("Digit{digit}"),
+            control: false,
+            shift: false,
+            alt: true,
+            meta_held: false,
+            typing: false,
+        })
+    }
+
+    // Risk (#646): while no stored thread is selected, the synthetic New thread row takes
+    // shortcut slot 1 even on non-Home views (Settings, Agents, Board). Routing Alt+1 through
+    // open_thread silently no-ops instead of opening the Home composer like clicking the row.
+    #[test]
+    fn alt_1_opens_new_thread_from_settings_like_clicking_draft() {
+        let mut from_settings = state_with_stored_threads();
+        from_settings.apply(LayoutAction::Request(LayoutIntent::Navigation(
+            NavigationIntent::Settings,
+        )));
+        let settings_snapshot = from_settings.snapshot();
+        assert_eq!(settings_snapshot.view, NavigationView::Settings);
+        assert_eq!(settings_snapshot.selected_thread, None);
+        let rows: Vec<_> = settings_snapshot
+            .groups
+            .iter()
+            .flat_map(|group| group.rows.iter())
+            .map(|row| (row.identifier, row.number, row.active))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (layout_catalog::DRAFT_ROW, Some(1), false),
+                (10, Some(2), false),
+                (20, Some(3), false),
+            ]
+        );
+
+        let mut clicked = from_settings.clone();
+        let click_intent = clicked.apply(LayoutAction::Request(LayoutIntent::Navigation(
+            NavigationIntent::NewThread,
+        )));
+        let jump_intent = from_settings.apply(alt_digit(1));
+
+        assert!(matches!(
+            click_intent,
+            Some(LayoutIntent::Navigation(NavigationIntent::NewThread))
+        ));
+        assert!(matches!(
+            jump_intent,
+            Some(LayoutIntent::Navigation(NavigationIntent::NewThread))
+        ));
+        let clicked_snapshot = clicked.snapshot();
+        let jumped_snapshot = from_settings.snapshot();
+        assert_eq!(jumped_snapshot.view, NavigationView::Home);
+        assert_eq!(jumped_snapshot.view, clicked_snapshot.view);
+        assert_eq!(jumped_snapshot.selected_thread, None);
+        assert_eq!(
+            jumped_snapshot.selected_thread,
+            clicked_snapshot.selected_thread
+        );
+        assert!(
+            jumped_snapshot
+                .groups
+                .iter()
+                .flat_map(|group| group.rows.iter())
+                .any(|row| row.identifier == layout_catalog::DRAFT_ROW && row.active)
+        );
+    }
+
+    // Risk (#646): Alt+1 on the draft row must also return to Home from Board and Agents.
+    #[test]
+    fn alt_1_opens_new_thread_from_board_and_agents() {
+        let mut state = state_with_stored_threads();
+        for open_view in [
+            LayoutAction::Request(LayoutIntent::Navigation(NavigationIntent::Board)),
+            LayoutAction::Request(LayoutIntent::SettingsTab("agents".into())),
+        ] {
+            state.apply(open_view);
+            assert_ne!(state.snapshot().view, NavigationView::Home);
+            let intent = state.apply(alt_digit(1));
+            assert!(matches!(
+                intent,
+                Some(LayoutIntent::Navigation(NavigationIntent::NewThread))
+            ));
+            assert_eq!(state.snapshot().view, NavigationView::Home);
+            assert_eq!(state.snapshot().selected_thread, None);
+        }
+    }
+
+    // Risk (#646): fixing Alt+1 on the draft row must preserve numeric shortcuts for stored
+    // rows both when the draft row occupies slot 1 and when a stored thread is selected.
+    #[test]
+    fn stored_rows_retain_alt_shortcuts_with_and_without_draft_row() {
+        let mut state = state_with_stored_threads();
+        state.apply(LayoutAction::Request(LayoutIntent::Navigation(
+            NavigationIntent::Settings,
+        )));
+
+        assert!(state.apply(alt_digit(2)).is_none());
+        assert_eq!(state.snapshot().view, NavigationView::Thread);
+        assert_eq!(state.snapshot().selected_thread, Some(10));
+
+        state.apply(LayoutAction::Request(LayoutIntent::Navigation(
+            NavigationIntent::Settings,
+        )));
+        assert_eq!(state.snapshot().view, NavigationView::Settings);
+        assert_eq!(state.snapshot().selected_thread, Some(10));
+
+        assert!(state.apply(alt_digit(2)).is_none());
+        assert_eq!(state.snapshot().view, NavigationView::Thread);
+        assert_eq!(state.snapshot().selected_thread, Some(20));
+
+        state.apply(LayoutAction::Request(LayoutIntent::Navigation(
+            NavigationIntent::Settings,
+        )));
+        assert!(state.apply(alt_digit(1)).is_none());
+        assert_eq!(state.snapshot().view, NavigationView::Thread);
+        assert_eq!(state.snapshot().selected_thread, Some(10));
+    }
 }
