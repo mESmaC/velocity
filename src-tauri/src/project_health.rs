@@ -624,21 +624,29 @@ pub(crate) fn record_deploy_running(
     upsert_health_item(application, project, item);
 }
 
-/// Records that a `[deploy.<step>]` command passed on `commit` (#594).
+/// Records that a `[deploy.<step>]` command passed on `commit` (#594, #604).
 pub(crate) fn record_deploy_passed(
     application: &AppHandle,
     project: u32,
     step: &str,
     commit: &str,
+    secret_sources: Option<&str>,
 ) {
     let now_ms = unix_millis();
     let now = now_ms / 1000;
+    let action = match secret_sources
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(sources) => format!("Deploy step passed · {sources}"),
+        None => "Deploy step passed".to_owned(),
+    };
     let item = ProjectHealthItem::new(
         deploy_health_key(step),
         HealthSignalKind::Deploy,
         HealthSeverity::Info,
         format!("Deployed {step} at {}", short_commit(commit)),
-        "Deploy step passed",
+        action,
         now_ms,
     );
     record_recent_action(application, project, item.clone(), now);
@@ -756,38 +764,7 @@ fn deploy_run_health_item(
             acted_at,
         )),
         velocity_core::deploy::DeployRunState::Failed => {
-            let repair = project
-                .deploy_repairs
-                .iter()
-                .rev()
-                .find(|repair| !repair.closed && repair.step == run.step);
-            let (action, thread) = match repair {
-                Some(repair) => (
-                    "Fix-forward thread opened for deploy failure",
-                    Some(repair.thread),
-                ),
-                None if !project.spec_locked => (
-                    "Lock the spec to start a fix-forward thread for this deploy failure",
-                    None,
-                ),
-                None => ("Deploy step failed; awaiting fix-forward thread", None),
-            };
-            Some(
-                ProjectHealthItem::new(
-                    deploy_health_key(&run.step),
-                    HealthSignalKind::Deploy,
-                    HealthSeverity::Error,
-                    format!(
-                        "Deploy `{}` failed at {}",
-                        run.step,
-                        short_commit(&run.commit)
-                    ),
-                    action,
-                    acted_at,
-                )
-                .with_detail(velocity_core::deploy::summarize_output(&run.output, 180))
-                .with_thread(thread),
-            )
+            Some(failed_deploy_health_item(project, run, acted_at))
         }
         velocity_core::deploy::DeployRunState::Skipped
             if run.superseded_by.is_none()
@@ -811,6 +788,57 @@ fn deploy_run_health_item(
         | velocity_core::deploy::DeployRunState::Passed
         | velocity_core::deploy::DeployRunState::Skipped => None,
     }
+}
+
+fn failed_deploy_health_item(
+    project: &ProjectItem,
+    run: &velocity_rosen::deploy::DeployRunRecord,
+    acted_at: u64,
+) -> ProjectHealthItem {
+    let signal = format!(
+        "Deploy `{}` failed at {}",
+        run.step,
+        short_commit(&run.commit)
+    );
+    let detail = velocity_core::deploy::summarize_deploy_error(&run.output, 180);
+    if let Some(hint) = velocity_core::deploy::extract_cli_scope_hint(&run.output) {
+        let action = hint.strip_prefix("[Velocity] ").unwrap_or(hint);
+        return ProjectHealthItem::new(
+            deploy_health_key(&run.step),
+            HealthSignalKind::Deploy,
+            HealthSeverity::Error,
+            signal,
+            action,
+            acted_at,
+        )
+        .with_detail(detail);
+    }
+    let repair = project
+        .deploy_repairs
+        .iter()
+        .rev()
+        .find(|repair| !repair.closed && repair.step == run.step);
+    let (action, thread) = match repair {
+        Some(repair) => (
+            "Fix-forward thread opened for deploy failure",
+            Some(repair.thread),
+        ),
+        None if !project.spec_locked => (
+            "Lock the spec to start a fix-forward thread for this deploy failure",
+            None,
+        ),
+        None => ("Deploy step failed; awaiting fix-forward thread", None),
+    };
+    ProjectHealthItem::new(
+        deploy_health_key(&run.step),
+        HealthSignalKind::Deploy,
+        HealthSeverity::Error,
+        signal,
+        action,
+        acted_at,
+    )
+    .with_detail(detail)
+    .with_thread(thread)
 }
 
 /// Signal: an AIRC issue tool failed locally for a reason that isn't GitHub's (#581).

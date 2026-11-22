@@ -1,5 +1,7 @@
 //! Runs Rosen R12 `[deploy.<step>]` steps after green lands using secrets from
-//! Windows Credential Manager (`velocity/deploy/<project>/<NAME>`) (#594).
+//! Windows Credential Manager (`velocity/deploy/<project>/<NAME>`) or known local
+//! CLI logins (`flyctl` for `FLY_API_TOKEN`, `wrangler` for `CLOUDFLARE_API_TOKEN`)
+//! (#594, #604).
 //!
 //! Secret values are loaded only for the step's named `secrets`, injected solely
 //! into that deploy process, never passed to agents, and redacted from all output
@@ -12,15 +14,20 @@ use std::sync::Mutex;
 
 use tauri::{AppHandle, Manager};
 use velocity_core::deploy::{
-    DeploySecretStatus, DeployStepSummary, ProjectDeploySettings, missing_secrets_output,
-    secret_target, summarize_output, validate_secret_name,
+    CliScopeFailure, DeploySecretSource, DeploySecretStatus, DeployStepSummary,
+    ProjectDeploySettings, detect_cli_scope_error, extract_secret_sources_line,
+    format_deploy_result_output, format_secret_sources, missing_secrets_output_with_notes,
+    secret_target, summarize_deploy_error, summarize_output, validate_secret_name,
 };
 use velocity_core::duty::DutyEventKind;
 use velocity_core::project_health::short_commit;
 use velocity_rosen::deploy::{
-    DeployCommandOutcome, DeployDue, RosenDeployStatus, deploy_steps, parse_deploy_due,
-    parse_deploy_result, platform_matches_host, run_deploy_command, running_deploys,
-    submit_deploy_result,
+    DeployCommandOutcome, DeployDue, MAX_REPORTED_BYTES, RosenDeployStatus, deploy_steps,
+    parse_deploy_due, parse_deploy_result, platform_matches_host, run_deploy_command,
+    running_deploys, submit_deploy_result,
+};
+use velocity_rosen::deploy_cli::{
+    CliSecretLookup, load_cli_fallback_secret, probe_cli_fallback_source,
 };
 use velocity_rosen::{ProjectEvent, ProjectServer, checker, post_land};
 use velocity_store::duty::LandingProject;
@@ -78,11 +85,13 @@ pub(crate) fn on_deploy_result(application: &AppHandle, project: u32, event: &Pr
     };
     if result.status == RosenDeployStatus::Passed {
         close_repairs(application, project, &result.step);
+        let sources = extract_secret_sources_line(&result.output);
         crate::project_health::record_deploy_passed(
             application,
             project,
             &result.step,
             &result.commit,
+            sources,
         );
     } else if result.status == RosenDeployStatus::Skipped {
         crate::project_health::record_deploy_skipped(
@@ -150,8 +159,8 @@ async fn execute_due(application: &AppHandle, project: u32, due: DeployDue) {
     let Ok(server) = crate::rosen::server(application, project).await else {
         return;
     };
-    let secrets = match load_step_secrets(&landing.project.name, project, &due.secrets).await {
-        Ok(SecretLoad::Ready(pairs)) => pairs,
+    let loaded = match load_step_secrets(&landing.project.name, project, &due.secrets).await {
+        Ok(SecretLoad::Ready(loaded)) => loaded,
         Ok(SecretLoad::Missing(missing)) => {
             handle_missing_secrets(application, &server, project, &due, &missing).await;
             return;
@@ -168,15 +177,16 @@ async fn execute_due(application: &AppHandle, project: u32, due: DeployDue) {
             return;
         }
     };
-    announce_running(application, project, &due);
+    let LoadedSecrets { pairs, sources } = loaded;
+    announce_running(application, project, &due, &sources);
     let step_due = due.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        run_deploy_command(&folder, &step_due, &secrets)
+        run_deploy_command(&folder, &step_due, &pairs)
     })
     .await
     .map_err(|error| error.to_string())
     .and_then(|inner| inner.map_err(|error| error.to_string()));
-    finish_due(application, &server, project, &due, outcome).await;
+    finish_due(application, &server, project, &due, &sources, outcome).await;
 }
 
 async fn finish_due(
@@ -184,11 +194,12 @@ async fn finish_due(
     server: &ProjectServer,
     project: u32,
     due: &DeployDue,
+    sources: &[(String, DeploySecretSource)],
     outcome: Result<DeployCommandOutcome, String>,
 ) {
     match outcome {
         Ok(DeployCommandOutcome::Passed { output }) => {
-            handle_passed(application, server, project, due, &output).await;
+            handle_passed(application, server, project, due, sources, &output).await;
         }
         Ok(DeployCommandOutcome::Failed {
             exit_code,
@@ -200,6 +211,7 @@ async fn finish_due(
                 server,
                 project,
                 due,
+                sources,
                 exit_code,
                 stopped_reason,
                 &output,
@@ -212,14 +224,33 @@ async fn finish_due(
     }
 }
 
-fn announce_running(application: &AppHandle, project: u32, due: &DeployDue) {
+fn announce_running(
+    application: &AppHandle,
+    project: u32,
+    due: &DeployDue,
+    sources: &[(String, DeploySecretSource)],
+) {
     let short = short_commit(&due.commit);
+    let source_summary = format_secret_sources(sources);
+    if let Some(summary) = &source_summary {
+        crate::diagnostics::record(
+            SOURCE,
+            &format!(
+                "Project {project} deploy `{}` at {short} using {summary}",
+                due.step
+            ),
+        );
+    }
+    let message = match &source_summary {
+        Some(summary) => format!("Deploying {} at {short} ({summary})…", due.step),
+        None => format!("Deploying {} at {short}…", due.step),
+    };
     crate::rosen_landing::publish_project_activity(
         application,
         project,
         DEPLOY_ACTOR,
         DutyEventKind::Wait,
-        format!("Deploying {} at {short}…", due.step),
+        message,
     );
     crate::project_health::record_deploy_running(application, project, &due.step, &due.commit);
 }
@@ -229,9 +260,9 @@ async fn handle_missing_secrets(
     server: &ProjectServer,
     project: u32,
     due: &DeployDue,
-    missing: &[(String, String)],
+    missing: &[(String, String, Option<String>)],
 ) {
-    let message = missing_secrets_output(missing);
+    let message = missing_secrets_output_with_notes(missing);
     let short = short_commit(&due.commit);
     crate::diagnostics::record(
         SOURCE,
@@ -276,16 +307,20 @@ async fn handle_passed(
     server: &ProjectServer,
     project: u32,
     due: &DeployDue,
+    sources: &[(String, DeploySecretSource)],
     redacted_output: &str,
 ) {
     let short = short_commit(&due.commit);
+    let source_summary = format_secret_sources(sources);
+    let reported_output =
+        format_deploy_result_output(sources, redacted_output, None, MAX_REPORTED_BYTES);
     if let Err(error) = submit_deploy_result(
         server,
         due.id,
         &due.step,
         &due.commit,
         RosenDeployStatus::Passed,
-        redacted_output,
+        &reported_output,
     )
     .await
     {
@@ -298,33 +333,51 @@ async fn handle_passed(
         );
     }
     close_repairs(application, project, &due.step);
+    let activity = match &source_summary {
+        Some(summary) => format!("Deployed {} at {short} · {summary}", due.step),
+        None => format!("Deployed {} at {short}", due.step),
+    };
     crate::rosen_landing::publish_project_activity(
         application,
         project,
         DEPLOY_ACTOR,
         DutyEventKind::Approve,
-        format!("Deployed {} at {short}", due.step),
+        activity,
     );
-    crate::project_health::record_deploy_passed(application, project, &due.step, &due.commit);
+    crate::project_health::record_deploy_passed(
+        application,
+        project,
+        &due.step,
+        &due.commit,
+        source_summary.as_deref(),
+    );
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_failed(
     application: &AppHandle,
     server: &ProjectServer,
     project: u32,
     due: &DeployDue,
+    sources: &[(String, DeploySecretSource)],
     exit_code: Option<i32>,
     stopped_reason: Option<String>,
     redacted_output: &str,
 ) {
-    let short = short_commit(&due.commit);
+    let scope_failure = detect_cli_scope_error(redacted_output, sources);
+    let reported_output = format_deploy_result_output(
+        sources,
+        redacted_output,
+        scope_failure.as_ref().map(|item| item.output_note.as_str()),
+        MAX_REPORTED_BYTES,
+    );
     if let Err(error) = submit_deploy_result(
         server,
         due.id,
         &due.step,
         &due.commit,
         RosenDeployStatus::Failed,
-        redacted_output,
+        &reported_output,
     )
     .await
     {
@@ -336,6 +389,74 @@ async fn handle_failed(
             ),
         );
     }
+    if let Some(scope) = scope_failure {
+        handle_cli_scope_failure(application, project, due, &scope);
+        return;
+    }
+    handle_repairable_failure(
+        application,
+        project,
+        due,
+        exit_code,
+        stopped_reason,
+        &reported_output,
+        redacted_output,
+    )
+    .await;
+}
+
+fn handle_cli_scope_failure(
+    application: &AppHandle,
+    project: u32,
+    due: &DeployDue,
+    scope: &CliScopeFailure,
+) {
+    let short = short_commit(&due.commit);
+    let action = format!("CLI login may lack a required scope; {}", scope.suggestion);
+    crate::diagnostics::record(
+        SOURCE,
+        &format!(
+            "Project {project} deploy `{}` failed at {short}: {} ({action})",
+            due.step, scope.api_error
+        ),
+    );
+    crate::rosen_landing::publish_project_activity(
+        application,
+        project,
+        DEPLOY_ACTOR,
+        DutyEventKind::Changes,
+        format!(
+            "Deploy {} failed at {short} · {} · {}",
+            due.step, scope.api_error, scope.suggestion
+        ),
+    );
+    crate::project_health::record_deploy_failed(
+        application,
+        project,
+        &due.step,
+        &due.commit,
+        &action,
+        Some(scope.api_error.clone()),
+        None,
+    );
+    show_failure_toast(
+        application,
+        &due.step,
+        short,
+        &format!("{} — {}", scope.api_error, scope.suggestion),
+    );
+}
+
+async fn handle_repairable_failure(
+    application: &AppHandle,
+    project: u32,
+    due: &DeployDue,
+    exit_code: Option<i32>,
+    stopped_reason: Option<String>,
+    reported_output: &str,
+    redacted_output: &str,
+) {
+    let short = short_commit(&due.commit);
     let failure = DeployFailure {
         run_id: due.id,
         step: due.step.clone(),
@@ -343,7 +464,7 @@ async fn handle_failed(
         command: due.command.clone(),
         exit_code,
         stopped_reason,
-        redacted_output: redacted_output.to_owned(),
+        redacted_output: reported_output.to_owned(),
     };
     let handle = application.clone();
     let repair_result = tauri::async_runtime::spawn_blocking(move || {
@@ -386,7 +507,7 @@ async fn handle_failed(
         &due.step,
         &due.commit,
         &action,
-        summarize_output(redacted_output, 180),
+        summarize_deploy_error(redacted_output, 180),
         thread,
     );
     show_failure_toast(application, &due.step, short, &action);
@@ -434,9 +555,14 @@ async fn handle_setup_failure(
     );
 }
 
+struct LoadedSecrets {
+    pairs: Vec<(String, String)>,
+    sources: Vec<(String, DeploySecretSource)>,
+}
+
 enum SecretLoad {
-    Ready(Vec<(String, String)>),
-    Missing(Vec<(String, String)>),
+    Ready(LoadedSecrets),
+    Missing(Vec<(String, String, Option<String>)>),
 }
 
 async fn load_step_secrets(
@@ -445,25 +571,41 @@ async fn load_step_secrets(
     names: &[String],
 ) -> Result<SecretLoad, String> {
     if names.is_empty() {
-        return Ok(SecretLoad::Ready(Vec::new()));
+        return Ok(SecretLoad::Ready(LoadedSecrets {
+            pairs: Vec::new(),
+            sources: Vec::new(),
+        }));
     }
     let project_name = project_name.to_owned();
     let names = names.to_vec();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut loaded = Vec::with_capacity(names.len());
+        let mut pairs = Vec::with_capacity(names.len());
+        let mut sources = Vec::with_capacity(names.len());
         let mut missing = Vec::new();
         for name in &names {
             let target = secret_target(&project_name, project_id, name)?;
             match velocity_collapse::load_deploy_secret(&target, name) {
-                Ok(Some(secret)) => loaded.push((name.clone(), secret.expose().to_owned())),
-                Ok(None) => missing.push((name.clone(), target)),
+                Ok(Some(secret)) => {
+                    pairs.push((name.clone(), secret.expose().to_owned()));
+                    sources.push((name.clone(), DeploySecretSource::CredentialManager));
+                }
+                Ok(None) => match load_cli_fallback_secret(name) {
+                    CliSecretLookup::Found { source, value } => {
+                        pairs.push((name.clone(), value.expose().to_owned()));
+                        sources.push((name.clone(), source));
+                    }
+                    CliSecretLookup::Unavailable { reason, .. } => {
+                        missing.push((name.clone(), target, Some(reason)));
+                    }
+                    CliSecretLookup::Unsupported => missing.push((name.clone(), target, None)),
+                },
                 Err(error) => {
                     return Err(format!("Could not read secret {name} ({target}): {error}"));
                 }
             }
         }
         if missing.is_empty() {
-            Ok(SecretLoad::Ready(loaded))
+            Ok(SecretLoad::Ready(LoadedSecrets { pairs, sources }))
         } else {
             Ok(SecretLoad::Missing(missing))
         }
@@ -773,11 +915,17 @@ async fn collect_secret_statuses(
             let target = secret_target(&project_name, project_identifier, &name)?;
             let stored = velocity_collapse::has_deploy_secret(&target, &name)
                 .map_err(|error| error.to_string())?;
+            let fallback = if stored {
+                None
+            } else {
+                probe_cli_fallback_source(&name).map(|source| source.label().to_owned())
+            };
             statuses.push(DeploySecretStatus {
                 name,
                 target,
                 stored,
                 used_by,
+                fallback,
             });
         }
         Ok(statuses)

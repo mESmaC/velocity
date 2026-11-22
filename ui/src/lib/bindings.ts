@@ -1264,13 +1264,13 @@ export type DependencyWait = {
 };
 
 /**
- *  Presence of one project deploy secret in Windows Credential Manager.
+ *  Presence of one project deploy secret in Windows Credential Manager or a CLI login.
  *  Never carries the secret value.
  */
 export type DeploySecretStatus = DeploySecretStatus_Serialize | DeploySecretStatus_Deserialize;
 
 /**
- *  Presence of one project deploy secret in Windows Credential Manager.
+ *  Presence of one project deploy secret in Windows Credential Manager or a CLI login.
  *  Never carries the secret value.
  */
 export type DeploySecretStatus_Deserialize = {
@@ -1279,10 +1279,12 @@ export type DeploySecretStatus_Deserialize = {
 	stored: boolean,
 	/**  Names of `[deploy.<step>]` entries that request this secret. */
 	used_by?: string[],
+	/**  Active CLI login fallback when `stored` is false (#604), for example `"from flyctl login"`. */
+	fallback?: string | null,
 };
 
 /**
- *  Presence of one project deploy secret in Windows Credential Manager.
+ *  Presence of one project deploy secret in Windows Credential Manager or a CLI login.
  *  Never carries the secret value.
  */
 export type DeploySecretStatus_Serialize = {
@@ -1291,6 +1293,8 @@ export type DeploySecretStatus_Serialize = {
 	stored: boolean,
 	/**  Names of `[deploy.<step>]` entries that request this secret. */
 	used_by: string[],
+	/**  Active CLI login fallback when `stored` is false (#604), for example `"from flyctl login"`. */
+	fallback?: string,
 };
 
 /**  Read-only description of one `[deploy.<name>]` step from `rosen.toml`. */

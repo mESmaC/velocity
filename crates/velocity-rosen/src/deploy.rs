@@ -36,7 +36,7 @@ const DEPLOY_COMMAND_LIMIT: Duration = Duration::from_secs(30 * 60);
 const DEPLOY_SILENCE_LIMIT: Duration = Duration::from_secs(10 * 60);
 const POLL: Duration = Duration::from_millis(250);
 const MAX_CAPTURE_BYTES: usize = 256 * 1024;
-const MAX_REPORTED_BYTES: usize = 64 * 1024;
+pub const MAX_REPORTED_BYTES: usize = 64 * 1024;
 
 /// A `[deploy.<step>]` run due to execute on this machine.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -124,7 +124,10 @@
       Secrets for <code>rosen.toml</code> <code>[deploy]</code> steps are stored
       in Windows Credential Manager under
       <code>velocity/deploy/&lt;project&gt;/&lt;NAME&gt;</code>, passed only to
-      matching deploy commands, and never shown again or exposed to agents.
+      matching deploy commands, and never shown again or exposed to agents. When
+      <code>FLY_API_TOKEN</code> or <code>CLOUDFLARE_API_TOKEN</code> is not
+      stored here, Velocity falls back to your local <code>flyctl</code> or
+      <code>wrangler</code> login; save a token here if a step needs extra scopes.
     </p>
     <PaneState
       name="Deploy secrets"
@@ -177,12 +180,20 @@
                   <div class="deploy-secret-title">
                     <code>{secret.name}</code>
                     <span
-                      class:deploy-status-ok={secret.stored}
+                      class:deploy-status-ok={secret.stored ||
+                        Boolean(secret.fallback)}
                       class:deploy-status-missing={!secret.stored &&
+                        !secret.fallback &&
                         secret.used_by.length > 0}
-                      class:hint={!secret.stored && secret.used_by.length === 0}
+                      class:hint={!secret.stored &&
+                        !secret.fallback &&
+                        secret.used_by.length === 0}
                     >
-                      {secret.stored ? 'Stored' : 'Not set'}
+                      {secret.stored
+                        ? 'Stored'
+                        : secret.fallback
+                          ? `Fallback (${secret.fallback})`
+                          : 'Not set'}
                     </span>
                   </div>
                   <span class="hint">
@@ -206,7 +217,9 @@
                       : `Set value for ${secret.name}`}
                     placeholder={secret.stored
                       ? 'Enter new value to replace'
-                      : 'Enter secret value'}
+                      : secret.fallback
+                        ? 'Enter token to override CLI login'
+                        : 'Enter secret value'}
                     value={secretInputs.get(secret.name) ?? ''}
                     oninput={(event) =>
                       secretInputs.set(secret.name, event.currentTarget.value)}
