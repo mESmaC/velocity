@@ -36,6 +36,30 @@ pub fn open(application: &AppHandle, argument: &str) {
     report(show_thread(application, project, thread));
 }
 
+fn select_linked_project(
+    store: &ManagedStateStore,
+    project: u32,
+    thread: u32,
+) -> Result<Option<velocity_store::projects::ProjectSwitchData>, String> {
+    let mut store = lock(store, "persisted state")?;
+    if !store
+        .project(project)
+        .is_some_and(|project| project.threads.iter().any(|item| item.id == thread))
+    {
+        return Err("The linked Velocity thread is unavailable on this installation".into());
+    }
+    if store
+        .active_project()
+        .is_some_and(|active| active.id == project)
+    {
+        return Ok(None);
+    }
+    store
+        .select_project(project, "")
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
 fn show_thread(application: &AppHandle, project: u32, thread: u32) -> Result<(), String> {
     let Some(window) = application.get_webview_window("main") else {
         return Ok(());
@@ -43,33 +67,33 @@ fn show_thread(application: &AppHandle, project: u32, thread: u32) -> Result<(),
     let Some(store) = application.try_state::<ManagedStateStore>() else {
         return Ok(());
     };
-    let (snapshot, selection) = {
+    let selection = match select_linked_project(store.inner(), project, thread)? {
+        Some(switched) => crate::layout::apply_project_switch(application, switched)?.2,
+        None => None,
+    };
+    let (outcome, fast_snapshot) = {
         let mut store = lock(store.inner(), "persisted state")?;
-        if !store
-            .project(project)
-            .is_some_and(|project| project.threads.iter().any(|item| item.id == thread))
-        {
-            return Err("The linked Velocity thread is unavailable on this installation".into());
-        }
         let layout = application.state::<MainLayout>();
         let mut layout = lock(layout.inner(), "main-window state")?;
-        let selection = if store
-            .active_project()
-            .is_some_and(|active| active.id == project)
-        {
-            None
-        } else {
-            Some(
-                store
-                    .switch_project_layout(&mut layout, project)
-                    .map_err(|error| error.to_string())?,
-            )
-        };
         let outcome = store
             .dispatch_project_layout(&mut layout, LayoutAction::OpenThread(thread as usize))
             .map_err(|error| error.to_string())?;
-        let selection = selection.map(|selection| (store.list_projects(), selection));
-        (outcome.snapshot, selection)
+        drop(store);
+        let fast_snapshot = (outcome.project_switch.is_none()
+            && outcome.pending_hydration.is_none())
+        .then(|| layout.snapshot());
+        (outcome, fast_snapshot)
+    };
+    let snapshot = match fast_snapshot {
+        Some(snapshot) => snapshot,
+        None => {
+            crate::layout::finish_dispatch(
+                application,
+                outcome.project_switch,
+                outcome.pending_hydration,
+            )?
+            .0
+        }
     };
     crate::layout::publish(&window, &snapshot, None)?;
     if let Some((projects, selection)) = selection {

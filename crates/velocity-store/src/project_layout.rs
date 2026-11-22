@@ -29,9 +29,18 @@ pub struct LayoutRefresh {
     pub data: LayoutData,
     pub spec_locked: Option<bool>,
     pub active_project: Option<u32>,
+    pub pending_hydration: Option<crate::transcripts::PendingTranscriptHydration>,
 }
 
 impl LayoutRefresh {
+    /// Reads any uncached settled thread transcripts from disk outside the store and layout
+    /// locks and attaches them onto `self.data` (#669).
+    pub fn hydrate_from_disk(&mut self) {
+        if let Some(pending) = self.pending_hydration.take() {
+            pending.hydrate_data(&mut self.data);
+        }
+    }
+
     pub fn apply(self, layout: &mut velocity_core::layout_state::LayoutState) -> bool {
         layout.apply_store_data(self.revision, self.data, self.spec_locked)
     }
@@ -40,13 +49,20 @@ impl LayoutRefresh {
 impl crate::StateStore {
     /// Extracts the active project's layout read model so callers can drop the store lock
     /// before locking `LayoutState`, building `LayoutSnapshot`, or emitting IPC events (#554).
+    /// Settled threads not yet in cache are returned in `pending_hydration` instead of being
+    /// read from disk under the store lock (#669).
     pub fn layout_refresh(&self) -> LayoutRefresh {
         let active = active_project(&self.state);
+        let selected = active
+            .and_then(|project| project.active_thread_id)
+            .and_then(|identifier| usize::try_from(identifier).ok());
+        let (data, pending_hydration) = read_model_cached(self, selected);
         LayoutRefresh {
             revision: self.state.revision,
-            data: read_model(self),
+            data,
             spec_locked: active.map(|project| project.spec_locked),
             active_project: active.map(|project| project.id),
+            pending_hydration,
         }
     }
 
@@ -93,11 +109,22 @@ pub(crate) fn read_model_for(
     store: &crate::StateStore,
     selected_thread: Option<usize>,
 ) -> LayoutData {
+    read_model_cached(store, selected_thread).0
+}
+
+pub(crate) fn read_model_cached(
+    store: &crate::StateStore,
+    selected_thread: Option<usize>,
+) -> (
+    LayoutData,
+    Option<crate::transcripts::PendingTranscriptHydration>,
+) {
     let state = store.state();
     let mut data = LayoutData {
         projects: project_palette(state),
         ..LayoutData::default()
     };
+    let mut pending_hydration = None;
     if let Some(project) = active_project(state) {
         let hydrated = crate::transcripts::hydrated_thread_ids(project, selected_thread);
         data.project_identifier = Some(project.id);
@@ -135,13 +162,17 @@ pub(crate) fn read_model_for(
                 .iter()
                 .map(crate::goal_swarm_view::goal_swarm_row),
         );
-        entries.extend(thread_entries(
-            store,
-            project,
-            task_count,
-            &state.settings,
-            &hydrated,
-        ));
+        let (thread_rows, missing) =
+            thread_entries(store, project, task_count, &state.settings, &hydrated);
+        entries.extend(thread_rows);
+        if !missing.is_empty() {
+            pending_hydration = Some(crate::transcripts::PendingTranscriptHydration::new(
+                store.directory.clone(),
+                project.id,
+                missing,
+                store.settled_transcripts.clone(),
+            ));
+        }
         data.threads = entries;
         data.interviews = project
             .threads
@@ -165,7 +196,7 @@ pub(crate) fn read_model_for(
     data.providers = crate::provider_views::provider_usage(&state.settings);
     data.default_model_pill = Some(crate::provider_views::default_model_pill(&state.settings));
     data.composer_model_pill = store.composer_model_pill();
-    data
+    (data, pending_hydration)
 }
 
 /// Thread rows. Swarm members are listed under their swarm in agent order (a1, a2, …),
@@ -177,7 +208,8 @@ fn thread_entries(
     task_count: usize,
     settings: &crate::Settings,
     hydrated: &BTreeSet<u32>,
-) -> Vec<ThreadEntry> {
+) -> (Vec<ThreadEntry>, Vec<u32>) {
+    let mut missing = Vec::new();
     let mut threads: Vec<_> = project
         .threads
         .iter()
@@ -188,7 +220,12 @@ fn thread_entries(
             let blocks = if !crate::transcripts::is_settled_state(thread.state) {
                 thread.transcript.clone()
             } else if hydrated.contains(&thread.id) {
-                store.thread_transcript(project.id, thread.id)
+                if let Some(cached) = store.cached_thread_transcript(project.id, thread.id) {
+                    cached
+                } else {
+                    missing.push(thread.id);
+                    velocity_core::thread_view_model::SharedBlocks::default()
+                }
             } else {
                 velocity_core::thread_view_model::SharedBlocks::default()
             };
@@ -200,7 +237,10 @@ fn thread_entries(
         })
         .collect();
     threads.sort_by_key(|(membership, _)| *membership);
-    threads.into_iter().map(|(_, entry)| entry).collect()
+    (
+        threads.into_iter().map(|(_, entry)| entry).collect(),
+        missing,
+    )
 }
 
 fn project_palette(state: &PersistedState) -> Vec<PaletteItem> {

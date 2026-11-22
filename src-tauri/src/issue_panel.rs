@@ -419,7 +419,7 @@ fn open_assigned_thread(
     repository: &str,
     number: u32,
 ) -> Result<Option<LayoutSnapshot>, String> {
-    let snapshot = {
+    let (outcome, fast_snapshot) = {
         let store = application.state::<ManagedStateStore>();
         let mut store = lock(store.inner(), "persisted state")?;
         let project = store
@@ -452,7 +452,22 @@ fn open_assigned_thread(
         let outcome = store
             .dispatch_project_layout(&mut layout, LayoutAction::OpenThread(identifier as usize))
             .map_err(|error| error.to_string())?;
-        outcome.snapshot
+        drop(store);
+        let fast_snapshot = (outcome.project_switch.is_none()
+            && outcome.pending_hydration.is_none())
+        .then(|| layout.snapshot());
+        (outcome, fast_snapshot)
+    };
+    let snapshot = match fast_snapshot {
+        Some(snapshot) => snapshot,
+        None => {
+            crate::layout::finish_dispatch(
+                application,
+                outcome.project_switch,
+                outcome.pending_hydration,
+            )?
+            .0
+        }
     };
     crate::layout::publish(application, &snapshot, None)?;
     Ok(Some(snapshot))

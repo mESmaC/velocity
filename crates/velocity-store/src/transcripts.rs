@@ -239,10 +239,12 @@ pub fn remove_transcript(directory: &Path, project: u32, thread: u32) {
     }
 }
 
+type SettledCacheEntry = ((u32, u32), SharedBlocks);
+
 /// Bounded LRU cache for settled threads loaded on demand when opened in the UI.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct SettledTranscriptCache {
-    entries: Mutex<Vec<((u32, u32), SharedBlocks)>>,
+    entries: Arc<Mutex<Vec<SettledCacheEntry>>>,
 }
 
 impl SettledTranscriptCache {
@@ -265,9 +267,118 @@ impl SettledTranscriptCache {
         entries.push((key, blocks));
     }
 
+    pub(crate) fn insert_if_absent(&self, key: (u32, u32), blocks: SharedBlocks) {
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        if entries.iter().any(|(cached, _)| *cached == key) {
+            return;
+        }
+        if entries.len() >= SETTLED_CACHE_CAPACITY {
+            entries.remove(0);
+        }
+        entries.push((key, blocks));
+    }
+
     pub(crate) fn remove(&self, key: (u32, u32)) {
         let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         entries.retain(|(cached, _)| *cached != key);
+    }
+}
+
+/// Settled thread transcripts that must be read from disk outside `ManagedStateStore` and
+/// `MainLayout` locks before hydrating the layout snapshot (#669).
+#[derive(Clone)]
+pub struct PendingTranscriptHydration {
+    directory: PathBuf,
+    project: u32,
+    thread_ids: Vec<u32>,
+    cache: SettledTranscriptCache,
+}
+
+/// Settled transcripts loaded from disk outside the store and layout locks (#669).
+pub struct LoadedTranscripts {
+    project: u32,
+    entries: Vec<(u32, SharedBlocks)>,
+}
+
+impl PendingTranscriptHydration {
+    pub(crate) fn new(
+        directory: PathBuf,
+        project: u32,
+        thread_ids: Vec<u32>,
+        cache: SettledTranscriptCache,
+    ) -> Self {
+        Self {
+            directory,
+            project,
+            thread_ids,
+            cache,
+        }
+    }
+
+    pub fn project(&self) -> u32 {
+        self.project
+    }
+
+    pub fn thread_ids(&self) -> &[u32] {
+        &self.thread_ids
+    }
+
+    /// Reads and deserializes pending settled transcript files from disk and caches them
+    /// without holding `ManagedStateStore` or `MainLayout` (#669).
+    pub fn load_from_disk(self) -> LoadedTranscripts {
+        let mut entries = Vec::with_capacity(self.thread_ids.len());
+        for thread_id in self.thread_ids {
+            match read_transcript(&self.directory, self.project, thread_id) {
+                Ok(blocks) if !blocks.is_empty() => {
+                    self.cache
+                        .insert_if_absent((self.project, thread_id), Arc::clone(&blocks));
+                    entries.push((thread_id, blocks));
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!(
+                        "Could not read transcript for project {} thread {thread_id}: {error}",
+                        self.project
+                    );
+                }
+            }
+        }
+        LoadedTranscripts {
+            project: self.project,
+            entries,
+        }
+    }
+
+    /// Loads pending transcripts from disk and attaches them onto a detached `LayoutData`
+    /// before acquiring `MainLayout` (#669).
+    pub fn hydrate_data(self, data: &mut velocity_core::layout_view::LayoutData) {
+        if data.project_identifier != Some(self.project) {
+            return;
+        }
+        let loaded = self.load_from_disk();
+        for (thread_id, blocks) in loaded.entries {
+            if let Some(detail) = data
+                .threads
+                .iter_mut()
+                .find(|entry| entry.policy.identifier == thread_id as usize)
+                .and_then(|entry| entry.detail.as_mut())
+            {
+                detail.blocks = blocks;
+            }
+        }
+    }
+}
+
+impl LoadedTranscripts {
+    /// Applies loaded settled transcripts to `layout` if its active project still matches (#669).
+    pub fn apply(self, layout: &mut velocity_core::layout_state::LayoutState) {
+        for (thread_id, blocks) in self.entries {
+            layout.hydrate_project_thread_blocks(self.project, thread_id as usize, blocks);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 }
 

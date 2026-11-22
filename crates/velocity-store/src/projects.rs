@@ -6,12 +6,13 @@ use specta::Type;
 use thiserror::Error;
 use velocity_core::duty::{DutyFeedEvent, DutyRole};
 use velocity_core::layout_state::LayoutState;
-use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
+use velocity_core::layout_view::{LayoutAction, LayoutIntent};
 use velocity_core::projects::{self as policy, ProjectSelection, ProjectSource};
 
 use crate::{ProjectLocationKind, StateStore, StoreError};
 
 pub use crate::project_layout::LayoutRefresh;
+pub use crate::transcripts::PendingTranscriptHydration;
 
 /// Data extracted under the store lock for a project switch so layout restoration, snapshot
 /// creation and event emission run after releasing the store lock (#554).
@@ -63,9 +64,9 @@ pub struct ProjectList {
 }
 
 pub struct ProjectDispatch {
-    pub snapshot: LayoutSnapshot,
     pub intent: Option<LayoutIntent>,
-    pub selection: Option<ProjectSelectionView>,
+    pub project_switch: Option<ProjectSwitchData>,
+    pub pending_hydration: Option<PendingTranscriptHydration>,
     pub task_added: Option<(u32, crate::TaskItem)>,
     pub duty_event: Option<(DutyRole, DutyFeedEvent)>,
 }
@@ -112,11 +113,11 @@ impl StateStore {
         let selected = crate::project_layout::active_project(&self.state)
             .and_then(|project| project.active_thread_id)
             .and_then(|identifier| usize::try_from(identifier).ok());
-        layout.restore_project(
-            crate::project_layout::read_model(self),
-            selected,
-            String::new(),
-        );
+        let (mut data, pending) = crate::project_layout::read_model_cached(self, selected);
+        if let Some(pending) = pending {
+            pending.hydrate_data(&mut data);
+        }
+        layout.restore_project(data, selected, String::new());
         crate::build_gate::sync_layout(&self.state, layout);
     }
 
@@ -168,7 +169,8 @@ impl StateStore {
         requested: u32,
     ) -> Result<ProjectSelectionView, ProjectError> {
         let current_search = layout.search_query().to_owned();
-        let switched = self.select_project(requested, &current_search)?;
+        let mut switched = self.select_project(requested, &current_search)?;
+        switched.refresh.hydrate_from_disk();
         layout.restore_store_project(
             switched.refresh.revision,
             switched.refresh.data,
@@ -223,38 +225,42 @@ impl StateStore {
         let mut candidate = layout.clone();
         let mut intent = crate::build_gate::dispatch_layout(&self.state, &mut candidate, action);
         let task_added = self.dispatch_task_intent(&mut candidate, &mut intent)?;
-        let mut duty_event = None;
-        let selection = if let Some(LayoutIntent::SwitchProject(identifier)) = &intent {
+        if let Some(LayoutIntent::SwitchProject(identifier)) = &intent {
             let requested = identifier
                 .parse()
                 .map_err(|_| ProjectError::InvalidIdentifier(identifier.clone()))?;
-            let selection = self.switch_project_layout(&mut candidate, requested)?;
-            intent = None;
-            Some(selection)
-        } else {
-            if let Some(LayoutIntent::SteerThread {
-                identifier, prompt, ..
-            }) = &intent
-            {
-                duty_event = self.record_duty_composer_message(
-                    &mut candidate,
-                    *identifier,
-                    prompt.clone(),
-                    crate::duty::clock_timestamp(),
-                )?;
-                if duty_event.is_some() {
-                    intent = None;
-                }
+            let current_search = candidate.search_query().to_owned();
+            let switched = self.select_project(requested, &current_search)?;
+            return Ok(ProjectDispatch {
+                intent: None,
+                project_switch: Some(switched),
+                pending_hydration: None,
+                task_added,
+                duty_event: None,
+            });
+        }
+        let mut duty_event = None;
+        if let Some(LayoutIntent::SteerThread {
+            identifier, prompt, ..
+        }) = &intent
+        {
+            duty_event = self.record_duty_composer_message(
+                &mut candidate,
+                *identifier,
+                prompt.clone(),
+                crate::duty::clock_timestamp(),
+            )?;
+            if duty_event.is_some() {
+                intent = None;
             }
-            self.remember_project_thread(candidate.selected_thread())?;
-            None
-        };
-        self.hydrate_selected_thread(&mut candidate);
+        }
+        self.remember_project_thread(candidate.selected_thread())?;
+        let pending_hydration = self.prepare_selected_thread_hydration(&mut candidate);
         *layout = candidate;
         Ok(ProjectDispatch {
-            snapshot: layout.snapshot(),
             intent,
-            selection,
+            project_switch: None,
+            pending_hydration,
             task_added,
             duty_event,
         })
@@ -327,6 +333,117 @@ impl StateStore {
             }
             return Err(error.into());
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{PersistedState, ProjectItem, ThreadItem, ThreadState};
+    use std::sync::Arc;
+    use velocity_core::layout_view::LayoutAction;
+    use velocity_core::thread_view_model::TranscriptBlock;
+
+    fn sample_blocks(label: &str) -> velocity_core::thread_view_model::SharedBlocks {
+        Arc::new(vec![TranscriptBlock::UserMessage {
+            text: format!("Prompt {label}"),
+            queued: false,
+        }])
+    }
+
+    fn seed_two_projects_with_settled_threads(
+        directory: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut state = PersistedState::default();
+        let mut first = ProjectItem::new(1, "Alpha".into(), r"C:\alpha".into());
+        let mut active = ThreadItem::new(1, "Active".into());
+        active.state = ThreadState::Working;
+        active.transcript = sample_blocks("active");
+        let mut settled = ThreadItem::new(2, "Settled".into());
+        settled.state = ThreadState::Merged;
+        settled.transcript = sample_blocks("settled-first");
+        first.threads.push(active);
+        first.threads.push(settled);
+        first.active_thread_id = Some(1);
+
+        let mut second = ProjectItem::new(2, "Beta".into(), r"C:\beta".into());
+        let mut second_settled = ThreadItem::new(5, "Beta settled".into());
+        second_settled.state = ThreadState::Done;
+        second_settled.transcript = sample_blocks("settled-second");
+        second.threads.push(second_settled);
+        second.active_thread_id = Some(5);
+
+        state.projects.push(first);
+        state.projects.push(second);
+        std::fs::write(
+            directory.join(crate::STATE_FILE_NAME),
+            serde_json::to_vec(&state)?,
+        )?;
+        Ok(())
+    }
+
+    // Risk (#669): opening an uncached settled thread or switching to a project whose active
+    // thread is settled must defer JSONL transcript disk I/O and restore_store_project outside
+    // the ManagedStateStore lock.
+    #[test]
+    fn dispatch_defers_settled_hydration_and_project_switch_restore()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-669-{unique}"));
+        let _ignored = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory)?;
+        seed_two_projects_with_settled_threads(&directory)?;
+
+        let mut store = StateStore::load_or_default(&directory)?;
+        let mut layout = LayoutState::default();
+        store.restore_project_layout(&mut layout);
+
+        let outcome = store.dispatch_project_layout(&mut layout, LayoutAction::OpenThread(2))?;
+        assert!(outcome.project_switch.is_none());
+        let pending = outcome
+            .pending_hydration
+            .ok_or("expected deferred hydration for uncached settled thread")?;
+        assert_eq!((pending.project(), pending.thread_ids()), (1, &[2][..]));
+        assert!(!layout.has_thread_blocks(2));
+
+        pending.load_from_disk().apply(&mut layout);
+        assert!(layout.has_thread_blocks(2));
+        let _ = store.dispatch_project_layout(&mut layout, LayoutAction::OpenThread(1))?;
+        let cached = store.dispatch_project_layout(&mut layout, LayoutAction::OpenThread(2))?;
+        assert!(cached.pending_hydration.is_none());
+
+        let mut switched = store
+            .dispatch_project_layout(
+                &mut layout,
+                LayoutAction::Request(LayoutIntent::SwitchProject("2".into())),
+            )?
+            .project_switch
+            .ok_or("expected deferred ProjectSwitchData")?;
+        assert_eq!(layout.snapshot().project_identifier, Some(1));
+        assert_eq!(
+            switched
+                .refresh
+                .pending_hydration
+                .as_ref()
+                .map(|item| item.thread_ids()),
+            Some([5u32].as_slice())
+        );
+
+        switched.refresh.hydrate_from_disk();
+        layout.restore_store_project(
+            switched.refresh.revision,
+            switched.refresh.data,
+            switched.selected_thread,
+            switched.search,
+            switched.refresh.spec_locked,
+        );
+        assert_eq!(layout.snapshot().project_identifier, Some(2));
+        assert!(layout.has_thread_blocks(5));
+
+        std::fs::remove_dir_all(&directory)?;
         Ok(())
     }
 }

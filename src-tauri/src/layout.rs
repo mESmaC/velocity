@@ -386,30 +386,96 @@ fn read_layout(window: &Window) -> Result<LayoutSnapshot, String> {
     Ok(snapshot)
 }
 
-fn dispatch(window: &Window, action: LayoutAction) -> Result<LayoutDelta, String> {
-    let store = window.state::<ManagedStateStore>();
-    let state = window.state::<MainLayout>();
-    let mut store = store.lock().map_err(|error| error.to_string())?;
-    let mut state = state
+type ProjectSelectionPublication = (
+    velocity_store::projects::ProjectList,
+    velocity_store::projects::ProjectSelectionView,
+);
+
+type DispatchSnapshot = (
+    LayoutSnapshot,
+    Option<(u32, usize)>,
+    Option<ProjectSelectionPublication>,
+);
+
+/// Hydrates any uncached settled transcripts outside both locks, restores the switched
+/// project into `MainLayout`, overlays live interviews, and snapshots (#554, #669).
+pub(crate) fn apply_project_switch(
+    application: &AppHandle,
+    mut switched: velocity_store::projects::ProjectSwitchData,
+) -> Result<DispatchSnapshot, String> {
+    switched.refresh.hydrate_from_disk();
+    let layout = application.state::<MainLayout>();
+    let mut state = layout
         .lock()
         .map_err(|error| format!("Could not update main-window state: {error}"))?;
-    let previous_selection = state.selected_thread_key();
-    let outcome = store
-        .dispatch_project_layout(&mut state, action)
-        .map_err(|error| error.to_string())?;
-    let mut snapshot = if outcome.selection.is_some() {
-        // A project switch rebuilds the window from state.json; put live interviews back.
-        velocity_interview::overlay_live(window.state::<Interviews>().inner(), &store, &mut state);
-        state.snapshot()
-    } else {
-        outcome.snapshot
+    state.restore_store_project(
+        switched.refresh.revision,
+        switched.refresh.data,
+        switched.selected_thread,
+        switched.search,
+        switched.refresh.spec_locked,
+    );
+    velocity_interview::overlay_live_for_project(
+        application.state::<Interviews>().inner(),
+        switched.refresh.active_project,
+        &mut state,
+    );
+    Ok((
+        state.snapshot(),
+        state.selected_thread_key(),
+        Some((switched.projects, switched.selection)),
+    ))
+}
+
+/// Finishes a layout dispatch after `ManagedStateStore` and `MainLayout` have been dropped,
+/// reading any uncached settled transcripts from disk outside both locks before re-acquiring
+/// only `MainLayout` to hydrate blocks and build the snapshot (#669).
+pub(crate) fn finish_dispatch(
+    application: &AppHandle,
+    project_switch: Option<velocity_store::projects::ProjectSwitchData>,
+    pending_hydration: Option<velocity_store::projects::PendingTranscriptHydration>,
+) -> Result<DispatchSnapshot, String> {
+    if let Some(switched) = project_switch {
+        return apply_project_switch(application, switched);
+    }
+    let loaded = pending_hydration.map(|hydration| hydration.load_from_disk());
+    let layout = application.state::<MainLayout>();
+    let mut state = layout
+        .lock()
+        .map_err(|error| format!("Could not update main-window state: {error}"))?;
+    if let Some(loaded) = loaded {
+        loaded.apply(&mut state);
+    }
+    Ok((state.snapshot(), state.selected_thread_key(), None))
+}
+
+fn dispatch(window: &Window, action: LayoutAction) -> Result<LayoutDelta, String> {
+    let (previous_selection, outcome, fast_snapshot) = {
+        let store = window.state::<ManagedStateStore>();
+        let state = window.state::<MainLayout>();
+        let mut store = store.lock().map_err(|error| error.to_string())?;
+        let mut state = state
+            .lock()
+            .map_err(|error| format!("Could not update main-window state: {error}"))?;
+        let previous_selection = state.selected_thread_key();
+        let outcome = store
+            .dispatch_project_layout(&mut state, action)
+            .map_err(|error| error.to_string())?;
+        // Release the store lock before snapshotting, disk hydration, or project-switch restore.
+        drop(store);
+        let fast_snapshot = (outcome.project_switch.is_none()
+            && outcome.pending_hydration.is_none())
+        .then(|| (state.snapshot(), state.selected_thread_key()));
+        (previous_selection, outcome, fast_snapshot)
     };
-    let next_selection = state.selected_thread_key();
-    let project_selection = outcome
-        .selection
-        .map(|selection| (store.list_projects(), selection));
-    drop(state);
-    drop(store);
+    let (mut snapshot, next_selection, project_selection) = match fast_snapshot {
+        Some((snapshot, next_selection)) => (snapshot, next_selection, None),
+        None => finish_dispatch(
+            window.app_handle(),
+            outcome.project_switch,
+            outcome.pending_hydration,
+        )?,
+    };
     if next_selection != previous_selection
         && let Some((project, identifier)) = next_selection
         && let Some(synced) =
@@ -562,8 +628,9 @@ pub(crate) fn show_toast(application: &AppHandle, message: String) {
 /// resulting delta without ever holding `ManagedStateStore` across layout or emit (#554).
 pub(crate) fn apply_refresh_and_publish(
     application: &AppHandle,
-    refresh: velocity_store::projects::LayoutRefresh,
+    mut refresh: velocity_store::projects::LayoutRefresh,
 ) -> Result<(), String> {
+    refresh.hydrate_from_disk();
     let snapshot = {
         let managed = application.state::<MainLayout>();
         let mut layout = managed
@@ -594,11 +661,12 @@ pub(crate) fn refresh_with_change_and_publish(
     application: &AppHandle,
     change: impl FnOnce(&mut LayoutState),
 ) -> Result<LayoutSnapshot, String> {
-    let refresh = {
+    let mut refresh = {
         let managed = application.state::<ManagedStateStore>();
         let store = managed.lock().map_err(|error| error.to_string())?;
         store.layout_refresh()
     };
+    refresh.hydrate_from_disk();
     let snapshot = {
         let managed = application.state::<MainLayout>();
         let mut layout = managed

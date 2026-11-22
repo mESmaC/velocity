@@ -1900,6 +1900,27 @@ impl StateStore {
         &self.state
     }
 
+    /// Returns a thread's transcript if already in memory, pending save, or in the settled
+    /// LRU cache, without touching the filesystem (#669).
+    pub(crate) fn cached_thread_transcript(
+        &self,
+        project: u32,
+        thread: u32,
+    ) -> Option<velocity_core::thread_view_model::SharedBlocks> {
+        let key = (project, thread);
+        if let Some(in_memory) = self
+            .project(project)
+            .and_then(|item| item.threads.iter().find(|entry| entry.id == thread))
+            .filter(|entry| !entry.transcript.is_empty())
+        {
+            return Some(Arc::clone(&in_memory.transcript));
+        }
+        if let Some(pending) = self.pending_transcripts.get(&key) {
+            return Some(Arc::clone(pending));
+        }
+        self.settled_transcripts.get(key)
+    }
+
     /// Loads a thread's transcript, returning the in-memory blocks for active threads and
     /// loading settled (`merged`/`done`) threads on demand through a bounded cache (#552).
     pub fn thread_transcript(
@@ -1907,20 +1928,10 @@ impl StateStore {
         project: u32,
         thread: u32,
     ) -> velocity_core::thread_view_model::SharedBlocks {
-        let key = (project, thread);
-        if let Some(in_memory) = self
-            .project(project)
-            .and_then(|item| item.threads.iter().find(|entry| entry.id == thread))
-            .filter(|entry| !entry.transcript.is_empty())
-        {
-            return Arc::clone(&in_memory.transcript);
-        }
-        if let Some(pending) = self.pending_transcripts.get(&key) {
-            return Arc::clone(pending);
-        }
-        if let Some(cached) = self.settled_transcripts.get(key) {
+        if let Some(cached) = self.cached_thread_transcript(project, thread) {
             return cached;
         }
+        let key = (project, thread);
         match transcripts::read_transcript(&self.directory, project, thread) {
             Ok(blocks) => {
                 if !blocks.is_empty() {
@@ -1937,23 +1948,47 @@ impl StateStore {
         }
     }
 
-    /// Hydrates the currently selected settled thread (and its `previous_work_thread` chain)
-    /// into `layout` on demand (#552).
-    pub fn hydrate_selected_thread(&self, layout: &mut velocity_core::layout_state::LayoutState) {
-        let Some(project) = project_layout::active_project(&self.state) else {
-            return;
-        };
+    /// Hydrates cached settled transcripts into `layout` without disk I/O and returns any
+    /// uncached settled thread IDs that the caller should load outside the store lock (#669).
+    pub fn prepare_selected_thread_hydration(
+        &self,
+        layout: &mut velocity_core::layout_state::LayoutState,
+    ) -> Option<transcripts::PendingTranscriptHydration> {
+        let project = project_layout::active_project(&self.state)?;
         let hydrated = transcripts::hydrated_thread_ids(project, layout.selected_thread());
+        let mut missing = Vec::new();
         for thread_id in hydrated {
             let Some(thread) = project.threads.iter().find(|entry| entry.id == thread_id) else {
                 continue;
             };
-            if transcripts::is_settled_state(thread.state) {
-                let blocks = self.thread_transcript(project.id, thread_id);
+            if !transcripts::is_settled_state(thread.state)
+                || layout.has_thread_blocks(thread_id as usize)
+            {
+                continue;
+            }
+            if let Some(blocks) = self.cached_thread_transcript(project.id, thread_id) {
                 if !blocks.is_empty() {
                     layout.hydrate_thread_blocks(thread_id as usize, blocks);
                 }
+            } else {
+                missing.push(thread_id);
             }
+        }
+        (!missing.is_empty()).then(|| {
+            transcripts::PendingTranscriptHydration::new(
+                self.directory.clone(),
+                project.id,
+                missing,
+                self.settled_transcripts.clone(),
+            )
+        })
+    }
+
+    /// Hydrates the currently selected settled thread (and its `previous_work_thread` chain)
+    /// into `layout` on demand (#552).
+    pub fn hydrate_selected_thread(&self, layout: &mut velocity_core::layout_state::LayoutState) {
+        if let Some(pending) = self.prepare_selected_thread_hydration(layout) {
+            pending.load_from_disk().apply(layout);
         }
     }
 

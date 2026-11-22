@@ -54,13 +54,14 @@ pub async fn list_projects(application: AppHandle) -> Result<ProjectList, String
 #[specta::specta]
 pub async fn switch_project(window: Window, identifier: u32) -> Result<LayoutSnapshot, String> {
     crate::layout::run_concurrently("switch_project", move || {
-        let switched = {
+        let mut switched = {
             let store = window.state::<ManagedStateStore>();
             let mut store = store.lock().map_err(|error| error.to_string())?;
             store
                 .select_project(identifier, "")
                 .map_err(|error| error.to_string())?
         };
+        switched.refresh.hydrate_from_disk();
         let snapshot = {
             let layout = window.state::<MainLayout>();
             let mut layout = layout.lock().map_err(|error| error.to_string())?;

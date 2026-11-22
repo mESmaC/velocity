@@ -422,6 +422,7 @@ impl LayoutState {
     pub fn replace_data(&mut self, mut data: LayoutData) {
         self.follow_new_work_session(&data);
         self.retain_land_history_expansion(&mut data);
+        self.retain_hydrated_settled_blocks(&mut data);
         if self.data.project_identifier != data.project_identifier {
             self.workspace_count = None;
         }
@@ -435,6 +436,50 @@ impl LayoutState {
             0
         };
         self.changed();
+    }
+
+    fn retain_hydrated_settled_blocks(&self, data: &mut LayoutData) {
+        if self.data.project_identifier != data.project_identifier {
+            return;
+        }
+        // Background layout refreshes read only cached transcripts so they never do disk
+        // I/O under the store lock (#669). Keep already-hydrated settled blocks intact.
+        let hydrated: Vec<(usize, thread_view_model::SharedBlocks)> = self
+            .data
+            .threads
+            .iter()
+            .filter(|previous| {
+                previous.policy.group == ThreadGroup::Settled
+                    || self.selected_thread == Some(previous.policy.identifier)
+            })
+            .filter_map(|previous| {
+                let detail = previous.detail.as_ref()?;
+                (!detail.blocks.is_empty()).then(|| {
+                    (
+                        previous.policy.identifier,
+                        std::sync::Arc::clone(&detail.blocks),
+                    )
+                })
+            })
+            .collect();
+        if hydrated.is_empty() {
+            return;
+        }
+        for entry in &mut data.threads {
+            if entry.policy.group != ThreadGroup::Settled {
+                continue;
+            }
+            let Some(detail) = &mut entry.detail else {
+                continue;
+            };
+            if detail.blocks.is_empty()
+                && let Some((_, blocks)) = hydrated
+                    .iter()
+                    .find(|(identifier, _)| *identifier == entry.policy.identifier)
+            {
+                detail.blocks = std::sync::Arc::clone(blocks);
+            }
+        }
     }
 
     fn retain_land_history_expansion(&self, data: &mut LayoutData) {
@@ -779,7 +824,17 @@ impl LayoutState {
         self.changed();
     }
 
-    /// Hydrates an archived settled thread's transcript blocks on demand (#552).
+    /// Whether `identifier` already has non-empty transcript blocks loaded in this layout (#669).
+    pub fn has_thread_blocks(&self, identifier: usize) -> bool {
+        self.data
+            .threads
+            .iter()
+            .find(|entry| entry.policy.identifier == identifier)
+            .and_then(|entry| entry.detail.as_ref())
+            .is_some_and(|detail| !detail.blocks.is_empty())
+    }
+
+    /// Hydrates an archived settled thread's transcript blocks on demand (#552, #669).
     pub fn hydrate_thread_blocks(
         &mut self,
         identifier: usize,
@@ -792,11 +847,63 @@ impl LayoutState {
             .find(|entry| entry.policy.identifier == identifier)
             .and_then(|entry| entry.detail.as_mut())
         {
+            if std::sync::Arc::ptr_eq(&detail.blocks, &blocks) || detail.blocks == blocks {
+                return;
+            }
             detail.blocks = blocks;
-            if self.selected_thread == Some(identifier) {
+            if self.is_in_selected_work_history(identifier) {
                 self.transcript_changed();
+                self.changed();
             }
         }
+    }
+
+    /// Hydrates a settled thread's transcript blocks only if `project` is still active (#669).
+    pub fn hydrate_project_thread_blocks(
+        &mut self,
+        project: u32,
+        identifier: usize,
+        blocks: thread_view_model::SharedBlocks,
+    ) {
+        if self.data.project_identifier == Some(project) {
+            self.hydrate_thread_blocks(identifier, blocks);
+        }
+    }
+
+    fn is_in_selected_work_history(&self, identifier: usize) -> bool {
+        let Some(selected) = self.selected_thread else {
+            return false;
+        };
+        if selected == identifier {
+            return true;
+        }
+        let Some(mut current) = self
+            .data
+            .threads
+            .iter()
+            .find(|thread| thread.policy.identifier == selected)
+            .and_then(|thread| thread.detail.as_ref())
+        else {
+            return false;
+        };
+        while let Some(previous) = current.previous_work_thread {
+            if previous >= current.identifier {
+                break;
+            }
+            if previous == identifier {
+                return true;
+            }
+            let Some(earlier) = self.data.threads.iter().find_map(|entry| {
+                entry
+                    .detail
+                    .as_ref()
+                    .filter(|detail| detail.identifier == previous)
+            }) else {
+                break;
+            };
+            current = earlier;
+        }
+        false
     }
 
     fn live_thread(&self, identifier: usize) -> Option<&LiveThreadView> {
