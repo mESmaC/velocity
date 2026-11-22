@@ -16,7 +16,7 @@ use tokio::sync::mpsc::unbounded_channel;
 use velocity_acp::client::{AgentEvent, AgentInput, SessionSetup};
 use velocity_core::worktree_settings::WorktreePreferences;
 use velocity_github::mcp_stdio::ToolServer;
-use velocity_github::{IssueClient, ParkedOutcome};
+use velocity_github::{IssueClient, IssueHost, ParkedOutcome};
 use velocity_rosen::{AgentWorkspace, ProjectServer, review_swarm};
 use velocity_store::duty::DutyAgentItem;
 use velocity_store::{ProjectItem, Settings};
@@ -94,6 +94,8 @@ pub struct ParkedReviews {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ParkedLaunch {
     workspace: PathBuf,
+    #[serde(default)]
+    host: IssueHost,
     repository: String,
     issue: u32,
     attempt: String,
@@ -184,6 +186,7 @@ impl ParkedReviews {
             .join(format!("{}-{}.json", request.project.id, request.issue));
         let record = ParkedLaunch {
             workspace: workspace.root.clone(),
+            host: request.project.effective_issue_host(),
             repository: request.repository.clone(),
             issue: request.issue,
             attempt: request.attempt.clone(),
@@ -378,8 +381,12 @@ impl ParkedReviewServer {
     }
 
     fn client(&self) -> Result<IssueClient, String> {
-        IssueClient::for_repository(&self.launch.workspace, &self.launch.repository)
-            .map_err(|error| error.to_string())
+        IssueClient::for_host(
+            &self.launch.workspace,
+            self.launch.host,
+            &self.launch.repository,
+        )
+        .map_err(|error| error.to_string())
     }
 
     fn read(&self) -> Result<Value, String> {

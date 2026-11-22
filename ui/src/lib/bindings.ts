@@ -52,6 +52,11 @@ export const commands = {
 	/**  `set_collapse_mcp { enabled }` (§3.1): the Settings switch. Running agents keep theirs. */
 	setCollapseMcp: (enabled: boolean) => __TAURI_INVOKE<CollapseConnection_Serialize>("set_collapse_mcp", { enabled }),
 	/**
+	 *  `clear_collapse_issues_token` (§3.1): removes the saved Collapse `issues` token from
+	 *  Windows Credential Manager (#589).
+	 */
+	clearCollapseIssuesToken: (projectIdentifier: number) => __TAURI_INVOKE<ProjectCollapseSettings_Serialize>("clear_collapse_issues_token", { projectIdentifier }),
+	/**
 	 *  `get_project_collapse_settings` (§3.1): reads the project's Collapse root, push token
 	 *  status, state feed and ledger push health, channel lines flag and relay allow-list (#576).
 	 *  Returns `None` for non-Rosen projects.
@@ -83,10 +88,17 @@ export const commands = {
 	 */
 	setCollapseChannel: (projectIdentifier: number, enabled: boolean) => __TAURI_INVOKE<CollapseActionResult_Serialize>("set_collapse_channel", { projectIdentifier, enabled }),
 	/**
+	 *  `set_collapse_issues_token` (§3.1): saves a Collapse personal access token with `issues`
+	 *  scope in Windows Credential Manager (`velocity:collapse.sh:issues`) (#589).
+	 */
+	setCollapseIssuesToken: (projectIdentifier: number, token: string) => __TAURI_INVOKE<ProjectCollapseSettings_Serialize>("set_collapse_issues_token", { projectIdentifier, token }),
+	/**
 	 *  `set_collapse_relay` (§3.1): saves the allowed Collapse relay action kinds for the
 	 *  project and applies them to the project's Rosen server immediately (#576).
 	 */
 	setCollapseRelay: (projectIdentifier: number, allow: CollapseRelayKind[]) => __TAURI_INVOKE<ProjectCollapseSettings_Serialize>("set_collapse_relay", { projectIdentifier, allow }),
+	/**  `set_project_issue_host` (§3.1): selects GitHub or Collapse as the project's issue host (#589). */
+	setProjectIssueHost: (projectIdentifier: number, host: IssueHost) => __TAURI_INVOKE<ProjectCollapseSettings_Serialize>("set_project_issue_host", { projectIdentifier, host }),
 	/**
 	 *  `unlink_collapse` (§3.1): removes the top-level `collapse` root (and `collapse_channel`)
 	 *  through a landed `rosen.toml` change and clears the server's relay allow-list (#576).
@@ -2437,6 +2449,9 @@ export type IssueHold = {
 	paths: string[],
 };
 
+/**  Where a project's issues are hosted (#589): GitHub or Collapse (C14). */
+export type IssueHost = "github" | "collapse";
+
 export type IssuePanelChanged = IssuePanelChanged_Serialize | IssuePanelChanged_Deserialize;
 
 export type IssuePanelChanged_Deserialize = {
@@ -3900,10 +3915,10 @@ export type ProcessMemory = {
 	budget_mib: number,
 };
 
-/**  Project settings view for the Collapse section (#576). */
+/**  Project settings view for the Collapse section (#576, #589). */
 export type ProjectCollapseSettings = ProjectCollapseSettings_Serialize | ProjectCollapseSettings_Deserialize;
 
-/**  Project settings view for the Collapse section (#576). */
+/**  Project settings view for the Collapse section (#576, #589). */
 export type ProjectCollapseSettings_Deserialize = {
 	project_identifier: number,
 	collapse_repository?: string | null,
@@ -3916,9 +3931,15 @@ export type ProjectCollapseSettings_Deserialize = {
 	relay_allow: CollapseRelayKind[],
 	server_relay_allow: CollapseRelayKind[],
 	relay_revoked: boolean,
+	/**  Effective issue host (`github` or `collapse`) for this project (#589). */
+	issue_host: IssueHost,
+	/**  Whether a dedicated Collapse PAT with `issues` scope is stored in Credential Manager (#589). */
+	collapse_issues_token_stored: boolean,
+	/**  Whether a Collapse account is connected on this machine (#589). */
+	collapse_connected: boolean,
 };
 
-/**  Project settings view for the Collapse section (#576). */
+/**  Project settings view for the Collapse section (#576, #589). */
 export type ProjectCollapseSettings_Serialize = {
 	project_identifier: number,
 	collapse_repository: string | null,
@@ -3931,6 +3952,12 @@ export type ProjectCollapseSettings_Serialize = {
 	relay_allow: CollapseRelayKind[],
 	server_relay_allow: CollapseRelayKind[],
 	relay_revoked: boolean,
+	/**  Effective issue host (`github` or `collapse`) for this project (#589). */
+	issue_host: IssueHost,
+	/**  Whether a dedicated Collapse PAT with `issues` scope is stored in Credential Manager (#589). */
+	collapse_issues_token_stored: boolean,
+	/**  Whether a Collapse account is connected on this machine (#589). */
+	collapse_connected: boolean,
 };
 
 /**  Project settings view for `[deploy]` steps and Windows Credential Manager secrets (#594). */

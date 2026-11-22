@@ -16,8 +16,10 @@ use velocity_core::issue_holds::{
     validate_person_hold,
 };
 
-use crate::issue_dependencies::waits_line;
-use crate::{GitHubCommandError, GitHubIssue, IssueClient, IssueState};
+use crate::gh_command::GitHubCommand;
+use crate::issue_dependencies::waits_line_for;
+use crate::issues::IssueBackend;
+use crate::{GitHubCommandError, GitHubIssue, IssueClient, IssueState, RepositoryName};
 
 /// Outcome of checking an upstream PR or release for a `blocked-upstream` issue (#526).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,7 +98,7 @@ impl IssueClient {
         number: u32,
     ) -> Result<UpstreamStatus, GitHubCommandError> {
         let endpoint = format!("repos/{repository}/issues/{number}");
-        let issue: RestIssue = self.transport.command.read(&["api", &endpoint])?;
+        let issue: RestIssue = self.read_upstream_github_json(repository, &endpoint)?;
         if issue.pull_request.is_some() {
             let pull = self.read_upstream_pull(repository, number)?;
             if pull.merged {
@@ -132,11 +134,7 @@ impl IssueClient {
         let candidates = release_tag_candidates(tag);
         for candidate in candidates {
             let endpoint = format!("repos/{repository}/releases/tags/{candidate}");
-            match self
-                .transport
-                .command
-                .read::<RestRelease>(&["api", &endpoint])
-            {
+            match self.read_upstream_github_json::<RestRelease>(repository, &endpoint) {
                 Ok(release) if !release.draft => {
                     return Ok(UpstreamStatus::Shipped {
                         summary: format!(
@@ -164,7 +162,8 @@ impl IssueClient {
             return Ok(UpstreamStatus::Waiting);
         };
         let endpoint = format!("repos/{release_repository}/releases?per_page=20");
-        let releases: Vec<RestRelease> = self.transport.command.read(&["api", &endpoint])?;
+        let releases: Vec<RestRelease> =
+            self.read_upstream_github_json(release_repository, &endpoint)?;
         if let Some(release) = releases.into_iter().find(|release| {
             !release.draft
                 && release
@@ -188,7 +187,22 @@ impl IssueClient {
         number: u32,
     ) -> Result<RestPullRequest, GitHubCommandError> {
         let endpoint = format!("repos/{repository}/pulls/{number}");
-        self.transport.command.read(&["api", &endpoint])
+        self.read_upstream_github_json(repository, &endpoint)
+    }
+
+    fn read_upstream_github_json<T: serde::de::DeserializeOwned>(
+        &self,
+        repository: &str,
+        endpoint: &str,
+    ) -> Result<T, GitHubCommandError> {
+        match &self.backend {
+            IssueBackend::GitHub(transport) => transport.command.read(&["api", endpoint]),
+            IssueBackend::Collapse(_) => {
+                let parsed = RepositoryName::parse(repository)
+                    .map_err(|error| GitHubCommandError::Invalid(error.to_string()))?;
+                GitHubCommand::for_repository(&parsed).read(&["api", endpoint])
+            }
+        }
     }
 
     /// Removes `blocked-upstream` and posts evidence when the upstream target ships (#526).
@@ -211,20 +225,20 @@ impl IssueClient {
                 "Velocity continuous dispatch · Upstream dependency shipped: {summary}. \
                  Removing `{BLOCKED_UPSTREAM_LABEL}` and returning this issue to dispatch.\n\n{marker}"
             );
-            self.add_issue_comment(&issue.id, &body)?;
+            self.add_issue_comment(number, &issue.id, &body)?;
         }
         self.remove_present_labels(&issue, &[BLOCKED_UPSTREAM_LABEL])?;
         self.remove_retired_hold_labels(&issue)?;
         let cleaned = strip_upstream_block(&issue.body);
         if cleaned != issue.body {
-            self.update_issue_body(&issue.id, &cleaned)?;
+            self.update_issue_body(number, &issue.id, &cleaned)?;
         }
-        crate::issue_cache::invalidate(self.repository());
+        crate::issue_cache::invalidate(self.host(), self.repository());
         Ok(true)
     }
 
     /// Closes a `tracking` issue automatically once every checklist item is ticked and
-    /// no open GitHub blockers remain (#526).
+    /// no open blockers remain (#526).
     pub fn close_completed_tracking_issue(&self, number: u32) -> Result<bool, GitHubCommandError> {
         let issue = self.read_issue(number)?;
         if issue.state != IssueState::Open
@@ -243,10 +257,10 @@ impl IssueClient {
                 "Velocity continuous dispatch · All {} checklist items on this tracking issue are complete. Closing.\n\n{marker}",
                 checklist.checked
             );
-            self.add_issue_comment(&issue.id, &body)?;
+            self.add_issue_comment(number, &issue.id, &body)?;
         }
         self.close_issue_with_reason(number, "completed")?;
-        crate::issue_cache::invalidate(self.repository());
+        crate::issue_cache::invalidate(self.host(), self.repository());
         Ok(true)
     }
 
@@ -260,10 +274,10 @@ impl IssueClient {
         blockers: &[IssueReference],
     ) -> Result<String, GitHubCommandError> {
         let issue = self.read_issue(number)?;
-        let waits = waits_line(&self.link_blockers(number, blockers)?);
+        let waits = waits_line_for(self.host(), &self.link_blockers(number, blockers)?);
         let updated_body = upsert_upstream_block(&issue.body, target);
         if updated_body != issue.body {
-            self.update_issue_body(&issue.id, &updated_body)?;
+            self.update_issue_body(number, &issue.id, &updated_body)?;
         }
         self.label_issue(number, BLOCKED_UPSTREAM_LABEL)?;
         self.remove_present_labels(&issue, &[Self::NO_CHANGE_LABEL, HOLD_LABEL])?;
@@ -274,8 +288,8 @@ impl IssueClient {
             reason.trim(),
             target.marker()
         );
-        let url = self.add_issue_comment(&issue.id, &comment)?;
-        crate::issue_cache::invalidate(self.repository());
+        let url = self.add_issue_comment(number, &issue.id, &comment)?;
+        crate::issue_cache::invalidate(self.host(), self.repository());
         Ok(url)
     }
 
@@ -292,10 +306,10 @@ impl IssueClient {
         let hold =
             validate_person_hold(reason, release_action).map_err(GitHubCommandError::Invalid)?;
         let issue = self.read_issue(number)?;
-        let waits = waits_line(&self.link_blockers(number, blockers)?);
+        let waits = waits_line_for(self.host(), &self.link_blockers(number, blockers)?);
         let updated_body = upsert_person_hold_block(&issue.body, &hold);
         if updated_body != issue.body {
-            self.update_issue_body(&issue.id, &updated_body)?;
+            self.update_issue_body(number, &issue.id, &updated_body)?;
         }
         self.label_issue(number, HOLD_LABEL)?;
         self.remove_present_labels(&issue, &[Self::NO_CHANGE_LABEL])?;
@@ -306,8 +320,8 @@ impl IssueClient {
             hold.release_action,
             hold.marker()
         );
-        let url = self.add_issue_comment(&issue.id, &comment)?;
-        crate::issue_cache::invalidate(self.repository());
+        let url = self.add_issue_comment(number, &issue.id, &comment)?;
+        crate::issue_cache::invalidate(self.host(), self.repository());
         Ok(url)
     }
 
@@ -318,14 +332,15 @@ impl IssueClient {
         self.remove_retired_hold_labels(&issue)?;
         let cleaned = strip_person_hold_block(&issue.body);
         if cleaned != issue.body {
-            self.update_issue_body(&issue.id, &cleaned)?;
+            self.update_issue_body(number, &issue.id, &cleaned)?;
         }
         self.add_issue_comment(
+            number,
             &issue.id,
             "Hold released from Velocity's Work view. Returning this issue to dispatch.\n\n<!-- velocity-hold-released -->",
         )?;
-        crate::issue_cache::invalidate(self.repository());
-        crate::issue_cache::invalidate_discussion(self.repository(), number);
+        crate::issue_cache::invalidate(self.host(), self.repository());
+        crate::issue_cache::invalidate_discussion(self.host(), self.repository(), number);
         Ok(())
     }
 
@@ -355,35 +370,58 @@ impl IssueClient {
         let comment = format!(
             "Closed as not planned · {byline}\n\nSpec section `{section}` was removed in commit `{commit}`.\n\n{reason}\n\n<!-- velocity-spec-orphaned:{commit} -->"
         );
-        let url = self.add_issue_comment(&issue.id, &comment)?;
+        let url = self.add_issue_comment(number, &issue.id, &comment)?;
         self.remove_present_labels(&issue, &[Self::NO_CHANGE_LABEL, HOLD_LABEL])?;
         self.remove_retired_hold_labels(&issue)?;
         self.close_issue_with_reason(number, "not_planned")?;
-        crate::issue_cache::invalidate(self.repository());
+        crate::issue_cache::invalidate(self.host(), self.repository());
         Ok(url)
     }
 
     pub(crate) fn update_issue_body(
         &self,
+        number: u32,
         issue_id: &str,
         body: &str,
     ) -> Result<(), GitHubCommandError> {
-        let _: Value = self.transport.graphql_at(
-            "mutation($input:UpdateIssueInput!) { updateIssue(input:$input) { issue { id } } }",
-            json!({"input": {"id": issue_id, "body": body}}),
-            "/data/updateIssue/issue",
-        )?;
-        Ok(())
+        match &self.backend {
+            IssueBackend::Collapse(collapse) => {
+                collapse.update_issue(
+                    number,
+                    velocity_collapse::issues::UpdateIssueRequest {
+                        body: Some(body.to_owned()),
+                        ..Default::default()
+                    },
+                )?;
+                Ok(())
+            }
+            IssueBackend::GitHub(transport) => {
+                let _: Value = transport.graphql_at(
+                    "mutation($input:UpdateIssueInput!) { updateIssue(input:$input) { issue { id } } }",
+                    json!({"input": {"id": issue_id, "body": body}}),
+                    "/data/updateIssue/issue",
+                )?;
+                Ok(())
+            }
+        }
     }
 
     fn close_issue_with_reason(&self, number: u32, reason: &str) -> Result<(), GitHubCommandError> {
-        let endpoint = format!("repos/{}/issues/{number}", self.repository());
-        let _: Value = self.transport.command.api(
-            "PATCH",
-            &endpoint,
-            &json!({"state": "closed", "state_reason": reason}),
-        )?;
-        Ok(())
+        match &self.backend {
+            IssueBackend::Collapse(collapse) => {
+                collapse.close_issue(number, reason, "")?;
+                Ok(())
+            }
+            IssueBackend::GitHub(transport) => {
+                let endpoint = format!("repos/{}/issues/{number}", self.repository());
+                let _: Value = transport.command.api(
+                    "PATCH",
+                    &endpoint,
+                    &json!({"state": "closed", "state_reason": reason}),
+                )?;
+                Ok(())
+            }
+        }
     }
 
     fn remove_present_labels(

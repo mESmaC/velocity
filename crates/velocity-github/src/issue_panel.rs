@@ -7,6 +7,7 @@ use velocity_core::issue_holds::{
     parse_upstream_target,
 };
 
+use crate::issues::IssueBackend;
 use crate::repository_client::Connection;
 use crate::{GitHubCommandError, GitHubIssue, IssueClient};
 
@@ -335,18 +336,28 @@ impl IssueClient {
     /// Read discussion on demand so comment latency stays outside the work inventory.
     /// Reuses cached discussions when the issue's `updated_at` in the shared open-issues
     /// cache has not moved, and reads comments via conditional REST (`If-None-Match`) when
-    /// the summary is already known from the shared cache (#556).
+    /// the summary is already known from the shared cache (#556, #589).
     pub fn discussion(&self, number: u32) -> Result<IssueDiscussion, GitHubCommandError> {
-        if let Some(cached) = crate::issue_cache::get_discussion(self.repository(), number) {
+        if let Some(cached) =
+            crate::issue_cache::get_discussion(self.host(), self.repository(), number)
+        {
             return Ok(cached);
         }
-        let cached_issue = crate::issue_cache::cached_issue(self.repository(), number);
-        let discussion = if let Some(issue) = &cached_issue {
-            self.discussion_via_rest(number, &issue.body)?
-        } else {
-            self.discussion_via_graphql(number)?
+        let cached_issue = crate::issue_cache::cached_issue(self.host(), self.repository(), number);
+        let discussion = match &self.backend {
+            IssueBackend::Collapse(collapse) => {
+                self.discussion_via_collapse(collapse, number, cached_issue.as_ref())?
+            }
+            IssueBackend::GitHub(_) => {
+                if let Some(issue) = &cached_issue {
+                    self.discussion_via_rest(number, &issue.body)?
+                } else {
+                    self.discussion_via_graphql(number)?
+                }
+            }
         };
         crate::issue_cache::store_discussion(
+            self.host(),
             self.repository(),
             number,
             cached_issue.map(|issue| issue.updated_at),
@@ -355,11 +366,41 @@ impl IssueClient {
         Ok(discussion)
     }
 
+    fn discussion_via_collapse(
+        &self,
+        collapse: &crate::collapse_issues::CollapseIssueTransport,
+        number: u32,
+        cached_issue: Option<&GitHubIssue>,
+    ) -> Result<IssueDiscussion, GitHubCommandError> {
+        let body = match cached_issue {
+            Some(issue) => issue.body.clone(),
+            None => collapse.read_issue(number)?.body,
+        };
+        let comments = collapse.issue_comments(number)?;
+        Ok(IssueDiscussion {
+            summary: body_summary(&body),
+            comments: comments
+                .into_iter()
+                .rev()
+                .filter_map(|comment| {
+                    let (author, body) = agent_comment(&comment.body)?;
+                    Some(IssueAgentComment {
+                        id: comment.id.to_string(),
+                        author,
+                        body,
+                    })
+                })
+                .take(5)
+                .collect(),
+        })
+    }
+
     fn discussion_via_rest(
         &self,
         number: u32,
         body: &str,
     ) -> Result<IssueDiscussion, GitHubCommandError> {
+        let transport = self.github_transport()?;
         #[derive(Deserialize)]
         struct RestComment {
             node_id: String,
@@ -370,7 +411,7 @@ impl IssueClient {
             "repos/{}/issues/{number}/comments?per_page=100",
             self.repository()
         );
-        let comments: Vec<RestComment> = self.transport.command.get_paginated(&endpoint)?;
+        let comments: Vec<RestComment> = transport.command.get_paginated(&endpoint)?;
         Ok(IssueDiscussion {
             summary: body_summary(body),
             comments: comments
@@ -390,6 +431,7 @@ impl IssueClient {
     }
 
     fn discussion_via_graphql(&self, number: u32) -> Result<IssueDiscussion, GitHubCommandError> {
+        let transport = self.github_transport()?;
         #[derive(Deserialize)]
         struct Comment {
             id: String,
@@ -405,11 +447,10 @@ impl IssueClient {
             body
             comments(first:100,after:$cursor) { nodes { id body }
               pageInfo { hasNextPage endCursor } } } } }";
-        let variables = self.transport.variables(number);
+        let variables = transport.variables(number);
         let issue: Discussion =
-            self.transport
-                .graphql_at(query, variables.clone(), "/data/repository/issue")?;
-        let comments = self.transport.complete_connection(
+            transport.graphql_at(query, variables.clone(), "/data/repository/issue")?;
+        let comments = transport.complete_connection(
             query,
             variables,
             "/data/repository/issue/comments",
@@ -440,7 +481,7 @@ impl IssueClient {
         cache: &mut IssuePanelCache,
     ) -> Result<(String, Vec<IssuePanelRow>), GitHubCommandError> {
         let issues = self.open_issues()?;
-        let version = crate::issue_cache::version(self.repository());
+        let version = crate::issue_cache::version(self.host(), self.repository());
         if let Some(panel) = &cache.panel
             && version.is_some()
             && cache.version == version
@@ -461,7 +502,7 @@ impl IssueClient {
     }
 
     fn project_panel(&self, issues: Vec<GitHubIssue>) -> (String, Vec<IssuePanelRow>) {
-        let repository = self.transport.repository.clone();
+        let repository = self.repository().to_owned();
         let mut rows: Vec<_> = issues
             .into_iter()
             .map(|issue| IssuePanelRow::from_issue_for_repository(Some(&repository), issue))
@@ -484,13 +525,34 @@ impl IssueClient {
         self.read_issue(number)
     }
 
+    /// Web URL for issue `number` on this client's configured issue host (#589).
+    pub fn issue_url(&self, number: u32) -> String {
+        match self.host() {
+            velocity_core::collapse::IssueHost::Collapse => {
+                velocity_core::collapse::issue_page(self.repository(), number).unwrap_or_else(
+                    || format!("https://collapse.sh/{}/issues/{number}", self.repository()),
+                )
+            }
+            velocity_core::collapse::IssueHost::GitHub => {
+                format!("https://github.com/{}/issues/{number}", self.repository())
+            }
+        }
+    }
+
     pub fn open_in_browser(&self, number: u32) -> Result<(), GitHubCommandError> {
+        let repository = self.repository();
+        if self.host() == velocity_core::collapse::IssueHost::Collapse {
+            return Err(GitHubCommandError::Invalid(format!(
+                "Open {} directly through the desktop opener",
+                self.issue_url(number)
+            )));
+        }
         let output = crate::command::gh(&[
             "issue",
             "view",
             &number.to_string(),
             "--repo",
-            &self.transport.repository,
+            repository,
             "--web",
         ])
         .output()?;

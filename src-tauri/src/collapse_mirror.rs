@@ -19,8 +19,8 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
 use velocity_collapse::{CollapseCredentials, MirrorRequest, RepositoryActivity};
 use velocity_core::collapse::{
-    CollapseFeedHealth, CollapseMirrorHealth, CollapseRelayKind, ForwarderState, PushTokenStatus,
-    dashboard_poll_active, dashboard_poll_delay,
+    CollapseFeedHealth, CollapseMirrorHealth, CollapseRelayKind, ForwarderState, IssueHost,
+    PushTokenStatus, dashboard_poll_active, dashboard_poll_delay,
 };
 use velocity_new_project::{
     NewProjectRequest, OpenProjectRequest, ProjectLocationRequest, ProjectMirror,
@@ -354,7 +354,7 @@ async fn preserve_github_remote(
     Ok(Some(repository))
 }
 
-/// Project settings view for the Collapse section (#576).
+/// Project settings view for the Collapse section (#576, #589).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
 pub struct ProjectCollapseSettings {
     pub project_identifier: u32,
@@ -368,6 +368,12 @@ pub struct ProjectCollapseSettings {
     pub relay_allow: Vec<CollapseRelayKind>,
     pub server_relay_allow: Vec<CollapseRelayKind>,
     pub relay_revoked: bool,
+    /// Effective issue host (`github` or `collapse`) for this project (#589).
+    pub issue_host: IssueHost,
+    /// Whether a dedicated Collapse PAT with `issues` scope is stored in Credential Manager (#589).
+    pub collapse_issues_token_stored: bool,
+    /// Whether a Collapse account is connected on this machine (#589).
+    pub collapse_connected: bool,
 }
 
 /// Result of a Collapse settings action that lands a `rosen.toml` change (#576).
@@ -461,6 +467,58 @@ pub async fn set_collapse_relay(
     read_project_collapse_settings(&application, project_identifier).await
 }
 
+/// `set_project_issue_host` (§3.1): selects GitHub or Collapse as the project's issue host (#589).
+#[tauri::command]
+#[specta::specta]
+pub async fn set_project_issue_host(
+    application: AppHandle,
+    project_identifier: u32,
+    host: IssueHost,
+) -> Result<ProjectCollapseSettings, String> {
+    let subject = mirror_subject(&application, project_identifier)?;
+    if host == IssueHost::Collapse && subject.repository.is_none() {
+        return Err("Mirror this project to Collapse before moving its issues to Collapse".into());
+    }
+    crate::state::try_with_store(&application, move |store| {
+        store
+            .save_issue_host(project_identifier, host)
+            .map_err(|error| error.to_string())
+    })
+    .await?;
+    read_project_collapse_settings(&application, project_identifier).await
+}
+
+/// `set_collapse_issues_token` (§3.1): saves a Collapse personal access token with `issues`
+/// scope in Windows Credential Manager (`velocity:collapse.sh:issues`) (#589).
+#[tauri::command]
+#[specta::specta]
+pub async fn set_collapse_issues_token(
+    application: AppHandle,
+    project_identifier: u32,
+    token: String,
+) -> Result<ProjectCollapseSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || velocity_collapse::save_issues_token(&token))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+    read_project_collapse_settings(&application, project_identifier).await
+}
+
+/// `clear_collapse_issues_token` (§3.1): removes the saved Collapse `issues` token from
+/// Windows Credential Manager (#589).
+#[tauri::command]
+#[specta::specta]
+pub async fn clear_collapse_issues_token(
+    application: AppHandle,
+    project_identifier: u32,
+) -> Result<ProjectCollapseSettings, String> {
+    tauri::async_runtime::spawn_blocking(velocity_collapse::forget_issues_token)
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+    read_project_collapse_settings(&application, project_identifier).await
+}
+
 /// `unlink_collapse` (§3.1): removes the top-level `collapse` root (and `collapse_channel`)
 /// through a landed `rosen.toml` change and clears the server's relay allow-list (#576).
 #[tauri::command]
@@ -536,16 +594,32 @@ async fn read_project_collapse_settings(
     application: &AppHandle,
     project: u32,
 ) -> Result<ProjectCollapseSettings, String> {
-    let (collapse_repository, saved_override, effective_allow) =
+    let (collapse_repository, saved_override, effective_allow, issue_host) =
         crate::state::try_with_store(application, move |store| {
             let item = store.project(project).ok_or("Unknown project")?;
             Ok((
                 item.collapse_repository.clone(),
                 item.collapse_relay_allow.clone(),
                 store.collapse_relay_allow(project),
+                item.effective_issue_host(),
             ))
         })
         .await?;
+    let (collapse_issues_token_stored, collapse_connected) =
+        tauri::async_runtime::spawn_blocking(|| {
+            (
+                velocity_collapse::load_issues_token()
+                    .ok()
+                    .flatten()
+                    .is_some(),
+                velocity_collapse::load_credentials()
+                    .ok()
+                    .flatten()
+                    .is_some(),
+            )
+        })
+        .await
+        .unwrap_or((false, false));
     let server = crate::rosen::server(application, project).await?;
     let state = collapse_state(&server)
         .await
@@ -586,6 +660,9 @@ async fn read_project_collapse_settings(
         relay_allow,
         server_relay_allow: state.relay_allow,
         relay_revoked: state.relay_revoked,
+        issue_host,
+        collapse_issues_token_stored,
+        collapse_connected,
     })
 }
 

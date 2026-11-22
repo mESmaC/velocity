@@ -19,6 +19,7 @@ specta.workspace = true
 tempfile = "3.27"
 thiserror.workspace = true
 tokio.workspace = true
+velocity-collapse.workspace = true
 velocity-core = { workspace = true, features = ["bindings"] }
 
 [target.'cfg(windows)'.dependencies]

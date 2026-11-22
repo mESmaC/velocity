@@ -5,6 +5,7 @@
     releaseCommands,
     type CollapseFeedHealth,
     type CollapseRelayKind,
+    type IssueHost,
     type ProjectCollapseSettings,
     type PushTokenStatus,
     type ReleaseCredentialsStatus,
@@ -28,6 +29,7 @@
   let signingKeyInput = $state('');
   let signingPasswordInput = $state('');
   let releaseTokenInput = $state('');
+  let issuesTokenInput = $state('');
   let loadError = $state('');
   let actionError = $state('');
   let notice = $state('');
@@ -232,6 +234,71 @@
     }
   }
 
+  async function selectIssueHost(host: IssueHost) {
+    if (busy || !settings || settings.issue_host === host) return;
+    const target = currentProject;
+    busy = true;
+    actionError = '';
+    notice = '';
+    try {
+      const updated = await collapseCommands.setIssueHost(target, host);
+      if (target === currentProject) {
+        settings = updated;
+        notice =
+          host === 'collapse'
+            ? 'Issues now run on Collapse (edge cursor + changes feed).'
+            : 'Issues now run on GitHub.';
+      }
+    } catch (reason) {
+      if (target === currentProject) actionError = formatError(reason);
+    } finally {
+      if (target === currentProject) busy = false;
+    }
+  }
+
+  async function saveIssuesToken() {
+    if (busy || !issuesTokenInput.trim()) return;
+    const target = currentProject;
+    busy = true;
+    actionError = '';
+    notice = '';
+    try {
+      const updated = await collapseCommands.setIssuesToken(
+        target,
+        issuesTokenInput,
+      );
+      if (target === currentProject) {
+        settings = updated;
+        issuesTokenInput = '';
+        notice = 'Saved Collapse issues token in Windows Credential Manager.';
+      }
+    } catch (reason) {
+      if (target === currentProject) actionError = formatError(reason);
+    } finally {
+      if (target === currentProject) busy = false;
+    }
+  }
+
+  async function clearIssuesToken() {
+    if (busy) return;
+    const target = currentProject;
+    busy = true;
+    actionError = '';
+    notice = '';
+    try {
+      const updated = await collapseCommands.clearIssuesToken(target);
+      if (target === currentProject) {
+        settings = updated;
+        notice =
+          'Removed Collapse issues token from Windows Credential Manager.';
+      }
+    } catch (reason) {
+      if (target === currentProject) actionError = formatError(reason);
+    } finally {
+      if (target === currentProject) busy = false;
+    }
+  }
+
   async function saveReleaseToken() {
     if (busy || !releaseTokenInput.trim()) return;
     busy = true;
@@ -373,6 +440,90 @@
             </p>
           {/if}
         </div>
+      </div>
+
+      <div class="worktree-setting-row collapse-relay-block">
+        <div class="collapse-relay-header">
+          <span>Issues on</span>
+          <span class="hint">
+            Defaults to Collapse for projects mirrored to Collapse. Dispatch,
+            holds, dependencies, AIRC issue tools and Rosen land/close comments
+            follow this host.
+          </span>
+        </div>
+        <div
+          class="collapse-row-value"
+          role="radiogroup"
+          aria-label="Issues host"
+        >
+          <label class="worktree-check">
+            <input
+              type="radio"
+              name={`issue-host-${currentProject}`}
+              value="github"
+              checked={settings.issue_host === 'github'}
+              disabled={busy}
+              onchange={() => void selectIssueHost('github')}
+            />
+            GitHub
+          </label>
+          <label class="worktree-check">
+            <input
+              type="radio"
+              name={`issue-host-${currentProject}`}
+              value="collapse"
+              checked={settings.issue_host === 'collapse'}
+              disabled={busy || !settings.collapse_repository}
+              onchange={() => void selectIssueHost('collapse')}
+            />
+            Collapse
+          </label>
+          {#if !settings.collapse_repository}
+            <span class="hint">Mirror to Collapse first</span>
+          {/if}
+        </div>
+        <div class="collapse-row-value">
+          <span>Collapse issues token</span>
+          <span
+            class:collapse-status-ok={settings.collapse_issues_token_stored}
+            class:hint={!settings.collapse_issues_token_stored}
+          >
+            {settings.collapse_issues_token_stored
+              ? 'Stored in Windows Credential Manager'
+              : settings.collapse_connected
+                ? 'Read-only · save a PAT with issues scope to write'
+                : 'Not set'}
+          </span>
+          {#if settings.collapse_issues_token_stored}
+            <button
+              type="button"
+              class="worktree-button mini"
+              disabled={busy}
+              onclick={() => void clearIssuesToken()}>Clear</button
+            >
+          {/if}
+        </div>
+        <form
+          class="collapse-row-value"
+          onsubmit={(event) => {
+            event.preventDefault();
+            void saveIssuesToken();
+          }}
+        >
+          <input
+            type="password"
+            aria-label="Collapse issues token"
+            placeholder="Collapse PAT with issues scope"
+            bind:value={issuesTokenInput}
+            disabled={busy}
+            autocomplete="off"
+          />
+          <button
+            type="submit"
+            class="worktree-button mini"
+            disabled={busy || !issuesTokenInput.trim()}>Save token</button
+          >
+        </form>
       </div>
 
       <div class="worktree-setting-row">

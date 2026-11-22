@@ -9,7 +9,7 @@ use velocity_core::project_health::AircIssueToolFailure;
 use velocity_core::text_budget::{json_text_page, preview};
 use velocity_core::work_pool::WorkKey;
 use velocity_github::{
-    AgentIssueDraft, AgentIssueOutcome, GitHubCommandError, IssueClient, IssueDetail,
+    AgentIssueDraft, AgentIssueOutcome, GitHubCommandError, IssueClient, IssueDetail, IssueHost,
     RepositoryName,
 };
 use velocity_rosen::ProjectServer;
@@ -106,8 +106,8 @@ fn open_issue_project(
         .map_err(|error| local(error.to_string()))?
         .ok_or_else(|| local("The project was removed".into()))?;
     let directory = Path::new(&project.repository_path);
-    let client = match &project.github_remote {
-        Some(remote) => IssueClient::for_repository(directory, remote),
+    let client = match project.issue_host_repository() {
+        Some((host, repository)) => IssueClient::for_host(directory, host, &repository),
         None => IssueClient::discover(directory),
     }
     .map_err(IssueActivityFailure::from_github)?;
@@ -123,23 +123,34 @@ fn read_issue(
     let target = resolve_read_target(app_data, project, client, &read)?;
     let comment_limit = if read.offset > 0 { 0 } else { read.comments };
     let detail = match target {
-        Some(repository) => client.read_issue_detail_in(&repository, read.issue, comment_limit),
+        Some((host, repository)) if host == client.host() => {
+            client.read_issue_detail_in(&repository, read.issue, comment_limit)
+        }
+        Some((host, repository)) => {
+            let sibling = IssueClient::for_host(
+                Path::new(&project.repository_path),
+                host,
+                &repository.full_name(),
+            )
+            .map_err(IssueActivityFailure::from_github)?;
+            sibling.read_issue_detail(read.issue, comment_limit)
+        }
         None => client.read_issue_detail(read.issue, comment_limit),
     }
     .map_err(IssueActivityFailure::from_github)?;
     format_issue_read(&detail, read.offset, read.comments).map_err(IssueActivityFailure::External)
 }
 
-/// Resolves an optional cross-repository `issue_read` target (#598). Returns `None` for this
-/// project's own repository, `Some(repo)` for an allowed sibling repository (a configured
-/// Velocity project or a repository referenced in `blocked_by` dependencies), or an external
-/// validation error when the repository is not allowed.
+/// Resolves an optional cross-repository `issue_read` target (#598, #589). Returns `None`
+/// for this project's own repository, `Some((host, repo))` for an allowed sibling
+/// repository (a configured Velocity project or a repository referenced in `blocked_by`
+/// dependencies), or an external validation error when the repository is not allowed.
 fn resolve_read_target(
     app_data: &Path,
     project: &ProjectItem,
     client: &IssueClient,
     read: &IssueRead,
-) -> Result<Option<RepositoryName>, IssueActivityFailure> {
+) -> Result<Option<(IssueHost, RepositoryName)>, IssueActivityFailure> {
     let Some(raw_repository) = read.repository.as_deref() else {
         return Ok(None);
     };
@@ -153,7 +164,7 @@ fn resolve_read_target(
         return Ok(Some(configured));
     }
     if let Some(blocker) = find_blocker_repository(project, client, read, &requested_name)? {
-        return Ok(Some(blocker));
+        return Ok(Some((client.host(), blocker)));
     }
     Err(IssueActivityFailure::External(Error::Invalid(format!(
         "Repository `{requested_name}` is not allowed for issue_read. Only this project's repository (`{}`), repositories of projects configured in Velocity, and repositories referenced in blocked_by dependencies may be read.",
@@ -164,19 +175,28 @@ fn resolve_read_target(
 fn find_configured_project_repository(
     app_data: &Path,
     requested_name: &str,
-) -> Result<Option<RepositoryName>, IssueActivityFailure> {
+) -> Result<Option<(IssueHost, RepositoryName)>, IssueActivityFailure> {
     let projects = velocity_store::read_all_project_snapshots(app_data, false)
         .map_err(|error| IssueActivityFailure::Local(Error::Invalid(error.to_string())))?;
     for item in projects {
-        let candidate = item
+        let effective_host = item.effective_issue_host();
+        if let Some(collapse) = item
+            .collapse_repository
+            .as_deref()
+            .and_then(|remote| RepositoryName::parse(remote).ok())
+            && collapse.full_name().eq_ignore_ascii_case(requested_name)
+        {
+            return Ok(Some((effective_host, collapse)));
+        }
+        let github = item
             .github_remote
             .as_deref()
             .and_then(|remote| RepositoryName::parse(remote).ok())
             .or_else(|| velocity_github::checkout_repository(Path::new(&item.repository_path)));
-        if let Some(repository) = candidate
+        if let Some(repository) = github
             && repository.full_name().eq_ignore_ascii_case(requested_name)
         {
-            return Ok(Some(repository));
+            return Ok(Some((effective_host, repository)));
         }
     }
     Ok(None)

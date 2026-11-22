@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 use velocity_github::{
-    DependencyGraph, ExternalIssueState, GitHubIssue, IssueClient, IssueState,
+    DependencyGraph, ExternalIssueState, GitHubIssue, IssueClient, IssueHost, IssueState,
     REMOTE_PROGRESS_WINDOW_SECONDS,
 };
 use velocity_store::continuous_dispatch::has_capacity as project_has_capacity;
@@ -348,8 +348,14 @@ pub fn initialize(application: &AppHandle) {
     std::thread::spawn(move || monitor(application));
 }
 
+/// How often continuous dispatch polls GitHub's shared backlog cache.
+const GITHUB_BACKLOG_REFRESH: Duration = Duration::from_secs(30);
+/// How often continuous dispatch polls Collapse's no-wake edge issue cursor (#589).
+const COLLAPSE_CURSOR_REFRESH: Duration = Duration::from_secs(5);
+
 struct Reader {
     directory: String,
+    host: IssueHost,
     remote: Option<String>,
     client: Option<IssueClient>,
     refreshed: Option<Instant>,
@@ -913,17 +919,20 @@ fn report_launch_failures(
         }
         let byline = velocity_threads::issue_activity::issue_byline(project.id, Some(thread), None);
         let attempt = format!("{}-{thread}-{}", project.id, pending.failure);
-        let result =
-            IssueClient::for_repository(Path::new(&reader.directory), &pending.issue.repository)
-                .and_then(|client| {
-                    client.post_launch_failure(
-                        pending.issue.number,
-                        &attempt,
-                        &byline,
-                        &pending.reason,
-                        &launch_failure_outlook(pending.failure),
-                    )
-                });
+        let result = IssueClient::for_host(
+            Path::new(&reader.directory),
+            reader.host,
+            &pending.issue.repository,
+        )
+        .and_then(|client| {
+            client.post_launch_failure(
+                pending.issue.number,
+                &attempt,
+                &byline,
+                &pending.reason,
+                &launch_failure_outlook(pending.failure),
+            )
+        });
         if let Err(error) = result {
             reader.report_retry.insert(thread, Instant::now());
             report::<()>(Err(format!(
@@ -962,9 +971,13 @@ fn refresh_backlog(
     project: u32,
     reader: &mut Reader,
 ) -> Result<(), String> {
+    let interval = match reader.host {
+        IssueHost::Collapse => COLLAPSE_CURSOR_REFRESH,
+        IssueHost::GitHub => GITHUB_BACKLOG_REFRESH,
+    };
     if reader
         .refreshed
-        .is_none_or(|time| time.elapsed() >= Duration::from_secs(30))
+        .is_none_or(|time| time.elapsed() >= interval)
     {
         // Failed reads also back off: an unavailable API must not be hammered every tick.
         reader.refreshed = Some(Instant::now());
@@ -1020,9 +1033,12 @@ fn prune_landed_holds(
 }
 
 fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> &'a mut Reader {
+    let host = project.effective_issue_host();
+    let remote = project.issue_host_repository().map(|(_, repo)| repo);
     let setup = || Reader {
         directory: project.repository_path.clone(),
-        remote: project.github_remote.clone(),
+        host,
+        remote: remote.clone(),
         client: None,
         refreshed: None,
         report_retry: BTreeMap::new(),
@@ -1032,7 +1048,8 @@ fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> 
         holds: holds::Holds::new(),
     };
     let reader = readers.entry(project.id).or_insert_with(setup);
-    if reader.directory != project.repository_path || reader.remote != project.github_remote {
+    if reader.directory != project.repository_path || reader.host != host || reader.remote != remote
+    {
         *reader = setup();
     }
     reader
@@ -1040,7 +1057,8 @@ fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> 
 
 fn read_issues(reader: &mut Reader) -> Result<Backlog, velocity_github::GitHubCommandError> {
     let directory = Path::new(&reader.directory);
-    if reader.remote.is_none()
+    if reader.host == IssueHost::GitHub
+        && reader.remote.is_none()
         && reader
             .client
             .as_ref()
@@ -1049,12 +1067,14 @@ fn read_issues(reader: &mut Reader) -> Result<Backlog, velocity_github::GitHubCo
         reader.client = None;
     }
     if reader.client.is_none() {
-        reader.client = match reader.remote.as_deref() {
-            Some(remote) => Some(IssueClient::for_repository(directory, remote)?),
-            None if directory.join(".git").exists() && IssueClient::has_origin(directory)? => {
+        reader.client = match (reader.host, reader.remote.as_deref()) {
+            (host, Some(remote)) => Some(IssueClient::for_host(directory, host, remote)?),
+            (IssueHost::GitHub, None)
+                if directory.join(".git").exists() && IssueClient::has_origin(directory)? =>
+            {
                 Some(IssueClient::discover(directory)?)
             }
-            None => None,
+            _ => None,
         };
     }
     let Some(client) = &reader.client else {
@@ -1372,23 +1392,26 @@ fn report_no_change_issues(
             Some(thread),
             pending.nick.as_deref(),
         );
-        let result =
-            IssueClient::for_repository(Path::new(&reader.directory), &pending.issue.repository)
-                .and_then(|client| {
-                    client.post_no_change_with_blocker_check(
-                        pending.issue.number,
-                        &pending.change,
-                        &byline,
-                        &pending.reason,
-                        |issue| {
-                            velocity_threads::continuous_dispatch::has_unsatisfied_blockers(
-                                project,
-                                &pending.issue.repository,
-                                issue,
-                            ) || restart_wait::is_waiting(application, project.id, issue.number)
-                        },
-                    )
-                });
+        let result = IssueClient::for_host(
+            Path::new(&reader.directory),
+            reader.host,
+            &pending.issue.repository,
+        )
+        .and_then(|client| {
+            client.post_no_change_with_blocker_check(
+                pending.issue.number,
+                &pending.change,
+                &byline,
+                &pending.reason,
+                |issue| {
+                    velocity_threads::continuous_dispatch::has_unsatisfied_blockers(
+                        project,
+                        &pending.issue.repository,
+                        issue,
+                    ) || restart_wait::is_waiting(application, project.id, issue.number)
+                },
+            )
+        });
         if let Err(error) = result {
             reader.report_retry.insert(thread, Instant::now());
             report::<()>(Err(format!(

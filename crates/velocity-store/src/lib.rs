@@ -1388,6 +1388,11 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub collapse_mirror_health: Option<velocity_core::collapse::CollapseMirrorHealth>,
+    /// Where this project's issues live (`github` or `collapse`) (#589). `None` defaults
+    /// to Collapse when the project mirrors to Collapse, and GitHub otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub issue_host: Option<velocity_core::collapse::IssueHost>,
     /// The base and mirror branch diverged at the last catch-up from the mirror; cleared
     /// when a catch-up or adoption succeeds (#501).
     #[serde(default)]
@@ -1466,6 +1471,7 @@ impl ProjectItem {
             collapse_live_state: false,
             collapse_relay_allow: None,
             collapse_mirror_health: None,
+            issue_host: None,
             rosen_mirror_divergence: None,
             retried_release_runs: Vec::new(),
         }
@@ -1481,6 +1487,35 @@ impl ProjectItem {
                 .iter()
                 .any(|thread| thread.rosen_change.is_some())
             || !self.retained_rosen_issues.is_empty()
+    }
+
+    /// Effective issue host for this project (#589): honors an explicit per-project setting,
+    /// otherwise defaults to Collapse whenever the project's mirror is Collapse.
+    pub fn effective_issue_host(&self) -> velocity_core::collapse::IssueHost {
+        use velocity_core::collapse::IssueHost;
+        match self.issue_host {
+            Some(IssueHost::GitHub) => IssueHost::GitHub,
+            Some(IssueHost::Collapse) | None if self.collapse_repository.is_some() => {
+                IssueHost::Collapse
+            }
+            Some(IssueHost::Collapse) | None => IssueHost::GitHub,
+        }
+    }
+
+    /// Effective issue host and configured `owner/name` repository for this project (#589).
+    /// Returns `None` when a GitHub-hosted project relies on local `.git` origin discovery.
+    pub fn issue_host_repository(&self) -> Option<(velocity_core::collapse::IssueHost, String)> {
+        use velocity_core::collapse::IssueHost;
+        match self.effective_issue_host() {
+            IssueHost::Collapse => self
+                .collapse_repository
+                .clone()
+                .map(|repository| (IssueHost::Collapse, repository)),
+            IssueHost::GitHub => self
+                .github_remote
+                .clone()
+                .map(|repository| (IssueHost::GitHub, repository)),
+        }
     }
 
     /// Hand out the next task number, above every task saved now or before (F8).

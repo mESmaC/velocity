@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+use velocity_core::collapse::IssueHost;
+
 use crate::{GitHubIssue, IssueDiscussion, IssueState};
 
 /// How long a repository's open issues are reused across every feature before refreshing.
@@ -30,37 +32,44 @@ struct CachedDiscussion {
     discussion: IssueDiscussion,
 }
 
-static ISSUES: LazyLock<Mutex<HashMap<String, RepoIssues>>> = LazyLock::new(Mutex::default);
-static FETCH_LOCKS: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
+type CacheKey = (IssueHost, String);
+type DiscussionKey = (IssueHost, String, u32);
+
+static ISSUES: LazyLock<Mutex<HashMap<CacheKey, RepoIssues>>> = LazyLock::new(Mutex::default);
+static FETCH_LOCKS: LazyLock<Mutex<HashMap<CacheKey, Arc<Mutex<()>>>>> =
     LazyLock::new(Mutex::default);
-static DISCUSSIONS: LazyLock<Mutex<HashMap<(String, u32), CachedDiscussion>>> =
+static DISCUSSIONS: LazyLock<Mutex<HashMap<DiscussionKey, CachedDiscussion>>> =
     LazyLock::new(Mutex::default);
 static NEXT_VERSION: AtomicU64 = AtomicU64::new(1);
 
-pub(crate) fn fetch_lock(repository: &str) -> Arc<Mutex<()>> {
+pub(crate) fn fetch_lock(host: IssueHost, repository: &str) -> Arc<Mutex<()>> {
     let mut locks = FETCH_LOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    Arc::clone(locks.entry(repo_key(repository)).or_default())
+    Arc::clone(locks.entry(repo_key(host, repository)).or_default())
 }
 
-pub(crate) fn get_fresh(repository: &str, max_age: Duration) -> Option<Vec<GitHubIssue>> {
+pub(crate) fn get_fresh(
+    host: IssueHost,
+    repository: &str,
+    max_age: Duration,
+) -> Option<Vec<GitHubIssue>> {
     let cache = ISSUES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache
-        .get(&repo_key(repository))
+        .get(&repo_key(host, repository))
         .filter(|entry| entry.fetched_at.elapsed() < max_age)
         .map(|entry| entry.issues.clone())
 }
 
-pub(crate) fn store(repository: &str, issues: &[GitHubIssue]) -> u64 {
+pub(crate) fn store(host: IssueHost, repository: &str, issues: &[GitHubIssue]) -> u64 {
     let version = NEXT_VERSION.fetch_add(1, Ordering::Relaxed);
     let mut cache = ISSUES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.insert(
-        repo_key(repository),
+        repo_key(host, repository),
         RepoIssues {
             issues: issues.to_vec(),
             fetched_at: Instant::now(),
@@ -70,35 +79,37 @@ pub(crate) fn store(repository: &str, issues: &[GitHubIssue]) -> u64 {
     version
 }
 
-pub(crate) fn invalidate(repository: &str) {
+pub(crate) fn invalidate(host: IssueHost, repository: &str) {
     let mut cache = ISSUES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    cache.remove(&repo_key(repository));
+    cache.remove(&repo_key(host, repository));
 }
 
-pub(crate) fn version(repository: &str) -> Option<u64> {
-    let cache = ISSUES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    cache.get(&repo_key(repository)).map(|entry| entry.version)
-}
-
-pub(crate) fn cached_issue(repository: &str, number: u32) -> Option<GitHubIssue> {
+pub(crate) fn version(host: IssueHost, repository: &str) -> Option<u64> {
     let cache = ISSUES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache
-        .get(&repo_key(repository))
+        .get(&repo_key(host, repository))
+        .map(|entry| entry.version)
+}
+
+pub(crate) fn cached_issue(host: IssueHost, repository: &str, number: u32) -> Option<GitHubIssue> {
+    let cache = ISSUES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache
+        .get(&repo_key(host, repository))
         .and_then(|entry| entry.issues.iter().find(|issue| issue.number == number))
         .cloned()
 }
 
-pub(crate) fn upsert_issue(repository: &str, issue: &GitHubIssue) {
+pub(crate) fn upsert_issue(host: IssueHost, repository: &str, issue: &GitHubIssue) {
     let mut cache = ISSUES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(entry) = cache.get_mut(&repo_key(repository)) else {
+    let Some(entry) = cache.get_mut(&repo_key(host, repository)) else {
         return;
     };
     if issue.state == IssueState::Closed {
@@ -117,12 +128,16 @@ pub(crate) fn upsert_issue(repository: &str, issue: &GitHubIssue) {
     entry.version = NEXT_VERSION.fetch_add(1, Ordering::Relaxed);
 }
 
-pub(crate) fn get_discussion(repository: &str, number: u32) -> Option<IssueDiscussion> {
-    let current_updated_at = cached_issue(repository, number).map(|issue| issue.updated_at);
+pub(crate) fn get_discussion(
+    host: IssueHost,
+    repository: &str,
+    number: u32,
+) -> Option<IssueDiscussion> {
+    let current_updated_at = cached_issue(host, repository, number).map(|issue| issue.updated_at);
     let cache = DISCUSSIONS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let entry = cache.get(&(repo_key(repository), number))?;
+    let entry = cache.get(&(host, repository.to_ascii_lowercase(), number))?;
     match current_updated_at {
         Some(updated_at) if entry.updated_at.as_deref() == Some(updated_at.as_str()) => {
             Some(entry.discussion.clone())
@@ -135,6 +150,7 @@ pub(crate) fn get_discussion(repository: &str, number: u32) -> Option<IssueDiscu
 }
 
 pub(crate) fn store_discussion(
+    host: IssueHost,
     repository: &str,
     number: u32,
     updated_at: Option<String>,
@@ -147,7 +163,7 @@ pub(crate) fn store_discussion(
         cache.clear();
     }
     cache.insert(
-        (repo_key(repository), number),
+        (host, repository.to_ascii_lowercase(), number),
         CachedDiscussion {
             updated_at,
             fetched_at: Instant::now(),
@@ -156,13 +172,13 @@ pub(crate) fn store_discussion(
     );
 }
 
-pub(crate) fn invalidate_discussion(repository: &str, number: u32) {
+pub(crate) fn invalidate_discussion(host: IssueHost, repository: &str, number: u32) {
     let mut cache = DISCUSSIONS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    cache.remove(&(repo_key(repository), number));
+    cache.remove(&(host, repository.to_ascii_lowercase(), number));
 }
 
-fn repo_key(repository: &str) -> String {
-    repository.to_ascii_lowercase()
+fn repo_key(host: IssueHost, repository: &str) -> CacheKey {
+    (host, repository.to_ascii_lowercase())
 }

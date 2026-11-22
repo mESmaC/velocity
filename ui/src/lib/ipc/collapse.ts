@@ -6,6 +6,7 @@ import {
   type CollapseConnection,
   type CollapseLinkOpened_Serialize,
   type CollapseRelayKind,
+  type IssueHost,
   type LayoutSnapshot_Serialize,
   type ProjectCollapseSettings,
 } from '../bindings';
@@ -15,6 +16,7 @@ export type {
   CollapseFeedHealth,
   CollapseLinkOpened_Serialize as CollapseLinkOpened,
   CollapseRelayKind,
+  IssueHost,
   ProjectCollapseSettings,
   PushTokenStatus,
 } from '../bindings';
@@ -52,6 +54,18 @@ export const collapseCommands = {
     allow: CollapseRelayKind[],
   ): Promise<ProjectCollapseSettings> =>
     commands.setCollapseRelay(project, allow),
+  setIssueHost: (
+    project: number,
+    host: IssueHost,
+  ): Promise<ProjectCollapseSettings> =>
+    commands.setProjectIssueHost(project, host),
+  setIssuesToken: (
+    project: number,
+    token: string,
+  ): Promise<ProjectCollapseSettings> =>
+    commands.setCollapseIssuesToken(project, token),
+  clearIssuesToken: (project: number): Promise<ProjectCollapseSettings> =>
+    commands.clearCollapseIssuesToken(project),
   unlink: (project: number): Promise<CollapseActionResult> =>
     commands.unlinkCollapse(project),
 };

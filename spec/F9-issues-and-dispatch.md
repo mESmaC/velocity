@@ -85,6 +85,11 @@ Closure waits for the GitHub mirror to contain the landed commit and honours **C
 A revert cancels pending closure and reopens the issue with the culprit output or reason.
 Discussion and closure happen asynchronously alongside the Work projection and landing.
 
+**Issue host (#589).** Each project chooses where its issues live through the per-project **Issues on: GitHub | Collapse** setting, defaulting to Collapse whenever the project mirrors to Collapse.
+Dispatch, holds, dependencies, the AIRC issue tools (`issue_read`, `issue_create`, `issue_comment`, `issue_ready_to_close`, `issue_blocked_upstream`, `issue_hold`, `issue_close_not_planned`), bounded parked reviews, and Rosen land, close and reopen comments all run through the project's issue host while exposing the same agent tools and arguments.
+The Collapse backend uses Collapse's C14 Issues REST API under `/api/repositories/{owner}/{name}/issues`, watches the no-wake edge change cursor (`/issues/cursor`) and reads incremental deltas (`/issues/changes?after=<cursor>`), supports `?numbers=` batch reads, and bypasses GitHub's `gh_rate` budget.
+Writes on Collapse authenticate with an owner personal access token carrying the `issues` scope stored in the OS credential store (`velocity:collapse.sh:issues`), with reads falling back to the connected Collapse personal token.
+
 **Issue tools (#441, #535, #598).** AIRC's `issue_read { issue, repository?, offset?, comments? }` reads any issue in the project's mirror repository—or, when `repository` (`owner/name`) names another project configured in Velocity or a repository referenced in `blocked_by` dependencies, that sibling repository—and returns its title, body (paged with `next_offset` when long), labels, state, `blocked_by` dependencies and recent comments.
 AIRC's `issue_create { title, body, labels?, blocked_by? }` files a new issue on the project's mirror repository with the calling agent's byline and records an `issue` event on the channel.
 Before filing, `issue_create` runs the #471 duplicate check against open issues using the project's code graph when available, returning the matching open issue instead of creating a duplicate.

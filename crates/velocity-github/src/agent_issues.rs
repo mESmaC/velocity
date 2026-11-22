@@ -11,7 +11,9 @@ use velocity_core::issue_holds::{
     parse_upstream_target, refuse_retired_label, validate_person_hold,
 };
 
-use crate::issues::{BLOCKER_FIELDS, Blocker, ISSUE_FIELDS, IssueNode, relative_blocker_name};
+use crate::issues::{
+    BLOCKER_FIELDS, Blocker, ISSUE_FIELDS, IssueBackend, IssueNode, relative_blocker_name,
+};
 use crate::repository_client::Connection;
 use crate::velocity_reports::find_matching_open_issue;
 use crate::{
@@ -116,16 +118,25 @@ impl IssueClient {
         number: u32,
         recent_comments: usize,
     ) -> Result<IssueDetail, GitHubCommandError> {
-        self.read_issue_detail_for(
-            self.transport.owner(),
-            self.transport.name(),
-            self.repository(),
-            number,
-            recent_comments,
-        )
+        match &self.backend {
+            IssueBackend::Collapse(collapse) => collapse.read_issue_detail_for(
+                collapse.owner(),
+                collapse.name(),
+                collapse.repository(),
+                number,
+                recent_comments.min(MAX_RECENT_COMMENTS),
+            ),
+            IssueBackend::GitHub(transport) => self.read_issue_detail_for(
+                transport.owner(),
+                transport.name(),
+                self.repository(),
+                number,
+                recent_comments,
+            ),
+        }
     }
 
-    /// Reads one issue from another allowed GitHub repository through this client's transport (#598).
+    /// Reads one issue from another allowed repository through this client's transport (#598, #589).
     pub fn read_issue_detail_in(
         &self,
         repository: &RepositoryName,
@@ -133,13 +144,22 @@ impl IssueClient {
         recent_comments: usize,
     ) -> Result<IssueDetail, GitHubCommandError> {
         let full_name = repository.full_name();
-        self.read_issue_detail_for(
-            repository.owner(),
-            repository.name(),
-            &full_name,
-            number,
-            recent_comments,
-        )
+        match &self.backend {
+            IssueBackend::Collapse(collapse) => collapse.read_issue_detail_for(
+                repository.owner(),
+                repository.name(),
+                &full_name,
+                number,
+                recent_comments.min(MAX_RECENT_COMMENTS),
+            ),
+            IssueBackend::GitHub(_) => self.read_issue_detail_for(
+                repository.owner(),
+                repository.name(),
+                &full_name,
+                number,
+                recent_comments,
+            ),
+        }
     }
 
     fn read_issue_detail_for(
@@ -150,22 +170,20 @@ impl IssueClient {
         number: u32,
         recent_comments: usize,
     ) -> Result<IssueDetail, GitHubCommandError> {
+        let transport = self.github_transport()?;
         if number == 0 {
             return Err(GitHubCommandError::Invalid(
                 "issue must be a positive issue number".into(),
             ));
         }
         let comment_limit = recent_comments.min(MAX_RECENT_COMMENTS);
-        let (query, mut variables) = issue_detail_query(
-            comment_limit,
-            self.transport.variables_for(owner, name, number),
-        );
+        let (query, mut variables) =
+            issue_detail_query(comment_limit, transport.variables_for(owner, name, number));
         if comment_limit > 0 {
             variables["comments"] = json!(comment_limit);
         }
         let raw: RawIssueDetail =
-            self.transport
-                .graphql_at(&query, variables, "/data/repository/issue")?;
+            transport.graphql_at(&query, variables, "/data/repository/issue")?;
         let issue = self.decode_issue_for(owner, name, raw.node)?;
         let blockers =
             self.complete_blockers_for(owner, name, repository, issue.number, raw.blocked_by)?;
@@ -197,14 +215,22 @@ impl IssueClient {
         })
     }
 
-    /// Files an agent issue on the project's mirror repository after checking for duplicates
-    /// (#471) and linking any `blocked_by` issues as GitHub dependencies (#511).
+    /// Files an agent issue on the project's configured issue host after checking for
+    /// duplicates (#471) and linking any `blocked_by` issues as dependencies (#511, #589).
     pub fn create_agent_issue(
         &self,
         draft: &AgentIssueDraft<'_>,
         mentioned_paths: impl FnOnce(&[(&str, &str)]) -> Vec<BTreeSet<String>>,
     ) -> Result<AgentIssueOutcome, GitHubCommandError> {
         let (title, body, full_body, labels) = validate_draft(draft)?;
+        if let IssueBackend::Collapse(collapse) = &self.backend {
+            return self.create_collapse_agent_issue(
+                collapse,
+                (title, body, &full_body, &labels),
+                draft.blocked_by,
+                mentioned_paths,
+            );
+        }
         let label_ids = self.resolve_agent_labels(&labels)?;
         // Refuse invalid blockers before running the duplicate scan or creating the issue (#511).
         let blockers = self.resolve_blockers(draft.blocked_by)?;
@@ -244,6 +270,37 @@ impl IssueClient {
         })
     }
 
+    fn create_collapse_agent_issue(
+        &self,
+        collapse: &crate::collapse_issues::CollapseIssueTransport,
+        (title, body, full_body, labels): (&str, &str, &str, &[String]),
+        raw_blockers: &[IssueReference],
+        mentioned_paths: impl FnOnce(&[(&str, &str)]) -> Vec<BTreeSet<String>>,
+    ) -> Result<AgentIssueOutcome, GitHubCommandError> {
+        let resolved_labels = resolve_collapse_labels(collapse, labels)?;
+        let blocked_by = collapse.validate_blockers(raw_blockers)?;
+        let lock = agent_filing_lock(&format!("collapse:{}", self.repository()))?;
+        let _guard = lock
+            .lock()
+            .map_err(|error| GitHubCommandError::Invalid(error.to_string()))?;
+        let open = collapse.open_issues_fresh()?;
+        if let Some(existing) = find_matching_open_issue(title, body, &open, mentioned_paths) {
+            return Ok(AgentIssueOutcome::Duplicate {
+                reason: format!(
+                    "Open issue #{} already matches this report. Read it with issue_read instead of opening a duplicate.",
+                    existing.number
+                ),
+                issue: existing.clone(),
+            });
+        }
+        let issue = collapse.create_issue(title, full_body, &resolved_labels, &blocked_by)?;
+        Ok(AgentIssueOutcome::Filed {
+            issue,
+            blocked_by,
+            unlinked: None,
+        })
+    }
+
     fn complete_blockers_for(
         &self,
         owner: &str,
@@ -252,14 +309,15 @@ impl IssueClient {
         number: u32,
         first_page: Connection<Option<Blocker>>,
     ) -> Result<Vec<IssueDependency>, GitHubCommandError> {
-        let blockers = self.transport.complete_connection(
+        let transport = self.github_transport()?;
+        let blockers = transport.complete_connection(
             &format!(
                 "query($owner:String!,$name:String!,$number:Int!,$cursor:String) {{
                   repository(owner:$owner,name:$name) {{ issue(number:$number) {{
                     blockedBy(first:100,after:$cursor) {{ nodes {{ {BLOCKER_FIELDS} }}
                       pageInfo {{ hasNextPage endCursor }} }} }} }} }}"
             ),
-            self.transport.variables_for(owner, name, number),
+            transport.variables_for(owner, name, number),
             "/data/repository/issue/blockedBy",
             first_page,
         )?;
@@ -318,26 +376,61 @@ impl IssueClient {
     }
 
     fn ensure_repository_label(&self, name: &str) -> Result<(), GitHubCommandError> {
+        let transport = self.github_transport()?;
         let labels = format!("repos/{}/labels", self.repository());
         let label = format!("{labels}/{name}");
-        if self
-            .transport
-            .command
-            .read::<Value>(&["api", &label])
-            .is_err()
-            && let Err(error) = self.transport.command.api::<Value>(
+        if transport.command.read::<Value>(&["api", &label]).is_err()
+            && let Err(error) = transport.command.api::<Value>(
                 "POST",
                 &labels,
                 &json!({"name": name, "color": "ededed"}),
             )
         {
-            self.transport
+            transport
                 .command
                 .read::<Value>(&["api", &label])
                 .map_err(|_| error)?;
         }
         Ok(())
     }
+}
+
+fn resolve_collapse_labels(
+    collapse: &crate::collapse_issues::CollapseIssueTransport,
+    names: &[String],
+) -> Result<Vec<String>, GitHubCommandError> {
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let auto_labels = [
+        SPEC_QUESTION_LABEL,
+        TRACKING_LABEL,
+        BLOCKED_UPSTREAM_LABEL,
+        HOLD_LABEL,
+    ];
+    for auto in auto_labels {
+        if names.iter().any(|name| name.eq_ignore_ascii_case(auto)) {
+            collapse.ensure_label(auto)?;
+        }
+    }
+    let available: BTreeMap<String, String> = collapse
+        .label_names()?
+        .into_iter()
+        .map(|label| (label.clone(), label))
+        .collect();
+    let mut resolved = Vec::new();
+    for name in names {
+        let Some((existing, _)) = available
+            .iter()
+            .find(|(existing, _)| existing.eq_ignore_ascii_case(name))
+        else {
+            return Err(unknown_label_error(name, &available));
+        };
+        if !resolved.contains(existing) {
+            resolved.push(existing.clone());
+        }
+    }
+    Ok(resolved)
 }
 
 fn issue_detail_query(comment_limit: usize, variables: Value) -> (String, Value) {

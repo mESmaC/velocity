@@ -62,7 +62,7 @@ impl IssueClient {
         let tag_input = format!("tag={tag}");
         let commit_input = format!("commit={commit}");
         let green_input = format!("green={green}");
-        self.transport.command.text(&[
+        self.github_transport()?.command.text(&[
             "workflow",
             "run",
             RELEASE_WORKFLOW,
@@ -93,7 +93,7 @@ impl IssueClient {
             "repos/{}/commits/{commit}/statuses?per_page=100",
             self.repository()
         );
-        let statuses: Vec<Status> = self.transport.command.read(&["api", &endpoint])?;
+        let statuses: Vec<Status> = self.github_transport()?.command.read(&["api", &endpoint])?;
         let passed = statuses
             .iter()
             .find(|status| status.context == INTEGRATION_CONTEXT)
@@ -125,7 +125,8 @@ impl IssueClient {
         }
         let per_page = limit.clamp(1, 50);
         let endpoint = format!("repos/{}/commits?per_page={per_page}", self.repository());
-        let commits: Vec<CommitEntry> = self.transport.command.read(&["api", &endpoint])?;
+        let commits: Vec<CommitEntry> =
+            self.github_transport()?.command.read(&["api", &endpoint])?;
         for entry in commits {
             if self.integration_passed(&entry.sha)? {
                 return Ok(Some(entry.sha));
@@ -207,14 +208,12 @@ impl IssueClient {
                 }
             }
         }";
-        let tags: Vec<Option<RefNode>> = self.transport.connection(
-            tags_query,
-            self.transport.variables(0),
-            "/data/repository/refs",
-        )?;
-        let releases: Vec<Option<ReleaseNode>> = self.transport.connection(
+        let transport = self.github_transport()?;
+        let tags: Vec<Option<RefNode>> =
+            transport.connection(tags_query, transport.variables(0), "/data/repository/refs")?;
+        let releases: Vec<Option<ReleaseNode>> = transport.connection(
             releases_query,
-            self.transport.variables(0),
+            transport.variables(0),
             "/data/repository/releases",
         )?;
         let mut names: Vec<String> = tags.into_iter().flatten().map(|node| node.name).collect();
@@ -224,7 +223,7 @@ impl IssueClient {
 
     fn list_releases(&self, limit: usize) -> Result<Vec<ApiRelease>, GitHubCommandError> {
         let endpoint = format!("repos/{}/releases?per_page={limit}", self.repository());
-        self.transport.command.read(&["api", &endpoint])
+        self.github_transport()?.command.read(&["api", &endpoint])
     }
 
     fn read_manifest_version(&self, asset_id: u64) -> Result<String, GitHubCommandError> {
@@ -242,7 +241,7 @@ impl IssueClient {
             version: String,
         }
         let endpoint = format!("repos/{}/releases/assets/{asset_id}", self.repository());
-        let manifest: Manifest = self.transport.command.read(&[
+        let manifest: Manifest = self.github_transport()?.command.read(&[
             "api",
             "-H",
             "Accept: application/octet-stream",
@@ -266,7 +265,7 @@ impl IssueClient {
             self.repository()
         );
         match self
-            .transport
+            .github_transport()?
             .command
             .read::<RunsResponse>(&["api", &endpoint])
         {
@@ -296,7 +295,7 @@ impl IssueClient {
             "repos/{}/actions/runs/{run_id}/jobs?per_page=20",
             self.repository()
         );
-        let response: JobsResponse = self.transport.command.read(&["api", &endpoint])?;
+        let response: JobsResponse = self.github_transport()?.command.read(&["api", &endpoint])?;
         Ok(response
             .jobs
             .iter()
@@ -304,7 +303,9 @@ impl IssueClient {
     }
 
     fn has_open_release_blocker(&self) -> Result<bool, GitHubCommandError> {
-        if let Some(open) = crate::issue_cache::get_fresh(self.repository(), OPEN_ISSUES_REFRESH) {
+        if let Some(open) =
+            crate::issue_cache::get_fresh(self.host(), self.repository(), OPEN_ISSUES_REFRESH)
+        {
             return Ok(open.iter().any(|issue| {
                 issue
                     .labels
@@ -321,7 +322,7 @@ impl IssueClient {
             "repos/{}/issues?state=open&labels=release-blocker&per_page=5",
             self.repository()
         );
-        let issues: Vec<IssueStub> = self.transport.command.read(&["api", &endpoint])?;
+        let issues: Vec<IssueStub> = self.github_transport()?.command.read(&["api", &endpoint])?;
         Ok(issues.iter().any(|issue| issue.pull_request.is_none()))
     }
 
@@ -336,7 +337,7 @@ impl IssueClient {
             commit: TagCommit,
         }
         let endpoint = format!("repos/{}/tags?per_page=20", self.repository());
-        let tags: Vec<TagEntry> = self.transport.command.read(&["api", &endpoint])?;
+        let tags: Vec<TagEntry> = self.github_transport()?.command.read(&["api", &endpoint])?;
         Ok(tags.into_iter().find_map(|entry| {
             (entry.commit.sha == commit && version_from_release_tag(&entry.name).is_some())
                 .then_some(entry.name)

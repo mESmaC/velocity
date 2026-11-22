@@ -21,6 +21,11 @@ const RELEASE_TOKEN_TARGET: &str = "velocity:collapse.sh:releases";
 const RELEASE_TOKEN_USER: &str = "velocity-releases";
 
 #[cfg(windows)]
+const ISSUES_TOKEN_TARGET: &str = "velocity:collapse.sh:issues";
+#[cfg(windows)]
+const ISSUES_TOKEN_USER: &str = "velocity-issues";
+
+#[cfg(windows)]
 const UPDATER_KEY_TARGET: &str = "velocity:updater-signing-key";
 #[cfg(windows)]
 const UPDATER_PASSWORD_TARGET: &str = "velocity:updater-signing-key-password";
@@ -178,6 +183,59 @@ pub fn resolve_release_token() -> Result<Option<String>, CollapseError> {
     Ok(load_credentials()?.map(|credentials| credentials.access_token))
 }
 
+/// Saves a Collapse personal access token with the `issues` scope in Windows Credential
+/// Manager under `velocity:collapse.sh:issues` (#589).
+#[cfg(windows)]
+pub fn save_issues_token(token: &str) -> Result<(), CollapseError> {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return Err(CollapseError::Credential(
+            "Collapse issues token cannot be empty".into(),
+        ));
+    }
+    issues_token_entry()?
+        .set_secret(trimmed.as_bytes())
+        .map_err(|error| CollapseError::Credential(error.to_string()))
+}
+
+/// Loads the optional Collapse issues token from Windows Credential Manager (#589).
+#[cfg(windows)]
+pub fn load_issues_token() -> Result<Option<String>, CollapseError> {
+    read_text_secret(&issues_token_entry()?)
+}
+
+/// Removes the saved Collapse issues token from Windows Credential Manager (#589).
+#[cfg(windows)]
+pub fn forget_issues_token() -> Result<(), CollapseError> {
+    delete_entry(&issues_token_entry()?)
+}
+
+#[cfg(not(windows))]
+pub fn save_issues_token(_token: &str) -> Result<(), CollapseError> {
+    Err(CollapseError::Unsupported)
+}
+
+#[cfg(not(windows))]
+pub fn load_issues_token() -> Result<Option<String>, CollapseError> {
+    Ok(None)
+}
+
+#[cfg(not(windows))]
+pub fn forget_issues_token() -> Result<(), CollapseError> {
+    Ok(())
+}
+
+/// Resolves the personal bearer token used for Collapse C14 Issues (#589): prefers a
+/// dedicated personal access token with `issues` scope (`velocity:collapse.sh:issues`,
+/// exempt from per-IP/per-token rate limits and allowed to write) and falls back to the
+/// connected account's read-only personal `mcp_token`.
+pub fn resolve_issues_token() -> Result<Option<String>, CollapseError> {
+    if let Some(token) = load_issues_token()? {
+        return Ok(Some(token));
+    }
+    Ok(load_credentials()?.map(|credentials| credentials.mcp_token))
+}
+
 /// Saves the Tauri updater signing key (and optional password) in Windows Credential Manager
 /// under `velocity:updater-signing-key` (#593).
 #[cfg(windows)]
@@ -268,6 +326,12 @@ pub fn forget_updater_signing_key() -> Result<(), CollapseError> {
 #[cfg(windows)]
 fn release_token_entry() -> Result<keyring::Entry, CollapseError> {
     keyring::Entry::new_with_target(RELEASE_TOKEN_TARGET, SERVICE, RELEASE_TOKEN_USER)
+        .map_err(|error| CollapseError::Credential(error.to_string()))
+}
+
+#[cfg(windows)]
+fn issues_token_entry() -> Result<keyring::Entry, CollapseError> {
+    keyring::Entry::new_with_target(ISSUES_TOKEN_TARGET, SERVICE, ISSUES_TOKEN_USER)
         .map_err(|error| CollapseError::Credential(error.to_string()))
 }
 

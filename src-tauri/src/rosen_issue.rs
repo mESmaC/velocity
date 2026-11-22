@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Manager};
 use velocity_core::work_pool::WorkKey;
-use velocity_github::{IssueClient, IssueState, RosenIssueEffect};
+use velocity_github::{IssueClient, IssueHost, IssueState, RosenIssueEffect};
 use velocity_rosen::{
     IssueEvent,
     review_swarm::{self, IssueCloser, IssueReviews},
@@ -155,13 +155,14 @@ async fn follow_thread(
         } else {
             None
         };
-        let (directory, change, work) = (
+        let (directory, host, change, work) = (
             thread.directory.clone(),
+            thread.host,
             thread.change.clone(),
             action.clone(),
         );
         let done = tauri::async_runtime::spawn_blocking(move || {
-            synchronize(directory, &change, work, closer)
+            synchronize(directory, host, &change, work, closer)
         })
         .await
         .map_err(|error| error.to_string())??;
@@ -267,6 +268,7 @@ pub(crate) async fn confirm_builds(
 
 struct Pending {
     directory: PathBuf,
+    host: IssueHost,
     change: String,
     watcher_due: bool,
     actions: Vec<IssueAction>,
@@ -281,6 +283,7 @@ fn pending(application: &AppHandle, project: u32) -> Result<Vec<Pending>, String
         return Ok(Vec::new());
     };
     let directory = PathBuf::from(&project.repository_path);
+    let host = project.effective_issue_host();
     let mut live_changes = HashSet::new();
     let mut items: Vec<Pending> = project
         .threads
@@ -291,6 +294,7 @@ fn pending(application: &AppHandle, project: u32) -> Result<Vec<Pending>, String
             live_changes.insert(change.clone());
             Some(Pending {
                 directory: directory.clone(),
+                host,
                 change,
                 watcher_due: thread.rosen_issue.watcher_due(),
                 actions: thread.rosen_issue.pending.clone(),
@@ -303,6 +307,7 @@ fn pending(application: &AppHandle, project: u32) -> Result<Vec<Pending>, String
         }
         items.push(Pending {
             directory: directory.clone(),
+            host,
             change: change.clone(),
             watcher_due: retained.progress.watcher_due(),
             actions: retained.progress.pending.clone(),
@@ -313,6 +318,7 @@ fn pending(application: &AppHandle, project: u32) -> Result<Vec<Pending>, String
 
 fn synchronize(
     directory: PathBuf,
+    host: IssueHost,
     change: &str,
     action: IssueAction,
     closer: Option<IssueCloser>,
@@ -327,7 +333,7 @@ fn synchronize(
         _ if action.land_comment => RosenIssueEffect::Landed { change },
         _ => return Ok(false),
     };
-    let client = IssueClient::for_repository(&directory, &issue.repository)
+    let client = IssueClient::for_host(&directory, host, &issue.repository)
         .map_err(|error| error.to_string())?;
     client
         .follow_rosen_issue(
@@ -356,6 +362,7 @@ fn finish(
 
 struct HandoffSweepTargets {
     directory: PathBuf,
+    host: IssueHost,
     remote: Option<String>,
     candidates: Vec<HandoffSweepCandidate>,
 }
@@ -376,6 +383,7 @@ pub(crate) async fn sweep_orphaned_handoff_issues(
     let handle = application.clone();
     let Some(HandoffSweepTargets {
         directory,
+        host,
         remote,
         candidates,
     }) = tauri::async_runtime::spawn_blocking(move || handoff_sweep_candidates(&handle, project))
@@ -399,10 +407,11 @@ pub(crate) async fn sweep_orphaned_handoff_issues(
         return Ok(());
     }
     let dir = directory.clone();
-    let Some((repository, open_numbers)) =
-        tauri::async_runtime::spawn_blocking(move || open_issue_numbers(&dir, remote.as_deref()))
-            .await
-            .map_err(|error| error.to_string())??
+    let Some((repository, open_numbers)) = tauri::async_runtime::spawn_blocking(move || {
+        open_issue_numbers(&dir, host, remote.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())??
     else {
         return Ok(());
     };
@@ -422,6 +431,7 @@ pub(crate) async fn sweep_orphaned_handoff_issues(
         project,
         &server,
         &directory,
+        host,
         &reviews,
         resolved,
     )
@@ -433,6 +443,7 @@ async fn adopt_resolved_handoff_issues(
     project: u32,
     server: &velocity_rosen::ProjectServer,
     directory: &Path,
+    host: IssueHost,
     reviews: &IssueReviews,
     resolved: Vec<(String, String, ThreadIssue)>,
 ) -> Result<(), String> {
@@ -449,16 +460,16 @@ async fn adopt_resolved_handoff_issues(
             issue.number,
             commit.clone(),
         );
-        let need_github_time = local_green.is_none();
-        let Some(github_green) = tauri::async_runtime::spawn_blocking(move || {
-            confirm_orphaned_handoff_github(&dir, &repo, number, &sha, need_github_time)
+        let need_remote_time = local_green.is_none();
+        let Some(remote_green) = tauri::async_runtime::spawn_blocking(move || {
+            confirm_orphaned_handoff_remote(&dir, host, &repo, number, &sha, need_remote_time)
         })
         .await
         .map_err(|error| error.to_string())??
         else {
             continue;
         };
-        let green_since = local_green.or(github_green).unwrap_or_else(unix_seconds);
+        let green_since = local_green.or(remote_green).unwrap_or_else(unix_seconds);
         crate::state::try_with_store(application, move |store| {
             store
                 .adopt_orphaned_handoff_issue(project, change, issue, commit, green_since)
@@ -520,25 +531,28 @@ fn handoff_sweep_candidates(
     }
     Ok(Some(HandoffSweepTargets {
         directory: PathBuf::from(&project.repository_path),
-        remote: project.github_remote.clone(),
+        host: project.effective_issue_host(),
+        remote: project.issue_host_repository().map(|(_, repo)| repo),
         candidates,
     }))
 }
 
 fn open_issue_numbers(
     directory: &Path,
+    host: IssueHost,
     remote: Option<&str>,
 ) -> Result<Option<(String, HashSet<u32>)>, String> {
-    let client = match remote {
-        Some(remote) => Some(
-            IssueClient::for_repository(directory, remote).map_err(|error| error.to_string())?,
+    let client = match (host, remote) {
+        (host, Some(remote)) => Some(
+            IssueClient::for_host(directory, host, remote).map_err(|error| error.to_string())?,
         ),
-        None if directory.join(".git").exists()
-            && IssueClient::has_origin(directory).map_err(|error| error.to_string())? =>
+        (IssueHost::GitHub, None)
+            if directory.join(".git").exists()
+                && IssueClient::has_origin(directory).map_err(|error| error.to_string())? =>
         {
             Some(IssueClient::discover(directory).map_err(|error| error.to_string())?)
         }
-        None => None,
+        _ => None,
     };
     let Some(client) = client else {
         return Ok(None);
@@ -584,15 +598,16 @@ async fn resolve_open_handoff_issues(
     Ok(resolved)
 }
 
-fn confirm_orphaned_handoff_github(
+fn confirm_orphaned_handoff_remote(
     directory: &Path,
+    host: IssueHost,
     repository: &str,
     number: u32,
     commit: &str,
     need_green_at: bool,
 ) -> Result<Option<Option<u64>>, String> {
     let client =
-        IssueClient::for_repository(directory, repository).map_err(|error| error.to_string())?;
+        IssueClient::for_host(directory, host, repository).map_err(|error| error.to_string())?;
     let current = client
         .landed_awaiting_integration(number)
         .map_err(|error| error.to_string())?;
@@ -612,15 +627,16 @@ fn confirm_orphaned_handoff_github(
 }
 
 /// Closes orphaned lands from other machines once a green integration build (here or on
-/// GitHub) covers the commit and the 30-minute review window has elapsed (#519).
+/// the issue host) covers the commit and the 30-minute review window has elapsed (#519, #589).
 async fn follow_orphaned_holds(application: &AppHandle, project: u32, covered: &[String]) {
-    let (directory, holds) = match lock(
+    let (directory, host, holds) = match lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     ) {
         Ok(store) => match store.project(project) {
             Some(item) => (
                 PathBuf::from(&item.repository_path),
+                item.effective_issue_host(),
                 item.orphaned_landed_holds(),
             ),
             None => return,
@@ -629,7 +645,7 @@ async fn follow_orphaned_holds(application: &AppHandle, project: u32, covered: &
     };
     for mut hold in holds {
         if let Err(error) =
-            follow_orphaned_hold(application, project, &directory, &mut hold, covered).await
+            follow_orphaned_hold(application, project, &directory, host, &mut hold, covered).await
         {
             report::<()>(Err(error));
         }
@@ -640,6 +656,7 @@ async fn follow_orphaned_hold(
     application: &AppHandle,
     project: u32,
     directory: &Path,
+    host: IssueHost,
     hold: &mut LandedHold,
     covered: &[String],
 ) -> Result<(), String> {
@@ -653,8 +670,8 @@ async fn follow_orphaned_hold(
             hold.commit.clone(),
         );
         let status = tauri::async_runtime::spawn_blocking(move || {
-            let client = velocity_github::IssueClient::for_repository(&dir, &repo)
-                .map_err(|error| error.to_string())?;
+            let client =
+                IssueClient::for_host(&dir, host, &repo).map_err(|error| error.to_string())?;
             client
                 .integration_status_covering(&commit)
                 .map_err(|error| error.to_string())
@@ -674,9 +691,10 @@ async fn follow_orphaned_hold(
         return Ok(());
     }
     let (dir, snapshot) = (directory.to_path_buf(), hold.clone());
-    let done = tauri::async_runtime::spawn_blocking(move || close_orphaned_hold(&dir, &snapshot))
-        .await
-        .map_err(|error| error.to_string())??;
+    let done =
+        tauri::async_runtime::spawn_blocking(move || close_orphaned_hold(&dir, host, &snapshot))
+            .await
+            .map_err(|error| error.to_string())??;
     if done {
         lock(
             application.state::<ManagedStateStore>().inner(),
@@ -722,8 +740,12 @@ fn status_check_due(project: u32, number: u32) -> bool {
     true
 }
 
-fn close_orphaned_hold(directory: &Path, hold: &LandedHold) -> Result<bool, String> {
-    let client = velocity_github::IssueClient::for_repository(directory, &hold.issue.repository)
+fn close_orphaned_hold(
+    directory: &Path,
+    host: IssueHost,
+    hold: &LandedHold,
+) -> Result<bool, String> {
+    let client = IssueClient::for_host(directory, host, &hold.issue.repository)
         .map_err(|error| error.to_string())?;
     let issue = client
         .get(hold.issue.number)

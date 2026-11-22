@@ -182,6 +182,26 @@ impl StateStore {
         Ok(true)
     }
 
+    /// Saves the project's explicit issue host (`github` or `collapse`) (#589) and reports
+    /// whether the saved value changed.
+    pub fn save_issue_host(
+        &mut self,
+        project: u32,
+        host: velocity_core::collapse::IssueHost,
+    ) -> Result<bool, StoreError> {
+        let unchanged = self
+            .project(project)
+            .is_none_or(|item| item.issue_host == Some(host));
+        if unchanged {
+            return Ok(false);
+        }
+        self.edit_project_in_place(project, |item| {
+            item.issue_host = Some(host);
+            (true, ())
+        })?;
+        Ok(true)
+    }
+
     /// Saves what Collapse last reported for the project's mirror and reports whether it
     /// changed (#427). `None` clears it, as when Collapse no longer lists the repository.
     pub fn save_collapse_mirror_health(
@@ -415,6 +435,61 @@ mod tests {
         assert_eq!(
             store.collapse_relay_allow(1),
             CollapseRelayKind::ALL.to_vec()
+        );
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#589): a project's Issues on (GitHub | Collapse) setting lost on reload would
+    // silently redirect dispatch, holds and agent issue tools to the wrong host.
+    #[test]
+    fn issue_host_defaults_and_survives_reload() -> Result<(), Box<dyn std::error::Error>> {
+        use velocity_core::collapse::IssueHost;
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-issue-host-{unique}"));
+        let mut store = StateStore::load_or_default(&directory)?;
+        store.state.projects = vec![ProjectItem::new(1, "One".into(), r"C:\project one".into())];
+        store.store_snapshot(store.state.clone())?;
+
+        // Without a Collapse mirror, default is GitHub.
+        assert_eq!(
+            store.state.projects[0].effective_issue_host(),
+            IssueHost::GitHub
+        );
+        // Once mirrored to Collapse, default flips to Collapse.
+        assert!(store.save_collapse_repository(1, Some("mESmaC/one".into()), Some(true))?);
+        assert_eq!(
+            store.state.projects[0].effective_issue_host(),
+            IssueHost::Collapse
+        );
+        assert_eq!(
+            store.state.projects[0].issue_host_repository(),
+            Some((IssueHost::Collapse, "mESmaC/one".into()))
+        );
+        // Explicit override to GitHub persists across reload.
+        assert!(store.save_github_remote(1, Some("mESmaC/one".into()))?);
+        assert!(store.save_issue_host(1, IssueHost::GitHub)?);
+        assert!(!store.save_issue_host(1, IssueHost::GitHub)?);
+
+        let mut store = StateStore::load_or_default(&directory)?;
+        assert_eq!(store.state.projects[0].issue_host, Some(IssueHost::GitHub));
+        assert_eq!(
+            store.state.projects[0].effective_issue_host(),
+            IssueHost::GitHub
+        );
+        assert!(store.save_issue_host(1, IssueHost::Collapse)?);
+
+        let store = StateStore::load_or_default(&directory)?;
+        assert_eq!(
+            store.state.projects[0].issue_host,
+            Some(IssueHost::Collapse)
+        );
+        assert_eq!(
+            store.state.projects[0].effective_issue_host(),
+            IssueHost::Collapse
         );
         std::fs::remove_dir_all(directory)?;
         Ok(())

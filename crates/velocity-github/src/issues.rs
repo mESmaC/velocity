@@ -5,6 +5,9 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::json;
 
+use velocity_core::collapse::IssueHost;
+
+use crate::collapse_issues::CollapseIssueTransport;
 use crate::commit_cache::{self, CommitStatusEntry};
 use crate::issue_cache::{self, OPEN_ISSUES_REFRESH};
 use crate::issue_types::IssueState;
@@ -20,10 +23,16 @@ pub(crate) const BLOCKER_FIELDS: &str = "number state repository { nameWithOwner
 /// so integration status checks need no separate ref or commit-status polling (#556).
 pub(crate) const BRANCH_HISTORY_COUNT: usize = 20;
 
-/// Reads and writes one repository's issues through the signed-in GitHub transport, with
-/// long-path repository discovery.
+/// Issue host backend selected for a repository (#589).
+pub(crate) enum IssueBackend {
+    GitHub(RepositoryClient),
+    Collapse(CollapseIssueTransport),
+}
+
+/// Reads and writes one repository's issues through its configured issue host (GitHub or
+/// Collapse C14), with long-path repository discovery on GitHub checkouts.
 pub struct IssueClient {
-    pub(crate) transport: RepositoryClient,
+    pub(crate) backend: IssueBackend,
     pub(crate) directory: PathBuf,
 }
 
@@ -193,29 +202,68 @@ impl IssueClient {
         Ok(repository.find_remote("origin").is_ok())
     }
 
-    /// See `RepositoryClient::is_current`.
+    /// Which issue host (`GitHub` or `Collapse`) backs this client (#589).
+    pub fn host(&self) -> IssueHost {
+        match &self.backend {
+            IssueBackend::GitHub(_) => IssueHost::GitHub,
+            IssueBackend::Collapse(_) => IssueHost::Collapse,
+        }
+    }
+
+    pub(crate) fn github_transport(&self) -> Result<&RepositoryClient, GitHubCommandError> {
+        match &self.backend {
+            IssueBackend::GitHub(transport) => Ok(transport),
+            IssueBackend::Collapse(_) => Err(GitHubCommandError::Invalid(
+                "This operation requires a GitHub-backed issue client".into(),
+            )),
+        }
+    }
+
+    /// See `RepositoryClient::is_current`. Collapse clients do not depend on `.git` origin.
     pub fn is_current(&self, directory: &Path) -> bool {
-        self.transport.is_current(directory)
+        match &self.backend {
+            IssueBackend::GitHub(transport) => transport.is_current(directory),
+            IssueBackend::Collapse(_) => true,
+        }
     }
 
     pub fn repository(&self) -> &str {
-        &self.transport.repository
+        match &self.backend {
+            IssueBackend::GitHub(transport) => &transport.repository,
+            IssueBackend::Collapse(collapse) => collapse.repository(),
+        }
     }
 
-    /// Invalidates the shared open-issues cache for `repository` after a write.
+    /// Invalidates the shared open-issues cache for `repository` after a GitHub write.
     pub fn invalidate_open_issues(repository: &str) {
-        issue_cache::invalidate(repository);
+        issue_cache::invalidate(IssueHost::GitHub, repository);
     }
 
-    /// Monotonic version of the shared open-issues cache for `repository`, if loaded.
+    /// Invalidates the shared open-issues cache for `(host, repository)` after a write (#589).
+    pub fn invalidate_open_issues_for(host: IssueHost, repository: &str) {
+        issue_cache::invalidate(host, repository);
+    }
+
+    /// Monotonic version of the shared open-issues cache for `repository` on GitHub, if loaded.
     pub fn open_issues_version(repository: &str) -> Option<u64> {
-        issue_cache::version(repository)
+        issue_cache::version(IssueHost::GitHub, repository)
     }
 
-    /// Returns the repository's open issues from the shared single-flight cache, refreshing
-    /// at most once per [`OPEN_ISSUES_REFRESH`] across dispatch, the issue panel and Work (#556).
+    /// Monotonic version of the shared open-issues cache for `(host, repository)`, if loaded (#589).
+    pub fn open_issues_version_for(host: IssueHost, repository: &str) -> Option<u64> {
+        issue_cache::version(host, repository)
+    }
+
+    /// Returns the repository's open issues.
+    /// - GitHub: reads from the shared single-flight cache, refreshing at most once per
+    ///   [`OPEN_ISSUES_REFRESH`] (#556).
+    /// - Collapse: polls the no-wake edge cursor and applies incremental `changes?after=`
+    ///   deltas without spending GitHub's `gh_rate` budget (#589).
     pub fn open_issues(&self) -> Result<Vec<GitHubIssue>, GitHubCommandError> {
-        self.cached_open_issues(OPEN_ISSUES_REFRESH)
+        match &self.backend {
+            IssueBackend::GitHub(_) => self.cached_open_issues(OPEN_ISSUES_REFRESH),
+            IssueBackend::Collapse(collapse) => collapse.open_issues(),
+        }
     }
 
     /// Returns the repository's open issues from the shared single-flight cache when younger
@@ -224,30 +272,49 @@ impl IssueClient {
         &self,
         max_age: Duration,
     ) -> Result<Vec<GitHubIssue>, GitHubCommandError> {
-        if let Some(cached) = issue_cache::get_fresh(self.repository(), max_age) {
+        if let IssueBackend::Collapse(collapse) = &self.backend {
+            return collapse.open_issues();
+        }
+        if let Some(cached) = issue_cache::get_fresh(self.host(), self.repository(), max_age) {
             return Ok(cached);
         }
-        let lock = issue_cache::fetch_lock(self.repository());
+        let lock = issue_cache::fetch_lock(self.host(), self.repository());
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(cached) = issue_cache::get_fresh(self.repository(), max_age) {
+        if let Some(cached) = issue_cache::get_fresh(self.host(), self.repository(), max_age) {
             return Ok(cached);
         }
         let issues = self.fetch_open_issues()?;
-        issue_cache::store(self.repository(), &issues);
+        issue_cache::store(self.host(), self.repository(), &issues);
         Ok(issues)
     }
 
     /// Forces an immediate read of open issues and refreshes the shared cache (for example,
     /// right before duplicate-checking a newly filed issue).
     pub(crate) fn open_issues_fresh(&self) -> Result<Vec<GitHubIssue>, GitHubCommandError> {
-        let lock = issue_cache::fetch_lock(self.repository());
+        if let IssueBackend::Collapse(collapse) = &self.backend {
+            return collapse.open_issues_fresh();
+        }
+        let lock = issue_cache::fetch_lock(self.host(), self.repository());
         let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let issues = self.fetch_open_issues()?;
-        issue_cache::store(self.repository(), &issues);
+        issue_cache::store(self.host(), self.repository(), &issues);
         Ok(issues)
     }
 
+    /// Batch-reads issues by number. On Collapse this uses `?numbers=1,2,3` (up to 100 per
+    /// request); on GitHub it falls back to individual reads (#589).
+    pub fn get_batch(&self, numbers: &[u32]) -> Result<Vec<GitHubIssue>, GitHubCommandError> {
+        match &self.backend {
+            IssueBackend::Collapse(collapse) => collapse.get_batch(numbers),
+            IssueBackend::GitHub(_) => numbers
+                .iter()
+                .map(|&number| self.read_issue(number))
+                .collect(),
+        }
+    }
+
     fn fetch_open_issues(&self) -> Result<Vec<GitHubIssue>, GitHubCommandError> {
+        let transport = self.github_transport()?;
         let page_query = format!(
             "query($owner:String!,$name:String!,$cursor:String) {{ repository(owner:$owner,name:$name) {{ issues(first:100,after:$cursor,states:OPEN,orderBy:{{field:CREATED_AT,direction:ASC}}) {{ nodes {{ {ISSUE_FIELDS} {} }} pageInfo {{ hasNextPage endCursor }} }} }} }}",
             dependency_fields(),
@@ -257,8 +324,8 @@ impl IssueClient {
             branch_history_selection(),
             dependency_fields(),
         );
-        let variables = self.transport.variables(0);
-        let first_page = match self.transport.graphql_at::<CombinedOpenIssues>(
+        let variables = transport.variables(0);
+        let first_page = match transport.graphql_at::<CombinedOpenIssues>(
             &combined_query,
             variables.clone(),
             "/data/repository",
@@ -272,15 +339,11 @@ impl IssueClient {
             Err(GitHubCommandError::Invalid(message))
                 if message.contains("GitHub GraphQL errors") =>
             {
-                self.transport.graphql_at(
-                    &page_query,
-                    variables.clone(),
-                    "/data/repository/issues",
-                )?
+                transport.graphql_at(&page_query, variables.clone(), "/data/repository/issues")?
             }
             Err(error) => return Err(error),
         };
-        let issues = self.transport.complete_connection(
+        let issues = transport.complete_connection(
             &page_query,
             variables,
             "/data/repository/issues",
@@ -293,24 +356,29 @@ impl IssueClient {
     }
 
     pub(crate) fn read_issue(&self, number: u32) -> Result<GitHubIssue, GitHubCommandError> {
-        let query = format!(
-            "query($owner:String!,$name:String!,$number:Int!) {{ repository(owner:$owner,name:$name) {{ issue(number:$number) {{ {ISSUE_FIELDS} {} }} }} }}",
-            dependency_fields(),
-        );
-        let issue = self.transport.graphql_at(
-            &query,
-            self.transport.variables(number),
-            "/data/repository/issue",
-        )?;
-        let decoded = self.decode_issue_with_dependencies(issue)?;
-        issue_cache::upsert_issue(self.repository(), &decoded);
-        Ok(decoded)
+        match &self.backend {
+            IssueBackend::Collapse(collapse) => collapse.read_issue(number),
+            IssueBackend::GitHub(transport) => {
+                let query = format!(
+                    "query($owner:String!,$name:String!,$number:Int!) {{ repository(owner:$owner,name:$name) {{ issue(number:$number) {{ {ISSUE_FIELDS} {} }} }} }}",
+                    dependency_fields(),
+                );
+                let issue = transport.graphql_at(
+                    &query,
+                    transport.variables(number),
+                    "/data/repository/issue",
+                )?;
+                let decoded = self.decode_issue_with_dependencies(issue)?;
+                issue_cache::upsert_issue(IssueHost::GitHub, self.repository(), &decoded);
+                Ok(decoded)
+            }
+        }
     }
 
     #[track_caller]
     pub fn discover(directory: &Path) -> Result<Self, GitHubCommandError> {
         Ok(Self {
-            transport: RepositoryClient::discover(directory)?,
+            backend: IssueBackend::GitHub(RepositoryClient::discover(directory)?),
             directory: std::fs::canonicalize(directory)?,
         })
     }
@@ -318,44 +386,87 @@ impl IssueClient {
     /// A Rosen project can keep its GitHub identity without a Git checkout.
     #[track_caller]
     pub fn for_repository(directory: &Path, repository: &str) -> Result<Self, GitHubCommandError> {
+        Self::for_host(directory, IssueHost::GitHub, repository)
+    }
+
+    /// Constructs a Collapse C14 Issues client for `repository` (`owner/name`) (#589).
+    pub fn for_collapse(directory: &Path, repository: &str) -> Result<Self, GitHubCommandError> {
+        Self::for_host(directory, IssueHost::Collapse, repository)
+    }
+
+    /// Constructs an issue client for `host` (`GitHub` or `Collapse`) and `repository` (#589).
+    #[track_caller]
+    pub fn for_host(
+        directory: &Path,
+        host: IssueHost,
+        repository: &str,
+    ) -> Result<Self, GitHubCommandError> {
+        let backend = match host {
+            IssueHost::GitHub => {
+                IssueBackend::GitHub(RepositoryClient::for_repository(repository)?)
+            }
+            IssueHost::Collapse => {
+                IssueBackend::Collapse(CollapseIssueTransport::for_repository(repository)?)
+            }
+        };
+        let canonical =
+            std::fs::canonicalize(directory).unwrap_or_else(|_| directory.to_path_buf());
         Ok(Self {
-            transport: RepositoryClient::for_repository(repository)?,
-            directory: std::fs::canonicalize(directory)?,
+            backend,
+            directory: canonical,
+        })
+    }
+
+    /// Constructs a Collapse client pointing at a custom endpoint and token (for integration tests).
+    pub fn for_collapse_endpoint(
+        directory: &Path,
+        base_url: &str,
+        token: Option<String>,
+        repository: &str,
+    ) -> Result<Self, GitHubCommandError> {
+        let canonical =
+            std::fs::canonicalize(directory).unwrap_or_else(|_| directory.to_path_buf());
+        Ok(Self {
+            backend: IssueBackend::Collapse(CollapseIssueTransport::with_endpoint(
+                base_url.to_owned(),
+                token,
+                repository,
+            )?),
+            directory: canonical,
         })
     }
 
     /// GraphQL's issues connection excludes PRs and has no search-index delay or
     /// 1,000-result search cap. Every open and closed page is included.
     pub fn inventory(&self) -> Result<IssueInventory, GitHubCommandError> {
+        let transport = self.github_transport()?;
         let query = format!(
             "query($owner:String!,$name:String!,$cursor:String) {{
               repository(owner:$owner,name:$name) {{ issues(first:100,after:$cursor,
                 states:[OPEN,CLOSED],orderBy:{{field:CREATED_AT,direction:ASC}}) {{
                   nodes {{ {ISSUE_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }} }}"
         );
-        let issues: Vec<IssueNode> = self.transport.connection(
-            &query,
-            self.transport.variables(0),
-            "/data/repository/issues",
-        )?;
+        let issues: Vec<IssueNode> =
+            transport.connection(&query, transport.variables(0), "/data/repository/issues")?;
         let issues = issues
             .into_iter()
             .map(|issue| self.decode_issue(issue))
             .collect::<Result<_, _>>()?;
-        IssueInventory::new(self.transport.repository.clone(), issues)
+        IssueInventory::new(transport.repository.clone(), issues)
     }
 
     pub(crate) fn label_identifiers(&self) -> Result<BTreeMap<String, String>, GitHubCommandError> {
+        let transport = self.github_transport()?;
         #[derive(Deserialize)]
         struct RepositoryLabel {
             name: String,
             id: String,
         }
-        let labels: Vec<RepositoryLabel> = self.transport.connection(
+        let labels: Vec<RepositoryLabel> = transport.connection(
             "query($owner:String!,$name:String!,$cursor:String) {
               repository(owner:$owner,name:$name) { labels(first:100,after:$cursor) {
                 nodes { name id } pageInfo { hasNextPage endCursor } } } }",
-            self.transport.variables(0),
+            transport.variables(0),
             "/data/repository/labels",
         )?;
         Ok(labels
@@ -370,23 +481,25 @@ impl IssueClient {
         body: &str,
         labels: &[String],
     ) -> Result<GitHubIssue, GitHubCommandError> {
-        let repository: serde_json::Value = self.transport.graphql_at(
+        let transport = self.github_transport()?;
+        let repository: serde_json::Value = transport.graphql_at(
             "query($owner:String!,$name:String!) { repository(owner:$owner,name:$name) { id } }",
-            self.transport.variables(0),
+            transport.variables(0),
             "/data/repository/id",
         )?;
-        let issue: IssueNode = self.transport.graphql_at(
+        let issue: IssueNode = transport.graphql_at(
             &format!("mutation($input:CreateIssueInput!) {{ createIssue(input:$input) {{ issue {{ {ISSUE_FIELDS} }} }} }}"),
             json!({"input":{"repositoryId":repository,"title":title,"body":body,"labelIds":labels}}),
             "/data/createIssue/issue",
         )?;
         let created = self.decode_issue(issue)?;
-        issue_cache::invalidate(self.repository());
+        issue_cache::invalidate(IssueHost::GitHub, self.repository());
         Ok(created)
     }
 
     pub(crate) fn decode_issue(&self, node: IssueNode) -> Result<GitHubIssue, GitHubCommandError> {
-        self.decode_issue_for(self.transport.owner(), self.transport.name(), node)
+        let transport = self.github_transport()?;
+        self.decode_issue_for(transport.owner(), transport.name(), node)
     }
 
     pub(crate) fn decode_issue_for(
@@ -395,10 +508,11 @@ impl IssueClient {
         name: &str,
         mut node: IssueNode,
     ) -> Result<GitHubIssue, GitHubCommandError> {
+        let transport = self.github_transport()?;
         if node.labels.total_count != node.labels.nodes.len() {
-            let mut variables = self.transport.variables_for(owner, name, node.issue.number);
+            let mut variables = transport.variables_for(owner, name, node.issue.number);
             variables["cursor"] = serde_json::Value::Null;
-            node.labels.nodes = self.transport.connection(
+            node.labels.nodes = transport.connection(
                 "query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
                   repository(owner:$owner,name:$name) { issue(number:$number) {
                     labels(first:100,after:$cursor) { nodes { name }
@@ -430,20 +544,21 @@ impl IssueClient {
         &self,
         node: IssueWithDependencies,
     ) -> Result<GitHubIssue, GitHubCommandError> {
+        let transport = self.github_transport()?;
         let mut issue = self.decode_issue(node.node)?;
         issue.open_blocker_count = node.issue_dependencies_summary.blocked_by;
         // The connection includes closed issues. Skip extra pages when the summary says none are open.
         let blockers = if issue.open_blocker_count == 0 {
             node.blocked_by.into_nodes()
         } else {
-            self.transport.complete_connection(
+            transport.complete_connection(
                 &format!(
                     "query($owner:String!,$name:String!,$number:Int!,$cursor:String) {{
                     repository(owner:$owner,name:$name) {{ issue(number:$number) {{
                       blockedBy(first:100,after:$cursor) {{ nodes {{ {BLOCKER_FIELDS} }}
                         pageInfo {{ hasNextPage endCursor }} }} }} }} }}"
                 ),
-                self.transport.variables(issue.number),
+                transport.variables(issue.number),
                 "/data/repository/issue/blockedBy",
                 node.blocked_by,
             )?

@@ -8,8 +8,8 @@ use tauri_specta::Event;
 use velocity_core::layout_view::{LayoutAction, LayoutIntent, LayoutSnapshot};
 use velocity_core::work_pool::WorkKey;
 use velocity_github::{
-    GitHubCommandError, IssueClient, IssueDiscussion, IssuePanelCache, IssuePanelSnapshot,
-    OPEN_ISSUES_REFRESH,
+    GitHubCommandError, IssueClient, IssueDiscussion, IssueHost, IssuePanelCache,
+    IssuePanelSnapshot, OPEN_ISSUES_REFRESH,
 };
 use velocity_store::issues::{ThreadIssue, issue_thread};
 use velocity_store::rosen_work::IssueVersion;
@@ -31,25 +31,31 @@ pub struct IssuePanelChanged {
 struct ProjectContext {
     identifier: u32,
     directory: PathBuf,
+    host: IssueHost,
     remote: Option<String>,
 }
 
 impl ProjectContext {
     fn from_project(project: &velocity_store::ProjectItem) -> Self {
+        let host = project.effective_issue_host();
+        let remote = match host {
+            IssueHost::Collapse => project.collapse_repository.clone(),
+            IssueHost::GitHub if project.version_control == VersionControl::Rosen => {
+                project.github_remote.clone()
+            }
+            IssueHost::GitHub => None,
+        };
         Self {
             identifier: project.id,
             directory: project.repository_path.clone().into(),
-            remote: if project.version_control == VersionControl::Rosen {
-                project.github_remote.clone()
-            } else {
-                None
-            },
+            host,
+            remote,
         }
     }
 
     fn issue_client(&self) -> Result<IssueClient, GitHubCommandError> {
         match &self.remote {
-            Some(remote) => IssueClient::for_repository(&self.directory, remote),
+            Some(remote) => IssueClient::for_host(&self.directory, self.host, remote),
             None => IssueClient::discover(&self.directory),
         }
     }
@@ -92,7 +98,7 @@ pub async fn get_issue_discussion(
 ) -> Result<IssueDiscussion, String> {
     let project = require_project(&application, project_identifier)?;
     tauri::async_runtime::spawn_blocking(move || {
-        IssueClient::for_repository(&project.directory, &repository)?.discussion(number)
+        IssueClient::for_host(&project.directory, project.host, &repository)?.discussion(number)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -106,17 +112,25 @@ pub fn open_issue_discussion(
     repository: String,
     number: u32,
 ) -> Result<(), String> {
-    let repository =
+    let parsed =
         velocity_github::RepositoryName::parse(&repository).map_err(|error| error.to_string())?;
+    let host = selected_project(&application)?
+        .filter(|project| {
+            project
+                .remote
+                .as_deref()
+                .is_some_and(|remote| remote.eq_ignore_ascii_case(&parsed.full_name()))
+        })
+        .map(|project| project.host)
+        .unwrap_or(IssueHost::GitHub);
+    let url = match host {
+        IssueHost::Collapse => velocity_core::collapse::issue_page(&parsed.full_name(), number)
+            .ok_or("Invalid Collapse issue URL")?,
+        IssueHost::GitHub => format!("https://github.com/{}/issues/{number}", parsed.full_name()),
+    };
     application
         .opener()
-        .open_url(
-            format!(
-                "https://github.com/{}/issues/{number}",
-                repository.full_name()
-            ),
-            None::<&str>,
-        )
+        .open_url(url, None::<&str>)
         .map_err(|error| error.to_string())
 }
 
@@ -299,7 +313,7 @@ pub async fn release_issue_hold(
 ) -> Result<IssuePanelSnapshot, String> {
     let project = require_project(&application, project_identifier)?;
     tauri::async_runtime::spawn_blocking(move || {
-        IssueClient::for_repository(&project.directory, &repository)
+        IssueClient::for_host(&project.directory, project.host, &repository)
             .and_then(|client| client.release_person_hold(number))
             .map_err(|error| error.to_string())?;
         refresh(&application, Some(project), &mut IssueReader::default())?;
@@ -321,6 +335,14 @@ pub async fn open_project_issue(
     let repository = panel_repository(&application, project_identifier)?;
     if open_assigned_thread(&application, project_identifier, &repository, number)?.is_some() {
         return Ok(());
+    }
+    if project.host == IssueHost::Collapse {
+        let url = velocity_core::collapse::issue_page(&repository, number)
+            .ok_or("Invalid Collapse issue URL")?;
+        return application
+            .opener()
+            .open_url(url, None::<&str>)
+            .map_err(|error| error.to_string());
     }
     tauri::async_runtime::spawn_blocking(move || project.issue_client()?.open_in_browser(number))
         .await
@@ -471,10 +493,9 @@ fn monitor(application: AppHandle) {
     let mut reader = IssueReader::default();
     loop {
         if let Ok(project) = selected_project(&application) {
-            let shared_version = reader
-                .client
-                .as_ref()
-                .and_then(|client| IssueClient::open_issues_version(client.repository()));
+            let shared_version = reader.client.as_ref().and_then(|client| {
+                IssueClient::open_issues_version_for(client.host(), client.repository())
+            });
             let cache_updated = shared_version.is_some() && shared_version != cache_version;
             if previous != project
                 || cache_updated
@@ -485,10 +506,9 @@ fn monitor(application: AppHandle) {
                 }
                 previous = project.clone();
                 report(refresh(&application, project, &mut reader));
-                cache_version = reader
-                    .client
-                    .as_ref()
-                    .and_then(|client| IssueClient::open_issues_version(client.repository()));
+                cache_version = reader.client.as_ref().and_then(|client| {
+                    IssueClient::open_issues_version_for(client.host(), client.repository())
+                });
                 refreshed = Some(Instant::now());
             }
             let next = application

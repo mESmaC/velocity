@@ -3,9 +3,11 @@
 //! `Held for dependencies` note with its `needs-owner` label is converted into links.
 
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
+use velocity_core::collapse::IssueHost;
 use velocity_core::issue_dependencies::{DependencyHold, IssueReference};
 
+use crate::issues::IssueBackend;
 use crate::repository_client::Connection;
 use crate::{GitHubCommandError, GitHubIssue, IssueClient, RepositoryName};
 
@@ -64,18 +66,24 @@ pub(crate) struct ResolvedBlocker {
 }
 
 /// `Waits for #12, owner/name#40 …`, the line a comment gains for the links it made.
-pub(crate) fn waits_line(linked: &[String]) -> String {
+pub(crate) fn waits_line_for(host: IssueHost, linked: &[String]) -> String {
     if linked.is_empty() {
         return String::new();
     }
-    format!(
-        "\n\nWaits for {}, recorded as GitHub issue dependencies.",
-        linked.join(", ")
-    )
+    match host {
+        IssueHost::GitHub => format!(
+            "\n\nWaits for {}, recorded as GitHub issue dependencies.",
+            linked.join(", ")
+        ),
+        IssueHost::Collapse => format!(
+            "\n\nWaits for {}, recorded as issue dependencies.",
+            linked.join(", ")
+        ),
+    }
 }
 
 impl IssueClient {
-    /// Makes `issue` wait on each blocker through a GitHub issue dependency. A blocker
+    /// Makes `issue` wait on each blocker through an issue dependency. A blocker
     /// can live in another repository. Links that already exist are kept, so a retry is
     /// safe. Returns every blocker as `GitHubIssue::open_blockers` names it.
     pub fn link_blockers(
@@ -96,6 +104,14 @@ impl IssueClient {
                 "Use a positive issue number and blockers other than the issue itself".into(),
             ));
         }
+        if let IssueBackend::Collapse(collapse) = &self.backend {
+            let names = collapse.validate_blockers(blockers)?;
+            for blocker in blockers {
+                collapse.add_dependency(issue, blocker)?;
+            }
+            let _ = collapse.read_issue(issue);
+            return Ok(names);
+        }
         let (subject, linked) = self.linked_blockers(issue)?;
         let missing: Vec<_> = blockers
             .iter()
@@ -108,7 +124,7 @@ impl IssueClient {
             .collect();
         self.add_blocked_by(&subject, &self.resolve_blockers(&missing)?)?;
         if !missing.is_empty() {
-            crate::issue_cache::invalidate(self.repository());
+            crate::issue_cache::invalidate(self.host(), self.repository());
         }
         Ok(blockers
             .iter()
@@ -116,8 +132,8 @@ impl IssueClient {
             .collect())
     }
 
-    /// Every repository referenced in `issue`'s GitHub `blockedBy` dependencies,
-    /// including closed blockers (#598).
+    /// Every repository referenced in `issue`'s `blockedBy` dependencies,
+    /// including closed blockers (#598, #589).
     pub fn linked_blocker_repositories(
         &self,
         issue: u32,
@@ -125,21 +141,46 @@ impl IssueClient {
         if issue == 0 {
             return Ok(Vec::new());
         }
+        if let IssueBackend::Collapse(collapse) = &self.backend {
+            let loaded = collapse.read_issue(issue)?;
+            return Ok(dedup_repositories(
+                loaded
+                    .open_blockers
+                    .iter()
+                    .chain(loaded.closed_blockers.iter())
+                    .filter_map(|item| IssueReference::parse(item))
+                    .map(|reference| reference.repository_or(self.repository()).to_owned()),
+            ));
+        }
         let (_, linked) = self.linked_blockers(issue)?;
         Ok(dedup_repositories(
             linked.into_iter().map(|(repository, _)| repository),
         ))
     }
 
-    /// Every repository referenced in GitHub `blockedBy` dependencies (open or closed)
-    /// of this repository's open issues (#598).
+    /// Every repository referenced in `blockedBy` dependencies (open or closed)
+    /// of this repository's open issues (#598, #589).
     pub fn open_issue_blocker_repositories(&self) -> Result<Vec<String>, GitHubCommandError> {
-        let issues: Vec<Option<OpenIssueBlockerNode>> = self.transport.connection(
+        if let IssueBackend::Collapse(collapse) = &self.backend {
+            let issues = collapse.open_issues()?;
+            let home = self.repository();
+            let repositories = issues.iter().flat_map(|issue| {
+                issue
+                    .open_blockers
+                    .iter()
+                    .chain(issue.closed_blockers.iter())
+                    .filter_map(|item| IssueReference::parse(item))
+                    .map(|reference| reference.repository_or(home).to_owned())
+            });
+            return Ok(dedup_repositories(repositories));
+        }
+        let transport = self.github_transport()?;
+        let issues: Vec<Option<OpenIssueBlockerNode>> = transport.connection(
             "query($owner:String!,$name:String!,$cursor:String) {
               repository(owner:$owner,name:$name) { issues(first:100,after:$cursor,states:OPEN) {
                 nodes { blockedBy(first:25) { nodes { repository { nameWithOwner } } } }
                 pageInfo { hasNextPage endCursor } } } }",
-            self.transport.variables(0),
+            transport.variables(0),
             "/data/repository/issues",
         )?;
         let repositories = issues
@@ -155,22 +196,23 @@ impl IssueClient {
         &self,
         issue: u32,
     ) -> Result<(String, Vec<(String, u32)>), GitHubCommandError> {
-        let dependent: Dependent = self.transport.graphql_at(
+        let transport = self.github_transport()?;
+        let dependent: Dependent = transport.graphql_at(
             &format!(
                 "query($owner:String!,$name:String!,$number:Int!) {{
                   repository(owner:$owner,name:$name) {{ issue(number:$number) {{
                     id blockedBy(first:100) {{ {LINKED_FIELDS} }} }} }} }}"
             ),
-            self.transport.variables(issue),
+            transport.variables(issue),
             "/data/repository/issue",
         )?;
-        let linked = self.transport.complete_connection(
+        let linked = transport.complete_connection(
             &format!(
                 "query($owner:String!,$name:String!,$number:Int!,$cursor:String) {{
                   repository(owner:$owner,name:$name) {{ issue(number:$number) {{
                     blockedBy(first:100,after:$cursor) {{ {LINKED_FIELDS} }} }} }} }}"
             ),
-            self.transport.variables(issue),
+            transport.variables(issue),
             "/data/repository/issue/blockedBy",
             dependent.blocked_by,
         )?;
@@ -188,6 +230,7 @@ impl IssueClient {
         &self,
         blockers: &[IssueReference],
     ) -> Result<Vec<ResolvedBlocker>, GitHubCommandError> {
+        let transport = self.github_transport()?;
         blockers
             .iter()
             .map(|blocker| {
@@ -198,8 +241,7 @@ impl IssueClient {
                 };
                 let repository = RepositoryName::parse(blocker.repository_or(home))
                     .map_err(|error| unreadable(error.to_string()))?;
-                let found: IssueId = self
-                    .transport
+                let found: IssueId = transport
                     .graphql_at(
                         "query($owner:String!,$name:String!,$number:Int!) {
                           repository(owner:$owner,name:$name) { issue(number:$number) { id } } }",
@@ -219,8 +261,9 @@ impl IssueClient {
         subject: &str,
         blockers: &[ResolvedBlocker],
     ) -> Result<(), GitHubCommandError> {
+        let transport = self.github_transport()?;
         for blocker in blockers {
-            let _: IssueId = self.transport.graphql_at(
+            let _: IssueId = transport.graphql_at(
                 "mutation($input:AddBlockedByInput!) { addBlockedBy(input:$input) { issue { id } } }",
                 json!({"input": {"issueId": subject, "blockingIssueId": blocker.id}}),
                 "/data/addBlockedBy/issue",
@@ -235,7 +278,7 @@ impl IssueClient {
         DependencyHold::find(&issue.body).is_some()
     }
 
-    /// Converts the retired hold on `number` into GitHub links (#511) and returns the
+    /// Converts the retired hold on `number` into issue links (#511, #589) and returns the
     /// blockers, or `None` when the issue no longer carries the note. Links go on first,
     /// the `needs-owner` label comes off second and the note is rewritten last: a failure
     /// in between leaves the issue held, and the next call finishes the rest.
@@ -269,12 +312,8 @@ impl IssueClient {
         {
             self.remove_issue_label(number, NEEDS_OWNER_LABEL)?;
         }
-        let _: Value = self.transport.graphql_at(
-            "mutation($input:UpdateIssueInput!) { updateIssue(input:$input) { issue { id } } }",
-            json!({"input": {"id": issue.id, "body": hold.rewritten(&issue.body)}}),
-            "/data/updateIssue/issue",
-        )?;
-        crate::issue_cache::invalidate(self.repository());
+        self.update_issue_body(number, &issue.id, &hold.rewritten(&issue.body))?;
+        crate::issue_cache::invalidate(self.host(), self.repository());
         Ok(Some(linked))
     }
 }

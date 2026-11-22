@@ -6,7 +6,8 @@ use velocity_core::issue_holds::{
     UpstreamTarget, is_blocked_upstream_label, is_person_hold_label, is_tracking_label,
 };
 
-use crate::issue_dependencies::waits_line;
+use crate::issue_dependencies::waits_line_for;
+use crate::issues::IssueBackend;
 use crate::{GitHubCommandError, GitHubIssue, IssueClient, IssueState};
 
 const READY_LABEL: &str = "ready-to-close";
@@ -121,7 +122,7 @@ impl IssueClient {
             .collect())
     }
 
-    /// `blockers` are the issues this one waits on (#511). They are linked as GitHub
+    /// `blockers` are the issues this one waits on (#511). They are linked as issue
     /// dependencies before the comment, so a failed link posts nothing and the agent's
     /// retry does both.
     pub fn post_issue_progress(
@@ -133,16 +134,19 @@ impl IssueClient {
         blockers: &[IssueReference],
     ) -> Result<String, GitHubCommandError> {
         let issue = self.read_issue(number)?;
-        let waits = waits_line(&self.link_blockers(number, blockers)?);
+        let waits = waits_line_for(self.host(), &self.link_blockers(number, blockers)?);
         if ready {
             self.label_issue(number, READY_LABEL)?;
         }
         let heading = if ready { "Ready to close · " } else { "" };
-        let url =
-            self.add_issue_comment(&issue.id, &format!("{heading}{byline}\n\n{body}{waits}"))?;
-        crate::issue_cache::invalidate_discussion(self.repository(), number);
+        let url = self.add_issue_comment(
+            number,
+            &issue.id,
+            &format!("{heading}{byline}\n\n{body}{waits}"),
+        )?;
+        crate::issue_cache::invalidate_discussion(self.host(), self.repository(), number);
         if ready {
-            crate::issue_cache::invalidate(self.repository());
+            crate::issue_cache::invalidate(self.host(), self.repository());
         }
         Ok(url)
     }
@@ -279,13 +283,14 @@ impl IssueClient {
             ""
         };
         self.add_issue_comment(
+            number,
             &issue.id,
             &format!(
                 "## {heading}\n\n{byline}\n\n{}{truncated}{hold_note}\n\n{marker}",
                 &reason[..end]
             ),
         )?;
-        crate::issue_cache::invalidate_discussion(self.repository(), number);
+        crate::issue_cache::invalidate_discussion(self.host(), self.repository(), number);
         Ok(())
     }
 
@@ -369,7 +374,7 @@ impl IssueClient {
                 self.sync_rosen_issue(number, &marker, &body, Some(IssueState::Closed))
             }
             ParkedOutcome::Returned => {
-                let waits = waits_line(&self.link_blockers(number, blockers)?);
+                let waits = waits_line_for(self.host(), &self.link_blockers(number, blockers)?);
                 let body = format!("{reviewer} returned to dispatch.\n\n{evidence}{waits}");
                 self.sync_rosen_issue(number, &marker, &body, None)?;
                 self.remove_issue_label(number, Self::NO_CHANGE_LABEL)
@@ -398,32 +403,43 @@ impl IssueClient {
     }
 
     pub(crate) fn label_issue(&self, number: u32, name: &str) -> Result<(), GitHubCommandError> {
-        let labels = format!("repos/{}/labels", self.repository());
-        let label = format!("{labels}/{name}");
-        if self
-            .transport
-            .command
-            .read::<Value>(&["api", &label])
-            .is_err()
-            && let Err(error) = self.transport.command.api::<Value>(
-                "POST",
-                &labels,
-                &json!({"name": name, "color": "ededed"}),
-            )
-        {
-            // Another commenter can create the repository label at the same time.
-            self.transport
-                .command
-                .read::<Value>(&["api", &label])
-                .map_err(|_| error)?;
+        match &self.backend {
+            IssueBackend::Collapse(collapse) => {
+                collapse.ensure_label(name)?;
+                collapse.update_issue(
+                    number,
+                    velocity_collapse::issues::UpdateIssueRequest {
+                        add_labels: vec![name.to_owned()],
+                        ..Default::default()
+                    },
+                )?;
+                Ok(())
+            }
+            IssueBackend::GitHub(transport) => {
+                let labels = format!("repos/{}/labels", self.repository());
+                let label = format!("{labels}/{name}");
+                if transport.command.read::<Value>(&["api", &label]).is_err()
+                    && let Err(error) = transport.command.api::<Value>(
+                        "POST",
+                        &labels,
+                        &json!({"name": name, "color": "ededed"}),
+                    )
+                {
+                    // Another commenter can create the repository label at the same time.
+                    transport
+                        .command
+                        .read::<Value>(&["api", &label])
+                        .map_err(|_| error)?;
+                }
+                let endpoint = format!("repos/{}/issues/{number}/labels", self.repository());
+                let _: Value =
+                    transport
+                        .command
+                        .api("POST", &endpoint, &json!({"labels": [name]}))?;
+                crate::issue_cache::invalidate(self.host(), self.repository());
+                Ok(())
+            }
         }
-        let endpoint = format!("repos/{}/issues/{number}/labels", self.repository());
-        let _: Value = self
-            .transport
-            .command
-            .api("POST", &endpoint, &json!({"labels": [name]}))?;
-        crate::issue_cache::invalidate(self.repository());
-        Ok(())
     }
 
     pub(crate) fn remove_issue_label(
@@ -431,24 +447,43 @@ impl IssueClient {
         number: u32,
         label: &str,
     ) -> Result<(), GitHubCommandError> {
-        let endpoint = format!("repos/{}/issues/{number}/labels/{label}", self.repository());
-        self.transport
-            .command
-            .text(&["api", "--method", "DELETE", &endpoint])?;
-        crate::issue_cache::invalidate(self.repository());
-        Ok(())
+        match &self.backend {
+            IssueBackend::Collapse(collapse) => {
+                collapse.update_issue(
+                    number,
+                    velocity_collapse::issues::UpdateIssueRequest {
+                        remove_labels: vec![label.to_owned()],
+                        ..Default::default()
+                    },
+                )?;
+                Ok(())
+            }
+            IssueBackend::GitHub(transport) => {
+                let endpoint =
+                    format!("repos/{}/issues/{number}/labels/{label}", self.repository());
+                transport
+                    .command
+                    .text(&["api", "--method", "DELETE", &endpoint])?;
+                crate::issue_cache::invalidate(self.host(), self.repository());
+                Ok(())
+            }
+        }
     }
 
     pub(crate) fn add_issue_comment(
         &self,
+        number: u32,
         subject: &str,
         body: &str,
     ) -> Result<String, GitHubCommandError> {
-        self.transport.graphql_at(
-            "mutation($input:AddCommentInput!) { addComment(input:$input) { commentEdge { node { url } } } }",
-            json!({"input":{"subjectId":subject,"body":body}}),
-            "/data/addComment/commentEdge/node/url",
-        )
+        match &self.backend {
+            IssueBackend::Collapse(collapse) => collapse.add_comment(number, body),
+            IssueBackend::GitHub(transport) => transport.graphql_at(
+                "mutation($input:AddCommentInput!) { addComment(input:$input) { commentEdge { node { url } } } }",
+                json!({"input":{"subjectId":subject,"body":body}}),
+                "/data/addComment/commentEdge/node/url",
+            ),
+        }
     }
 
     /// Applies one saved Rosen event effect. A lagging mirror leaves the close pending.
@@ -497,8 +532,9 @@ impl IssueClient {
             crate::commit_cache::record_green(self.repository(), commit, passed_at);
             return Ok(true);
         }
+        let transport = self.github_transport()?;
         let endpoint = format!("repos/{}/statuses/{commit}", self.repository());
-        let _: Value = self.transport.command.api(
+        let _: Value = transport.command.api(
             "POST",
             &endpoint,
             &json!({
@@ -518,6 +554,9 @@ impl IssueClient {
     /// Returns false while the mirror's default branch has not caught up to the land.
     pub fn rosen_commit_mirrored(&self, commit: &str) -> Result<bool, GitHubCommandError> {
         validate_commit_sha(commit)?;
+        if let IssueBackend::Collapse(collapse) = &self.backend {
+            return collapse.commit_mirrored(commit);
+        }
         if crate::commit_cache::is_mirrored(self.repository(), commit) {
             return Ok(true);
         }
@@ -532,14 +571,15 @@ impl IssueClient {
     /// Whether any machine has already posted a green `velocity/integration` commit status
     /// on `commit` or a newer commit on the mirror's default branch (#519, #556).
     ///
-    /// Uses the cached default-branch snapshot (populated by the shared open-issues query
-    /// or one GraphQL read per 2 min) and records green, covered and settled non-green
-    /// commits so old commits are never polled repeatedly.
+    /// On Collapse, reads post-land verification state from Collapse instead of GitHub (#589).
     pub fn integration_status_covering(
         &self,
         commit: &str,
     ) -> Result<Option<IntegrationCoverage>, GitHubCommandError> {
         validate_commit_sha(commit)?;
+        if let IssueBackend::Collapse(collapse) = &self.backend {
+            return collapse.integration_status_covering(commit);
+        }
         if let Some(coverage) = crate::commit_cache::covered(self.repository(), commit) {
             return Ok(Some(coverage));
         }
@@ -590,12 +630,12 @@ impl IssueClient {
         if let Some(snapshot) = crate::commit_cache::fresh_branch_snapshot(self.repository(), ttl) {
             return Ok(snapshot);
         }
-        let branch = self
-            .transport
+        let transport = self.github_transport()?;
+        let branch = transport
             .default_branch
             .as_deref()
             .ok_or_else(|| GitHubCommandError::Missing("default branch".into()))?;
-        let mut variables = self.transport.variables(0);
+        let mut variables = transport.variables(0);
         variables["branch"] = format!("refs/heads/{branch}").into();
         let query = format!(
             "query($owner:String!,$name:String!,$branch:String!) {{
@@ -603,13 +643,11 @@ impl IssueClient {
                 name {} }} }} }}",
             crate::issues::branch_history_selection(),
         );
-        match self
-            .transport
-            .graphql_at::<crate::issues::DefaultBranchRefNode>(
-                &query,
-                variables.clone(),
-                "/data/repository/ref",
-            ) {
+        match transport.graphql_at::<crate::issues::DefaultBranchRefNode>(
+            &query,
+            variables.clone(),
+            "/data/repository/ref",
+        ) {
             Ok(branch_ref) => {
                 crate::issues::record_branch_ref(self.repository(), branch_ref);
                 if let Some(snapshot) =
@@ -632,15 +670,15 @@ impl IssueClient {
     }
 
     fn default_branch_tip(&self) -> Result<String, GitHubCommandError> {
-        let branch = self
-            .transport
+        let transport = self.github_transport()?;
+        let branch = transport
             .default_branch
             .as_deref()
             .ok_or_else(|| GitHubCommandError::Missing("default branch".into()))?;
-        let mut variables = self.transport.variables(0);
+        let mut variables = transport.variables(0);
         variables["branch"] = format!("refs/heads/{branch}").into();
         // Resolve the branch via GraphQL so names with slashes need no URL escaping.
-        self.transport.graphql_at(
+        transport.graphql_at(
             "query($owner:String!,$name:String!,$branch:String!) {
               repository(owner:$owner,name:$name) { ref(qualifiedName:$branch) { target { oid } } } }",
             variables,
@@ -681,7 +719,8 @@ impl IssueClient {
             #[serde(default)]
             commits: Vec<ComparedCommit>,
         }
-        let comparison: Comparison = match self.transport.command.read(&["api", &endpoint]) {
+        let transport = self.github_transport()?;
+        let comparison: Comparison = match transport.command.read(&["api", &endpoint]) {
             Ok(comparison) => comparison,
             Err(GitHubCommandError::Command { message, .. })
                 if message.contains("HTTP 404") || message.contains("Not Found") =>
@@ -720,7 +759,8 @@ impl IssueClient {
             "repos/{}/commits/{commit}/statuses?per_page=100",
             self.repository()
         );
-        let statuses: Vec<Status> = self.transport.command.read(&["api", &endpoint])?;
+        let transport = self.github_transport()?;
+        let statuses: Vec<Status> = transport.command.read(&["api", &endpoint])?;
         Ok(statuses
             .into_iter()
             .find(|status| status.context == INTEGRATION_CONTEXT)
@@ -752,8 +792,8 @@ impl IssueClient {
             .iter()
             .any(|existing| comment_matches_marker(existing, marker))
         {
-            self.add_issue_comment(&issue.id, &format_marked_comment(body, marker))?;
-            crate::issue_cache::invalidate_discussion(self.repository(), number);
+            self.add_issue_comment(number, &issue.id, &format_marked_comment(body, marker))?;
+            crate::issue_cache::invalidate_discussion(self.host(), self.repository(), number);
         }
         if state.is_some()
             && issue
@@ -767,21 +807,37 @@ impl IssueClient {
             return Ok(());
         };
         let reopen = state == IssueState::Open;
-        let mutation = if reopen {
-            "mutation($input:ReopenIssueInput!) { reopenIssue(input:$input) { issue { id } } }"
-        } else {
-            "mutation($input:CloseIssueInput!) { closeIssue(input:$input) { issue { id } } }"
-        };
-        let path = if reopen {
-            "/data/reopenIssue"
-        } else {
-            "/data/closeIssue"
-        };
-        let _: Value =
-            self.transport
-                .graphql_at(mutation, json!({"input":{"issueId":issue.id}}), path)?;
-        crate::issue_cache::invalidate(self.repository());
-        crate::issue_cache::invalidate_discussion(self.repository(), number);
+        match &self.backend {
+            IssueBackend::Collapse(collapse) => {
+                if reopen {
+                    collapse.update_issue(
+                        number,
+                        velocity_collapse::issues::UpdateIssueRequest {
+                            state: Some("open".to_owned()),
+                            ..Default::default()
+                        },
+                    )?;
+                } else {
+                    collapse.close_issue(number, "completed", "")?;
+                }
+            }
+            IssueBackend::GitHub(transport) => {
+                let mutation = if reopen {
+                    "mutation($input:ReopenIssueInput!) { reopenIssue(input:$input) { issue { id } } }"
+                } else {
+                    "mutation($input:CloseIssueInput!) { closeIssue(input:$input) { issue { id } } }"
+                };
+                let path = if reopen {
+                    "/data/reopenIssue"
+                } else {
+                    "/data/closeIssue"
+                };
+                let _: Value =
+                    transport.graphql_at(mutation, json!({"input":{"issueId":issue.id}}), path)?;
+            }
+        }
+        crate::issue_cache::invalidate(self.host(), self.repository());
+        crate::issue_cache::invalidate_discussion(self.host(), self.repository(), number);
         Ok(())
     }
 
@@ -848,18 +904,29 @@ impl IssueClient {
 
     /// Oldest first.
     fn issue_comments(&self, number: u32) -> Result<Vec<IssueComment>, GitHubCommandError> {
+        if let IssueBackend::Collapse(collapse) = &self.backend {
+            return Ok(collapse
+                .issue_comments(number)?
+                .into_iter()
+                .map(|comment| IssueComment {
+                    body: comment.body,
+                    created_at: comment.created_at,
+                })
+                .collect());
+        }
+        let transport = self.github_transport()?;
         #[derive(Deserialize)]
         struct Comment {
             body: String,
             #[serde(rename = "createdAt")]
             created_at: String,
         }
-        let comments: Vec<Comment> = self.transport.connection(
+        let comments: Vec<Comment> = transport.connection(
             "query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
               repository(owner:$owner,name:$name) { issue(number:$number) {
                 comments(first:100,after:$cursor) { nodes { body createdAt }
                   pageInfo { hasNextPage endCursor } } } } }",
-            self.transport.variables(number),
+            transport.variables(number),
             "/data/repository/issue/comments",
         )?;
         Ok(comments
@@ -1195,7 +1262,9 @@ fn is_starting_comment(message: &str, number: u32) -> bool {
 fn ends_with_dependency_wait(message: &str) -> bool {
     message.lines().last().is_some_and(|line| {
         let line = line.trim();
-        line.starts_with("Waits for ") && line.ends_with(", recorded as GitHub issue dependencies.")
+        line.starts_with("Waits for ")
+            && (line.ends_with(", recorded as GitHub issue dependencies.")
+                || line.ends_with(", recorded as issue dependencies."))
     })
 }
 

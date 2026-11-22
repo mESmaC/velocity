@@ -83,6 +83,35 @@ pub fn repository_page(repository: &str) -> Option<String> {
     (valid_segment(owner) && valid_segment(name)).then(|| format!("{PAGE_HOST}{owner}/{name}"))
 }
 
+/// An issue's web page on Collapse (`https://collapse.sh/<owner>/<name>/issues/<number>`) (#589).
+pub fn issue_page(repository: &str, number: u32) -> Option<String> {
+    (number > 0).then_some(())?;
+    Some(format!("{}/issues/{number}", repository_page(repository)?))
+}
+
+/// An issue comment's web anchor on Collapse
+/// (`https://collapse.sh/<owner>/<name>/issues/<number>#comment-<id>`) (#589).
+pub fn issue_comment_page(repository: &str, number: u32, comment_id: u64) -> Option<String> {
+    (comment_id > 0).then_some(())?;
+    Some(format!(
+        "{}#comment-{comment_id}",
+        issue_page(repository, number)?
+    ))
+}
+
+/// Where a project's issues are hosted (#589): GitHub or Collapse (C14).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[serde(rename_all = "snake_case")]
+pub enum IssueHost {
+    #[default]
+    #[serde(rename = "github")]
+    GitHub,
+    Collapse,
+}
+
 /// A release's web page on Collapse (`https://collapse.sh/<owner>/<name>/releases/<tag>`) (#593).
 pub fn release_page(repository: &str, tag: &str) -> Option<String> {
     let trimmed = tag.trim();

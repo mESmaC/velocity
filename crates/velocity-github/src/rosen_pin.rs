@@ -362,8 +362,11 @@ impl RosenPinWatch {
     /// The repository's open issues without its pull requests, or `None` when the signed-in
     /// account cannot read the repository. Reuses the shared open-issues cache when fresh (#556).
     fn open_issues(&self, repository: &str) -> Result<Option<Vec<OpenIssue>>, GitHubCommandError> {
-        if let Some(cached) = crate::issue_cache::get_fresh(repository, crate::OPEN_ISSUES_REFRESH)
-        {
+        if let Some(cached) = crate::issue_cache::get_fresh(
+            crate::IssueHost::GitHub,
+            repository,
+            crate::OPEN_ISSUES_REFRESH,
+        ) {
             return Ok(Some(
                 cached
                     .into_iter()
@@ -408,14 +411,14 @@ impl RosenPinWatch {
         let (kept, issue) = match plan.step {
             PinBumpStep::Open => {
                 let opened: Numbered = self.command.api("POST", &issues, &text)?;
-                crate::issue_cache::invalidate(&self.velocity);
+                crate::issue_cache::invalidate(crate::IssueHost::GitHub, &self.velocity);
                 (opened.number, PinIssue::Opened(opened.number))
             }
             PinBumpStep::Rewrite(number) => {
                 let _: Value = self
                     .command
                     .api("PATCH", &format!("{issues}/{number}"), &text)?;
-                crate::issue_cache::invalidate(&self.velocity);
+                crate::issue_cache::invalidate(crate::IssueHost::GitHub, &self.velocity);
                 (number, PinIssue::Rewritten(number))
             }
             PinBumpStep::Keep(number) => (number, PinIssue::Kept(number)),
@@ -458,7 +461,7 @@ impl RosenPinWatch {
             &issue,
             &json!({"state": "closed", "state_reason": reason}),
         )?;
-        crate::issue_cache::invalidate(&self.velocity);
+        crate::issue_cache::invalidate(crate::IssueHost::GitHub, &self.velocity);
         Ok(())
     }
 

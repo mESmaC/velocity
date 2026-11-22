@@ -6,6 +6,7 @@
 
 mod agent_issues;
 pub mod base_ci;
+mod collapse_issues;
 mod command;
 mod commit_cache;
 mod dependency_graph;
@@ -67,4 +68,5 @@ pub use scout_evidence::Reproduction;
 pub use scout_issues::{ScoutFinding, ScoutIssueError, ScoutIssueOutcome};
 pub use scout_reference::{ReferenceComparison, ReferenceComparisonResult};
 pub use scout_server::{ScoutReport, ScoutServer, filed_message, read_scout_reports};
+pub use velocity_core::collapse::IssueHost;
 pub use workflow_watch::{WorkflowDispatch, WorkflowOutcome, run_workflow};
