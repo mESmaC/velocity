@@ -30,10 +30,14 @@ pub(crate) fn continue_wait(
         .find(|wait| wait.member == member);
     let parent = if let Some(wait) = air_wait.as_ref() {
         parent_change(application, key.0, &wait.holder)?
-    } else if let Some(rosen_wait) = thread.rosen_path_wait.as_ref()
+    } else if thread.rosen_path_wait.is_some()
+        && thread
+            .rosen_overlap_wait
+            .as_ref()
+            .is_none_or(|wait| wait.blockers.is_empty())
         && let Some(change) = thread.rosen_change.as_deref()
     {
-        rosen_wait_parent(application, key.0, change, &rosen_wait.paths)?
+        rosen_wait_parent(application, key.0, change, thread.goal_stack.as_ref())?
     } else {
         None
     };
@@ -87,13 +91,25 @@ fn rosen_wait_parent(
     application: &AppHandle,
     project: u32,
     change: &str,
-    paths: &[String],
+    existing_stack: Option<&GoalStack>,
 ) -> Result<Option<String>, String> {
     let holders = tauri::async_runtime::block_on(async {
         let server = crate::rosen::server(application, project).await?;
-        velocity_rosen::mcp_proxy::wait_holders(&server, change, paths)
+        let holders = velocity_rosen::mcp_proxy::active_wait_holders(&server, change)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        if !holders.is_empty() {
+            return Ok::<_, String>(holders);
+        }
+        // Retry an interrupted stack handoff whose original change still holds the wait.
+        if let Some(stack) = existing_stack
+            && Path::new(&stack.source_root).exists()
+        {
+            return velocity_rosen::mcp_proxy::active_wait_holders(&server, &stack.source_change)
+                .await
+                .map_err(|error| error.to_string());
+        }
+        Ok(Vec::new())
     })?;
     let store = lock(
         application.state::<ManagedStateStore>().inner(),
@@ -102,15 +118,27 @@ fn rosen_wait_parent(
     let Some(project) = store.project(project) else {
         return Ok(None);
     };
-    for (holder_change, _) in holders {
-        if project.threads.iter().any(|other| {
+    Ok(select_rosen_wait_parent(&holders, &project.threads))
+}
+
+/// Chooses a single D19 stack parent from an active Rosen wait's actual `Claim` blockers (#674).
+/// Returns `Some(change)` only when exactly one other live change blocks the active wait and
+/// belongs to a working or reviewing thread in this project; multiple blockers or an unstackable
+/// holder keep the thread waiting so it never resumes while another blocker still holds a path.
+fn select_rosen_wait_parent(
+    holders: &[(String, String)],
+    threads: &[ThreadItem],
+) -> Option<String> {
+    let [(holder_change, _)] = holders else {
+        return None;
+    };
+    threads
+        .iter()
+        .any(|other| {
             other.rosen_change.as_deref() == Some(holder_change.as_str())
                 && matches!(other.state, ThreadState::Working | ThreadState::Review)
-        }) {
-            return Ok(Some(holder_change));
-        }
-    }
-    Ok(None)
+        })
+        .then(|| holder_change.clone())
 }
 
 fn parent_change(
@@ -200,4 +228,73 @@ async fn cleanup_source(
         crate::rosen::abandon_unstarted(application, project, &root, &stack.source_change).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_rosen_wait_parent;
+    use velocity_store::{ThreadItem, ThreadState};
+
+    fn thread_with_change(id: u32, change: &str, state: ThreadState) -> ThreadItem {
+        let mut thread = ThreadItem::new(id, format!("Thread {id}"));
+        thread.rosen_change = Some(change.to_owned());
+        thread.state = state;
+        thread
+    }
+
+    // Risk (#674): F16 goal stacking must only select a stack parent when a single live Claim
+    // blocker belongs to a working or reviewing thread, and must keep waiting when a real holder
+    // is unstackable or when more than one change blocks the active wait.
+    #[test]
+    fn select_rosen_wait_parent_requires_single_stackable_blocker() {
+        let working = "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm";
+        let reviewing = "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn";
+        let failed = "pppppppppppppppppppppppppppppppp";
+        let external = "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
+        let threads = vec![
+            thread_with_change(1, working, ThreadState::Working),
+            thread_with_change(2, reviewing, ThreadState::Review),
+            thread_with_change(3, failed, ThreadState::Error),
+        ];
+
+        assert_eq!(
+            select_rosen_wait_parent(&[(working.into(), "w1".into())], &threads),
+            Some(working.to_owned())
+        );
+        assert_eq!(
+            select_rosen_wait_parent(&[(reviewing.into(), "r1".into())], &threads),
+            Some(reviewing.to_owned())
+        );
+        assert_eq!(
+            select_rosen_wait_parent(&[(failed.into(), "f1".into())], &threads),
+            None
+        );
+        assert_eq!(
+            select_rosen_wait_parent(&[(external.into(), "ext".into())], &threads),
+            None
+        );
+        assert_eq!(select_rosen_wait_parent(&[], &threads), None);
+        // Two blockers (whether both stackable or one unstackable) must keep waiting so the
+        // waiter never resumes on one parent while another holder still blocks a waited path.
+        assert_eq!(
+            select_rosen_wait_parent(
+                &[
+                    (working.into(), "w1".into()),
+                    (reviewing.into(), "r1".into()),
+                ],
+                &threads,
+            ),
+            None
+        );
+        assert_eq!(
+            select_rosen_wait_parent(
+                &[
+                    (working.into(), "w1".into()),
+                    (external.into(), "ext".into())
+                ],
+                &threads,
+            ),
+            None
+        );
+    }
 }

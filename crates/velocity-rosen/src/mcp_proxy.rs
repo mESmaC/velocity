@@ -11,10 +11,9 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 
-use rosen_client::protocol::{
-    ClaimFilter, ClaimKind, ClaimRequest, OverlapQuery, PathClaim, WaitOutcome,
-};
+use rosen_client::protocol::{ClaimFilter, ClaimKind, ClaimRequest, PathClaim, WaitOutcome};
 use rosen_client::{Client, Endpoint};
+use rosen_core::PathPattern;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -126,7 +125,9 @@ pub async fn active_waits(
         .collect())
 }
 
-/// Other live changes currently overlapping `paths`, as `(change_id, owner)` pairs.
+/// Other live changes holding `ClaimKind::Claim` records overlapping `paths`, as
+/// `(change_id, owner)` pairs. Shares, waits, and unclaimed snapshot edits do not block
+/// Rosen waits and are excluded (#674).
 pub async fn wait_holders(
     server: &ProjectServer,
     change: &str,
@@ -136,21 +137,69 @@ pub async fn wait_holders(
         return Ok(Vec::new());
     }
     let client = crate::connection::requests(server.endpoint()).await?;
-    let query: OverlapQuery = serde_json::from_value(json!({"paths": paths}))
+    let claims = client.claim_list(ClaimFilter::default()).await?;
+    blocking_wait_holders(change, paths, &claims)
+}
+
+/// Other live changes holding `ClaimKind::Claim` records that currently block `change`'s
+/// active `ClaimKind::Wait` records, derived from one live `claim_list` snapshot (#674).
+pub async fn active_wait_holders(
+    server: &ProjectServer,
+    change: &str,
+) -> Result<Vec<(String, String)>, RosenError> {
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let claims = client.claim_list(ClaimFilter::default()).await?;
+    active_blocking_wait_holders(change, &claims)
+}
+
+/// Pure blocker selection matching Rosen's wait transaction: only live `ClaimKind::Claim`
+/// records on other changes block `paths`; shares, waits, and unclaimed snapshot edits do
+/// not (#674). Preserves claim order and deduplicates by change ID.
+pub fn blocking_wait_holders(
+    change: &str,
+    paths: &[String],
+    claims: &[PathClaim],
+) -> Result<Vec<(String, String)>, RosenError> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let requested: Vec<PathPattern> = paths
+        .iter()
+        .map(|path| PathPattern::new(path))
+        .collect::<Result<_, _>>()
         .map_err(|error| RosenError::StatusData(error.to_string()))?;
-    let answer = client.overlaps(query).await?;
     let mut holders = Vec::new();
-    for overlap in answer.overlaps {
-        let id = overlap.change.to_string();
+    for claim in claims {
+        if claim.kind != ClaimKind::Claim {
+            continue;
+        }
+        let id = claim.change.to_string();
         if id == change {
             continue;
         }
-        let pair = (id, overlap.owner.to_string());
-        if !holders.contains(&pair) {
-            holders.push(pair);
+        let held = PathPattern::new(&claim.path)
+            .map_err(|error| RosenError::StatusData(error.to_string()))?;
+        if requested.iter().any(|pattern| held.overlaps(pattern))
+            && !holders.iter().any(|(existing, _)| existing == &id)
+        {
+            holders.push((id, claim.owner.to_string()));
         }
     }
     Ok(holders)
+}
+
+/// Pure blocker selection for `change`'s active `ClaimKind::Wait` records in `claims` (#674).
+/// Returns empty when `change` has no active wait records.
+pub fn active_blocking_wait_holders(
+    change: &str,
+    claims: &[PathClaim],
+) -> Result<Vec<(String, String)>, RosenError> {
+    let waited_paths: Vec<String> = claims
+        .iter()
+        .filter(|claim| claim.kind == ClaimKind::Wait && claim.change.to_string() == change)
+        .map(|claim| claim.path.clone())
+        .collect();
+    blocking_wait_holders(change, &waited_paths, claims)
 }
 
 /// Serves the `rosen` MCP stdio proxy, forwarding non-wait methods to `rosen mcp`.
@@ -1046,6 +1095,109 @@ mod tests {
         let reply: Value = serde_json::from_str(String::from_utf8(out)?.trim())?;
         assert_eq!(reply["result"]["isError"], json!(false));
         assert_eq!(passed_backend.forwarded, vec!["commit".to_owned()]);
+        Ok(())
+    }
+
+    fn path_claim(
+        change: &str,
+        owner: &str,
+        path: &str,
+        kind: &str,
+        exclusive: bool,
+        since: i64,
+    ) -> Result<PathClaim, serde_json::Error> {
+        serde_json::from_value(json!({
+            "change": change,
+            "owner": owner,
+            "path": path,
+            "kind": kind,
+            "exclusive": exclusive,
+            "since": since
+        }))
+    }
+
+    // Risk (#674): Rosen wait blockers must include only live `ClaimKind::Claim` records
+    // overlapping active waits, ignoring incidental shares, other waits, and unclaimed snapshot
+    // edits, while preserving every distinct blocking change.
+    #[test]
+    fn active_wait_holders_ignore_shares_and_report_all_claim_blockers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let sharer = "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk";
+        let blocker_a = "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm";
+        let blocker_b = "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn";
+        let stale_holder = "pppppppppppppppppppppppppppppppp";
+        let other_waiter = "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
+        let waiter = "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr";
+
+        // Incidental share sorts before the real blocker; unclaimed snapshot edits have no
+        // Claim record at all. Neither may appear as a wait blocker.
+        let claims = vec![
+            path_claim(sharer, "sharer-1", "src/code.rs", "share", false, 1)?,
+            path_claim(other_waiter, "waiter-2", "src/code.rs", "wait", false, 2)?,
+            path_claim(waiter, "waiter-1", "src/other.rs", "claim", true, 3)?,
+            path_claim(blocker_a, "blocker-1", "src/**", "claim", true, 4)?,
+            path_claim(blocker_a, "blocker-1", "src/code.rs", "claim", true, 5)?,
+            path_claim(stale_holder, "stale-1", "src/released.rs", "claim", true, 6)?,
+            path_claim(waiter, "waiter-1", "src/code.rs", "wait", false, 7)?,
+        ];
+        assert_eq!(
+            active_blocking_wait_holders(waiter, &claims)?,
+            vec![(blocker_a.to_owned(), "blocker-1".to_owned())]
+        );
+
+        // Two distinct changes blocking either the same path or different waited paths both
+        // appear so F16 stacking keeps waiting while any other holder blocks a path.
+        let mut multi_claims = claims.clone();
+        multi_claims.push(path_claim(
+            blocker_b,
+            "blocker-2",
+            "src/code.rs",
+            "claim",
+            false,
+            8,
+        )?);
+        let expected_two = vec![
+            (blocker_a.to_owned(), "blocker-1".to_owned()),
+            (blocker_b.to_owned(), "blocker-2".to_owned()),
+        ];
+        assert_eq!(
+            active_blocking_wait_holders(waiter, &multi_claims)?,
+            expected_two
+        );
+
+        let mut split_path_claims = claims;
+        split_path_claims.push(path_claim(
+            blocker_b,
+            "blocker-2",
+            "src/extra.rs",
+            "claim",
+            true,
+            8,
+        )?);
+        split_path_claims.push(path_claim(
+            waiter,
+            "waiter-1",
+            "src/extra.rs",
+            "wait",
+            false,
+            9,
+        )?);
+        assert_eq!(
+            active_blocking_wait_holders(waiter, &split_path_claims)?,
+            expected_two
+        );
+
+        // Once the waiter's own `Wait` record is gone, active_blocking_wait_holders is empty
+        // even though other changes still hold claims on the old path.
+        let no_active_wait: Vec<PathClaim> = multi_claims
+            .into_iter()
+            .filter(|claim| !(claim.change.to_string() == waiter && claim.kind == ClaimKind::Wait))
+            .collect();
+        assert!(active_blocking_wait_holders(waiter, &no_active_wait)?.is_empty());
+        assert_eq!(
+            blocking_wait_holders(waiter, &["src/code.rs".to_owned()], &no_active_wait)?,
+            expected_two
+        );
         Ok(())
     }
 }

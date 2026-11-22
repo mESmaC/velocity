@@ -21,6 +21,7 @@ It keeps ownership with the original thread, updates the board and resumes that 
 These state changes and the event cursor save together and survive restart.
 
 A Rosen goal member's `wait` on another member's held path (via the `rosen` MCP server, or legacy `airc_wait`) becomes a stacked change (Rosen D19) after its session parks: Velocity snapshots its work, creates a child on the holder's unlanded change and continues the same task and transcript there.
+For Rosen path waits, the stack parent comes only from live `Claim` blockers of the change's active waits (ignoring shares and unclaimed snapshot edits), and a wait blocked by more than one change or by an unstackable holder keeps waiting (#674).
 The original change is retained until the replacement identity, workspace path and stack handoff are durable in state.json, including when saves are deferred.
 A failed save retains the original; cleanup retries must pass the same save barrier before abandoning it through Rosen's deletion guard.
 A copy that overlaps the dependency's edits, changes a nonregular file, or cannot be made safely keeps the original task waiting; on the holder's land it continues through Rosen's rebase, without a git checkout update.
