@@ -1818,6 +1818,15 @@ pub fn is_live_local_member(project: &ProjectItem, member: &str, live: &LiveLoca
     {
         return true;
     }
+    if let Some(thread) = project
+        .threads
+        .iter()
+        .find(|thread| thread.state != ThreadState::Spec && thread.matches_airc_member(member))
+    {
+        return !thread.supervision.released
+            && (!matches!(thread.state, ThreadState::Merged | ThreadState::Done)
+                || has_pending_finish_cleanup(project, thread));
+    }
     if let Some(nickname) = member.strip_prefix("duty-") {
         return live.running_scouts.contains(nickname);
     }
@@ -1831,14 +1840,8 @@ pub fn is_live_local_member(project: &ProjectItem, member: &str, live: &LiveLoca
                 .iter()
                 .any(|thread| thread.id == id && thread.state == ThreadState::Spec);
     }
-    let thread = project
-        .threads
-        .iter()
-        .find(|thread| thread.matches_airc_member(member))
-        .or_else(|| {
-            velocity_core::thread_titles::thread_id_from_member(member)
-                .and_then(|id| project.threads.iter().find(|thread| thread.id == id))
-        });
+    let thread = velocity_core::thread_titles::thread_id_from_member(member)
+        .and_then(|id| project.threads.iter().find(|thread| thread.id == id));
     match thread {
         Some(thread) => {
             !thread.supervision.released
@@ -1981,6 +1984,32 @@ mod tests {
             stale_claim_reason("scout-1-1"),
             "stale AIRC claim by scout-1-1, released"
         );
+    }
+
+    // Risk (#678): a live saved build thread named `spec-*` or pre-fix `duty-*` must stay
+    // live in claim filtering while a deleted `spec-*` thread is reaped and `duty-scout-*`
+    // and `spec-<id>` retain scout/interview semantics.
+    #[test]
+    fn reserved_slug_build_threads_keep_live_claim_classification() {
+        let mut project = ProjectItem::new(1, "velocity".into(), "Z:/repo".into());
+        let mut spec_build = ThreadItem::new(50, "Spec cleanup".into());
+        spec_build.agent_name = Some("spec-cleanup-50".into());
+        spec_build.state = ThreadState::Working;
+        let mut legacy_duty_build = ThreadItem::new(52, "Duty cleanup".into());
+        legacy_duty_build.agent_name = Some("duty-cleanup-52".into());
+        legacy_duty_build.state = ThreadState::Working;
+        let mut interview = ThreadItem::new(12, "Spec interview".into());
+        interview.state = ThreadState::Spec;
+        project
+            .threads
+            .extend([spec_build, legacy_duty_build, interview]);
+
+        let live = LiveLocalMembers::default();
+        assert!(is_live_local_member(&project, "spec-cleanup-50", &live));
+        assert!(is_live_local_member(&project, "duty-cleanup-52", &live));
+        assert!(is_live_local_member(&project, "spec-12", &live));
+        assert!(!is_live_local_member(&project, "spec-deleted-51", &live));
+        assert!(!is_live_local_member(&project, "duty-scout-1", &live));
     }
 
     // Risk (#656): landed, abandoned, or empty-dispatch threads whose own finish follow-up

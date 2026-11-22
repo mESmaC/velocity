@@ -182,23 +182,10 @@ pub fn thread_agent_name(source: &str, thread_id: u32) -> String {
     if words.len() > 1 && words.last().is_some_and(|last| last == &id_text) {
         words.pop();
     }
-    let mut slug = String::new();
-    for word in &words {
-        let separator = usize::from(!slug.is_empty());
-        if slug.len() + separator + word.len() > AGENT_SLUG_LENGTH {
-            break;
-        }
-        if separator == 1 {
-            slug.push('-');
-        }
-        slug.push_str(word);
-    }
-    if slug.is_empty() {
-        slug = words
-            .first()
-            .map(|word| word.chars().take(AGENT_SLUG_LENGTH).collect())
-            .filter(|word: &String| !word.is_empty())
-            .unwrap_or_else(|| FALLBACK_SLUG.to_owned());
+    let mut slug = join_agent_slug(&words);
+    if is_reserved_agent_slug(&slug) {
+        words.insert(0, FALLBACK_SLUG.to_owned());
+        slug = join_agent_slug(&words);
     }
     format!("{slug}-{thread_id}")
 }
@@ -206,11 +193,13 @@ pub fn thread_agent_name(source: &str, thread_id: u32) -> String {
 /// Extracts the local build thread identifier from an AIRC member identity: either the
 /// unified `<short-slug>-<thread_id>` name (#532) or legacy `thread-<id>`. Returns `None`
 /// for foreign machine-scoped members (`<scope>/...`), duty agents (`duty-*`), spec
-/// interviews (`spec-*`), and reserved names (`you`, `velocity`).
+/// interviews (`spec-<id>`), machine control members (`velocity-machine-*`), and
+/// reserved names (`you`, `velocity`).
 pub fn thread_id_from_member(member: &str) -> Option<u32> {
     if member.contains('/')
         || member.starts_with("duty-")
-        || member.starts_with("spec-")
+        || member.starts_with("velocity-machine-")
+        || is_spec_interview_member(member)
         || matches!(member, "you" | "velocity")
     {
         return None;
@@ -234,6 +223,47 @@ fn stable_hash(text: &str) -> u32 {
     text.bytes().fold(0x811C_9DC5, |hash: u32, byte| {
         (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
     })
+}
+
+fn join_agent_slug(words: &[String]) -> String {
+    let mut slug = String::new();
+    for word in words {
+        let separator = usize::from(!slug.is_empty());
+        if slug.len() + separator + word.len() > AGENT_SLUG_LENGTH {
+            break;
+        }
+        if separator == 1 {
+            slug.push('-');
+        }
+        slug.push_str(word);
+    }
+    if slug.is_empty() {
+        words
+            .first()
+            .map(|word| word.chars().take(AGENT_SLUG_LENGTH).collect())
+            .filter(|word: &String| !word.is_empty())
+            .unwrap_or_else(|| FALLBACK_SLUG.to_owned())
+    } else {
+        slug
+    }
+}
+
+/// Slugs whose `<slug>-<id>` member name would collide with spec interviews (`spec-<id>`),
+/// duty agents (`duty-<nick>`), or machine control members (`velocity-machine-<id>`) (#678).
+fn is_reserved_agent_slug(slug: &str) -> bool {
+    slug == "spec"
+        || slug == "duty"
+        || slug.starts_with("duty-")
+        || slug == "velocity-machine"
+        || slug.starts_with("velocity-machine-")
+}
+
+/// Spec interviews join AIRC as `spec-<thread_id>`, distinct from build slugs like
+/// `spec-cleanup-50` (#678).
+fn is_spec_interview_member(member: &str) -> bool {
+    member
+        .strip_prefix("spec-")
+        .is_some_and(|value| value.parse::<u32>().is_ok())
 }
 
 #[cfg(test)]
@@ -269,5 +299,50 @@ mod tests {
     fn claim_task_from_prompt_avoids_mid_phrase_truncation() {
         let prompt = "I'd like your honest feedback on the AIRC naming and event log architecture.";
         assert_eq!(claim_task_from_prompt(prompt), prompt);
+    }
+
+    // Risk (#678): build workspaces whose slug starts with `spec-`, `duty-` or
+    // `velocity-machine-` must resolve to their thread ID without colliding with
+    // actual spec interviews, duty agents, machine workers or foreign members.
+    #[test]
+    fn reserved_slug_prefixes_resolve_without_colliding_with_non_threads() {
+        assert_eq!(thread_agent_name("spec-cleanup", 50), "spec-cleanup-50");
+        assert_eq!(thread_id_from_member("spec-cleanup-50"), Some(50));
+
+        let bare_spec = thread_agent_name("spec", 50);
+        assert_eq!(bare_spec, "thread-spec-50");
+        assert_eq!(thread_id_from_member(&bare_spec), Some(50));
+        assert_eq!(thread_agent_name("spec-50", 50), "thread-spec-50");
+        assert_eq!(
+            thread_agent_name("spec-veryveryverylongwordexceeding24chars", 50),
+            "thread-spec-50"
+        );
+
+        let duty_cleanup = thread_agent_name("duty-cleanup", 50);
+        assert_eq!(duty_cleanup, "thread-duty-cleanup-50");
+        assert_eq!(thread_id_from_member(&duty_cleanup), Some(50));
+
+        let duty_scout = thread_agent_name("duty-scout", 1);
+        assert_eq!(duty_scout, "thread-duty-scout-1");
+        assert_eq!(thread_id_from_member(&duty_scout), Some(1));
+
+        let bare_duty = thread_agent_name("duty", 50);
+        assert_eq!(bare_duty, "thread-duty-50");
+        assert_eq!(thread_id_from_member(&bare_duty), Some(50));
+
+        let machine_fix = thread_agent_name("velocity-machine-fix", 50);
+        assert_eq!(machine_fix, "thread-velocity-machine-50");
+        assert_eq!(thread_id_from_member(&machine_fix), Some(50));
+
+        assert_eq!(thread_id_from_member("spec-12"), None);
+        assert_eq!(thread_id_from_member("duty-scout-1"), None);
+        assert_eq!(thread_id_from_member("duty-pr-1"), None);
+        assert_eq!(thread_id_from_member("velocity-machine-1"), None);
+        assert_eq!(
+            thread_id_from_member("0123456789abcdef/spec-cleanup-50"),
+            None
+        );
+        assert_eq!(thread_id_from_member("you"), None);
+        assert_eq!(thread_id_from_member("velocity"), None);
     }
 }

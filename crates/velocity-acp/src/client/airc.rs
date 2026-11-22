@@ -253,4 +253,65 @@ mod tests {
             var.name == velocity_github::GH_PROGRAM_ENV && var.value == gh_path.to_string_lossy()
         }));
     }
+
+    // Risk (#678): build threads with `spec-*` or disambiguated `duty-*` names must retain
+    // per-thread graph and ACP token usage attribution while actual spec interviews and duty
+    // agents keep their existing attribution.
+    #[test]
+    fn usage_attribution_handles_reserved_slug_build_threads() {
+        use velocity_graph::token_usage::{Role, Subject};
+
+        let launch = AircLaunch::new(PathBuf::from("/app/velocity"), PathBuf::from("/app/data"));
+        let check = |server: McpServer, expected_graph: Option<&str>, expected_subject: Subject| {
+            let McpServer::Stdio(stdio) = &server else {
+                panic!("AIRC server should stay stdio");
+            };
+            assert_eq!(usage_thread(stdio).as_deref(), expected_graph);
+            let mut setup = SessionSetup::new(PathBuf::from("/app/work"), Vec::new());
+            setup.airc = Some(server);
+            let ledger = super::super::token_usage::Ledger::for_setup(&setup);
+            assert_eq!(ledger.map(|item| item.subject), Some(expected_subject));
+        };
+
+        check(
+            launch.thread(1, 50, Path::new(r"Z:\work\spec-cleanup")),
+            Some("thread-50"),
+            Subject {
+                role: Role::Implementation,
+                thread: Some(50),
+            },
+        );
+        check(
+            launch.thread(1, 50, Path::new(r"Z:\work\spec")),
+            Some("thread-50"),
+            Subject {
+                role: Role::Implementation,
+                thread: Some(50),
+            },
+        );
+        check(
+            launch.thread(1, 50, Path::new(r"Z:\work\duty-cleanup")),
+            Some("thread-50"),
+            Subject {
+                role: Role::Implementation,
+                thread: Some(50),
+            },
+        );
+        check(
+            launch.spec_interview(1, 12),
+            Some("spec-12"),
+            Subject {
+                role: Role::Implementation,
+                thread: Some(12),
+            },
+        );
+        check(
+            launch.duty(1, "scout-1"),
+            None,
+            Subject {
+                role: Role::Duty,
+                thread: None,
+            },
+        );
+    }
 }
