@@ -298,10 +298,12 @@ impl StateStore {
                 record.agent_wall_ms = record.agent_wall_ms.saturating_add(wall_ms);
                 record.turns = record.turns.saturating_add(1);
                 if let Some((provider, model)) = provider_model {
-                    if !provider.is_empty() {
+                    // Only backfill missing metadata; do not overwrite the provider or model
+                    // already recorded by dispatch with a thread's default fields (#631).
+                    if record.provider.is_none() && !provider.is_empty() {
                         record.provider = Some(provider);
                     }
-                    if !model.trim().is_empty() {
+                    if record.model.is_none() && !model.trim().is_empty() {
                         record.model = Some(model);
                     }
                 }
@@ -621,6 +623,105 @@ mod tests {
         assert!(!serialized.contains("Fleet ledger"));
         assert!(!serialized.contains("preflight"));
 
+        let _ = std::fs::remove_dir_all(&directory);
+        Ok(())
+    }
+
+    fn write_provider_test_state(
+        directory: &std::path::Path,
+        provider_count: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut state = PersistedState::default();
+        let mut project = ProjectItem::new(1, "Velocity".into(), ".".into());
+        for index in 0..provider_count {
+            let issue_number = 700 + index as u32;
+            let mut thread = ThreadItem::new(100 + index as u32, format!("Issue #{issue_number}"));
+            thread.issue = Some(crate::issues::ThreadIssue::new(
+                "mESmaC/velocity".into(),
+                issue_number,
+            ));
+            project.threads.push(thread);
+        }
+        let mut fallback_thread = ThreadItem::new(200, "Backfill".into());
+        fallback_thread.provider = crate::ProviderKind::Kimi;
+        fallback_thread.model_name = "kimi-k2".into();
+        fallback_thread.issue = Some(crate::issues::ThreadIssue::new(
+            "mESmaC/velocity".into(),
+            800,
+        ));
+        project.threads.push(fallback_thread);
+        project.fleet_ledger.issues.insert(
+            issue_key("mESmaC/velocity", 800),
+            FleetIssueRecord::new("mESmaC/velocity".into(), 800),
+        );
+        state.projects.push(project);
+        std::fs::write(directory.join("state.json"), serde_json::to_vec(&state)?)?;
+        Ok(())
+    }
+
+    #[test]
+    fn fleet_ledger_preserves_every_provider_across_turns_and_reload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Risk (#631): every provider persisted in a fleet ledger record must survive
+        // subsequent turn updates and StateStore reload without being clobbered by
+        // ThreadItem's default Codex provider.
+        let directory = std::env::temp_dir().join(format!(
+            "velocity-fleet-ledger-providers-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory)?;
+        let providers = [
+            crate::ProviderKind::Claude,
+            crate::ProviderKind::Codex,
+            crate::ProviderKind::Antigravity,
+            crate::ProviderKind::Kimi,
+            crate::ProviderKind::Custom(7),
+        ];
+        write_provider_test_state(&directory, providers.len())?;
+
+        let mut store = StateStore::load_or_default(&directory)?;
+        for (index, provider) in providers.iter().enumerate() {
+            let issue = 700 + index as u32;
+            let thread_id = 100 + index as u32;
+            let key = provider.key();
+            let model = format!("model-{key}");
+            assert!(store.record_fleet_dispatch(
+                1,
+                FleetDispatchInput {
+                    repository: "mESmaC/velocity",
+                    issue,
+                    title: Some("Provider roundtrip"),
+                    url: None,
+                    filed_at: None,
+                    thread_id,
+                    provider: &key,
+                    model: &model,
+                    now_secs: 1_795_262_400,
+                },
+            )?);
+            assert!(store.record_fleet_turn(1, thread_id, 1_000, 500, 2_000)?);
+        }
+        assert!(store.record_fleet_turn(1, 200, 500, 250, 1_000)?);
+
+        let reloaded = StateStore::load_or_default(&directory)?;
+        let ledger = reloaded.fleet_ledger(1).ok_or("missing project")?;
+        for (index, provider) in providers.iter().enumerate() {
+            let key = issue_key("mESmaC/velocity", 700 + index as u32);
+            let record = ledger.issues.get(&key).ok_or("missing provider record")?;
+            let expected = provider.key();
+            assert_eq!(record.provider.as_deref(), Some(expected.as_str()));
+            assert_eq!(
+                record.model.as_deref(),
+                Some(format!("model-{expected}").as_str())
+            );
+        }
+        let backfill = ledger
+            .issues
+            .get(&issue_key("mESmaC/velocity", 800))
+            .ok_or("missing backfill record")?;
+        assert_eq!(backfill.provider.as_deref(), Some("kimi"));
+        assert_eq!(backfill.model.as_deref(), Some("kimi-k2"));
         let _ = std::fs::remove_dir_all(&directory);
         Ok(())
     }
