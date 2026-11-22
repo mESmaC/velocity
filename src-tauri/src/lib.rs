@@ -46,6 +46,7 @@ mod ready_pool;
 mod release;
 mod restart;
 mod rosen;
+mod rosen_deploy;
 mod rosen_events;
 mod rosen_issue;
 mod rosen_landing;
@@ -189,6 +190,9 @@ fn bindings() -> Builder<tauri::Wry> {
         issue_panel::dispatch_work_issue,
         issue_panel::set_work_issue_expanded,
         issue_panel::toggle_issue_expanded,
+        rosen_deploy::clear_project_deploy_secret,
+        rosen_deploy::get_project_deploy_settings,
+        rosen_deploy::set_project_deploy_secret,
         rosen_mirror::adopt_mirror_tip,
         rosen_mirror::catch_up_from_mirror,
         rosen_status::switch_to_after_land,
@@ -436,6 +440,7 @@ pub fn run() -> anyhow::Result<()> {
             skills::initialize(application.handle())?;
             interview::start(application.handle());
             rosen_landing::initialize(application.handle())?;
+            rosen_deploy::initialize(application.handle());
             base_ci::initialize(application.handle());
             project_health::initialize(application.handle());
             sweeps::initialize(application.handle())?;

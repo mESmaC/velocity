@@ -599,9 +599,218 @@ async fn check_project(application: &AppHandle, app_data: &Path, project: &Proje
     if let Some(item) = check_airc_issue_tool_health(app_data, project.id, now_ms) {
         items.push(item);
     }
+    items.extend(check_deploy_health(project, &server, now_ms).await);
     items.extend(check_release_health(application, project, &server, now, now_ms).await);
     items.extend(collect_recent_actions(application, project.id, now, &items));
     stabilize_and_publish(application, project.id, items, now_ms);
+}
+
+/// Records that a `[deploy.<step>]` command started running on `commit` (#594).
+pub(crate) fn record_deploy_running(
+    application: &AppHandle,
+    project: u32,
+    step: &str,
+    commit: &str,
+) {
+    let now_ms = unix_millis();
+    let item = ProjectHealthItem::new(
+        deploy_health_key(step),
+        HealthSignalKind::Deploy,
+        HealthSeverity::Info,
+        format!("Deploying {step} at {}", short_commit(commit)),
+        "Running [deploy] step in base checkout",
+        now_ms,
+    );
+    upsert_health_item(application, project, item);
+}
+
+/// Records that a `[deploy.<step>]` command passed on `commit` (#594).
+pub(crate) fn record_deploy_passed(
+    application: &AppHandle,
+    project: u32,
+    step: &str,
+    commit: &str,
+) {
+    let now_ms = unix_millis();
+    let now = now_ms / 1000;
+    let item = ProjectHealthItem::new(
+        deploy_health_key(step),
+        HealthSignalKind::Deploy,
+        HealthSeverity::Info,
+        format!("Deployed {step} at {}", short_commit(commit)),
+        "Deploy step passed",
+        now_ms,
+    );
+    record_recent_action(application, project, item.clone(), now);
+    upsert_health_item(application, project, item);
+}
+
+/// Records that a `[deploy.<step>]` command failed on `commit` (#594).
+pub(crate) fn record_deploy_failed(
+    application: &AppHandle,
+    project: u32,
+    step: &str,
+    commit: &str,
+    action: &str,
+    detail: Option<String>,
+    thread: Option<u32>,
+) {
+    let now_ms = unix_millis();
+    let item = ProjectHealthItem::new(
+        deploy_health_key(step),
+        HealthSignalKind::Deploy,
+        HealthSeverity::Error,
+        format!("Deploy `{step}` failed at {}", short_commit(commit)),
+        action,
+        now_ms,
+    )
+    .with_detail(detail)
+    .with_thread(thread);
+    upsert_health_item(application, project, item);
+}
+
+/// Records that a `[deploy.<step>]` step was skipped (for example missing secrets) (#594).
+pub(crate) fn record_deploy_skipped(
+    application: &AppHandle,
+    project: u32,
+    step: &str,
+    commit: &str,
+    reason: &str,
+) {
+    let now_ms = unix_millis();
+    let missing_secrets = reason.starts_with(velocity_core::deploy::MISSING_SECRETS_PREFIX);
+    let (signal, action) = if missing_secrets {
+        (
+            format!("Deploy `{step}` skipped: missing secrets"),
+            "Set the required secrets in Settings -> Workspaces -> Deploy secrets",
+        )
+    } else {
+        (
+            format!("Deploy `{step}` skipped at {}", short_commit(commit)),
+            "Deploy step was skipped",
+        )
+    };
+    let item = ProjectHealthItem::new(
+        deploy_health_key(step),
+        HealthSignalKind::Deploy,
+        HealthSeverity::Warning,
+        signal,
+        action,
+        now_ms,
+    )
+    .with_detail(velocity_core::deploy::summarize_output(reason, 180));
+    upsert_health_item(application, project, item);
+}
+
+fn deploy_health_key(step: &str) -> String {
+    format!("deploy:{step}")
+}
+
+fn upsert_health_item(application: &AppHandle, project: u32, item: ProjectHealthItem) {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let updated = {
+        let mut reg = registry(&managed);
+        let list = reg.views.entry(project).or_default();
+        upsert_item(list, item);
+        list.clone()
+    };
+    emit_view(application, project, updated);
+}
+
+async fn check_deploy_health(
+    project: &ProjectItem,
+    server: &ProjectServer,
+    now_ms: u64,
+) -> Vec<ProjectHealthItem> {
+    let reading = server.clone();
+    let runs = tauri::async_runtime::spawn_blocking(move || {
+        velocity_rosen::deploy::latest_deploys_per_step(&reading)
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .unwrap_or_default();
+    runs.into_iter()
+        .filter_map(|run| deploy_run_health_item(project, &run, now_ms))
+        .collect()
+}
+
+fn deploy_run_health_item(
+    project: &ProjectItem,
+    run: &velocity_rosen::deploy::DeployRunRecord,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    let acted_at = run
+        .submitted_at
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(now_ms);
+    match run.state {
+        velocity_core::deploy::DeployRunState::Running => Some(ProjectHealthItem::new(
+            deploy_health_key(&run.step),
+            HealthSignalKind::Deploy,
+            HealthSeverity::Info,
+            format!("Deploying {} at {}", run.step, short_commit(&run.commit)),
+            "Running [deploy] step in base checkout",
+            acted_at,
+        )),
+        velocity_core::deploy::DeployRunState::Failed => {
+            let repair = project
+                .deploy_repairs
+                .iter()
+                .rev()
+                .find(|repair| !repair.closed && repair.step == run.step);
+            let (action, thread) = match repair {
+                Some(repair) => (
+                    "Fix-forward thread opened for deploy failure",
+                    Some(repair.thread),
+                ),
+                None if !project.spec_locked => (
+                    "Lock the spec to start a fix-forward thread for this deploy failure",
+                    None,
+                ),
+                None => ("Deploy step failed; awaiting fix-forward thread", None),
+            };
+            Some(
+                ProjectHealthItem::new(
+                    deploy_health_key(&run.step),
+                    HealthSignalKind::Deploy,
+                    HealthSeverity::Error,
+                    format!(
+                        "Deploy `{}` failed at {}",
+                        run.step,
+                        short_commit(&run.commit)
+                    ),
+                    action,
+                    acted_at,
+                )
+                .with_detail(velocity_core::deploy::summarize_output(&run.output, 180))
+                .with_thread(thread),
+            )
+        }
+        velocity_core::deploy::DeployRunState::Skipped
+            if run.superseded_by.is_none()
+                && run
+                    .output
+                    .starts_with(velocity_core::deploy::MISSING_SECRETS_PREFIX) =>
+        {
+            Some(
+                ProjectHealthItem::new(
+                    deploy_health_key(&run.step),
+                    HealthSignalKind::Deploy,
+                    HealthSeverity::Warning,
+                    format!("Deploy `{}` skipped: missing secrets", run.step),
+                    "Set the required secrets in Settings -> Workspaces -> Deploy secrets",
+                    acted_at,
+                )
+                .with_detail(velocity_core::deploy::summarize_output(&run.output, 180)),
+            )
+        }
+        velocity_core::deploy::DeployRunState::Pending
+        | velocity_core::deploy::DeployRunState::Passed
+        | velocity_core::deploy::DeployRunState::Skipped => None,
+    }
 }
 
 /// Signal: an AIRC issue tool failed locally for a reason that isn't GitHub's (#581).

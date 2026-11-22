@@ -15,6 +15,7 @@ pub mod ci_repairs;
 pub mod claim_piece;
 pub mod continuous_dispatch;
 pub mod deleted_worktrees;
+pub mod deploy_repairs;
 pub mod follow_through;
 
 use serde::{Deserialize, Serialize};
@@ -94,6 +95,8 @@ pub enum StoreError {
     SharedMcpServer(String),
     #[error("Invalid pass-through environment variable: {0}")]
     EnvPassthrough(String),
+    #[error("Invalid deploy secret name: {0}")]
+    DeploySecretName(String),
     #[error("Could not create state directory '{path}': {source}")]
     CreateDirectory {
         path: String,
@@ -1237,6 +1240,14 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub ci_repairs: Vec<ci_repairs::CiRepair>,
+    /// Fix-forward repair ownership for failed `[deploy]` steps, retained across restarts (#594).
+    #[serde(default)]
+    #[specta(skip)]
+    pub deploy_repairs: Vec<deploy_repairs::DeployRepair>,
+    /// Remembered deploy secret names (never values) configured in Project Settings (#594).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[specta(skip)]
+    pub deploy_secret_names: Vec<String>,
     /// GitHub CI on the base as last read, shown at startup before the next read (#507).
     #[serde(default)]
     #[specta(skip)]
@@ -1406,6 +1417,8 @@ impl ProjectItem {
         Self {
             build_repairs: Vec::new(),
             ci_repairs: Vec::new(),
+            deploy_repairs: Vec::new(),
+            deploy_secret_names: Vec::new(),
             base_ci: None,
             handoff_items: BTreeMap::new(),
             retained_rosen_issues: BTreeMap::new(),

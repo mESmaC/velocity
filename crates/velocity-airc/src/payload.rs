@@ -89,6 +89,16 @@ pub enum EventPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<String>,
     },
+    Deploy {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+    },
 }
 
 impl EventPayload {
@@ -101,6 +111,8 @@ impl EventPayload {
             EventKind::Claim => Some(path_claim(detail, kind, owner)),
             EventKind::Released => Some(released(detail)),
             EventKind::Reverted => Some(reverted(detail)),
+            EventKind::DeployDue => Some(deploy_due(detail)),
+            EventKind::DeployResult => Some(deploy_result(detail)),
             _ => None,
         }
     }
@@ -156,6 +168,12 @@ impl EventPayload {
                 commit,
                 output,
             } => opt(culprit) || opt(commit) || opt(output),
+            Self::Deploy {
+                step,
+                commit,
+                status,
+                output,
+            } => opt(step) || opt(commit) || opt(status) || opt(output),
         }
     }
 }
@@ -312,6 +330,48 @@ fn reverted(detail: &serde_json::Value) -> (String, EventPayload) {
     let payload = EventPayload::Reverted {
         culprit,
         commit,
+        output,
+    };
+    (text, payload)
+}
+
+fn deploy_due(detail: &serde_json::Value) -> (String, EventPayload) {
+    let step = string(detail, "step");
+    let commit = string(detail, "commit");
+    let text = match (&step, &commit) {
+        (Some(step), Some(commit)) => format!("deploy {step} queued at {}", short(commit)),
+        (Some(step), None) => format!("deploy {step} queued"),
+        _ => "deploy queued".into(),
+    };
+    let payload = EventPayload::Deploy {
+        step,
+        commit,
+        status: Some("due".into()),
+        output: None,
+    };
+    (text, payload)
+}
+
+fn deploy_result(detail: &serde_json::Value) -> (String, EventPayload) {
+    let step = string(detail, "step");
+    let commit = string(detail, "commit");
+    let status = string(detail, "status");
+    let output = string(detail, "output");
+    let verb = match status.as_deref() {
+        Some("passed") => "deployed",
+        Some("failed") => "deploy failed",
+        Some("skipped") => "deploy skipped",
+        _ => "deploy finished",
+    };
+    let text = match (&step, &commit) {
+        (Some(step), Some(commit)) => format!("{verb} {step} at {}", short(commit)),
+        (Some(step), None) => format!("{verb} {step}"),
+        _ => verb.into(),
+    };
+    let payload = EventPayload::Deploy {
+        step,
+        commit,
+        status,
         output,
     };
     (text, payload)

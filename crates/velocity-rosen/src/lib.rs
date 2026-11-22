@@ -18,6 +18,7 @@ mod checkout;
 pub mod collapse_link;
 mod conflicts;
 pub mod connection;
+pub mod deploy;
 pub mod dispatch;
 mod events;
 mod git_base;

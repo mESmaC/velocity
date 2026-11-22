@@ -421,6 +421,15 @@ fn project_entry(event: &Event) -> Option<Entry> {
         EventKind::Conflict => "conflict",
         EventKind::Rebased => "rebased",
         EventKind::Reverted => "reverted",
+        EventKind::DeployDue => "deploy",
+        EventKind::DeployResult => {
+            match event.detail.get("status").and_then(|value| value.as_str()) {
+                Some("passed") => "deployed",
+                Some("failed") => "deploy failed",
+                Some("skipped") => "deploy skipped",
+                _ => "deploy",
+            }
+        }
         _ => return None,
     };
     let owner = event

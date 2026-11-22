@@ -273,6 +273,22 @@ export const commands = {
 	/**  Expands or collapses one issue row in the rail (#209) and broadcasts the new snapshot. */
 	toggleIssueExpanded: (number: number) => __TAURI_INVOKE<IssuePanelSnapshot_Serialize>("toggle_issue_expanded", { number }),
 	/**
+	 *  `clear_project_deploy_secret` (§3.1): deletes one deploy secret from Windows
+	 *  Credential Manager under `velocity/deploy/<project>/<NAME>` (#594).
+	 */
+	clearProjectDeploySecret: (projectIdentifier: number, name: string) => __TAURI_INVOKE<ProjectDeploySettings_Serialize>("clear_project_deploy_secret", { projectIdentifier, name }),
+	/**
+	 *  `get_project_deploy_settings` (§3.1): reads `[deploy]` steps from `rosen.toml`
+	 *  and reports which named secrets exist in Windows Credential Manager without
+	 *  ever returning secret values (#594).
+	 */
+	getProjectDeploySettings: (projectIdentifier: number) => __TAURI_INVOKE<ProjectDeploySettings_Serialize | null>("get_project_deploy_settings", { projectIdentifier }),
+	/**
+	 *  `set_project_deploy_secret` (§3.1): saves or replaces one deploy secret under
+	 *  `velocity/deploy/<project>/<NAME>` in Windows Credential Manager (#594).
+	 */
+	setProjectDeploySecret: (projectIdentifier: number, name: string, value: string) => __TAURI_INVOKE<ProjectDeploySettings_Serialize>("set_project_deploy_secret", { projectIdentifier, name, value }),
+	/**
 	 *  `adopt_mirror_tip` (§3.1): adopts the diverged mirror tip the project's notice shows,
 	 *  for a mirror whose edits were already ported into Rosen (Rosen #396). Rust takes the
 	 *  tip from the saved divergence; Rosen refuses a tip that moved or was not ported.
@@ -1233,6 +1249,57 @@ export type DependencyWait = {
 	file: string,
 };
 
+/**
+ *  Presence of one project deploy secret in Windows Credential Manager.
+ *  Never carries the secret value.
+ */
+export type DeploySecretStatus = DeploySecretStatus_Serialize | DeploySecretStatus_Deserialize;
+
+/**
+ *  Presence of one project deploy secret in Windows Credential Manager.
+ *  Never carries the secret value.
+ */
+export type DeploySecretStatus_Deserialize = {
+	name: string,
+	target: string,
+	stored: boolean,
+	/**  Names of `[deploy.<step>]` entries that request this secret. */
+	used_by?: string[],
+};
+
+/**
+ *  Presence of one project deploy secret in Windows Credential Manager.
+ *  Never carries the secret value.
+ */
+export type DeploySecretStatus_Serialize = {
+	name: string,
+	target: string,
+	stored: boolean,
+	/**  Names of `[deploy.<step>]` entries that request this secret. */
+	used_by: string[],
+};
+
+/**  Read-only description of one `[deploy.<name>]` step from `rosen.toml`. */
+export type DeployStepSummary = DeployStepSummary_Serialize | DeployStepSummary_Deserialize;
+
+/**  Read-only description of one `[deploy.<name>]` step from `rosen.toml`. */
+export type DeployStepSummary_Deserialize = {
+	name: string,
+	command: string,
+	paths?: string[],
+	secrets?: string[],
+	platforms?: string[],
+};
+
+/**  Read-only description of one `[deploy.<name>]` step from `rosen.toml`. */
+export type DeployStepSummary_Serialize = {
+	name: string,
+	command: string,
+	paths: string[],
+	secrets: string[],
+	platforms: string[],
+};
+
 /**  A design proof found in the Lake project, `proofs/<Feature>/Design.lean`. */
 export type DesignProofEntry = {
 	feature: string,
@@ -1653,10 +1720,10 @@ export type ErrorCardView = {
 export type EventPayload = EventPayload_Serialize | EventPayload_Deserialize;
 
 /**  Typed event detail carried beside an entry's human-readable `text`. */
-export type EventPayload_Deserialize = { type: "rebased"; onto?: string | null; tree?: string | null; regenerate?: string[]; conflicts?: string[] } | { type: "landed"; commit: string } | { type: "conflict"; onto?: string | null; paths?: string[] } | { type: "path_claim"; exclusive?: boolean | null; overlaps?: OverlapDetail_Deserialize[] } | { type: "released"; reason?: string | null; commit?: string | null; path?: string | null; released_by?: string | null; wake?: boolean | null; woken?: WokenDetail[] } | { type: "reverted"; culprit?: string | null; commit?: string | null; output?: string | null };
+export type EventPayload_Deserialize = { type: "rebased"; onto?: string | null; tree?: string | null; regenerate?: string[]; conflicts?: string[] } | { type: "landed"; commit: string } | { type: "conflict"; onto?: string | null; paths?: string[] } | { type: "path_claim"; exclusive?: boolean | null; overlaps?: OverlapDetail_Deserialize[] } | { type: "released"; reason?: string | null; commit?: string | null; path?: string | null; released_by?: string | null; wake?: boolean | null; woken?: WokenDetail[] } | { type: "reverted"; culprit?: string | null; commit?: string | null; output?: string | null } | { type: "deploy"; step?: string | null; commit?: string | null; status?: string | null; output?: string | null };
 
 /**  Typed event detail carried beside an entry's human-readable `text`. */
-export type EventPayload_Serialize = { type: "rebased"; onto?: string; tree?: string; regenerate?: string[]; conflicts?: string[] } | { type: "landed"; commit: string } | { type: "conflict"; onto?: string; paths?: string[] } | { type: "path_claim"; exclusive?: boolean; overlaps?: OverlapDetail_Serialize[] } | { type: "released"; reason?: string; commit?: string; path?: string; released_by?: string; wake?: boolean; woken?: WokenDetail[] } | { type: "reverted"; culprit?: string; commit?: string; output?: string };
+export type EventPayload_Serialize = { type: "rebased"; onto?: string; tree?: string; regenerate?: string[]; conflicts?: string[] } | { type: "landed"; commit: string } | { type: "conflict"; onto?: string; paths?: string[] } | { type: "path_claim"; exclusive?: boolean; overlaps?: OverlapDetail_Serialize[] } | { type: "released"; reason?: string; commit?: string; path?: string; released_by?: string; wake?: boolean; woken?: WokenDetail[] } | { type: "reverted"; culprit?: string; commit?: string; output?: string } | { type: "deploy"; step?: string; commit?: string; status?: string; output?: string };
 
 /**  A rule in the side panel's Flagged list, with its first flagged phrase. */
 export type FlaggedRule = {
@@ -2160,7 +2227,7 @@ export type GraphStatus_Serialize = {
 
 export type HealthSeverity = "Info" | "Warning" | "Error";
 
-export type HealthSignalKind = "MirrorBehind" | "CollapseProactiveAuth" | "CollapseForwarding" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "PostLandStalled" | "UpdaterManifestBehind" | "ReleaseGateRefused" | "AircIssueToolFailed";
+export type HealthSignalKind = "MirrorBehind" | "CollapseProactiveAuth" | "CollapseForwarding" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "PostLandStalled" | "UpdaterManifestBehind" | "ReleaseGateRefused" | "AircIssueToolFailed" | "Deploy";
 
 /**  A model you hid from the pickers by clicking its chip (F15 Models). */
 export type HiddenModel = {
@@ -3846,6 +3913,29 @@ export type ProjectCollapseSettings_Serialize = {
 	relay_allow: CollapseRelayKind[],
 	server_relay_allow: CollapseRelayKind[],
 	relay_revoked: boolean,
+};
+
+/**  Project settings view for `[deploy]` steps and Windows Credential Manager secrets (#594). */
+export type ProjectDeploySettings = ProjectDeploySettings_Serialize | ProjectDeploySettings_Deserialize;
+
+/**  Project settings view for `[deploy]` steps and Windows Credential Manager secrets (#594). */
+export type ProjectDeploySettings_Deserialize = {
+	project_identifier: number,
+	project_name: string,
+	supported: boolean,
+	steps?: DeployStepSummary_Deserialize[],
+	secrets?: DeploySecretStatus_Deserialize[],
+	config_error?: string | null,
+};
+
+/**  Project settings view for `[deploy]` steps and Windows Credential Manager secrets (#594). */
+export type ProjectDeploySettings_Serialize = {
+	project_identifier: number,
+	project_name: string,
+	supported: boolean,
+	steps: DeployStepSummary_Serialize[],
+	secrets: DeploySecretStatus_Serialize[],
+	config_error?: string,
 };
 
 /**

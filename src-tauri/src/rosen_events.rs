@@ -74,6 +74,7 @@ async fn follow_project(application: &AppHandle, project: u32) {
                     }
                     // What a crash or a failed step left undone, before anything new.
                     run_follow_ups(application, project).await;
+                    crate::rosen_deploy::recover_running(application, project);
                     report(crate::rosen_mirror::refresh(application, project).await);
                     if let Some(warm) = &warm {
                         let _ = warm.try_send(());
@@ -211,6 +212,12 @@ async fn consume(
     ) {
         // The independent repair worker reads durable evidence to start or close repairs (#567).
         crate::rosen_landing::wake(application);
+    }
+    if event.kind == velocity_rosen::ProjectEventKind::DeployDue {
+        crate::rosen_deploy::on_deploy_due(application, project, event);
+    }
+    if event.kind == velocity_rosen::ProjectEventKind::DeployResult {
+        crate::rosen_deploy::on_deploy_result(application, project, event);
     }
     if event.kind == velocity_rosen::ProjectEventKind::Mirror {
         report(crate::rosen_mirror::refresh(application, project).await);

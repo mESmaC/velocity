@@ -338,7 +338,7 @@ fn run_one(
 /// `cmd /S /C "<command>"`: with `/S`, cmd drops the outer quotes and runs the rest as
 /// written, so the command's own quotes survive.
 #[cfg(windows)]
-fn shell(command: &str, priority: Priority) -> Command {
+pub(crate) fn shell(command: &str, priority: Priority) -> Command {
     use std::os::windows::process::CommandExt;
     let mut shell = shell_program("cmd", priority);
     shell.raw_arg(format!("/S /C \"{command}\""));
@@ -346,7 +346,7 @@ fn shell(command: &str, priority: Priority) -> Command {
 }
 
 #[cfg(not(windows))]
-fn shell(command: &str, priority: Priority) -> Command {
+pub(crate) fn shell(command: &str, priority: Priority) -> Command {
     #[cfg(unix)]
     use std::os::unix::process::CommandExt;
 
@@ -366,7 +366,7 @@ fn shell_program(program: &str, priority: Priority) -> Command {
 
 /// Reads the deepest active descendant under `root_pid` right before stopping the tree,
 /// so a timed-out or silent post-land check names the hung process (#486).
-fn active_descendant_process(root_pid: u32) -> Option<String> {
+pub(crate) fn active_descendant_process(root_pid: u32) -> Option<String> {
     let mut system = System::new().ok()?;
     system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
     let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
@@ -423,7 +423,7 @@ fn format_process(process: &sysinfo::Process) -> String {
 
 /// Stops the command and what it started: a build left running would hold the folder's
 /// files against the next check.
-fn stop_tree(child: &mut Child) {
+pub(crate) fn stop_tree(child: &mut Child) {
     #[cfg(windows)]
     {
         let _ = hidden_command("taskkill")

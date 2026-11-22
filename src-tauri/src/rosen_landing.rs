@@ -43,6 +43,18 @@ pub fn request_integration(application: &AppHandle, project: u32, commit: Option
     }
 }
 
+/// Appends one project-level activity line (e.g. post-land verification or deploy
+/// progress) to the project's feed and notifies the window (#594).
+pub(crate) fn publish_project_activity(
+    application: &AppHandle,
+    project: u32,
+    actor: &str,
+    kind: DutyEventKind,
+    line: String,
+) {
+    report(TauriLandingHost(application.clone()).publish_activity(project, actor, kind, line));
+}
+
 #[derive(Clone)]
 struct TauriLandingHost(AppHandle);
 

@@ -6,6 +6,7 @@
   import RosenWorkspaces from './RosenWorkspaces.svelte';
   import RosenMirror from './RosenMirror.svelte';
   import CollapseProjectSettings from './CollapseProjectSettings.svelte';
+  import DeploySecretsSettings from './DeploySecretsSettings.svelte';
   import {
     projectCommands,
     workspaceCommands,
@@ -132,6 +133,7 @@
         <RosenMirror state={mirror} />
         {#if projectIdentifier !== null}
           <CollapseProjectSettings project={projectIdentifier} />
+          <DeploySecretsSettings project={projectIdentifier} />
         {/if}
         {#if projectIdentifier !== null && githubView}
           <section>

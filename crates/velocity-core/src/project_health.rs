@@ -54,6 +54,7 @@ pub enum HealthSignalKind {
     UpdaterManifestBehind,
     ReleaseGateRefused,
     AircIssueToolFailed,
+    Deploy,
 }
 
 /// Persisted record of the latest non-GitHub AIRC issue tool failure for one project (#581).

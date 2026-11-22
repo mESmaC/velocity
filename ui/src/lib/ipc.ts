@@ -4,6 +4,7 @@ export * from './ipc/agents';
 export * from './ipc/appearance';
 export * from './ipc/browser';
 export * from './ipc/collapse';
+export * from './ipc/deploy';
 export * from './ipc/diagnostics';
 export * from './ipc/goal-swarm';
 export * from './ipc/issues';

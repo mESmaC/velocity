@@ -11,6 +11,7 @@ pub mod ci_repairs;
 pub mod continuous_dispatch;
 pub mod deletion;
 pub mod dependencies;
+pub mod deploy_repairs;
 pub mod dispatch;
 pub mod follow_through;
 pub mod goal_selection;

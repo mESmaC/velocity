@@ -8,6 +8,7 @@
 
 pub mod connect;
 pub mod credential;
+pub mod deploy_credential;
 pub mod downstream;
 mod git_credential;
 pub mod health;
@@ -21,6 +22,10 @@ pub use credential::{
     CollapseCredentials, UpdaterSigningKey, forget_credentials, forget_release_token,
     forget_updater_signing_key, load_credentials, load_release_token, load_updater_signing_key,
     resolve_release_token, save_release_token, save_updater_signing_key,
+};
+pub use deploy_credential::{
+    DeploySecretValue, deploy_credentials_supported, forget_deploy_secret, has_deploy_secret,
+    load_deploy_secret, save_deploy_secret,
 };
 pub use downstream::{DownstreamSetup, set_downstream};
 pub use git_credential::{

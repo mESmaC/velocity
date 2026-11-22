@@ -621,11 +621,15 @@ fn ledger_line(record: &AircRecord, nicks: &BTreeSet<String>) -> AircLineView {
 pub fn event_tone(tag: &str) -> AircTone {
     match tag {
         "claim" => AircTone::Claim,
-        "PR" | "issue" | "task" | "swarm" | "pushed" | "updated" => AircTone::Info,
-        "approved" | "merged" | "unblocked" | "rebased" | "proved" => AircTone::Positive,
+        "PR" | "issue" | "task" | "swarm" | "pushed" | "updated" | "deploy" => AircTone::Info,
+        "approved" | "merged" | "unblocked" | "rebased" | "proved" | "deployed" => {
+            AircTone::Positive
+        }
         "overlap" | "statement" | "waits" | "changes" | "shares" | "order" | "stalled"
-        | "at limit" | "reverted" => AircTone::Warning,
-        "refused" | "failed" | "stress" | "conflict" | "broken" => AircTone::Danger,
+        | "at limit" | "reverted" | "deploy skipped" => AircTone::Warning,
+        "refused" | "failed" | "stress" | "conflict" | "broken" | "deploy failed" => {
+            AircTone::Danger
+        }
         "left" | "discovery" | "released" => AircTone::Muted,
         _ => AircTone::Neutral,
     }
