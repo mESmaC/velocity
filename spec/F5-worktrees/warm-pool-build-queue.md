@@ -16,7 +16,7 @@
   An agent may also queue, through `velocity-run`'s `queue_run` or `rosen run --` from the workspace root, an exact command listed under `[generated.commands]` in the base's `rosen.toml`, classified as `RegisteredGenerator` and run in the light run queue (#582).
   Velocity snapshots the workspace before and after a `RegisteredGenerator` run and allows only paths covered by that command's `[generated.commands]` pattern(s) to change; any change outside those patterns is reverted and refused, while unregistered commands (such as plain `cargo test` or the same command without its registered environment prefix) remain refused with the shared refusal message (#582).
   Agents use Rust formatting, UI type-check and lint as applicable.
-  Warm pool prepares install UI dependencies and fetch the Lean cache.
+  Warm pool prepares install UI dependencies, while Mathlib cache preparation runs on demand when a workspace runs `lake` or builds proofs (#546, #676).
   Integration builds use Rosen's `verify` class and wait for a memory-budgeted turn.
   The shared ACP client supplies the same command policy on launch and resume.
   `queue_run` takes an executable, separate arguments, an optional working directory and a Rosen class, and returns a durable run ID, queue position and estimated wait (#536).
