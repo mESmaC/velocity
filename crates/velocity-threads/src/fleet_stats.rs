@@ -114,12 +114,41 @@ fn build_project_report(
             .values()
             .find(|record| record.issue == number)
     });
+    let recent_outcomes: Vec<Value> = project
+        .fleet_ledger
+        .improvement_outcomes
+        .iter()
+        .take(20)
+        .map(|outcome| {
+            json!({
+                "repository": outcome.repository,
+                "issue": outcome.issue,
+                "title": outcome.title,
+                "url": outcome.url,
+                "landed_commit": outcome.landed_commit,
+                "landed_at": outcome.landed_at,
+                "measured_at": outcome.measured_at,
+                "target_metric": outcome.target_metric_raw,
+                "metric": outcome.metric,
+                "direction": outcome.direction,
+                "before": outcome.before_value(),
+                "after": outcome.after_value(),
+                "relative_change_pct": outcome.relative_change_pct(),
+                "before_samples": outcome.before_samples,
+                "after_samples": outcome.after_samples,
+                "verdict": outcome.verdict,
+                "regression_issue": outcome.regression_issue,
+                "regression_issue_url": outcome.regression_issue_url,
+            })
+        })
+        .collect();
     json!({
         "project_id": project.id,
         "name": project.name,
         "repository": repository,
         "summary": summary,
         "matched_issue": matched_issue.map(issue_report),
+        "improvement_outcomes": recent_outcomes,
     })
 }
 
@@ -147,6 +176,7 @@ fn issue_report(record: &FleetIssueRecord) -> Value {
         "issue": record.issue,
         "title": record.title,
         "url": record.url,
+        "target_metric": record.target_metric,
         "change": record.change,
         "landed_commit": record.landed_commit,
         "thread_id": record.thread_id,

@@ -11,6 +11,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use velocity_core::improvement_outcomes::format_outcome_digest_line;
 use velocity_core::improvement_scout::{
     ImprovementDigestInput, ImprovementTrigger, VelocityLogDigest, build_compact_digest,
     parse_velocity_log_since, signal_fingerprint,
@@ -53,7 +54,7 @@ pub fn collect_digest(
         friction_groups: read_friction_below_threshold(app_data, projects),
         velocity_log,
         rosen_stats: read_rosen_stats_summary(app_data, projects),
-        prior_outcomes: read_prior_outcomes_summary(app_data),
+        prior_outcomes: read_prior_outcomes_summary(app_data, projects),
     };
     let fingerprint = signal_fingerprint(&input);
     let markdown = build_compact_digest(&input);
@@ -225,8 +226,38 @@ fn run_with_timeout(mut command: Command, limit: Duration) -> Option<std::proces
     }
 }
 
-/// Reads measured outcomes of earlier `self-improvement` issues when #621 is present.
-fn read_prior_outcomes_summary(app_data: &Path) -> Option<String> {
+/// Reads measured outcomes of earlier `self-improvement` issues from each project's
+/// persisted `fleet_ledger.improvement_outcomes` (#621), falling back to legacy files.
+fn read_prior_outcomes_summary(app_data: &Path, projects: &[ProjectItem]) -> Option<String> {
+    let mut persisted: Vec<(
+        &str,
+        &velocity_core::improvement_outcomes::ImprovementOutcomeRecord,
+    )> = projects
+        .iter()
+        .flat_map(|project| {
+            project
+                .fleet_ledger
+                .improvement_outcomes
+                .iter()
+                .map(move |outcome| (project.name.as_str(), outcome))
+        })
+        .collect();
+    if !persisted.is_empty() {
+        persisted.sort_by(|left, right| {
+            right
+                .1
+                .measured_at
+                .cmp(&left.1.measured_at)
+                .then_with(|| right.1.landed_at.cmp(&left.1.landed_at))
+                .then_with(|| right.1.issue.cmp(&left.1.issue))
+        });
+        let lines: Vec<String> = persisted
+            .into_iter()
+            .take(MAX_OUTCOME_LINES)
+            .map(|(project_name, outcome)| format_outcome_digest_line(project_name, outcome))
+            .collect();
+        return Some(lines.join("\n"));
+    }
     for candidate in [
         "self-improvement-outcomes.json",
         "improvement-outcomes.json",

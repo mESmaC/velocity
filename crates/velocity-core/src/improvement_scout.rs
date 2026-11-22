@@ -604,16 +604,23 @@ fn append_velocity_log_section(out: &mut String, log: &VelocityLogDigest) {
     }
 }
 
-/// Extracts the value after `Target metric:` on any line (stripping Markdown bold markers).
+/// Extracts the value after `Target metric:` on any line (stripping Markdown bold and list markers).
 pub fn parse_target_metric_line(text: &str) -> Option<String> {
     for line in text.lines() {
-        let plain = line.trim().replace("**", "");
-        let rest = plain
-            .get(..14)
-            .filter(|head| head.eq_ignore_ascii_case("target metric:"))
-            .map(|_| plain[14..].trim())?;
-        if !rest.is_empty() {
-            return Some(collapse_whitespace(rest));
+        let plain = line
+            .trim()
+            .trim_start_matches(['-', '*', '•'])
+            .trim()
+            .replace("**", "");
+        let Some((head, rest)) = plain.split_once(':') else {
+            continue;
+        };
+        if !head.trim().eq_ignore_ascii_case("target metric") {
+            continue;
+        }
+        let value = rest.trim();
+        if !value.is_empty() {
+            return Some(collapse_whitespace(value));
         }
     }
     None
@@ -907,6 +914,17 @@ unix 204.000 [post-land] integration build failed and reverted change abc\n";
         );
         assert!(validate_target_metric("make dispatch better").is_err());
         assert!(validate_target_metric("").is_err());
+        assert_eq!(
+            parse_target_metric_line(
+                "## Why\n\nToo slow.\n\n**Target metric:** idle slot-minutes per day, down\n"
+            )
+            .as_deref(),
+            Some("idle slot-minutes per day, down")
+        );
+        assert_eq!(
+            parse_target_metric_line("Intro line\n- Target metric: lands per hour, up").as_deref(),
+            Some("lands per hour, up")
+        );
     }
 
     // Risk (#622): Rosen land counting must seed each project's initial tip without

@@ -9,6 +9,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::improvement_outcomes::{
+    FleetImprovementOutcomeView, ImprovementOutcomeRecord, build_recent_improvement_views,
+};
+
 /// One hour in seconds.
 pub const HOUR_SECONDS: u64 = 3_600;
 /// Retain up to 90 days of hourly idle slot-second buckets.
@@ -61,6 +65,9 @@ pub struct FleetIssueRecord {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Extracted `Target metric:` line from the issue body for post-land evaluation (#621).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_metric: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -200,6 +207,9 @@ pub struct FleetLedger {
     /// Idle slot-seconds accumulated per UTC hour start (Unix seconds, multiple of 3600).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub idle_slot_seconds_by_hour: BTreeMap<u64, u64>,
+    /// Measured post-land outcomes for issues with a `Target metric:` line (#621).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub improvement_outcomes: Vec<ImprovementOutcomeRecord>,
 }
 
 impl FleetLedger {
@@ -271,6 +281,31 @@ impl FleetLedger {
         self.issues
             .values_mut()
             .find(|record| record.landed_commit.as_deref() == Some(commit))
+    }
+
+    /// Inserts or updates a measured self-improvement outcome, keeping the newest records bounded (#621).
+    pub fn upsert_improvement_outcome(&mut self, outcome: ImprovementOutcomeRecord) -> bool {
+        if let Some(existing) = self
+            .improvement_outcomes
+            .iter_mut()
+            .find(|item| item.matches_land(&outcome.repository, outcome.issue, outcome.landed_at))
+        {
+            if *existing == outcome {
+                return false;
+            }
+            *existing = outcome;
+            return true;
+        }
+        self.improvement_outcomes.push(outcome);
+        self.improvement_outcomes.sort_by(|left, right| {
+            right
+                .landed_at
+                .cmp(&left.landed_at)
+                .then_with(|| right.issue.cmp(&left.issue))
+        });
+        self.improvement_outcomes
+            .truncate(crate::improvement_outcomes::MAX_IMPROVEMENT_OUTCOMES);
+        true
     }
 }
 
@@ -901,21 +936,24 @@ impl From<&FleetWindowSummary> for FleetWindowView {
     }
 }
 
-/// Complete Fleet status payload for the status pane (last 24 hours and last 7 days, #619).
+/// Complete Fleet status payload for the status pane (last 24 hours, last 7 days, and recent improvements, #619, #621).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 pub struct FleetStatusView {
     pub last_24h: FleetWindowView,
     pub last_7d: FleetWindowView,
+    pub recent_improvements: Vec<FleetImprovementOutcomeView>,
 }
 
 impl FleetStatusView {
     pub fn from_ledger(ledger: &FleetLedger, now_secs: u64) -> Self {
         let last_24h = build_window_summary(ledger, 24, now_secs);
         let last_7d = build_window_summary(ledger, 24 * 7, now_secs);
+        let recent_improvements = build_recent_improvement_views(ledger, now_secs);
         Self {
             last_24h: FleetWindowView::from(&last_24h),
             last_7d: FleetWindowView::from(&last_7d),
+            recent_improvements,
         }
     }
 }

@@ -9,9 +9,11 @@
     watchRosenStatus,
     type BaseCi,
     type CollapseMirrorHealth,
+    type FleetImprovementOutcomeView,
     type FleetOffenderView,
     type FleetStatusView,
     type FleetWindowView,
+    type ImprovementVerdict,
     type LayoutAction,
     type MirrorBehind,
     type RosenStatusChanged,
@@ -353,6 +355,51 @@
       fleetError = String(reason);
     }
   }
+
+  async function openImprovementIssue(item: FleetImprovementOutcomeView) {
+    if (project === null) return;
+    try {
+      if (item.url && item.url.startsWith('https://')) {
+        await collapseCommands.openPage(item.url);
+      } else {
+        await issueCommands.open(project, item.issue);
+      }
+    } catch (reason) {
+      fleetError = String(reason);
+    }
+  }
+
+  async function openRegressionFollowUp(item: FleetImprovementOutcomeView) {
+    if (project === null || item.regression_issue == null) return;
+    try {
+      if (
+        item.regression_issue_url &&
+        item.regression_issue_url.startsWith('https://')
+      ) {
+        await collapseCommands.openPage(item.regression_issue_url);
+      } else {
+        await issueCommands.open(project, item.regression_issue);
+      }
+    } catch (reason) {
+      fleetError = String(reason);
+    }
+  }
+
+  function verdictLabel(verdict: ImprovementVerdict, pending: boolean): string {
+    if (pending) return 'Measuring';
+    switch (verdict) {
+      case 'improved':
+        return 'Improved';
+      case 'regressed':
+        return 'Regressed';
+      case 'insufficient_samples':
+        return 'Low n';
+      case 'unsupported_metric':
+        return 'Unmeasured';
+      default:
+        return 'No change';
+    }
+  }
 </script>
 
 {#if enabled && project !== null}
@@ -644,6 +691,51 @@
                       </div>
                     {/each}
                   {/if}
+                  {#if fleet && fleet.recent_improvements.length}
+                    <p class="fleet-subhead">Recent improvements</p>
+                    {#each fleet.recent_improvements as item (`imp:${item.repository}#${item.issue}:${item.landed_at_secs}`)}
+                      <div class="fleet-improvement">
+                        <div class="fleet-row fleet-improvement-head">
+                          <button
+                            class="fleet-link"
+                            title={item.title ??
+                              `${item.repository}#${item.issue}`}
+                            onclick={() => void openImprovementIssue(item)}
+                          >
+                            #{item.issue}
+                            {#if item.title}
+                              · {item.title}{/if}
+                          </button>
+                          <span
+                            class="fleet-verdict"
+                            class:verdict-ok={!item.pending &&
+                              item.verdict === 'improved'}
+                            class:verdict-err={!item.pending &&
+                              item.verdict === 'regressed'}
+                          >
+                            {verdictLabel(item.verdict, item.pending)}
+                          </span>
+                        </div>
+                        <p class="hint fleet-improvement-detail">
+                          {item.metric_label} ·
+                          {#if item.pending}
+                            {item.pending_summary ?? 'Window open'}
+                          {:else}
+                            {item.before_text} → {item.after_text}
+                            ({item.change_text}, n={item.before_samples}/{item.after_samples})
+                          {/if}
+                          {#if item.regression_issue != null}
+                            ·
+                            <button
+                              class="fleet-thread"
+                              onclick={() => void openRegressionFollowUp(item)}
+                              >Follow-up #{item.regression_issue}</button
+                            >
+                          {/if}
+                        </p>
+                      </div>
+                    {/each}
+                  {/if}
                 {:else}
                   <p class="hint">Loading fleet metrics…</p>
                 {/if}
@@ -930,5 +1022,27 @@
   .fleet-thread:hover {
     color: var(--text);
     text-decoration: underline;
+  }
+  .fleet-improvement {
+    margin: var(--sp-1) 0 0;
+  }
+  .fleet-improvement-head {
+    margin-top: 0;
+  }
+  .fleet-improvement-detail {
+    margin-top: 0;
+    font-size: var(--fs-xs);
+  }
+  .fleet-verdict {
+    flex-shrink: 0;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-medium);
+    color: var(--muted);
+  }
+  .fleet-verdict.verdict-ok {
+    color: var(--ok);
+  }
+  .fleet-verdict.verdict-err {
+    color: var(--err);
   }
 </style>

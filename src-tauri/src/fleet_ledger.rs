@@ -81,6 +81,7 @@ pub(crate) fn record_dispatch(
 ) {
     let now = unix_now();
     let filed_at = parse_rfc3339_seconds(&issue.created_at);
+    let target_metric = velocity_core::improvement_scout::parse_target_metric_line(&issue.body);
     let Ok(mut store) = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -94,6 +95,7 @@ pub(crate) fn record_dispatch(
             issue: issue.number,
             title: Some(issue.title.as_str()),
             url: Some(issue.url.as_str()),
+            target_metric: target_metric.as_deref(),
             filed_at,
             thread_id,
             provider,
@@ -156,6 +158,7 @@ pub(crate) fn record_landed(
     };
     if changed {
         push_collapse_rollups_if_due(application, project, true);
+        crate::improvement_outcomes::wake();
     }
 }
 

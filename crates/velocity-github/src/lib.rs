@@ -14,6 +14,7 @@ mod gh_command;
 pub mod github_issue_sync;
 pub mod graph_indexer_pin;
 mod http_transport;
+mod improvement_outcomes;
 pub mod improvement_scout;
 mod issue_cache;
 mod issue_dependencies;

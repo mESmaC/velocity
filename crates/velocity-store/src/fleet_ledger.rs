@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use velocity_core::fleet_ledger::{
     FleetCheckRecord, FleetIssueRecord, FleetLedger, FleetStatusView, issue_key,
 };
+use velocity_core::improvement_outcomes::ImprovementOutcomeRecord;
 
 use crate::{StateStore, StoreError, ThreadItem};
 
@@ -22,6 +23,7 @@ pub struct FleetDispatchInput<'a> {
     pub issue: u32,
     pub title: Option<&'a str>,
     pub url: Option<&'a str>,
+    pub target_metric: Option<&'a str>,
     pub filed_at: Option<u64>,
     pub thread_id: u32,
     pub provider: &'a str,
@@ -70,6 +72,11 @@ impl StateStore {
                 }
                 if let Some(url) = input.url.filter(|value| !value.trim().is_empty()) {
                     entry.url = Some(url.to_owned());
+                }
+                if let Some(target_metric) =
+                    input.target_metric.filter(|value| !value.trim().is_empty())
+                {
+                    entry.target_metric = Some(target_metric.to_owned());
                 }
                 entry.thread_id = Some(input.thread_id);
                 if !input.provider.trim().is_empty() {
@@ -389,6 +396,80 @@ impl StateStore {
             })?
             .unwrap_or(false))
     }
+
+    /// Persists a newly measured post-land self-improvement outcome (#621).
+    pub fn record_fleet_improvement_outcome(
+        &mut self,
+        project: u32,
+        outcome: ImprovementOutcomeRecord,
+    ) -> Result<bool, StoreError> {
+        Ok(self
+            .edit_project_in_place(project, |project| {
+                let changed = project.fleet_ledger.upsert_improvement_outcome(outcome);
+                (changed, changed)
+            })?
+            .unwrap_or(false))
+    }
+
+    /// Marks an improvement outcome's issue comment as posted (#621).
+    pub fn mark_fleet_improvement_commented(
+        &mut self,
+        project: u32,
+        repository: &str,
+        issue: u32,
+        landed_at: u64,
+        commented_at: u64,
+    ) -> Result<bool, StoreError> {
+        Ok(self
+            .edit_project_in_place(project, |project| {
+                let Some(record) = project
+                    .fleet_ledger
+                    .improvement_outcomes
+                    .iter_mut()
+                    .find(|item| item.matches_land(repository, issue, landed_at))
+                else {
+                    return (false, false);
+                };
+                if record.commented_at.is_some() {
+                    return (false, false);
+                }
+                record.commented_at = Some(commented_at);
+                (true, true)
+            })?
+            .unwrap_or(false))
+    }
+
+    /// Records the follow-up `self-improvement` issue filed for a regressed outcome (#621).
+    pub fn record_fleet_improvement_regression_issue(
+        &mut self,
+        project: u32,
+        repository: &str,
+        issue: u32,
+        landed_at: u64,
+        regression_issue: u32,
+        regression_issue_url: Option<&str>,
+    ) -> Result<bool, StoreError> {
+        Ok(self
+            .edit_project_in_place(project, |project| {
+                let Some(record) = project
+                    .fleet_ledger
+                    .improvement_outcomes
+                    .iter_mut()
+                    .find(|item| item.matches_land(repository, issue, landed_at))
+                else {
+                    return (false, false);
+                };
+                if record.regression_issue == Some(regression_issue) {
+                    return (false, false);
+                }
+                record.regression_issue = Some(regression_issue);
+                record.regression_issue_url = regression_issue_url
+                    .filter(|url| !url.trim().is_empty())
+                    .map(str::to_owned);
+                (true, true)
+            })?
+            .unwrap_or(false))
+    }
 }
 
 fn ensure_thread_record(
@@ -542,6 +623,7 @@ mod tests {
                 issue: 619,
                 title: Some("Fleet ledger"),
                 url: Some("https://collapse.sh/mESmaC/velocity/issues/619"),
+                target_metric: Some("idle slot-minutes per day, down"),
                 filed_at: Some(base_hour - 1_800),
                 thread_id: 10,
                 provider: "antigravity",
@@ -581,6 +663,52 @@ mod tests {
             base_hour + 1_500,
         )?);
         assert!(store.record_fleet_idle_interval(1, base_hour, base_hour + 900, 2)?);
+        let sample_outcome = velocity_core::improvement_outcomes::ImprovementOutcomeRecord {
+            repository: "mESmaC/velocity".into(),
+            issue: 619,
+            title: Some("Fleet ledger".into()),
+            url: Some("https://collapse.sh/mESmaC/velocity/issues/619".into()),
+            change: Some("change-619".into()),
+            landed_commit: Some("abc1234".into()),
+            landed_at: base_hour + 1_080,
+            measured_at: base_hour + 1_080 + 86_400,
+            target_metric_raw: "idle slot-minutes per day, down".into(),
+            metric: Some(
+                velocity_core::improvement_outcomes::TargetMetricKind::IdleSlotMinutesPerDay,
+            ),
+            direction: Some(velocity_core::improvement_outcomes::TargetDirection::Down),
+            before_from_unix: base_hour,
+            before_to_unix: base_hour + 1_080,
+            after_from_unix: base_hour + 1_080,
+            after_to_unix: base_hour + 1_080 + 86_400,
+            before_value_scaled: Some(1_000_000),
+            after_value_scaled: Some(1_300_000),
+            relative_change_bps: Some(3_000),
+            before_samples: 24,
+            after_samples: 24,
+            before_lands: 20,
+            after_lands: 22,
+            verdict: velocity_core::improvement_outcomes::ImprovementVerdict::Regressed,
+            commented_at: None,
+            regression_issue: None,
+            regression_issue_url: None,
+        };
+        assert!(store.record_fleet_improvement_outcome(1, sample_outcome)?);
+        assert!(store.mark_fleet_improvement_commented(
+            1,
+            "mESmaC/velocity",
+            619,
+            base_hour + 1_080,
+            base_hour + 1_080 + 86_460,
+        )?);
+        assert!(store.record_fleet_improvement_regression_issue(
+            1,
+            "mESmaC/velocity",
+            619,
+            base_hour + 1_080,
+            650,
+            Some("https://collapse.sh/mESmaC/velocity/issues/650"),
+        )?);
 
         let reloaded = StateStore::load_or_default(&directory)?;
         let ledger = reloaded
@@ -592,6 +720,17 @@ mod tests {
             .ok_or("missing fleet issue record after reload")?;
         assert_eq!(record.repository, "mESmaC/velocity");
         assert_eq!(record.issue, 619);
+        assert_eq!(
+            record.target_metric.as_deref(),
+            Some("idle slot-minutes per day, down")
+        );
+        assert_eq!(ledger.improvement_outcomes.len(), 1);
+        assert_eq!(ledger.improvement_outcomes[0].issue, 619);
+        assert_eq!(
+            ledger.improvement_outcomes[0].commented_at,
+            Some(base_hour + 1_080 + 86_460)
+        );
+        assert_eq!(ledger.improvement_outcomes[0].regression_issue, Some(650));
         assert_eq!(record.filed_at, Some(base_hour - 1_800));
         assert_eq!(record.dispatched_at, Some(base_hour + 60));
         assert_eq!(record.first_snapshot_at, Some(base_hour + 120));
@@ -693,6 +832,7 @@ mod tests {
                     issue,
                     title: Some("Provider roundtrip"),
                     url: None,
+                    target_metric: None,
                     filed_at: None,
                     thread_id,
                     provider: &key,

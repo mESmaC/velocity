@@ -1901,6 +1901,53 @@ export type FlaggedRule = {
 	message: string,
 };
 
+/**  IPC-safe improvement row shown in the Fleet section of the status pane (#621). */
+export type FleetImprovementOutcomeView = FleetImprovementOutcomeView_Serialize | FleetImprovementOutcomeView_Deserialize;
+
+/**  IPC-safe improvement row shown in the Fleet section of the status pane (#621). */
+export type FleetImprovementOutcomeView_Deserialize = {
+	repository: string,
+	issue: number,
+	title?: string | null,
+	url?: string | null,
+	target_metric: string,
+	metric_label: string,
+	verdict: ImprovementVerdict,
+	before_text: string,
+	after_text: string,
+	change_text: string,
+	before_samples: number,
+	after_samples: number,
+	landed_at_secs: number | null,
+	measured_at_secs: number | null,
+	regression_issue?: number | null,
+	regression_issue_url?: string | null,
+	pending: boolean,
+	pending_summary?: string | null,
+};
+
+/**  IPC-safe improvement row shown in the Fleet section of the status pane (#621). */
+export type FleetImprovementOutcomeView_Serialize = {
+	repository: string,
+	issue: number,
+	title: string | null,
+	url: string | null,
+	target_metric: string,
+	metric_label: string,
+	verdict: ImprovementVerdict,
+	before_text: string,
+	after_text: string,
+	change_text: string,
+	before_samples: number,
+	after_samples: number,
+	landed_at_secs: number | null,
+	measured_at_secs: number | null,
+	regression_issue: number | null,
+	regression_issue_url: string | null,
+	pending: boolean,
+	pending_summary: string | null,
+};
+
 /**  IPC-safe offender row for the status pane (`f64` avoids specta BigInt restrictions). */
 export type FleetOffenderView = FleetOffenderView_Serialize | FleetOffenderView_Deserialize;
 
@@ -1936,19 +1983,21 @@ export type FleetOffenderView_Serialize = {
 	review_findings: number,
 };
 
-/**  Complete Fleet status payload for the status pane (last 24 hours and last 7 days, #619). */
+/**  Complete Fleet status payload for the status pane (last 24 hours, last 7 days, and recent improvements, #619, #621). */
 export type FleetStatusView = FleetStatusView_Serialize | FleetStatusView_Deserialize;
 
-/**  Complete Fleet status payload for the status pane (last 24 hours and last 7 days, #619). */
+/**  Complete Fleet status payload for the status pane (last 24 hours, last 7 days, and recent improvements, #619, #621). */
 export type FleetStatusView_Deserialize = {
 	last_24h: FleetWindowView_Deserialize,
 	last_7d: FleetWindowView_Deserialize,
+	recent_improvements: FleetImprovementOutcomeView_Deserialize[],
 };
 
-/**  Complete Fleet status payload for the status pane (last 24 hours and last 7 days, #619). */
+/**  Complete Fleet status payload for the status pane (last 24 hours, last 7 days, and recent improvements, #619, #621). */
 export type FleetStatusView_Serialize = {
 	last_24h: FleetWindowView_Serialize,
 	last_7d: FleetWindowView_Serialize,
+	recent_improvements: FleetImprovementOutcomeView_Serialize[],
 };
 
 /**  IPC-safe window summary for the status pane Fleet section (#619). */
@@ -2471,6 +2520,9 @@ export type HostSwitchBack = {
 	/**  Whether switching back can be performed directly in one click. */
 	can_switch_back: boolean,
 };
+
+/**  Measured verdict for one self-improvement change after its window closes. */
+export type ImprovementVerdict = "improved" | "no_significant_change" | "regressed" | "insufficient_samples" | "unsupported_metric";
 
 export type IndexState = "Indexing" | "Ready" | "Stale" | "Failed";
 
