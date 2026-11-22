@@ -629,14 +629,14 @@ mod tests {
         Ok(())
     }
 
-    // Risk (#574): moving a GitHub project to a Collapse mirror must keep `github_remote`
-    // pointing at GitHub across save and reload, and edits to `github_remote` must persist
-    // while clearing stale base CI from another repository.
+    // Risk (#574, #613): moving a GitHub project to a Collapse mirror must keep `github_remote`
+    // pointing at GitHub across save and reload while clearing stale GitHub base CI as CI
+    // switches to Rosen, and edits to `github_remote` must persist while clearing stale base CI.
     #[test]
     fn github_remote_survives_collapse_mirror_and_reload() -> Result<(), Box<dyn std::error::Error>>
     {
         use crate::ProjectLocationKind;
-        use velocity_core::base_ci::{BaseCi, BaseCiState};
+        use velocity_core::base_ci::{BaseCi, BaseCiSource, BaseCiState};
 
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -648,31 +648,33 @@ mod tests {
 
         assert!(store.save_github_remote(1, Some("mESmaC/velocity".into()))?);
         assert!(!store.save_github_remote(1, Some("mESmaC/velocity".into()))?);
-        store.save_base_ci(
-            1,
-            Some(BaseCi {
-                source: velocity_core::base_ci::BaseCiSource::GitHub,
-                state: BaseCiState::Green,
-                commit: Some("a".repeat(40)),
-                failing: Vec::new(),
-                running: false,
-            }),
-        )?;
+        let github_ci = BaseCi {
+            source: BaseCiSource::GitHub,
+            state: BaseCiState::Green,
+            commit: Some("a".repeat(40)),
+            ..BaseCi::default()
+        };
+        store.save_base_ci(1, Some(github_ci))?;
         assert!(store.save_collapse_repository(1, Some("owner/velocity".into()), Some(true))?);
 
         let mut store = StateStore::load_or_default(&directory)?;
+        let project = &store.state.projects[0];
+        assert_eq!(project.github_remote.as_deref(), Some("mESmaC/velocity"));
+        assert_eq!(project.location_kind, ProjectLocationKind::GitHub);
         assert_eq!(
-            store.state.projects[0].github_remote.as_deref(),
-            Some("mESmaC/velocity")
-        );
-        assert_eq!(
-            store.state.projects[0].location_kind,
-            ProjectLocationKind::GitHub
-        );
-        assert_eq!(
-            store.state.projects[0].collapse_repository.as_deref(),
+            project.collapse_repository.as_deref(),
             Some("owner/velocity")
         );
+        assert_eq!(project.effective_base_ci_source(), BaseCiSource::Rosen);
+        // Linking a Collapse mirror switches base CI to Rosen and clears stale GitHub CI (#613).
+        assert_eq!(project.base_ci, None);
+
+        let rosen_ci = BaseCi {
+            source: BaseCiSource::Rosen,
+            state: BaseCiState::Green,
+            ..BaseCi::default()
+        };
+        store.save_base_ci(1, Some(rosen_ci))?;
         assert!(store.state.projects[0].base_ci.is_some());
 
         assert!(store.save_github_remote(1, None)?);
