@@ -197,8 +197,17 @@ pub async fn repository_exists(
     name: &str,
 ) -> Result<Option<ProvisionedMirror>, CollapseError> {
     let client = build_client()?;
+    repository_exists_with_client(&client, credentials, owner, name).await
+}
+
+async fn repository_exists_with_client(
+    client: &Client,
+    credentials: &CollapseCredentials,
+    owner: &str,
+    name: &str,
+) -> Result<Option<ProvisionedMirror>, CollapseError> {
     let path = format!("/api/repositories/{}/{}", encode(owner), encode(name));
-    let response = authorized(&client, Method::GET, &path, &credentials.mcp_token)
+    let response = authorized(client, Method::GET, &path, &credentials.mcp_token)
         .send()
         .await
         .map_err(failed)?;
@@ -530,12 +539,39 @@ async fn create_repository(
     {
         return Ok((existing(owner, request.name), false));
     }
+    // A gateway error (502, 503, 504) can arrive after Collapse made the repository, and a
+    // retry would then meet a 409. Adopt what was made; otherwise report the original error.
+    if status.is_server_error()
+        && let Some(made) =
+            adopt_after_server_error(client, credentials, owner, request.name).await?
+    {
+        return Ok((made, false));
+    }
     let reply: RepositoryReply = success(response, "create the repository")
         .await?
         .json()
         .await
         .map_err(failed)?;
     Ok((mirror_from(reply, ProvisionDisposition::Created), false))
+}
+
+/// Checks whether Collapse created `owner/name` despite returning a 5xx on create (#686).
+/// Ignores non-`DeletedPending` probe failures so the caller reports the original create error.
+async fn adopt_after_server_error(
+    client: &Client,
+    credentials: &CollapseCredentials,
+    owner: &str,
+    name: &str,
+) -> Result<Option<ProvisionedMirror>, CollapseError> {
+    match repository_exists_with_client(client, credentials, owner, name).await {
+        Ok(Some(mut made)) => {
+            made.created = true;
+            made.disposition = ProvisionDisposition::Created;
+            Ok(Some(made))
+        }
+        Err(CollapseError::DeletedPending(deleted)) => Err(CollapseError::DeletedPending(deleted)),
+        Ok(None) | Err(_) => Ok(None),
+    }
 }
 
 fn mirror_from(reply: RepositoryReply, disposition: ProvisionDisposition) -> ProvisionedMirror {
