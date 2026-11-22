@@ -155,11 +155,12 @@ mod tests {
     // work after refusal, or stop a keep_going agent while open pieces remain.
     #[test]
     fn lean_work_choice_decisions() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut projected_rows, mut projected_choose_rows) = (0usize, 0usize);
         for line in include_str!("../../../proofs/fixtures/goal-swarm-work-choice.tsv").lines() {
             let fields: Vec<_> = line.split('\t').collect();
-            let flags = parse_flags(fields[1])?;
             match fields[0] {
                 "choose" => {
+                    let flags = parse_flags(fields[1])?;
                     let expected = match fields[3].strip_prefix("claim:") {
                         Some(index) => ChoiceDecision::Claim(index.parse()?),
                         None => ChoiceDecision::Leave,
@@ -167,6 +168,7 @@ mod tests {
                     assert_eq!(choose_open_index(&flags), expected);
                 }
                 "attempt" => {
+                    let flags = parse_flags(fields[1])?;
                     let (index, tag) = fields[2]
                         .split_once(':')
                         .ok_or("missing attempt separator")?;
@@ -185,6 +187,7 @@ mod tests {
                     assert_eq!(resolve_attempt(index.parse()?, reply, &flags), expected);
                 }
                 "merge" => {
+                    let flags = parse_flags(fields[1])?;
                     let expected = match fields[3] {
                         "stop" => PostMergeDecision::Stop,
                         "continue" => PostMergeDecision::Continue,
@@ -192,9 +195,24 @@ mod tests {
                     };
                     assert_eq!(decide_after_merge(fields[2].parse()?, &flags), expected);
                 }
+                "projected" => {
+                    // Persisted store/inventory/claim checks run in velocity_threads::work_pool.
+                    projected_rows += 1;
+                    let _: bool = fields[3].parse()?;
+                }
+                "projected_choose" => {
+                    projected_choose_rows += 1;
+                    let flags = parse_flags(fields[2])?;
+                    let expected = match fields[3].strip_prefix("claim:") {
+                        Some(index) => ChoiceDecision::Claim(index.parse()?),
+                        None => ChoiceDecision::Leave,
+                    };
+                    assert_eq!(choose_open_index(&flags), expected);
+                }
                 other => return Err(format!("unknown fixture kind {other}").into()),
             }
         }
+        assert!(projected_rows > 0 && projected_choose_rows > 0);
         Ok(())
     }
 }

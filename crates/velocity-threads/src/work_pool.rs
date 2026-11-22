@@ -161,38 +161,52 @@ fn issue_pieces(
     project: &ProjectItem,
     checkout: &Path,
     issue_age: Duration,
-    mut issue_evidence: impl FnMut(&GitHubIssue),
+    issue_evidence: impl FnMut(&GitHubIssue),
 ) -> Result<Vec<WorkPiece>, WorkPoolError> {
+    let Some((repository, issues)) = open_issues(project, checkout, issue_age)? else {
+        return Ok(Vec::new());
+    };
+    Ok(issue_pieces_from_open(
+        project,
+        &repository,
+        issues,
+        issue_evidence,
+    ))
+}
+
+fn issue_pieces_from_open(
+    project: &ProjectItem,
+    repository: &str,
+    mut issues: Vec<GitHubIssue>,
+    mut issue_evidence: impl FnMut(&GitHubIssue),
+) -> Vec<WorkPiece> {
     let mut pieces = Vec::new();
-    if let Some((repository, mut issues)) = open_issues(project, checkout, issue_age)? {
-        issues.sort_by(|left, right| {
-            left.created_at
-                .cmp(&right.created_at)
-                .then_with(|| left.number.cmp(&right.number))
-        });
-        // Unlabelled owner questions can also leave an agent holding a claim with
-        // nothing to build (#389). Use the dispatch filter so both sources of work
-        // wait for the owner's answer, including before a question is labelled.
-        for issue in issues.iter().filter(|issue| {
-            crate::continuous_dispatch::actionable_in_project(project, &repository, issue)
-        }) {
-            let assignment = ThreadIssue::new(repository.clone(), issue.number);
-            if project
-                .rosen_issue_completed_for_version(&assignment, IssueVersion::from_github(issue))
-            {
-                continue;
-            }
-            let owner = issue_thread(project, &assignment).map(|thread| thread.id);
-            issue_evidence(issue);
-            pieces.push(WorkPiece::new(
-                WorkKey::issue(&repository, issue.number),
-                issue.title.clone(),
-                issue.url.clone(),
-                owner,
-            ));
+    issues.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.number.cmp(&right.number))
+    });
+    // Unlabelled owner questions can also leave an agent holding a claim with
+    // nothing to build (#389). Use the dispatch filter so both sources of work
+    // wait for the owner's answer, including before a question is labelled.
+    for issue in issues.iter().filter(|issue| {
+        crate::continuous_dispatch::actionable_in_project(project, repository, issue)
+    }) {
+        let assignment = ThreadIssue::new(repository.to_owned(), issue.number);
+        if project.rosen_issue_completed_for_version(&assignment, IssueVersion::from_github(issue))
+        {
+            continue;
         }
+        let owner = issue_thread(project, &assignment).map(|thread| thread.id);
+        issue_evidence(issue);
+        pieces.push(WorkPiece::new(
+            WorkKey::issue(repository, issue.number),
+            issue.title.clone(),
+            issue.url.clone(),
+            owner,
+        ));
     }
-    Ok(pieces)
+    pieces
 }
 
 fn held_rosen_issues(project: &ProjectItem) -> Vec<WorkPiece> {
@@ -329,14 +343,30 @@ fn available_spec_pieces(project: &ProjectItem, spec: &ProjectSpec) -> Vec<WorkP
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
-    use velocity_core::work_pool::{WorkKey, WorkPiece, WorkSources, WorkStatus};
+    use velocity_core::collapse::IssueHost;
+    use velocity_core::goal_swarm_choice::{
+        ChoiceDecision, choose_pool_piece, is_piece_unclaimed, open_flags_for_pool,
+    };
+    use velocity_core::work_pool::{
+        WorkItem, WorkKey, WorkPiece, WorkPool, WorkSources, WorkStatus,
+    };
+    use velocity_github::{GitHubIssue, IssueState};
+    use velocity_store::issues::ThreadIssue;
     use velocity_store::rosen::RosenProgress;
-    use velocity_store::rosen_work::WorkEvidence;
+    use velocity_store::rosen_work::{IssueVersion, WorkEvidence};
     use velocity_store::threads::{NewThread, ThreadError};
-    use velocity_store::{PersistedState, ProjectItem, StateStore, TaskState, VersionControl};
+    use velocity_store::{
+        PersistedState, ProjectItem, StateStore, TaskAttribution, TaskItem, TaskState, ThreadItem,
+        VersionControl,
+    };
 
-    use super::read_selected_work_pool;
+    use super::{issue_pieces_from_open, read_selected_work_pool};
+
+    const FIXTURE_REPO: &str = "owner/repo";
+    const COMPLETED_AT: &str = "2026-01-01T00:00:00Z";
+    const AFTER_COMPLETION: &str = "2026-01-02T00:00:00Z";
 
     // Risk (#636): after landing a task, deleting its thread, reverting, and relanding the
     // detached change, the Work pool and Goal Swarm claim check must both reject the
@@ -483,5 +513,362 @@ mod tests {
             &store.settings(),
         );
         store.add_thread(1, thread)
+    }
+
+    #[derive(Clone, Copy)]
+    struct FixtureSlot {
+        is_issue: bool,
+        source_open: bool,
+        active_owner: bool,
+        airc_held: bool,
+        projection: Option<WorkStatus>,
+        reopened_after: bool,
+        updated_after: bool,
+    }
+
+    struct SeededSlot {
+        spec: FixtureSlot,
+        piece: WorkPiece,
+        issue: Option<GitHubIssue>,
+    }
+
+    struct SeededFixture {
+        directory: PathBuf,
+        store: StateStore,
+        seeded: Vec<SeededSlot>,
+        held_keys: BTreeSet<String>,
+    }
+
+    fn parse_bit(raw: &str) -> Result<bool, Box<dyn std::error::Error>> {
+        match raw {
+            "1" => Ok(true),
+            "0" => Ok(false),
+            other => Err(format!("invalid fixture bit {other}").into()),
+        }
+    }
+
+    fn parse_slot(raw: &str) -> Result<FixtureSlot, Box<dyn std::error::Error>> {
+        let parts: Vec<_> = raw.split(':').collect();
+        let &[kind, src, own, held, proj, reop, upd] = parts.as_slice() else {
+            return Err(format!("invalid fixture slot {raw}").into());
+        };
+        let is_issue = match kind {
+            "task" => false,
+            "issue" => true,
+            other => return Err(format!("invalid slot kind {other}").into()),
+        };
+        let projection = match proj {
+            "absent" => None,
+            "claimed" => Some(WorkStatus::Claimed),
+            "in_change" => Some(WorkStatus::InChange),
+            "landed" => Some(WorkStatus::Landed),
+            "green" => Some(WorkStatus::Green),
+            "reopened" => Some(WorkStatus::Reopened),
+            other => return Err(format!("invalid projection {other}").into()),
+        };
+        Ok(FixtureSlot {
+            is_issue,
+            source_open: parse_bit(src)?,
+            active_owner: parse_bit(own)?,
+            airc_held: parse_bit(held)?,
+            projection,
+            reopened_after: parse_bit(reop)?,
+            updated_after: parse_bit(upd)?,
+        })
+    }
+
+    fn fixture_issue(number: u32, slot: FixtureSlot) -> GitHubIssue {
+        GitHubIssue {
+            id: format!("issue-{number}"),
+            number,
+            title: format!("Issue {number}"),
+            body: String::new(),
+            url: format!("https://example.test/{FIXTURE_REPO}/issues/{number}"),
+            state: if slot.source_open {
+                IssueState::Open
+            } else {
+                IssueState::Closed
+            },
+            author: None,
+            created_at: format!("2026-01-01T00:00:{number:02}Z"),
+            updated_at: if slot.updated_after {
+                AFTER_COMPLETION.into()
+            } else {
+                COMPLETED_AT.into()
+            },
+            closed_at: None,
+            reopened_at: slot.reopened_after.then(|| AFTER_COMPLETION.into()),
+            reopened_by_import: false,
+            reopened_by_non_person: false,
+            labels: Vec::new(),
+            scout: None,
+            milestone: None,
+            open_blocker_count: 0,
+            open_blockers: Vec::new(),
+            closed_blockers: Vec::new(),
+            host: IssueHost::GitHub,
+        }
+    }
+
+    fn fixture_work_item(
+        key: WorkKey,
+        title: String,
+        status: WorkStatus,
+        owner: Option<u32>,
+    ) -> WorkItem {
+        let completed = matches!(status, WorkStatus::Landed | WorkStatus::Green);
+        WorkItem {
+            key,
+            title,
+            thread_identifier: owner,
+            change: Some("change-fixture".into()),
+            status,
+            claimed_at: Some(COMPLETED_AT.into()),
+            updated_at: Some(COMPLETED_AT.into()),
+            landed_at: completed.then(|| COMPLETED_AT.into()),
+            green_at: (status == WorkStatus::Green).then(|| COMPLETED_AT.into()),
+            reverted_at: (status == WorkStatus::Reopened).then(|| COMPLETED_AT.into()),
+            landed_commit: completed.then(|| "commit-fixture".into()),
+            revert_reason: None,
+        }
+    }
+
+    fn seed_slots(
+        row_index: usize,
+        slots: &[FixtureSlot],
+    ) -> Result<SeededFixture, Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("velocity-work-pool-637-{unique}-{row_index}"));
+        std::fs::create_dir_all(&directory)?;
+        let mut state = PersistedState::default();
+        let mut project = ProjectItem::new(1, "Demo".into(), directory.display().to_string());
+        project.version_control = VersionControl::Rosen;
+        project.spec_locked = true;
+        let mut seeded = Vec::new();
+        let mut held_keys = BTreeSet::new();
+        for (index, &spec) in slots.iter().enumerate() {
+            let slot_num = u32::try_from(index + 1)?;
+            let entry = push_slot(&mut project, slot_num, spec);
+            if spec.airc_held {
+                held_keys.insert(entry.piece.key.claim_piece());
+            }
+            seeded.push(entry);
+        }
+        state.projects.push(project);
+        std::fs::write(directory.join("state.json"), serde_json::to_vec(&state)?)?;
+        let store = StateStore::load_or_default(&directory)?;
+        Ok(SeededFixture {
+            directory,
+            store,
+            seeded,
+            held_keys,
+        })
+    }
+
+    fn push_slot(project: &mut ProjectItem, slot_num: u32, spec: FixtureSlot) -> SeededSlot {
+        let owner = spec.active_owner.then(|| {
+            let thread_id = 100 + slot_num;
+            let mut thread = ThreadItem::new(thread_id, format!("Owner {slot_num}"));
+            if spec.is_issue {
+                thread.issue = Some(ThreadIssue::new(FIXTURE_REPO.into(), slot_num));
+            }
+            project.threads.push(thread);
+            thread_id
+        });
+        let (key, title, reference, issue) = if spec.is_issue {
+            let issue = fixture_issue(slot_num, spec);
+            let key = WorkKey::issue(FIXTURE_REPO, slot_num);
+            let (title, url) = (issue.title.clone(), issue.url.clone());
+            (key, title, url, Some(issue))
+        } else {
+            let title = format!("Task {slot_num}");
+            let key = WorkKey::Task {
+                identifier: slot_num,
+            };
+            project.tasks.push(TaskItem {
+                agent_request: None,
+                id: slot_num,
+                text: title.clone(),
+                state: if spec.source_open {
+                    TaskState::Todo
+                } else {
+                    TaskState::Done
+                },
+                added_by: TaskAttribution::User,
+                assigned_thread_id: owner,
+                completed_at: None,
+            });
+            (key, title, "Task List".into(), None)
+        };
+        if let Some(status) = spec.projection {
+            project.rosen_work_items.push(fixture_work_item(
+                key.clone(),
+                title.clone(),
+                status,
+                owner,
+            ));
+        }
+        SeededSlot {
+            spec,
+            piece: WorkPiece::new(key, title, reference, None),
+            issue,
+        }
+    }
+
+    fn production_pool_for_slots(
+        project: &ProjectItem,
+        seeded: &[SeededSlot],
+    ) -> Result<WorkPool, Box<dyn std::error::Error>> {
+        let task_pool = read_selected_work_pool(
+            project,
+            WorkSources {
+                tasks: true,
+                issues: false,
+                sections: false,
+            },
+        )?;
+        let issues: Vec<_> = seeded.iter().filter_map(|s| s.issue.clone()).collect();
+        let issue_pieces = issue_pieces_from_open(project, FIXTURE_REPO, issues, |_| {});
+        let mut ordered = Vec::new();
+        for slot in seeded {
+            let found = if slot.spec.is_issue {
+                issue_pieces.iter().find(|p| p.key == slot.piece.key)
+            } else {
+                task_pool.pieces.iter().find(|p| p.key == slot.piece.key)
+            };
+            if let Some(piece) = found {
+                ordered.push(piece.clone());
+            }
+        }
+        Ok(WorkPool::new(project.id, ordered))
+    }
+
+    fn slot_claim_result(
+        store: &mut StateStore,
+        slot: &SeededSlot,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let claimant = add_thread(store, "Claimant")?;
+        let version = slot
+            .issue
+            .as_ref()
+            .map(IssueVersion::from_github)
+            .unwrap_or_default();
+        Ok(store
+            .claim_goal_piece_for_version(1, claimant, &slot.piece, "vel/claim".into(), version)
+            .is_ok())
+    }
+
+    fn check_projected_row(
+        row_index: usize,
+        fields: &[&str],
+        line: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let spec = parse_slot(fields[1])?;
+        let expected: bool = fields[3].parse()?;
+        let mut fixture = seed_slots(row_index, &[spec])?;
+        let project = fixture.store.project(1).ok_or("missing project")?;
+        let pool = production_pool_for_slots(project, &fixture.seeded)?;
+        let flags = open_flags_for_pool(&pool, &fixture.held_keys);
+        let pool_open = flags.first().copied().unwrap_or(false);
+        assert_eq!(pool_open, expected, "inventory mismatch for {line}");
+        if !spec.airc_held && (!spec.is_issue || spec.source_open) {
+            assert_eq!(
+                slot_claim_result(&mut fixture.store, &fixture.seeded[0])?,
+                expected,
+                "claim predicate mismatch for {line}"
+            );
+        }
+        std::fs::remove_dir_all(fixture.directory)?;
+        Ok(())
+    }
+
+    fn check_projected_choose_row(
+        row_index: usize,
+        fields: &[&str],
+        line: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let specs = fields[1]
+            .split(';')
+            .map(parse_slot)
+            .collect::<Result<Vec<_>, _>>()?;
+        let expected_flags = fields[2]
+            .split(',')
+            .map(parse_bit)
+            .collect::<Result<Vec<_>, _>>()?;
+        let expected = match fields[3].strip_prefix("claim:") {
+            Some(index) => ChoiceDecision::Claim(index.parse()?),
+            None => ChoiceDecision::Leave,
+        };
+        let mut fixture = seed_slots(row_index, &specs)?;
+        let project = fixture.store.project(1).ok_or("missing project")?;
+        let pool = production_pool_for_slots(project, &fixture.seeded)?;
+        let actual_flags: Vec<bool> = fixture
+            .seeded
+            .iter()
+            .map(|slot| {
+                pool.pieces
+                    .iter()
+                    .find(|p| p.key == slot.piece.key)
+                    .is_some_and(|p| is_piece_unclaimed(p, &fixture.held_keys))
+            })
+            .collect();
+        assert_eq!(actual_flags, expected_flags, "flags mismatch for {line}");
+        let chosen = choose_pool_piece(&pool, &fixture.held_keys).map(|piece| piece.key.clone());
+        let expected_key = match expected {
+            ChoiceDecision::Claim(index) => Some(fixture.seeded[index].piece.key.clone()),
+            ChoiceDecision::Leave => None,
+        };
+        assert_eq!(chosen, expected_key, "choice mismatch for {line}");
+        let skipped = match expected {
+            ChoiceDecision::Claim(index) => index,
+            ChoiceDecision::Leave => fixture.seeded.len(),
+        };
+        for slot in &fixture.seeded[..skipped] {
+            if !slot.spec.airc_held && (!slot.spec.is_issue || slot.spec.source_open) {
+                assert!(
+                    !slot_claim_result(&mut fixture.store, slot)?,
+                    "skipped slot unexpectedly claimable for {line}"
+                );
+            }
+        }
+        if let ChoiceDecision::Claim(index) = expected {
+            assert!(
+                slot_claim_result(&mut fixture.store, &fixture.seeded[index])?,
+                "chosen slot rejected by store claim predicate for {line}"
+            );
+        }
+        std::fs::remove_dir_all(fixture.directory)?;
+        Ok(())
+    }
+
+    // Risk (#636, #637, #638): projected Rosen completion (detached Landed/Green tasks and
+    // unchanged Landed/Green issues) must match Lean's F16 model in both production pool
+    // inventory and store claim predicates, while legitimately reopened items stay claimable.
+    #[test]
+    fn lean_projected_eligibility_fixtures() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut projected_rows, mut projected_choose_rows) = (0usize, 0usize);
+        for (row_index, line) in include_str!("../../../proofs/fixtures/goal-swarm-work-choice.tsv")
+            .lines()
+            .enumerate()
+        {
+            let fields: Vec<_> = line.split('\t').collect();
+            match fields.first().copied() {
+                Some("projected") => {
+                    projected_rows += 1;
+                    check_projected_row(row_index, &fields, line)?;
+                }
+                Some("projected_choose") => {
+                    projected_choose_rows += 1;
+                    check_projected_choose_row(row_index, &fields, line)?;
+                }
+                Some("choose" | "attempt" | "merge") => {}
+                other => return Err(format!("unknown fixture kind {other:?}").into()),
+            }
+        }
+        assert!(projected_rows >= 17 && projected_choose_rows >= 5);
+        Ok(())
     }
 }
