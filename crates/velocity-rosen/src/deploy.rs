@@ -16,7 +16,7 @@ use rosen_client::protocol::{
 };
 use rosen_client::run_queue::{self, RunClass, RunQueue};
 use rosen_core::{AgentId, Platform};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use velocity_core::agent_env::is_denied_name;
 use velocity_core::deploy::{DeployRunState, DeployStepSummary, redact_secret_pairs};
 
@@ -198,6 +198,31 @@ pub async fn submit_deploy_result(
         Err(rosen_client::Error::Server(error)) if error.code == ErrorCode::Refused => Ok(None),
         Err(error) => Err(error.into()),
     }
+}
+
+/// Reads the current persisted state of deploy run `run_id` from Rosen's `metadata.sqlite`
+/// (read-only), returning `Ok(None)` when the table or row is absent (#606).
+pub fn deploy_run_state(
+    server: &ProjectServer,
+    run_id: i64,
+) -> Result<Option<DeployRunState>, RosenError> {
+    let Some(connection) = open_deploy_db(server)? else {
+        return Ok(None);
+    };
+    let state: Option<String> = connection
+        .query_row(
+            "SELECT state FROM deploy_runs WHERE id = ?1",
+            [run_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(state.as_deref().and_then(parse_run_state))
+}
+
+/// Removes any leftover `<folder>.rosen-next` staging directory from a crashed or failed
+/// deploy run before materialising or after an interrupted setup (#606).
+pub fn cleanup_deploy_staging(folder: &Path) -> Result<(), RosenError> {
+    crate::checkout::remove_staging_if_present(folder)
 }
 
 /// Reads currently `running` deploy rows from Rosen's `metadata.sqlite` (read-only)

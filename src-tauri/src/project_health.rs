@@ -604,7 +604,8 @@ async fn check_project(application: &AppHandle, app_data: &Path, project: &Proje
     if let Some(item) = check_local_build_restart_health(application, project, now_ms) {
         items.push(item);
     }
-    items.extend(check_deploy_health(project, &server, now_ms).await);
+    crate::rosen_deploy::retry_setup_failures(application, project.id);
+    items.extend(check_deploy_health(application, project, &server, now_ms).await);
     items.extend(check_release_health(application, project, &server, now, now_ms).await);
     items.extend(collect_recent_actions(application, project.id, now, &items));
     stabilize_and_publish(application, project.id, items, now_ms);
@@ -680,6 +681,39 @@ pub(crate) fn record_deploy_failed(
     .with_detail(detail)
     .with_thread(thread);
     upsert_health_item(application, project, item);
+}
+
+/// Records that a `[deploy.<step>]` step hit a setup error and will retry once on the next pass (#606).
+pub(crate) fn record_deploy_retrying(
+    application: &AppHandle,
+    project: u32,
+    step: &str,
+    commit: &str,
+    error: &str,
+) {
+    let now_ms = unix_millis();
+    upsert_health_item(
+        application,
+        project,
+        deploy_retrying_health_item(step, commit, error, now_ms),
+    );
+}
+
+fn deploy_retrying_health_item(
+    step: &str,
+    commit: &str,
+    error: &str,
+    acted_at: u64,
+) -> ProjectHealthItem {
+    ProjectHealthItem::new(
+        deploy_health_key(step),
+        HealthSignalKind::Deploy,
+        HealthSeverity::Warning,
+        format!("Deploy `{step}` setup error at {}", short_commit(commit)),
+        "Retrying once on the next pass",
+        acted_at,
+    )
+    .with_detail(velocity_core::deploy::summarize_output(error, 180))
 }
 
 /// Records that a `[deploy.<step>]` step was skipped (for example missing secrets) (#594).
@@ -845,6 +879,7 @@ fn upsert_health_item(application: &AppHandle, project: u32, item: ProjectHealth
 }
 
 async fn check_deploy_health(
+    application: &AppHandle,
     project: &ProjectItem,
     server: &ProjectServer,
     now_ms: u64,
@@ -858,11 +893,12 @@ async fn check_deploy_health(
     .and_then(Result::ok)
     .unwrap_or_default();
     runs.into_iter()
-        .filter_map(|run| deploy_run_health_item(project, &run, now_ms))
+        .filter_map(|run| deploy_run_health_item(application, project, &run, now_ms))
         .collect()
 }
 
 fn deploy_run_health_item(
+    application: &AppHandle,
     project: &ProjectItem,
     run: &velocity_rosen::deploy::DeployRunRecord,
     now_ms: u64,
@@ -872,14 +908,29 @@ fn deploy_run_health_item(
         .and_then(|value| u64::try_from(value).ok())
         .unwrap_or(now_ms);
     match run.state {
-        velocity_core::deploy::DeployRunState::Running => Some(ProjectHealthItem::new(
-            deploy_health_key(&run.step),
-            HealthSignalKind::Deploy,
-            HealthSeverity::Info,
-            format!("Deploying {} at {}", run.step, short_commit(&run.commit)),
-            "Running [deploy] step in base checkout",
-            acted_at,
-        )),
+        velocity_core::deploy::DeployRunState::Running => {
+            if let Some(retry) = crate::rosen_deploy::pending_setup_retry(
+                application,
+                project.id,
+                &run.step,
+                &run.commit,
+            ) {
+                return Some(deploy_retrying_health_item(
+                    &run.step,
+                    &run.commit,
+                    &retry.error,
+                    retry.failed_at_ms,
+                ));
+            }
+            Some(ProjectHealthItem::new(
+                deploy_health_key(&run.step),
+                HealthSignalKind::Deploy,
+                HealthSeverity::Info,
+                format!("Deploying {} at {}", run.step, short_commit(&run.commit)),
+                "Running [deploy] step in base checkout",
+                acted_at,
+            ))
+        }
         velocity_core::deploy::DeployRunState::Failed => {
             Some(failed_deploy_health_item(project, run, acted_at))
         }

@@ -7,6 +7,8 @@
 //! in `state.json`, never passed to agents, and redacted from all captured
 //! command output before reporting or starting a fix-forward thread.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 
 /// Prefix for deploy secret targets in Windows Credential Manager (#594).
@@ -155,6 +157,81 @@ pub fn summarize_deploy_error(output: &str, max_chars: usize) -> Option<String> 
         Some(error_line) => Some(truncate_chars(error_line, max_chars)),
         None => summarize_output(output, max_chars),
     }
+}
+
+/// Formats the last `max_lines` non-empty redacted output lines for `[deploy]` failure logs,
+/// skipping Velocity's own `[Velocity]` metadata lines when command output is present (#606).
+pub fn format_deploy_failure_tail(
+    output: &str,
+    max_lines: usize,
+    max_chars: usize,
+) -> Option<String> {
+    if max_lines == 0 || max_chars == 0 {
+        return None;
+    }
+    let mut lines: Vec<&str> = output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("[Velocity]"))
+        .take(max_lines)
+        .collect();
+    if lines.is_empty() {
+        lines = output
+            .lines()
+            .rev()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .take(max_lines)
+            .collect();
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    lines.reverse();
+    Some(tail_chars(&lines.join(" | "), max_chars))
+}
+
+/// Formats elapsed deploy execution time concisely for `[deploy]` logs and activity (#606).
+pub fn format_deploy_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs_f64();
+    if seconds < 10.0 {
+        format!("{seconds:.1}s")
+    } else if seconds < 60.0 {
+        format!("{}s", seconds.round() as u64)
+    } else {
+        let total = duration.as_secs();
+        format!("{}m {}s", total / 60, total % 60)
+    }
+}
+
+/// Returns the isolated per-step checkout folder name `deploy-checkout-<step>` (#606).
+pub fn deploy_checkout_folder_name(step: &str) -> String {
+    let cleaned: String = step
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches('-');
+    let slug: String = if trimmed.is_empty() {
+        "step".to_owned()
+    } else {
+        trimmed.chars().take(48).collect()
+    };
+    format!("deploy-checkout-{slug}")
+}
+
+/// Declaration position of `step` in `rosen.toml`'s `[deploy]` list, or `usize::MAX` when absent (#606).
+pub fn deploy_step_position(step_order: &[String], step: &str) -> usize {
+    step_order
+        .iter()
+        .position(|name| name == step)
+        .unwrap_or(usize::MAX)
 }
 
 /// Formats the skip message recorded when required secrets are missing from
@@ -522,6 +599,16 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
         truncated.push('…');
     }
     truncated
+}
+
+fn tail_chars(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_owned();
+    }
+    let skip = count.saturating_sub(max_chars);
+    let kept: String = text.chars().skip(skip).collect();
+    format!("…{kept}")
 }
 
 fn tail_utf8_bytes(text: &str, max_bytes: usize) -> String {

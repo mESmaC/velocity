@@ -8,23 +8,26 @@
 //! before posting `deploy_result`, recording activity/health, or starting a
 //! fix-forward repair thread.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Manager};
 use velocity_core::deploy::{
-    CliScopeFailure, DeploySecretSource, DeploySecretStatus, DeployStepSummary,
-    ProjectDeploySettings, detect_cli_scope_error, extract_secret_sources_line,
-    format_deploy_result_output, format_secret_sources, missing_secrets_output_with_notes,
-    secret_target, summarize_deploy_error, summarize_output, validate_secret_name,
+    CliScopeFailure, DeployRunState, DeploySecretSource, DeploySecretStatus, DeployStepSummary,
+    ProjectDeploySettings, deploy_checkout_folder_name, deploy_step_position,
+    detect_cli_scope_error, extract_secret_sources_line, format_deploy_duration,
+    format_deploy_failure_tail, format_deploy_result_output, format_secret_sources,
+    missing_secrets_output_with_notes, secret_target, summarize_deploy_error, summarize_output,
+    validate_secret_name,
 };
 use velocity_core::duty::DutyEventKind;
 use velocity_core::project_health::short_commit;
 use velocity_rosen::deploy::{
-    DeployCommandOutcome, DeployDue, MAX_REPORTED_BYTES, RosenDeployStatus, deploy_steps,
-    parse_deploy_due, parse_deploy_result, platform_matches_host, run_deploy_command,
-    running_deploys, submit_deploy_result,
+    DeployCommandOutcome, DeployDue, MAX_REPORTED_BYTES, RosenDeployStatus, cleanup_deploy_staging,
+    deploy_run_state, deploy_steps, parse_deploy_due, parse_deploy_result, platform_matches_host,
+    run_deploy_command, running_deploys, submit_deploy_result,
 };
 use velocity_rosen::deploy_cli::{
     CliSecretLookup, load_cli_fallback_secret, probe_cli_fallback_source,
@@ -41,40 +44,235 @@ use crate::state::ManagedStateStore;
 use crate::threads::{ManagedThreads, lock, report};
 
 const DEPLOY_ACTOR: &str = "deploy";
-const DEPLOY_FOLDER: &str = "deploy-checkout";
 const SOURCE: &str = "deploy";
+const FAILURE_LOG_LINES: usize = 3;
+const FAILURE_LOG_CHARS: usize = 400;
+
+/// Setup failure waiting for its single next-pass retry on the same green commit (#606).
+#[derive(Clone, Debug)]
+pub(crate) struct PendingSetupRetry {
+    pub(crate) due: DeployDue,
+    pub(crate) error: String,
+    pub(crate) failed_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SetupRetryDecision {
+    RetryOnNextPass,
+    Exhausted,
+}
+
+#[derive(Default)]
+struct ProjectDeployQueue {
+    running: Option<i64>,
+    worker_active: bool,
+    pending: Vec<DeployDue>,
+    pending_retries: BTreeMap<(String, String), PendingSetupRetry>,
+    retried_once: HashSet<(String, String)>,
+}
 
 #[derive(Default)]
 pub struct ManagedDeployRunner {
-    active_runs: Mutex<HashSet<(u32, i64)>>,
+    projects: Mutex<BTreeMap<u32, ProjectDeployQueue>>,
 }
 
 impl ManagedDeployRunner {
-    fn begin(&self, project: u32, run_id: i64) -> bool {
-        self.active_runs
+    fn lock_projects(&self) -> std::sync::MutexGuard<'_, BTreeMap<u32, ProjectDeployQueue>> {
+        self.projects
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert((project, run_id))
     }
 
-    fn finish(&self, project: u32, run_id: i64) {
-        self.active_runs
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&(project, run_id));
+    fn enqueue_many(&self, project: u32, dues: Vec<DeployDue>) -> bool {
+        if dues.is_empty() {
+            return false;
+        }
+        let mut projects = self.lock_projects();
+        let queue = projects.entry(project).or_default();
+        let mut added = false;
+        for due in dues {
+            let duplicate = queue.running == Some(due.id)
+                || queue.pending.iter().any(|item| item.id == due.id)
+                || queue
+                    .pending_retries
+                    .values()
+                    .any(|item| item.due.id == due.id);
+            if !duplicate {
+                queue.pending.push(due);
+                added = true;
+            }
+        }
+        if !added {
+            return false;
+        }
+        queue.pending.sort_by_key(|item| item.id);
+        if queue.worker_active {
+            false
+        } else {
+            queue.worker_active = true;
+            true
+        }
     }
+
+    fn pending_count(&self, project: u32) -> usize {
+        self.lock_projects()
+            .get(&project)
+            .map_or(0, |queue| queue.pending.len())
+    }
+
+    fn pop_next(&self, project: u32, step_order: &[String]) -> Option<DeployDue> {
+        let mut projects = self.lock_projects();
+        let queue = projects.get_mut(&project)?;
+        if queue.pending.is_empty() {
+            queue.running = None;
+            queue.worker_active = false;
+            return None;
+        }
+        let next_index = next_pending_index(&queue.pending, step_order);
+        let due = queue.pending.remove(next_index);
+        queue.running = Some(due.id);
+        Some(due)
+    }
+
+    fn clear_running(&self, project: u32) {
+        if let Some(queue) = self.lock_projects().get_mut(&project) {
+            queue.running = None;
+        }
+    }
+
+    fn record_setup_failure(
+        &self,
+        project: u32,
+        due: &DeployDue,
+        error: &str,
+    ) -> SetupRetryDecision {
+        let mut projects = self.lock_projects();
+        let queue = projects.entry(project).or_default();
+        prune_older_step_retries(queue, &due.step, &due.commit);
+        let key = (due.step.clone(), due.commit.clone());
+        if queue.retried_once.insert(key.clone()) {
+            queue.pending_retries.insert(
+                key,
+                PendingSetupRetry {
+                    due: due.clone(),
+                    error: error.to_owned(),
+                    failed_at_ms: unix_millis(),
+                },
+            );
+            SetupRetryDecision::RetryOnNextPass
+        } else {
+            queue.pending_retries.remove(&key);
+            SetupRetryDecision::Exhausted
+        }
+    }
+
+    fn clear_step_retries(&self, project: u32, step: &str, commit: &str) {
+        if let Some(queue) = self.lock_projects().get_mut(&project) {
+            prune_older_step_retries(queue, step, commit);
+            queue
+                .pending_retries
+                .remove(&(step.to_owned(), commit.to_owned()));
+        }
+    }
+
+    fn schedule_pending_retries(&self, project: u32) -> (Vec<(String, String)>, bool) {
+        let mut projects = self.lock_projects();
+        let Some(queue) = projects.get_mut(&project) else {
+            return (Vec::new(), false);
+        };
+        if queue.pending_retries.is_empty() {
+            return (Vec::new(), false);
+        }
+        let retries: Vec<PendingSetupRetry> = std::mem::take(&mut queue.pending_retries)
+            .into_values()
+            .collect();
+        let mut scheduled = Vec::new();
+        for entry in retries {
+            let duplicate = queue.running == Some(entry.due.id)
+                || queue.pending.iter().any(|item| item.id == entry.due.id);
+            if !duplicate {
+                scheduled.push((entry.due.step.clone(), entry.due.commit.clone()));
+                queue.pending.push(entry.due);
+            }
+        }
+        if scheduled.is_empty() {
+            return (scheduled, false);
+        }
+        queue.pending.sort_by_key(|item| item.id);
+        let spawn_worker = if queue.worker_active {
+            false
+        } else {
+            queue.worker_active = true;
+            true
+        };
+        (scheduled, spawn_worker)
+    }
+
+    fn pending_retry_for(
+        &self,
+        project: u32,
+        step: &str,
+        commit: &str,
+    ) -> Option<PendingSetupRetry> {
+        self.lock_projects()
+            .get(&project)?
+            .pending_retries
+            .get(&(step.to_owned(), commit.to_owned()))
+            .cloned()
+    }
+}
+
+fn prune_older_step_retries(queue: &mut ProjectDeployQueue, step: &str, commit: &str) {
+    queue
+        .pending_retries
+        .retain(|(entry_step, entry_commit), _| entry_step != step || entry_commit == commit);
+    queue
+        .retried_once
+        .retain(|(entry_step, entry_commit)| entry_step != step || entry_commit == commit);
+}
+
+fn next_pending_index(pending: &[DeployDue], step_order: &[String]) -> usize {
+    if pending.len() <= 1 || step_order.is_empty() {
+        return 0;
+    }
+    let mut commit_min_id: HashMap<&str, i64> = HashMap::new();
+    for item in pending {
+        commit_min_id
+            .entry(item.commit.as_str())
+            .and_modify(|min_id| *min_id = (*min_id).min(item.id))
+            .or_insert(item.id);
+    }
+    pending
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, item)| {
+            let group_id = commit_min_id
+                .get(item.commit.as_str())
+                .copied()
+                .unwrap_or(item.id);
+            let step_index = deploy_step_position(step_order, &item.step);
+            (group_id, step_index, item.id)
+        })
+        .map_or(0, |(index, _)| index)
+}
+
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 pub fn initialize(application: &AppHandle) {
     application.manage(ManagedDeployRunner::default());
 }
 
-/// Handles a live or replayed `deploy_due` event from Rosen's event stream (#594).
+/// Handles a live `deploy_due` event from Rosen's event stream (#594, #606).
 pub(crate) fn on_deploy_due(application: &AppHandle, project: u32, event: &ProjectEvent) {
     let Some(due) = parse_deploy_due(event) else {
         return;
     };
-    spawn_deploy(application, project, due);
+    enqueue_deploys(application, project, vec![due]);
 }
 
 /// Handles a `deploy_result` event from Rosen's event stream: closes open deploy
@@ -83,6 +281,9 @@ pub(crate) fn on_deploy_result(application: &AppHandle, project: u32, event: &Pr
     let Some(result) = parse_deploy_result(event) else {
         return;
     };
+    if let Some(runner) = application.try_state::<ManagedDeployRunner>() {
+        runner.clear_step_retries(project, &result.step, &result.commit);
+    }
     if result.status == RosenDeployStatus::Passed {
         close_repairs(application, project, &result.step);
         let sources = extract_secret_sources_line(&result.output);
@@ -119,27 +320,102 @@ pub(crate) fn recover_running(application: &AppHandle, project: u32) {
             .ok()
             .and_then(Result::ok)
             .unwrap_or_default();
-        for due in running {
-            spawn_deploy(&handle, project, due);
-        }
+        enqueue_deploys(&handle, project, running);
     });
 }
 
-fn spawn_deploy(application: &AppHandle, project: u32, due: DeployDue) {
+/// Re-enqueues any deploy step that hit a setup error for its single retry on the next pass (#606).
+pub(crate) fn retry_setup_failures(application: &AppHandle, project: u32) {
     let Some(runner) = application.try_state::<ManagedDeployRunner>() else {
         return;
     };
-    if !runner.begin(project, due.id) {
-        return;
+    let (scheduled, spawn_worker) = runner.schedule_pending_retries(project);
+    for (step, commit) in scheduled {
+        crate::diagnostics::record(
+            SOURCE,
+            &format!(
+                "Project {project} retrying deploy `{step}` at {} after setup error",
+                short_commit(&commit)
+            ),
+        );
     }
+    if spawn_worker {
+        spawn_project_worker(application, project);
+    }
+}
+
+/// Returns the pending setup-error retry for `(project, step, commit)` when waiting for the next pass (#606).
+pub(crate) fn pending_setup_retry(
+    application: &AppHandle,
+    project: u32,
+    step: &str,
+    commit: &str,
+) -> Option<PendingSetupRetry> {
+    application
+        .try_state::<ManagedDeployRunner>()?
+        .pending_retry_for(project, step, commit)
+}
+
+fn enqueue_deploys(application: &AppHandle, project: u32, dues: Vec<DeployDue>) {
+    let Some(runner) = application.try_state::<ManagedDeployRunner>() else {
+        return;
+    };
+    if runner.enqueue_many(project, dues) {
+        spawn_project_worker(application, project);
+    }
+}
+
+fn spawn_project_worker(application: &AppHandle, project: u32) {
     let handle = application.clone();
     tauri::async_runtime::spawn(async move {
-        let run_id = due.id;
-        execute_due(&handle, project, due).await;
-        if let Some(runner) = handle.try_state::<ManagedDeployRunner>() {
-            runner.finish(project, run_id);
-        }
+        drain_project_deploys(&handle, project).await;
     });
+}
+
+async fn drain_project_deploys(application: &AppHandle, project: u32) {
+    loop {
+        let needs_order = application
+            .try_state::<ManagedDeployRunner>()
+            .is_some_and(|runner| runner.pending_count(project) > 1);
+        let step_order = if needs_order {
+            load_step_order(application, project).await
+        } else {
+            Vec::new()
+        };
+        let next = application
+            .try_state::<ManagedDeployRunner>()
+            .and_then(|runner| runner.pop_next(project, &step_order));
+        let Some(due) = next else {
+            return;
+        };
+        execute_due(application, project, due).await;
+        if let Some(runner) = application.try_state::<ManagedDeployRunner>() {
+            runner.clear_running(project);
+        }
+    }
+}
+
+async fn load_step_order(application: &AppHandle, project: u32) -> Vec<String> {
+    let Ok(server) = crate::rosen::server(application, project).await else {
+        return Vec::new();
+    };
+    deploy_steps(&server)
+        .await
+        .map(|steps| steps.into_iter().map(|step| step.name).collect())
+        .unwrap_or_default()
+}
+
+async fn is_run_still_active(server: &ProjectServer, run_id: i64) -> bool {
+    let reading = server.clone();
+    let state = tauri::async_runtime::spawn_blocking(move || deploy_run_state(&reading, run_id))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten();
+    !matches!(
+        state,
+        Some(DeployRunState::Passed | DeployRunState::Failed | DeployRunState::Skipped)
+    )
 }
 
 async fn execute_due(application: &AppHandle, project: u32, due: DeployDue) {
@@ -159,6 +435,9 @@ async fn execute_due(application: &AppHandle, project: u32, due: DeployDue) {
     let Ok(server) = crate::rosen::server(application, project).await else {
         return;
     };
+    if !is_run_still_active(&server, due.id).await {
+        return;
+    }
     let loaded = match load_step_secrets(&landing.project.name, project, &due.secrets).await {
         Ok(SecretLoad::Ready(loaded)) => loaded,
         Ok(SecretLoad::Missing(missing)) => {
@@ -170,7 +449,7 @@ async fn execute_due(application: &AppHandle, project: u32, due: DeployDue) {
             return;
         }
     };
-    let folder = match stage_deploy_folder(&landing, &server, &due.commit).await {
+    let folder = match stage_deploy_folder(&landing, &server, &due.step, &due.commit).await {
         Ok(folder) => folder,
         Err(error) => {
             handle_setup_failure(application, &server, project, &due, &error).await;
@@ -179,6 +458,7 @@ async fn execute_due(application: &AppHandle, project: u32, due: DeployDue) {
     };
     let LoadedSecrets { pairs, sources } = loaded;
     announce_running(application, project, &due, &sources);
+    let started = Instant::now();
     let step_due = due.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         run_deploy_command(&folder, &step_due, &pairs)
@@ -186,7 +466,16 @@ async fn execute_due(application: &AppHandle, project: u32, due: DeployDue) {
     .await
     .map_err(|error| error.to_string())
     .and_then(|inner| inner.map_err(|error| error.to_string()));
-    finish_due(application, &server, project, &due, &sources, outcome).await;
+    finish_due(
+        application,
+        &server,
+        project,
+        &due,
+        &sources,
+        started.elapsed(),
+        outcome,
+    )
+    .await;
 }
 
 async fn finish_due(
@@ -195,11 +484,12 @@ async fn finish_due(
     project: u32,
     due: &DeployDue,
     sources: &[(String, DeploySecretSource)],
+    elapsed: Duration,
     outcome: Result<DeployCommandOutcome, String>,
 ) {
     match outcome {
         Ok(DeployCommandOutcome::Passed { output }) => {
-            handle_passed(application, server, project, due, sources, &output).await;
+            handle_passed(application, server, project, due, sources, elapsed, &output).await;
         }
         Ok(DeployCommandOutcome::Failed {
             exit_code,
@@ -212,6 +502,7 @@ async fn finish_due(
                 project,
                 due,
                 sources,
+                elapsed,
                 exit_code,
                 stopped_reason,
                 &output,
@@ -232,15 +523,14 @@ fn announce_running(
 ) {
     let short = short_commit(&due.commit);
     let source_summary = format_secret_sources(sources);
-    if let Some(summary) = &source_summary {
-        crate::diagnostics::record(
-            SOURCE,
-            &format!(
-                "Project {project} deploy `{}` at {short} using {summary}",
-                due.step
-            ),
-        );
-    }
+    let log_line = match &source_summary {
+        Some(summary) => format!(
+            "Project {project} deploy `{}` at {short} using {summary}",
+            due.step
+        ),
+        None => format!("Project {project} deploy `{}` at {short}", due.step),
+    };
+    crate::diagnostics::record(SOURCE, &log_line);
     let message = match &source_summary {
         Some(summary) => format!("Deploying {} at {short} ({summary})…", due.step),
         None => format!("Deploying {} at {short}…", due.step),
@@ -255,6 +545,33 @@ fn announce_running(
     crate::project_health::record_deploy_running(application, project, &due.step, &due.commit);
 }
 
+async fn submit_and_log_result(
+    server: &ProjectServer,
+    project: u32,
+    due: &DeployDue,
+    status: RosenDeployStatus,
+    output: &str,
+) {
+    let label = status.as_str();
+    match submit_deploy_result(server, due.id, &due.step, &due.commit, status, output).await {
+        Ok(Some(_)) => {}
+        Ok(None) => crate::diagnostics::record(
+            SOURCE,
+            &format!(
+                "Project {project} deploy `{}` (run {}) {label} result was refused by Rosen (already finished or superseded)",
+                due.step, due.id
+            ),
+        ),
+        Err(error) => crate::diagnostics::record(
+            SOURCE,
+            &format!(
+                "Project {project} could not report {label} deploy `{}` (run {}): {error}",
+                due.step, due.id
+            ),
+        ),
+    }
+}
+
 async fn handle_missing_secrets(
     application: &AppHandle,
     server: &ProjectServer,
@@ -262,30 +579,17 @@ async fn handle_missing_secrets(
     due: &DeployDue,
     missing: &[(String, String, Option<String>)],
 ) {
+    clear_step_retries(application, project, due);
     let message = missing_secrets_output_with_notes(missing);
     let short = short_commit(&due.commit);
     crate::diagnostics::record(
         SOURCE,
-        &format!("Project {project} {}: {message}", due.step),
+        &format!(
+            "Project {project} deploy `{}` skipped at {short}: {message}",
+            due.step
+        ),
     );
-    if let Err(error) = submit_deploy_result(
-        server,
-        due.id,
-        &due.step,
-        &due.commit,
-        RosenDeployStatus::Skipped,
-        &message,
-    )
-    .await
-    {
-        crate::diagnostics::record(
-            SOURCE,
-            &format!(
-                "Project {project} could not report skipped deploy `{}`: {error}",
-                due.step
-            ),
-        );
-    }
+    submit_and_log_result(server, project, due, RosenDeployStatus::Skipped, &message).await;
     crate::rosen_landing::publish_project_activity(
         application,
         project,
@@ -308,34 +612,38 @@ async fn handle_passed(
     project: u32,
     due: &DeployDue,
     sources: &[(String, DeploySecretSource)],
+    elapsed: Duration,
     redacted_output: &str,
 ) {
+    clear_step_retries(application, project, due);
     let short = short_commit(&due.commit);
+    let took = format_deploy_duration(elapsed);
     let source_summary = format_secret_sources(sources);
     let reported_output =
         format_deploy_result_output(sources, redacted_output, None, MAX_REPORTED_BYTES);
-    if let Err(error) = submit_deploy_result(
+    let log_line = match &source_summary {
+        Some(summary) => format!(
+            "Project {project} deploy `{}` deployed {short} in {took} ({summary})",
+            due.step
+        ),
+        None => format!(
+            "Project {project} deploy `{}` deployed {short} in {took}",
+            due.step
+        ),
+    };
+    crate::diagnostics::record(SOURCE, &log_line);
+    submit_and_log_result(
         server,
-        due.id,
-        &due.step,
-        &due.commit,
+        project,
+        due,
         RosenDeployStatus::Passed,
         &reported_output,
     )
-    .await
-    {
-        crate::diagnostics::record(
-            SOURCE,
-            &format!(
-                "Project {project} could not report passed deploy `{}`: {error}",
-                due.step
-            ),
-        );
-    }
+    .await;
     close_repairs(application, project, &due.step);
     let activity = match &source_summary {
-        Some(summary) => format!("Deployed {} at {short} · {summary}", due.step),
-        None => format!("Deployed {} at {short}", due.step),
+        Some(summary) => format!("Deployed {} at {short} in {took} · {summary}", due.step),
+        None => format!("Deployed {} at {short} in {took}", due.step),
     };
     crate::rosen_landing::publish_project_activity(
         application,
@@ -360,10 +668,12 @@ async fn handle_failed(
     project: u32,
     due: &DeployDue,
     sources: &[(String, DeploySecretSource)],
+    elapsed: Duration,
     exit_code: Option<i32>,
     stopped_reason: Option<String>,
     redacted_output: &str,
 ) {
+    clear_step_retries(application, project, due);
     let scope_failure = detect_cli_scope_error(redacted_output, sources);
     let reported_output = format_deploy_result_output(
         sources,
@@ -371,32 +681,23 @@ async fn handle_failed(
         scope_failure.as_ref().map(|item| item.output_note.as_str()),
         MAX_REPORTED_BYTES,
     );
-    if let Err(error) = submit_deploy_result(
+    submit_and_log_result(
         server,
-        due.id,
-        &due.step,
-        &due.commit,
+        project,
+        due,
         RosenDeployStatus::Failed,
         &reported_output,
     )
-    .await
-    {
-        crate::diagnostics::record(
-            SOURCE,
-            &format!(
-                "Project {project} could not report failed deploy `{}`: {error}",
-                due.step
-            ),
-        );
-    }
+    .await;
     if let Some(scope) = scope_failure {
-        handle_cli_scope_failure(application, project, due, &scope);
+        handle_cli_scope_failure(application, project, due, elapsed, &scope);
         return;
     }
     handle_repairable_failure(
         application,
         project,
         due,
+        elapsed,
         exit_code,
         stopped_reason,
         &reported_output,
@@ -409,14 +710,16 @@ fn handle_cli_scope_failure(
     application: &AppHandle,
     project: u32,
     due: &DeployDue,
+    elapsed: Duration,
     scope: &CliScopeFailure,
 ) {
     let short = short_commit(&due.commit);
+    let took = format_deploy_duration(elapsed);
     let action = format!("CLI login may lack a required scope; {}", scope.suggestion);
     crate::diagnostics::record(
         SOURCE,
         &format!(
-            "Project {project} deploy `{}` failed at {short}: {} ({action})",
+            "Project {project} deploy `{}` failed at {short} in {took}: {} ({action})",
             due.step, scope.api_error
         ),
     );
@@ -447,50 +750,38 @@ fn handle_cli_scope_failure(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_repairable_failure(
     application: &AppHandle,
     project: u32,
     due: &DeployDue,
+    elapsed: Duration,
     exit_code: Option<i32>,
     stopped_reason: Option<String>,
     reported_output: &str,
     redacted_output: &str,
 ) {
     let short = short_commit(&due.commit);
-    let failure = DeployFailure {
-        run_id: due.id,
-        step: due.step.clone(),
-        commit: due.commit.clone(),
-        command: due.command.clone(),
-        exit_code,
-        stopped_reason,
-        redacted_output: reported_output.to_owned(),
-    };
-    let handle = application.clone();
-    let repair_result = tauri::async_runtime::spawn_blocking(move || {
-        start_deploy_repair(&handle, project, &failure)
-    })
-    .await
-    .map_err(|error| error.to_string())
-    .and_then(|inner| inner);
-    let (action, thread) = match repair_result {
-        Ok(Some(thread_id)) => (
-            "Started fix-forward thread for deploy failure".to_owned(),
-            Some(thread_id),
-        ),
-        Ok(None) => (
-            "Fix-forward thread already open for this deploy failure".to_owned(),
-            open_repair_thread(application, project, &due.step),
-        ),
-        Err(reason) => (
-            format!("Could not start fix-forward thread: {reason}"),
-            None,
-        ),
-    };
+    let took = format_deploy_duration(elapsed);
+    let tail = format_failure_log_tail(redacted_output, exit_code, stopped_reason.as_deref());
+    let (action, thread) = open_or_track_repair(
+        application,
+        project,
+        DeployFailure {
+            run_id: due.id,
+            step: due.step.clone(),
+            commit: due.commit.clone(),
+            command: due.command.clone(),
+            exit_code,
+            stopped_reason,
+            redacted_output: reported_output.to_owned(),
+        },
+    )
+    .await;
     crate::diagnostics::record(
         SOURCE,
         &format!(
-            "Project {project} deploy `{}` failed at {short}: {action}",
+            "Project {project} deploy `{}` failed at {short} in {took}: {tail} ({action})",
             due.step
         ),
     );
@@ -513,6 +804,52 @@ async fn handle_repairable_failure(
     show_failure_toast(application, &due.step, short, &action);
 }
 
+fn format_failure_log_tail(
+    redacted_output: &str,
+    exit_code: Option<i32>,
+    stopped_reason: Option<&str>,
+) -> String {
+    format_deploy_failure_tail(redacted_output, FAILURE_LOG_LINES, FAILURE_LOG_CHARS)
+        .unwrap_or_else(|| {
+            if let Some(reason) = stopped_reason {
+                reason.to_owned()
+            } else if let Some(code) = exit_code {
+                format!("exited with status {code}")
+            } else {
+                "command failed with no output".to_owned()
+            }
+        })
+}
+
+async fn open_or_track_repair(
+    application: &AppHandle,
+    project: u32,
+    failure: DeployFailure,
+) -> (String, Option<u32>) {
+    let step = failure.step.clone();
+    let handle = application.clone();
+    let repair_result = tauri::async_runtime::spawn_blocking(move || {
+        start_deploy_repair(&handle, project, &failure)
+    })
+    .await
+    .map_err(|error| error.to_string())
+    .and_then(|inner| inner);
+    match repair_result {
+        Ok(Some(thread_id)) => (
+            "Started fix-forward thread for deploy failure".to_owned(),
+            Some(thread_id),
+        ),
+        Ok(None) => (
+            "Fix-forward thread already open for this deploy failure".to_owned(),
+            open_repair_thread(application, project, &step),
+        ),
+        Err(reason) => (
+            format!("Could not start fix-forward thread: {reason}"),
+            None,
+        ),
+    }
+}
+
 async fn handle_setup_failure(
     application: &AppHandle,
     server: &ProjectServer,
@@ -520,23 +857,24 @@ async fn handle_setup_failure(
     due: &DeployDue,
     error: &str,
 ) {
+    let decision = application
+        .try_state::<ManagedDeployRunner>()
+        .map_or(SetupRetryDecision::Exhausted, |runner| {
+            runner.record_setup_failure(project, due, error)
+        });
+    if decision == SetupRetryDecision::RetryOnNextPass {
+        record_setup_retry(application, project, due, error);
+        return;
+    }
     let short = short_commit(&due.commit);
-    let _ = submit_deploy_result(
-        server,
-        due.id,
-        &due.step,
-        &due.commit,
-        RosenDeployStatus::Failed,
-        error,
-    )
-    .await;
     crate::diagnostics::record(
         SOURCE,
         &format!(
-            "Project {project} deploy `{}` setup error at {short}: {error}",
+            "Project {project} deploy `{}` failed at {short}: setup error after retry: {error}",
             due.step
         ),
     );
+    submit_and_log_result(server, project, due, RosenDeployStatus::Failed, error).await;
     crate::rosen_landing::publish_project_activity(
         application,
         project,
@@ -549,10 +887,44 @@ async fn handle_setup_failure(
         project,
         &due.step,
         &due.commit,
-        "Deploy step failed before command finished",
+        "Deploy step failed before command finished after retry",
         summarize_output(error, 180),
         None,
     );
+}
+
+fn record_setup_retry(application: &AppHandle, project: u32, due: &DeployDue, error: &str) {
+    let short = short_commit(&due.commit);
+    crate::diagnostics::record(
+        SOURCE,
+        &format!(
+            "Project {project} deploy `{}` setup error at {short}: {error} (retrying once on next pass)",
+            due.step
+        ),
+    );
+    crate::rosen_landing::publish_project_activity(
+        application,
+        project,
+        DEPLOY_ACTOR,
+        DutyEventKind::Wait,
+        format!(
+            "Deploy {} setup error at {short} · retrying once on next pass",
+            due.step
+        ),
+    );
+    crate::project_health::record_deploy_retrying(
+        application,
+        project,
+        &due.step,
+        &due.commit,
+        error,
+    );
+}
+
+fn clear_step_retries(application: &AppHandle, project: u32, due: &DeployDue) {
+    if let Some(runner) = application.try_state::<ManagedDeployRunner>() {
+        runner.clear_step_retries(project, &due.step, &due.commit);
+    }
 }
 
 struct LoadedSecrets {
@@ -617,19 +989,35 @@ async fn load_step_secrets(
 async fn stage_deploy_folder(
     landing: &LandingProject,
     server: &ProjectServer,
+    step: &str,
     commit: &str,
 ) -> Result<PathBuf, String> {
     let folder = project_workspace_root(&landing.project, &landing.worktrees)
         .ok_or_else(|| "Could not resolve the project's workspace folder for deploy".to_owned())?
-        .join(DEPLOY_FOLDER);
-    post_land::stage_commit(server, commit, &folder)
-        .await
-        .map_err(|error| error.to_string())?;
-    let apply_folder = folder.clone();
-    tauri::async_runtime::spawn_blocking(move || checker::apply_staged(&apply_folder))
+        .join(deploy_checkout_folder_name(step));
+    let clean_before = folder.clone();
+    tauri::async_runtime::spawn_blocking(move || cleanup_deploy_staging(&clean_before))
         .await
         .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())?;
+    if let Err(error) = post_land::stage_commit(server, commit, &folder).await {
+        let clean_failed = folder.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || cleanup_deploy_staging(&clean_failed))
+            .await;
+        return Err(error.to_string());
+    }
+    let apply_folder = folder.clone();
+    let applied =
+        tauri::async_runtime::spawn_blocking(move || checker::apply_staged(&apply_folder))
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|inner| inner.map_err(|error| error.to_string()));
+    if let Err(error) = applied {
+        let clean_failed = folder.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || cleanup_deploy_staging(&clean_failed))
+            .await;
+        return Err(error);
+    }
     Ok(folder)
 }
 
@@ -932,4 +1320,70 @@ async fn collect_secret_statuses(
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_due(id: i64, step: &str, commit: &str) -> DeployDue {
+        DeployDue {
+            id,
+            step: step.to_owned(),
+            commit: commit.to_owned(),
+            from: None,
+            command: format!("deploy-{step}"),
+            paths: Vec::new(),
+            secrets: Vec::new(),
+            platforms: Vec::new(),
+        }
+    }
+
+    // Risk (#606): concurrent deploy steps raced on one checkout and setup errors were never
+    // retried. Queued steps for a project must serialize in `rosen.toml` declaration order, and
+    // a setup error must retry exactly once on the next pass for the same green commit.
+    #[test]
+    fn runner_serializes_in_declaration_order_and_retries_setup_once() {
+        let runner = ManagedDeployRunner::default();
+        let commit = "1a2acaffbb2b0000000000000000000000000000";
+        let edge = sample_due(11, "edge", commit);
+        let server = sample_due(12, "server", commit);
+
+        assert!(runner.enqueue_many(3, vec![edge.clone()]));
+        assert!(!runner.enqueue_many(3, vec![server.clone()]));
+
+        let order = vec!["server".to_owned(), "edge".to_owned()];
+        let first = runner.pop_next(3, &order);
+        assert_eq!(
+            first.as_ref().map(|item| item.step.as_str()),
+            Some("server")
+        );
+
+        assert_eq!(
+            runner.record_setup_failure(3, &server, "leftover staging"),
+            SetupRetryDecision::RetryOnNextPass
+        );
+        runner.clear_running(3);
+
+        let second = runner.pop_next(3, &order);
+        assert_eq!(second.as_ref().map(|item| item.step.as_str()), Some("edge"));
+        runner.clear_running(3);
+        assert!(runner.pop_next(3, &order).is_none());
+
+        let (scheduled, spawn_worker) = runner.schedule_pending_retries(3);
+        assert_eq!(scheduled, vec![("server".to_owned(), commit.to_owned())]);
+        assert!(spawn_worker);
+
+        let retried = runner.pop_next(3, &order);
+        assert_eq!(
+            retried.as_ref().map(|item| item.step.as_str()),
+            Some("server")
+        );
+        assert_eq!(
+            runner.record_setup_failure(3, &server, "still failing"),
+            SetupRetryDecision::Exhausted
+        );
+        runner.clear_running(3);
+        assert!(runner.schedule_pending_retries(3).0.is_empty());
+    }
 }

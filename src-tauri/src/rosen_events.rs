@@ -215,7 +215,9 @@ async fn consume(
         // Wake base CI immediately so per-platform Rosen post-land failures start repairs (#591).
         crate::base_ci::wake(application);
     }
-    if event.kind == velocity_rosen::ProjectEventKind::DeployDue {
+    // Historical `deploy_due` events are skipped during rewind because `recover_running`
+    // already restores every authoritative `state = 'running'` row in `rosen.toml` order (#606).
+    if live && event.kind == velocity_rosen::ProjectEventKind::DeployDue {
         crate::rosen_deploy::on_deploy_due(application, project, event);
     }
     if event.kind == velocity_rosen::ProjectEventKind::DeployResult {
