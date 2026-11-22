@@ -362,14 +362,16 @@ pub(crate) fn observation_server(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let store = lock(
-        application.state::<ManagedStateStore>().inner(),
-        "persisted state",
-    )?;
-    let item = store.project(project).ok_or("Unknown project")?;
-    let preferences = store.worktree_preferences(item);
-    let pool = velocity_threads::project_workspace_root(item, &preferences)
-        .map(|root| root.join(WARM_POOL_FOLDER));
+    let pool = {
+        let store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let item = store.project(project).ok_or("Unknown project")?;
+        let preferences = store.worktree_preferences(item);
+        velocity_threads::project_workspace_root(item, &preferences)
+            .map(|root| root.join(WARM_POOL_FOLDER))
+    };
     Ok(ProjectServer::new(&data, project).with_warm_pool_dir(pool))
 }
 
