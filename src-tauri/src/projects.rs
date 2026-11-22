@@ -144,6 +144,9 @@ pub async fn set_project_github_repository(
             let changed = store
                 .save_github_remote(project_identifier, parsed)
                 .map_err(|error| error.to_string())?;
+            if changed {
+                let _ = store.acknowledge_host_sources(project_identifier);
+            }
             let context = store.project(project_identifier).map(|project| {
                 let health = project.collapse_mirror_health.as_ref();
                 (
@@ -177,6 +180,7 @@ pub async fn set_project_github_repository(
                 forwarder_message.as_deref(),
             );
         }
+        crate::project_health::sync_host_source_change(&application, project_identifier);
         crate::base_ci::wake(&application);
     }
     project_github_view(&application, project_identifier).await

@@ -2,8 +2,8 @@
 
 Lands go through after-land review, and the integration build runs on one machine.
 A job that fails only on GitHub's runners, such as a macOS or Linux job, is found by reading GitHub CI on the base.
-Velocity does this for every Rosen project that has a GitHub repository with Issues on GitHub, with `gh` signed in as the owner.
-On a project with Issues on Collapse (or no GitHub repository), Velocity watches Rosen's per-platform post-land failures and checkpoints directly instead of reading GitHub Actions (#591).
+Velocity does this for every Rosen project that has a GitHub repository, does not mirror to Collapse, and has Issues on GitHub, with `gh` signed in as the owner.
+On a project whose `[mirror] remote` is Collapse, on a project with Issues on Collapse, or on a project with no GitHub repository, Velocity never follows GitHub Actions and watches Rosen's per-platform post-land failures and checkpoints directly instead, whatever the issue host (#591, #613).
 Each unreverted, uncovered per-platform failure starts a fix-forward thread naming the platform, the culprit change and commit, and the failure output, and closes once that platform's post-land checkpoint covers the culprit.
 It needs no thread, agent session or window.
 

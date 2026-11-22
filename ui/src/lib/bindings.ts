@@ -153,6 +153,12 @@ export const commands = {
 	getProcessMemory: () => __TAURI_INVOKE<ProcessMemory[]>("get_process_memory"),
 	/**  `get_project_health` (§3.1): returns the active health signals for one project (#509). */
 	getProjectHealth: (projectIdentifier: number) => __TAURI_INVOKE<ProjectHealthView_Serialize>("get_project_health", { projectIdentifier }),
+	/**
+	 *  `resolve_project_host_change` (§3.1): switches a project back to its previous issue host
+	 *  or base CI source in one click, or acknowledges the current setting and clears the health
+	 *  warning (#613).
+	 */
+	resolveProjectHostChange: (projectIdentifier: number, switchBack: boolean) => __TAURI_INVOKE<ProjectHealthView_Serialize>("resolve_project_host_change", { projectIdentifier, switchBack }),
 	getSettings: () => __TAURI_INVOKE<Settings_Serialize>("get_settings"),
 	setSettings: (settings: Settings_Deserialize) => __TAURI_INVOKE<Settings_Serialize>("set_settings", { settings }),
 	getUiZoom: () => __TAURI_INVOKE<UiZoomView>("get_ui_zoom"),
@@ -2414,12 +2420,22 @@ export type GraphStatus_Serialize = {
 
 export type HealthSeverity = "Info" | "Warning" | "Error";
 
-export type HealthSignalKind = "MirrorBehind" | "CollapseProactiveAuth" | "CollapseForwarding" | "CollapseIssuesNotImported" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "PostLandStalled" | "UpdaterManifestBehind" | "ReleaseGateRefused" | "AircIssueToolFailed" | "Deploy" | "LocalBuildRestartFailed";
+export type HealthSignalKind = "MirrorBehind" | "CollapseProactiveAuth" | "CollapseForwarding" | "CollapseIssuesNotImported" | "HostSourceChanged" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "PostLandStalled" | "UpdaterManifestBehind" | "ReleaseGateRefused" | "AircIssueToolFailed" | "Deploy" | "LocalBuildRestartFailed";
 
 /**  A model you hid from the pickers by clicking its chip (F15 Models). */
 export type HiddenModel = {
 	provider: ProviderKind,
 	model: string,
+};
+
+/**  One-click revert metadata for an unexpected issue host or CI source change (#613). */
+export type HostSwitchBack = {
+	/**  Label for the one-click revert button (for example `Switch back to Collapse`). */
+	button_label: string,
+	/**  Label for acknowledging the current host/CI setting without reverting. */
+	keep_label: string,
+	/**  Whether switching back can be performed directly in one click. */
+	can_switch_back: boolean,
 };
 
 export type IndexState = "Indexing" | "Ready" | "Stale" | "Failed";
@@ -4347,6 +4363,8 @@ export type ProjectHealthItem_Deserialize = {
 	action_url?: string | null,
 	/**  Optional label for `action_url` (#611). */
 	action_label?: string | null,
+	/**  Optional one-click revert metadata for `HostSourceChanged` signals (#613). */
+	host_switch_back?: HostSwitchBack | null,
 	/**  Decimal Unix milliseconds when Velocity last acted or updated this signal. */
 	acted_at_ms: string,
 };
@@ -4369,6 +4387,8 @@ export type ProjectHealthItem_Serialize = {
 	action_url?: string,
 	/**  Optional label for `action_url` (#611). */
 	action_label?: string,
+	/**  Optional one-click revert metadata for `HostSourceChanged` signals (#613). */
+	host_switch_back?: HostSwitchBack,
 	/**  Decimal Unix milliseconds when Velocity last acted or updated this signal. */
 	acted_at_ms: string,
 };

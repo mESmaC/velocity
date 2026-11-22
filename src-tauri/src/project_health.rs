@@ -23,11 +23,11 @@ use velocity_core::collapse::{
     downstream_settings_page,
 };
 use velocity_core::project_health::{
-    AIRC_ISSUE_FAILURE_TTL_SECONDS, DISPATCH_IDLE_LIMIT_SECONDS, HealthSeverity, HealthSignalKind,
-    INTEGRATION_UNCOVERED_LANDS, INTEGRATION_UNCOVERED_SECONDS, MIRROR_BEHIND_LIMIT_SECONDS,
-    POST_LAND_STALL_LIMIT_SECONDS, ProjectHealthItem, ProjectHealthView,
-    REVIEW_STUCK_LIMIT_SECONDS, airc_issue_tool_failure_item, format_duration,
-    format_stopped_check_detail, short_commit,
+    AIRC_ISSUE_FAILURE_TTL_SECONDS, DISPATCH_IDLE_LIMIT_SECONDS, HOST_SOURCE_CHANGED_KEY,
+    HealthSeverity, HealthSignalKind, INTEGRATION_UNCOVERED_LANDS, INTEGRATION_UNCOVERED_SECONDS,
+    MIRROR_BEHIND_LIMIT_SECONDS, POST_LAND_STALL_LIMIT_SECONDS, ProjectHealthItem,
+    ProjectHealthView, REVIEW_STUCK_LIMIT_SECONDS, airc_issue_tool_failure_item, format_duration,
+    format_stopped_check_detail, host_source_change_item, short_commit,
 };
 use velocity_core::release::{
     ManifestLag, RefusedGateRecovery, is_beta_release_tag, plan_refused_gate_recovery,
@@ -208,16 +208,159 @@ pub fn get_project_health(application: AppHandle, project_identifier: u32) -> Pr
                 .unwrap_or_default()
         })
         .unwrap_or_default();
-    if !items.iter().any(|item| item.key == COLLAPSE_FORWARDING_KEY)
-        && let Some(project) = persisted_project(&application, project_identifier)
-        && let Some(item) = check_collapse_forwarding(&application, &project, unix_millis())
-    {
-        upsert_item(&mut items, item);
+    if let Some(project) = persisted_project(&application, project_identifier) {
+        if !items.iter().any(|item| item.key == COLLAPSE_FORWARDING_KEY)
+            && let Some(item) = check_collapse_forwarding(&application, &project, unix_millis())
+        {
+            upsert_item(&mut items, item);
+        }
+        if !items.iter().any(|item| item.key == HOST_SOURCE_CHANGED_KEY)
+            && let Some(item) = check_host_source_change(&project)
+        {
+            upsert_item(&mut items, item);
+        }
     }
     ProjectHealthView {
         project_identifier,
         items,
     }
+}
+
+/// `resolve_project_host_change` (§3.1): switches a project back to its previous issue host
+/// or base CI source in one click, or acknowledges the current setting and clears the health
+/// warning (#613).
+#[tauri::command]
+#[specta::specta]
+pub async fn resolve_project_host_change(
+    application: AppHandle,
+    project_identifier: u32,
+    switch_back: bool,
+) -> Result<ProjectHealthView, String> {
+    let (resolution, refresh) = crate::state::try_with_store(&application, move |store| {
+        let resolution = store
+            .resolve_host_source_change(project_identifier, switch_back)
+            .map_err(|error| error.to_string())?;
+        let refresh = matches!(
+            resolution,
+            velocity_store::rosen_mirror::HostChangeResolution::Resolved(_)
+        )
+        .then(|| store.layout_refresh());
+        Ok((resolution, refresh))
+    })
+    .await?;
+    match resolution {
+        velocity_store::rosen_mirror::HostChangeResolution::CannotSwitchBack(reason) => Err(reason),
+        velocity_store::rosen_mirror::HostChangeResolution::NothingPending => {
+            sync_host_source_change(&application, project_identifier);
+            Ok(get_project_health(application, project_identifier))
+        }
+        velocity_store::rosen_mirror::HostChangeResolution::Resolved(outcome) => {
+            finish_resolved_host_change(
+                &application,
+                project_identifier,
+                switch_back,
+                &outcome,
+                refresh,
+            )
+            .await?;
+            Ok(get_project_health(application, project_identifier))
+        }
+    }
+}
+
+async fn finish_resolved_host_change(
+    application: &AppHandle,
+    project: u32,
+    switch_back: bool,
+    outcome: &velocity_store::rosen_mirror::ResolvedHostChange,
+    refresh: Option<velocity_store::projects::LayoutRefresh>,
+) -> Result<(), String> {
+    if let Some(refresh) = refresh {
+        let handle = application.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::layout::apply_refresh_and_publish(&handle, refresh)
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+    }
+    if outcome.issue_host_changed {
+        match outcome.effective_issue_host {
+            IssueHost::Collapse => {
+                if let Some(repo) = outcome.collapse_repository.as_deref() {
+                    velocity_github::IssueClient::invalidate_open_issues_for(
+                        IssueHost::Collapse,
+                        repo,
+                    );
+                }
+                recheck_collapse_import_soon(application, project);
+            }
+            IssueHost::GitHub => {
+                clear_collapse_issues_not_imported(application, project);
+            }
+        }
+    }
+    sync_host_source_change(application, project);
+    crate::base_ci::wake(application);
+    let host_label = match outcome.effective_issue_host {
+        IssueHost::Collapse => "Collapse",
+        IssueHost::GitHub => "GitHub",
+    };
+    let ci_label = match outcome.effective_ci_source {
+        BaseCiSource::Rosen => "Rosen checkpoints",
+        BaseCiSource::GitHub => "GitHub Actions",
+    };
+    let verb = if switch_back {
+        "switched back to"
+    } else {
+        "kept"
+    };
+    let message = format!(
+        "{}: {verb} {host_label} issues and {ci_label}",
+        outcome.project_name
+    );
+    crate::diagnostics::record("collapse", &message);
+    let _ = crate::collapse_mirror::toast(application, message);
+    Ok(())
+}
+
+/// Immediately synchronizes the non-owner host/CI source change row for `project` (#613).
+pub(crate) fn sync_host_source_change(application: &AppHandle, project: u32) {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let next =
+        persisted_project(application, project).and_then(|item| check_host_source_change(&item));
+    let updated = {
+        let mut reg = registry(&managed);
+        let list = reg.views.entry(project).or_default();
+        match next {
+            Some(item) => {
+                let changed = list
+                    .iter()
+                    .find(|existing| existing.key == HOST_SOURCE_CHANGED_KEY)
+                    != Some(&item);
+                upsert_item(list, item);
+                changed.then(|| list.clone())
+            }
+            None => {
+                let before = list.len();
+                list.retain(|existing| existing.key != HOST_SOURCE_CHANGED_KEY);
+                (list.len() != before).then(|| list.clone())
+            }
+        }
+    };
+    if let Some(items) = updated {
+        emit_view(application, project, items);
+    }
+}
+
+fn check_host_source_change(project: &ProjectItem) -> Option<ProjectHealthItem> {
+    let change = project.host_source_change.as_ref()?;
+    host_source_change_item(
+        change,
+        project.collapse_repository.is_some(),
+        project.github_remote.is_some(),
+    )
 }
 
 fn persisted_project(application: &AppHandle, project_identifier: u32) -> Option<ProjectItem> {
@@ -751,6 +894,9 @@ async fn check_project(application: &AppHandle, app_data: &Path, project: &Proje
         items.push(item);
     }
     if let Some(item) = check_collapse_issues_import(application, project, now, now_ms).await {
+        items.push(item);
+    }
+    if let Some(item) = check_host_source_change(project) {
         items.push(item);
     }
     if let Some(item) = check_mirror(application, project, &server, now, now_ms).await {

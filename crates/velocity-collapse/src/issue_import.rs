@@ -82,9 +82,22 @@ pub struct GitHubIssueImportStatus {
 }
 
 impl GitHubIssueImportStatus {
-    /// Whether Collapse has recorded at least one completed GitHub issue import (#612).
+    /// Returns the non-empty `finished_at` timestamp when Collapse's last GitHub issue
+    /// import finished without an error (#613).
+    pub fn finished_without_error_at(&self) -> Option<&str> {
+        if !self.error.trim().is_empty() {
+            return None;
+        }
+        self.finished_at
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    /// Whether Collapse has recorded at least one completed GitHub issue import (#612, #613).
     pub fn has_finished(&self) -> bool {
         self.result.is_some()
+            || self.finished_without_error_at().is_some()
             || self
                 .last_synced_at
                 .as_deref()
@@ -296,4 +309,38 @@ fn simple_failure(message: String) -> IssueImportFailure {
 fn non_empty(text: &str) -> Option<String> {
     let trimmed = text.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GitHubIssueImportStatus;
+
+    #[test]
+    fn finished_without_error_requires_finished_at_and_empty_error() {
+        let finished = GitHubIssueImportStatus {
+            finished_at: Some(" 2026-04-12T10:20:30Z ".into()),
+            error: String::new(),
+            ..GitHubIssueImportStatus::default()
+        };
+        assert_eq!(
+            finished.finished_without_error_at(),
+            Some("2026-04-12T10:20:30Z")
+        );
+        assert!(finished.has_finished());
+
+        let errored = GitHubIssueImportStatus {
+            finished_at: Some("2026-04-12T10:20:30Z".into()),
+            error: "rate limited".into(),
+            ..GitHubIssueImportStatus::default()
+        };
+        assert_eq!(errored.finished_without_error_at(), None);
+
+        let never_finished = GitHubIssueImportStatus {
+            finished_at: Some("   ".into()),
+            error: String::new(),
+            ..GitHubIssueImportStatus::default()
+        };
+        assert_eq!(never_finished.finished_without_error_at(), None);
+        assert!(!never_finished.has_finished());
+    }
 }

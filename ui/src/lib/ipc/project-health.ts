@@ -8,6 +8,7 @@ import {
 export type {
   HealthSeverity,
   HealthSignalKind,
+  HostSwitchBack,
   ProjectHealthChanged,
   ProjectHealthItem,
   ProjectHealthView,
@@ -16,6 +17,7 @@ export type {
 // Per-project health checks and automatic remediation summaries (SPEC.md F5, #509).
 export const projectHealthCommands = {
   get: commands.getProjectHealth,
+  resolveHostChange: commands.resolveProjectHostChange,
 };
 
 export const onProjectHealth = (

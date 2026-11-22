@@ -1,5 +1,9 @@
 <script lang="ts">
-  import { collapseCommands, rosenMirrorCommands } from './ipc';
+  import {
+    collapseCommands,
+    projectHealthCommands,
+    rosenMirrorCommands,
+  } from './ipc';
   import type {
     CollapseMirrorHealth,
     MirrorBehind,
@@ -17,6 +21,7 @@
     collapse = null,
     collapseForwarding = null,
     collapseIssuesImport = null,
+    hostSourceChange = null,
   }: {
     state: MirrorState | null;
     // The project's base trails its mirror while a catch-up is pending (#520).
@@ -32,6 +37,8 @@
     collapseForwarding?: ProjectHealthItem | null;
     // Collapse issue host whose GitHub issues were never imported (#612).
     collapseIssuesImport?: ProjectHealthItem | null;
+    // Non-owner change to effective issue host or base CI source (#613).
+    hostSourceChange?: ProjectHealthItem | null;
   } = $props();
 
   let running = $state('');
@@ -40,16 +47,39 @@
   let importError = $state('');
   let importActionUrl = $state<string | null>(null);
   let importActionLabel = $state<string | null>(null);
+  let resolvingHostChange = $state(false);
+  let hostChangeError = $state('');
 
   $effect(() => {
     void project;
     void collapseIssuesImport;
+    void hostSourceChange;
     if (!collapseIssuesImport) {
       importError = '';
       importActionUrl = null;
       importActionLabel = null;
     }
+    if (!hostSourceChange) {
+      hostChangeError = '';
+    }
   });
+
+  async function resolveHostSourceChange(switchBack: boolean) {
+    const target = project;
+    if (target === null || resolvingHostChange) return;
+    resolvingHostChange = true;
+    hostChangeError = '';
+    try {
+      await projectHealthCommands.resolveHostChange(target, switchBack);
+    } catch (reason) {
+      if (target === project) {
+        hostChangeError =
+          reason instanceof Error ? reason.message : String(reason);
+      }
+    } finally {
+      if (target === project) resolvingHostChange = false;
+    }
+  }
 
   async function importCollapseIssuesNow() {
     const target = project;
@@ -179,6 +209,41 @@
       </div>
     {/if}
     {#if error}<p role="alert">{error}</p>{/if}
+  </section>
+{/if}
+{#if hostSourceChange}
+  {@const switchBack = hostSourceChange.host_switch_back}
+  <section
+    class="mirror-status"
+    role="status"
+    aria-label="Issue host or base CI change"
+  >
+    <strong>{hostSourceChange.signal}</strong>
+    <span>{hostSourceChange.action}</span>
+    {#if hostSourceChange.detail}<pre>{hostSourceChange.detail}</pre>{/if}
+    {#if project !== null && switchBack}
+      <div class="mirror-actions">
+        {#if switchBack.can_switch_back}
+          <button
+            type="button"
+            class="mini"
+            disabled={resolvingHostChange}
+            onclick={() => void resolveHostSourceChange(true)}
+            >{resolvingHostChange
+              ? 'Switching…'
+              : switchBack.button_label}</button
+          >
+        {/if}
+        <button
+          type="button"
+          class="mini"
+          disabled={resolvingHostChange}
+          onclick={() => void resolveHostSourceChange(false)}
+          >{switchBack.keep_label}</button
+        >
+      </div>
+    {/if}
+    {#if hostChangeError}<p role="alert">{hostChangeError}</p>{/if}
   </section>
 {/if}
 {#if collapseIssuesImport}

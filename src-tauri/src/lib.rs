@@ -132,6 +132,7 @@ fn bindings() -> Builder<tauri::Wry> {
         performance::get_performance_diagnostics,
         process_memory::get_process_memory,
         project_health::get_project_health,
+        project_health::resolve_project_host_change,
         state::get_settings,
         state::set_settings,
         state::get_ui_zoom,

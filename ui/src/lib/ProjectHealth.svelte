@@ -20,11 +20,13 @@
     send,
     onForwardingWarning,
     onIssuesImportWarning,
+    onHostSourceChangeWarning,
   }: {
     project: number | null;
     send: (action: LayoutAction) => void;
     onForwardingWarning?: (item: ProjectHealthItem | null) => void;
     onIssuesImportWarning?: (item: ProjectHealthItem | null) => void;
+    onHostSourceChangeWarning?: (item: ProjectHealthItem | null) => void;
   } = $props();
 
   const POPOUT_MS = 8000;
@@ -42,6 +44,8 @@
   let importIssuesError = $state('');
   let importIssuesUrl = $state<string | null>(null);
   let importIssuesUrlLabel = $state<string | null>(null);
+  let resolvingHostChange = $state(false);
+  let hostChangeError = $state('');
   // What each signal said when last shown. The timestamp is left out, so a check
   // that re-confirms the same signal doesn't pop it out again.
   let seen = new Map<string, string>();
@@ -56,7 +60,7 @@
   );
 
   const fingerprint = (item: ProjectHealthItem) =>
-    `${item.severity}|${item.signal}|${item.action}|${item.action_url ?? ''}`;
+    `${item.severity}|${item.signal}|${item.action}|${item.action_url ?? ''}|${item.host_switch_back?.button_label ?? ''}|${item.host_switch_back?.can_switch_back ?? ''}`;
 
   function safeExternalUrl(url: string | null | undefined): string | null {
     if (!url) return null;
@@ -79,6 +83,12 @@
       importIssuesError = '';
       importIssuesUrl = null;
       importIssuesUrlLabel = null;
+    }
+    const hostChangeItem =
+      next.find((item) => item.kind === 'HostSourceChanged') ?? null;
+    onHostSourceChangeWarning?.(hostChangeItem);
+    if (!hostChangeItem) {
+      hostChangeError = '';
     }
   }
 
@@ -163,6 +173,29 @@
     }
   }
 
+  async function resolveHostSourceChange(switchBack: boolean) {
+    const id = currentProject;
+    if (id === null || resolvingHostChange) return;
+    resolvingHostChange = true;
+    hostChangeError = '';
+    try {
+      const view = await projectHealthCommands.resolveHostChange(
+        id,
+        switchBack,
+      );
+      if (id === currentProject && view.project_identifier === id) {
+        receive(view.items, false);
+      }
+    } catch (reason) {
+      if (id === currentProject) {
+        hostChangeError =
+          reason instanceof Error ? reason.message : String(reason);
+      }
+    } finally {
+      if (id === currentProject) resolvingHostChange = false;
+    }
+  }
+
   $effect(() => {
     const id = currentProject;
     items = [];
@@ -171,6 +204,8 @@
     importIssuesError = '';
     importIssuesUrl = null;
     importIssuesUrlLabel = null;
+    resolvingHostChange = false;
+    hostChangeError = '';
     clearPopouts();
     publishHeaderWarnings([]);
     if (id === null) return;
@@ -241,6 +276,32 @@
         type="button"
         onclick={() => openThread(threadId)}>Open thread</button
       >
+    {/if}
+    {#if item.kind === 'HostSourceChanged' && item.host_switch_back && currentProject !== null}
+      {@const switchBack = item.host_switch_back}
+      <div class="health-actions">
+        {#if switchBack.can_switch_back}
+          <button
+            class="mini health-open"
+            type="button"
+            disabled={resolvingHostChange}
+            onclick={() => void resolveHostSourceChange(true)}
+            >{resolvingHostChange
+              ? 'Switching…'
+              : switchBack.button_label}</button
+          >
+        {/if}
+        <button
+          class="mini health-open"
+          type="button"
+          disabled={resolvingHostChange}
+          onclick={() => void resolveHostSourceChange(false)}
+          >{switchBack.keep_label}</button
+        >
+      </div>
+      {#if !popout && hostChangeError}
+        <div class="health-detail" role="alert">{hostChangeError}</div>
+      {/if}
     {/if}
     {#if item.kind === 'CollapseIssuesNotImported' && currentProject !== null}
       <button
@@ -522,5 +583,10 @@
   .health-open {
     justify-self: start;
     margin-top: var(--sp-2);
+  }
+  .health-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
   }
 </style>

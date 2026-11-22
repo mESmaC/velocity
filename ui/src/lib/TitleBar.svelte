@@ -20,11 +20,15 @@
 
   let collapseForwarding = $state<ProjectHealthItem | null>(null);
   let collapseIssuesImport = $state<ProjectHealthItem | null>(null);
+  let hostSourceChange = $state<ProjectHealthItem | null>(null);
   const activeCollapseForwarding = $derived(
     layout?.project_identifier != null ? collapseForwarding : null,
   );
   const activeCollapseIssuesImport = $derived(
     layout?.project_identifier != null ? collapseIssuesImport : null,
+  );
+  const activeHostSourceChange = $derived(
+    layout?.project_identifier != null ? hostSourceChange : null,
   );
 </script>
 
@@ -105,6 +109,7 @@
             {send}
             onForwardingWarning={(item) => (collapseForwarding = item)}
             onIssuesImportWarning={(item) => (collapseIssuesImport = item)}
+            onHostSourceChangeWarning={(item) => (hostSourceChange = item)}
           />
         {/if}
       </div>
@@ -141,5 +146,6 @@
     collapse={layout?.collapse_mirror_health ?? null}
     collapseForwarding={activeCollapseForwarding}
     collapseIssuesImport={activeCollapseIssuesImport}
+    hostSourceChange={activeHostSourceChange}
   />
 </div>

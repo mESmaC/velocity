@@ -46,6 +46,25 @@ pub enum BaseCiSource {
     Rosen,
 }
 
+/// Resolves which CI system Velocity follows for a Rosen project's base (#591, #613).
+///
+/// Projects whose `[mirror] remote` points to Collapse always use Rosen's per-platform
+/// checkpoints, whatever the issue host, because GitHub's copy is not the mirror target.
+pub fn effective_base_ci_source(
+    has_collapse_mirror: bool,
+    issue_host: crate::collapse::IssueHost,
+    saved_ci_source: Option<BaseCiSource>,
+    has_github_remote: bool,
+) -> BaseCiSource {
+    if has_collapse_mirror
+        || issue_host == crate::collapse::IssueHost::Collapse
+        || !has_github_remote
+    {
+        return BaseCiSource::Rosen;
+    }
+    saved_ci_source.unwrap_or(BaseCiSource::GitHub)
+}
+
 /// The CI state of a project's base on its GitHub mirror or Rosen per-platform post-land
 /// checks, kept with the project so it shows at startup before the next read (#507, #591).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -2655,5 +2674,35 @@ test collapse_link::collapse_link_and_unlink_round_trip_with_live_server has bee
         let green_plan = plan_for_verdict(&open, &green_verdict);
         assert!(green_plan.start.is_empty());
         assert_eq!(green_plan.closed, vec![ROSEN_BASE_WORKFLOW]);
+    }
+
+    #[test]
+    fn collapse_mirror_always_uses_rosen_ci_whatever_the_issue_host() {
+        use crate::collapse::IssueHost;
+
+        assert_eq!(
+            effective_base_ci_source(true, IssueHost::GitHub, Some(BaseCiSource::GitHub), true),
+            BaseCiSource::Rosen
+        );
+        assert_eq!(
+            effective_base_ci_source(true, IssueHost::GitHub, None, true),
+            BaseCiSource::Rosen
+        );
+        assert_eq!(
+            effective_base_ci_source(true, IssueHost::Collapse, None, true),
+            BaseCiSource::Rosen
+        );
+        assert_eq!(
+            effective_base_ci_source(false, IssueHost::GitHub, None, true),
+            BaseCiSource::GitHub
+        );
+        assert_eq!(
+            effective_base_ci_source(false, IssueHost::GitHub, Some(BaseCiSource::Rosen), true),
+            BaseCiSource::Rosen
+        );
+        assert_eq!(
+            effective_base_ci_source(false, IssueHost::GitHub, Some(BaseCiSource::GitHub), false),
+            BaseCiSource::Rosen
+        );
     }
 }

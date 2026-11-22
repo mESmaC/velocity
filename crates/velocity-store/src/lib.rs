@@ -1390,10 +1390,29 @@ pub struct ProjectItem {
     pub collapse_mirror_health: Option<velocity_core::collapse::CollapseMirrorHealth>,
     /// Where this project's issues live (`github` or `collapse`) (#589, #612). `None` stays
     /// on GitHub even when the project mirrors to Collapse; Move to Collapse saves
-    /// `IssueHost::Collapse` after its issue import step passes.
+    /// `IssueHost::Collapse` after its issue import step passes, and startup backfill saves
+    /// `IssueHost::Collapse` once when Collapse's import finished without error (#613).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(skip)]
     pub issue_host: Option<velocity_core::collapse::IssueHost>,
+    /// Explicit base CI source override when not forced to Rosen by a Collapse mirror or
+    /// Collapse issue host (#613).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub base_ci_source: Option<velocity_core::base_ci::BaseCiSource>,
+    /// Last effective issue host acknowledged by the owner or startup baseline (#613).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub acknowledged_issue_host: Option<velocity_core::collapse::IssueHost>,
+    /// Last effective base CI source acknowledged by the owner or startup baseline (#613).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub acknowledged_base_ci_source: Option<velocity_core::base_ci::BaseCiSource>,
+    /// Active non-owner change to effective issue host or base CI source, surfaced in
+    /// project health with a one-click way to switch back until resolved (#613).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub host_source_change: Option<velocity_core::project_health::HostSourceChange>,
     /// Post-switch one-way sync of newly opened GitHub issues into Collapse (#612).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(skip)]
@@ -1477,6 +1496,10 @@ impl ProjectItem {
             collapse_relay_allow: None,
             collapse_mirror_health: None,
             issue_host: None,
+            base_ci_source: None,
+            acknowledged_issue_host: None,
+            acknowledged_base_ci_source: None,
+            host_source_change: None,
             github_issue_sync: None,
             rosen_mirror_divergence: None,
             retried_release_runs: Vec::new(),
@@ -1496,15 +1519,26 @@ impl ProjectItem {
     }
 
     /// Effective issue host for this project (#589, #612): uses Collapse only on an explicit
-    /// `IssueHost::Collapse` (saved by Move to Collapse after its import passes or by the
-    /// owner) while a Collapse repository is configured. A project with a Collapse repository
-    /// but no saved host stays on GitHub.
+    /// `IssueHost::Collapse` (saved by Move to Collapse after its import passes, startup
+    /// backfill after a finished import, or by the owner) while a Collapse repository is
+    /// configured. A project with a Collapse repository but no saved host stays on GitHub.
     pub fn effective_issue_host(&self) -> velocity_core::collapse::IssueHost {
         use velocity_core::collapse::IssueHost;
         match self.issue_host {
             Some(IssueHost::Collapse) if self.collapse_repository.is_some() => IssueHost::Collapse,
             _ => IssueHost::GitHub,
         }
+    }
+
+    /// Effective base CI source for this project (#591, #613): projects mirroring to Collapse
+    /// always use Rosen's checkpoints, whatever the issue host.
+    pub fn effective_base_ci_source(&self) -> velocity_core::base_ci::BaseCiSource {
+        velocity_core::base_ci::effective_base_ci_source(
+            self.collapse_repository.is_some(),
+            self.effective_issue_host(),
+            self.base_ci_source,
+            self.github_remote.is_some(),
+        )
     }
 
     /// Effective issue host and configured `owner/name` repository for this project (#589).

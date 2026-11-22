@@ -15,7 +15,6 @@ use velocity_core::base_ci::{
     self, BaseCi, BaseCiSource, BaseCiState, CommitOrder, Failure, OpenRepair, RepairThreadState,
     ResolvedJob, RosenBaseSnapshot, SupersededRepair,
 };
-use velocity_core::collapse::IssueHost;
 use velocity_core::project_health::short_commit;
 use velocity_core::thread_view_model::RosenChangeStage;
 use velocity_github::base_ci::{BaseCiWatch, FailedLog};
@@ -114,16 +113,18 @@ fn subjects(application: &AppHandle) -> Vec<Subject> {
         .iter()
         .filter(|project| project.version_control == VersionControl::Rosen)
         .map(|project| {
-            let mode = if project.effective_issue_host() == IssueHost::Collapse {
-                SubjectMode::Rosen
-            } else if let Some(repository) = project.github_remote.clone() {
-                let branch = project.default_branch.trim();
-                SubjectMode::GitHub {
-                    repository,
-                    branch: if branch.is_empty() { "master" } else { branch }.to_owned(),
-                }
-            } else {
-                SubjectMode::Rosen
+            let mode = match project.effective_base_ci_source() {
+                BaseCiSource::Rosen => SubjectMode::Rosen,
+                BaseCiSource::GitHub => match project.github_remote.clone() {
+                    Some(repository) => {
+                        let branch = project.default_branch.trim();
+                        SubjectMode::GitHub {
+                            repository,
+                            branch: if branch.is_empty() { "master" } else { branch }.to_owned(),
+                        }
+                    }
+                    None => SubjectMode::Rosen,
+                },
             };
             Subject {
                 project: project.id,
@@ -142,10 +143,28 @@ fn look(
 ) -> Result<(), String> {
     match &subject.mode {
         SubjectMode::GitHub { repository, branch } => {
+            // Never follow GitHub Actions if `[mirror] remote` in `rosen.toml` is Collapse (#613),
+            // even before `rosen_mirror::refresh` updates `collapse_repository` in persisted state.
+            if mirror_remote_is_collapse(application, subject.project) {
+                return look_rosen(application, subject);
+            }
             look_github(application, subject, repository, branch, run_logs)
         }
         SubjectMode::Rosen => look_rosen(application, subject),
     }
+}
+
+fn mirror_remote_is_collapse(application: &AppHandle, project: u32) -> bool {
+    if crate::rosen::paused(application) {
+        return false;
+    }
+    let Ok(server) = crate::rosen::observation_server(application, project) else {
+        return false;
+    };
+    tauri::async_runtime::block_on(velocity_rosen::mirror_remote(&server))
+        .ok()
+        .flatten()
+        .is_some_and(|remote| velocity_core::collapse::repository_from_remote(&remote).is_some())
 }
 
 fn look_github(

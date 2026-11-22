@@ -792,7 +792,7 @@ async fn step_switch_mirror(
     let sync = wait_for_mirror_fast_forward(server, &provisioned.mirror_url, MIRROR_SYNC_WAIT)
         .await
         .map_err(|error| error.to_string())?;
-    crate::rosen_mirror::refresh(application, project).await?;
+    crate::rosen_mirror::refresh_for_owner(application, project).await?;
     Ok(format_mirror_step(
         title,
         &repo,
@@ -979,6 +979,7 @@ async fn step_set_issues_and_ci(
     }
     velocity_github::IssueClient::invalidate_open_issues_for(IssueHost::Collapse, &repo);
     crate::project_health::mark_collapse_issues_imported(application, project, &repo);
+    crate::project_health::sync_host_source_change(application, project);
     if let Some(github) = github_repository {
         let _ = crate::collapse_issue_sync::enable_post_switch_sync(
             application,
@@ -1225,6 +1226,9 @@ async fn save_project_github_remote(
         let changed = store
             .save_github_remote(project, repository)
             .map_err(|error| error.to_string())?;
+        if changed {
+            let _ = store.acknowledge_host_sources(project);
+        }
         Ok(changed.then(|| store.layout_refresh()))
     })
     .await?;

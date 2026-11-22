@@ -5,6 +5,12 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::base_ci::BaseCiSource;
+use crate::collapse::IssueHost;
+
+/// Stable project-health key for non-owner issue host or CI source changes (#613).
+pub const HOST_SOURCE_CHANGED_KEY: &str = "host-source-changed";
+
 /// How long the mirror may sit behind the base before Velocity retries the push (#509).
 pub const MIRROR_BEHIND_LIMIT_SECONDS: u64 = 10 * 60;
 
@@ -44,6 +50,7 @@ pub enum HealthSignalKind {
     CollapseProactiveAuth,
     CollapseForwarding,
     CollapseIssuesNotImported,
+    HostSourceChanged,
     IntegrationUncovered,
     BaseRed,
     LandedIssuesWaiting,
@@ -90,6 +97,212 @@ pub fn airc_issue_tool_failure_item(failure: &AircIssueToolFailure) -> ProjectHe
     .with_thread(failure.thread_identifier)
 }
 
+/// One-click revert metadata for an unexpected issue host or CI source change (#613).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct HostSwitchBack {
+    /// Label for the one-click revert button (for example `Switch back to Collapse`).
+    pub button_label: String,
+    /// Label for acknowledging the current host/CI setting without reverting.
+    pub keep_label: String,
+    /// Whether switching back can be performed directly in one click.
+    pub can_switch_back: bool,
+}
+
+/// Persisted record of a non-owner change to a project's effective issue host or base CI
+/// source, shown in project health until the owner switches back or keeps it (#613).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostSourceChange {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_issue_host: Option<IssueHost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_issue_host: Option<IssueHost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_ci_source: Option<BaseCiSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_ci_source: Option<BaseCiSource>,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub detected_at_ms: u64,
+}
+
+impl HostSourceChange {
+    pub fn issue_host_changed(&self) -> Option<(IssueHost, IssueHost)> {
+        match (self.previous_issue_host, self.current_issue_host) {
+            (Some(previous), Some(current)) if previous != current => Some((previous, current)),
+            _ => None,
+        }
+    }
+
+    pub fn ci_source_changed(&self) -> Option<(BaseCiSource, BaseCiSource)> {
+        match (self.previous_ci_source, self.current_ci_source) {
+            (Some(previous), Some(current)) if previous != current => Some((previous, current)),
+            _ => None,
+        }
+    }
+
+    pub fn has_change(&self) -> bool {
+        self.issue_host_changed().is_some() || self.ci_source_changed().is_some()
+    }
+}
+
+/// Whether `change` can be switched back directly in one click without violating project
+/// invariants (a Collapse issue host requires a Collapse repository, and a Collapse-mirrored
+/// project never follows GitHub Actions for base CI) (#613).
+pub fn host_source_change_can_switch_back(
+    change: &HostSourceChange,
+    has_collapse_repository: bool,
+    has_github_remote: bool,
+) -> bool {
+    let host_ok = match change.issue_host_changed() {
+        Some((IssueHost::Collapse, _)) => has_collapse_repository,
+        Some((IssueHost::GitHub, _)) | None => true,
+    };
+    let ci_ok = match change.ci_source_changed() {
+        Some((BaseCiSource::GitHub, _)) => !has_collapse_repository && has_github_remote,
+        Some((BaseCiSource::Rosen, _)) | None => true,
+    };
+    change.has_change() && host_ok && ci_ok
+}
+
+/// Formats a non-owner issue host or base CI source change as a project health row (#613).
+pub fn host_source_change_item(
+    change: &HostSourceChange,
+    has_collapse_repository: bool,
+    has_github_remote: bool,
+) -> Option<ProjectHealthItem> {
+    let host_change = change.issue_host_changed();
+    let ci_change = change.ci_source_changed();
+    if host_change.is_none() && ci_change.is_none() {
+        return None;
+    }
+    let can_switch_back =
+        host_source_change_can_switch_back(change, has_collapse_repository, has_github_remote);
+    let (signal, button_label, keep_label) = host_change_labels(host_change, ci_change);
+    let action = if can_switch_back {
+        format!("Changed without an owner choice; click {button_label} to revert")
+    } else if ci_change == Some((BaseCiSource::GitHub, BaseCiSource::Rosen))
+        && has_collapse_repository
+    {
+        "Collapse-mirrored projects always use Rosen checkpoints instead of GitHub Actions"
+            .to_owned()
+    } else {
+        "Changed without an owner choice; re-link the previous repository to switch back".to_owned()
+    };
+    let detail = host_change_detail(host_change, ci_change, &change.reason);
+    Some(
+        ProjectHealthItem::new(
+            HOST_SOURCE_CHANGED_KEY,
+            HealthSignalKind::HostSourceChanged,
+            HealthSeverity::Warning,
+            signal,
+            action,
+            change.detected_at_ms,
+        )
+        .with_detail(detail)
+        .with_host_switch_back(Some(HostSwitchBack {
+            button_label,
+            keep_label,
+            can_switch_back,
+        })),
+    )
+}
+
+fn host_change_labels(
+    host_change: Option<(IssueHost, IssueHost)>,
+    ci_change: Option<(BaseCiSource, BaseCiSource)>,
+) -> (String, String, String) {
+    match (host_change, ci_change) {
+        (Some((prev, curr)), None) => (
+            format!(
+                "Issue host changed from {} to {}",
+                issue_host_label(prev),
+                issue_host_label(curr)
+            ),
+            format!("Switch back to {}", issue_host_label(prev)),
+            format!("Keep {}", issue_host_label(curr)),
+        ),
+        (None, Some((prev, curr))) => (
+            format!(
+                "Base CI changed from {} to {}",
+                ci_source_label(prev),
+                ci_source_label(curr)
+            ),
+            format!("Switch back to {} CI", ci_short_label(prev)),
+            format!("Keep {} CI", ci_short_label(curr)),
+        ),
+        (Some((prev_host, curr_host)), Some((prev_ci, curr_ci))) => (
+            format!(
+                "Issue host and base CI changed ({} / {} → {} / {})",
+                issue_host_label(prev_host),
+                ci_short_label(prev_ci),
+                issue_host_label(curr_host),
+                ci_short_label(curr_ci),
+            ),
+            format!(
+                "Switch back to {} & {}",
+                issue_host_label(prev_host),
+                ci_short_label(prev_ci)
+            ),
+            format!(
+                "Keep {} & {}",
+                issue_host_label(curr_host),
+                ci_short_label(curr_ci)
+            ),
+        ),
+        (None, None) => (String::new(), String::new(), String::new()),
+    }
+}
+
+fn host_change_detail(
+    host_change: Option<(IssueHost, IssueHost)>,
+    ci_change: Option<(BaseCiSource, BaseCiSource)>,
+    reason: &str,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some((prev, curr)) = host_change {
+        parts.push(format!(
+            "Issues: {} → {}",
+            issue_host_label(prev),
+            issue_host_label(curr)
+        ));
+    }
+    if let Some((prev, curr)) = ci_change {
+        parts.push(format!(
+            "CI: {} → {}",
+            ci_source_label(prev),
+            ci_source_label(curr)
+        ));
+    }
+    let trimmed = reason.trim();
+    if !trimmed.is_empty() {
+        parts.push(trimmed.to_owned());
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+fn issue_host_label(host: IssueHost) -> &'static str {
+    match host {
+        IssueHost::GitHub => "GitHub",
+        IssueHost::Collapse => "Collapse",
+    }
+}
+
+fn ci_source_label(source: BaseCiSource) -> &'static str {
+    match source {
+        BaseCiSource::GitHub => "GitHub Actions",
+        BaseCiSource::Rosen => "Rosen checkpoints",
+    }
+}
+
+fn ci_short_label(source: BaseCiSource) -> &'static str {
+    match source {
+        BaseCiSource::GitHub => "GitHub",
+        BaseCiSource::Rosen => "Rosen",
+    }
+}
+
 /// One active health signal on a project, with the automatic action taken and when (#509).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
@@ -114,6 +327,9 @@ pub struct ProjectHealthItem {
     /// Optional label for `action_url` (#611).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action_label: Option<String>,
+    /// Optional one-click revert metadata for `HostSourceChanged` signals (#613).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_switch_back: Option<HostSwitchBack>,
     /// Decimal Unix milliseconds when Velocity last acted or updated this signal.
     pub acted_at_ms: String,
 }
@@ -137,6 +353,7 @@ impl ProjectHealthItem {
             thread_identifier: None,
             action_url: None,
             action_label: None,
+            host_switch_back: None,
             acted_at_ms: acted_at_ms.to_string(),
         }
     }
@@ -154,6 +371,11 @@ impl ProjectHealthItem {
     pub fn with_action_link(mut self, url: Option<String>, label: impl Into<String>) -> Self {
         self.action_url = url.filter(|text| !text.trim().is_empty());
         self.action_label = self.action_url.as_ref().map(|_| label.into());
+        self
+    }
+
+    pub fn with_host_switch_back(mut self, switch_back: Option<HostSwitchBack>) -> Self {
+        self.host_switch_back = switch_back;
         self
     }
 }
@@ -310,5 +532,45 @@ test gamma::stalled_case has been running for over 60 seconds
             extract_running_test(log).as_deref(),
             Some("Running unittests src/lib.rs (target/debug/deps/velocity_store-1234.exe)")
         );
+    }
+
+    #[test]
+    fn host_source_change_item_offers_one_click_switch_back_when_possible() {
+        let change = HostSourceChange {
+            previous_issue_host: Some(IssueHost::Collapse),
+            current_issue_host: Some(IssueHost::GitHub),
+            previous_ci_source: None,
+            current_ci_source: None,
+            reason: "Changed on startup".into(),
+            detected_at_ms: 1_700_000_000_000,
+        };
+        let item = host_source_change_item(&change, true, true);
+        assert!(item.is_some());
+        if let Some(item) = item {
+            assert_eq!(item.kind, HealthSignalKind::HostSourceChanged);
+            assert_eq!(item.signal, "Issue host changed from Collapse to GitHub");
+            assert_eq!(
+                item.host_switch_back,
+                Some(HostSwitchBack {
+                    button_label: "Switch back to Collapse".into(),
+                    keep_label: "Keep GitHub".into(),
+                    can_switch_back: true,
+                })
+            );
+        }
+        // Without a Collapse mirror, switching back to Collapse issues is not directly possible.
+        assert!(!host_source_change_can_switch_back(&change, false, true));
+
+        // Collapse-mirrored projects never switch back to GitHub Actions for base CI.
+        let ci_change = HostSourceChange {
+            previous_issue_host: None,
+            current_issue_host: None,
+            previous_ci_source: Some(BaseCiSource::GitHub),
+            current_ci_source: Some(BaseCiSource::Rosen),
+            reason: "[mirror] remote now points to Collapse".into(),
+            detected_at_ms: 1_700_000_000_000,
+        };
+        assert!(!host_source_change_can_switch_back(&ci_change, true, true));
+        assert!(host_source_change_can_switch_back(&ci_change, false, true));
     }
 }

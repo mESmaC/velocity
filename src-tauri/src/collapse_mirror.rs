@@ -11,9 +11,9 @@
 //! the account tokens stay in the OS credential store (§1, #430).
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
@@ -130,7 +130,7 @@ pub(crate) async fn finalize_opened_collapse_project(
         }
     }
     allow_relay_after_create(application, project).await;
-    crate::rosen_mirror::refresh(application, project).await?;
+    crate::rosen_mirror::refresh_for_owner(application, project).await?;
     Ok(())
 }
 
@@ -522,6 +522,7 @@ pub async fn set_project_issue_host(
             );
         }
     }
+    crate::project_health::sync_host_source_change(&application, project_identifier);
     crate::base_ci::wake(&application);
     read_project_collapse_settings(&application, project_identifier).await
 }
@@ -615,7 +616,7 @@ pub async fn unlink_collapse(
     })
     .await?;
     toast(&application, message.clone())?;
-    crate::rosen_mirror::refresh(&application, project_identifier).await?;
+    crate::rosen_mirror::refresh_for_owner(&application, project_identifier).await?;
     let settings = read_project_collapse_settings(&application, project_identifier).await?;
     Ok(CollapseActionResult { settings, message })
 }
@@ -822,7 +823,7 @@ pub async fn mirror_to_collapse(
     .await?;
     message.push_str(&downstream_note(downstream.as_ref()));
     toast(&application, message.clone())?;
-    crate::rosen_mirror::refresh(&application, project_identifier).await?;
+    crate::rosen_mirror::refresh_for_owner(&application, project_identifier).await?;
     finish_downstream_setup(
         &application,
         project_identifier,
@@ -1013,7 +1014,7 @@ pub async fn send_collapse_live_state(
     )
     .await?;
     toast(&application, message)?;
-    crate::rosen_mirror::refresh(&application, project_identifier).await?;
+    crate::rosen_mirror::refresh_for_owner(&application, project_identifier).await?;
     refresh_health(&application).await
 }
 
@@ -1213,15 +1214,190 @@ struct DashboardPoller {
     wake: tokio::sync::Notify,
 }
 
+/// Signals when the startup Collapse issue-host backfill has finished so dispatch and the
+/// issue panel do not race ahead with a stale GitHub host (#613).
+#[derive(Default)]
+struct IssueHostBackfillGate {
+    done: Mutex<bool>,
+    ready: Condvar,
+}
+
+impl IssueHostBackfillGate {
+    fn mark_done(&self) {
+        let mut done = self
+            .done
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *done = true;
+        self.ready.notify_all();
+    }
+
+    fn wait_timeout(&self, timeout: Duration) {
+        let guard = self
+            .done
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *guard {
+            return;
+        }
+        let _ = self.ready.wait_timeout_while(guard, timeout, |done| !*done);
+    }
+}
+
+struct BackfillGateGuard<'a>(&'a AppHandle);
+
+impl Drop for BackfillGateGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(gate) = self.0.try_state::<IssueHostBackfillGate>() {
+            gate.mark_done();
+        }
+    }
+}
+
+/// Waits briefly on startup until Collapse issue-host backfill finishes (#613).
+pub(crate) fn wait_for_issue_host_backfill(application: &AppHandle, timeout: Duration) {
+    if let Some(gate) = application.try_state::<IssueHostBackfillGate>() {
+        gate.wait_timeout(timeout);
+    }
+}
+
 /// Polls Collapse's dashboard only during the 5-minute window after a land on a
 /// Collapse-mirrored project; outside that window, reads happen on mirror pushes, window
-/// focus, and opening the Rosen status pane (#572).
+/// focus, and opening the Rosen status pane (#572). Also runs the one-time startup backfill
+/// keeping already-imported Collapse projects on Collapse issues (#613).
 pub(crate) fn initialize(application: &AppHandle) {
     application.manage(DashboardPoller::default());
-    let application = application.clone();
+    application.manage(IssueHostBackfillGate::default());
+    let poll_handle = application.clone();
     tauri::async_runtime::spawn(async move {
-        poll_after_lands(&application).await;
+        poll_after_lands(&poll_handle).await;
     });
+    let backfill_handle = application.clone();
+    tauri::async_runtime::spawn(async move {
+        backfill_collapse_issue_hosts(&backfill_handle).await;
+    });
+}
+
+struct BackfillCandidate {
+    project: u32,
+    name: String,
+    collapse_repository: String,
+}
+
+/// On startup, keeps already-moved projects on Collapse when Collapse's GitHub issue import
+/// finished without an error, and reconciles host/CI drift across all projects (#613).
+async fn backfill_collapse_issue_hosts(application: &AppHandle) {
+    let _guard = BackfillGateGuard(application);
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let Ok((candidates, others)) = crate::state::with_store(application, |store| {
+        let mut candidates = Vec::new();
+        let mut others = Vec::new();
+        for item in &store.state().projects {
+            if item.issue_host.is_none()
+                && let Some(repo) = item.collapse_repository.clone()
+            {
+                candidates.push(BackfillCandidate {
+                    project: item.id,
+                    name: item.name.clone(),
+                    collapse_repository: repo,
+                });
+            } else {
+                others.push(item.id);
+            }
+        }
+        (candidates, others)
+    })
+    .await
+    else {
+        return;
+    };
+    for project in others {
+        reconcile_startup_host_sources(application, project, now_ms).await;
+    }
+    if candidates.is_empty() {
+        return;
+    }
+    let token = tauri::async_runtime::spawn_blocking(velocity_collapse::resolve_issues_token)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten();
+    for candidate in candidates {
+        backfill_one_project(application, &candidate, token.as_deref(), now_ms).await;
+    }
+}
+
+async fn backfill_one_project(
+    application: &AppHandle,
+    candidate: &BackfillCandidate,
+    token: Option<&str>,
+    now_ms: u64,
+) {
+    let Some(token) = token else {
+        return;
+    };
+    let Some((owner, name)) = candidate.collapse_repository.split_once('/') else {
+        return;
+    };
+    let Ok(status) = velocity_collapse::get_issue_import_status(token, owner, name).await else {
+        return;
+    };
+    let Some(finished_at) = status.finished_without_error_at().map(str::to_owned) else {
+        reconcile_startup_host_sources(application, candidate.project, now_ms).await;
+        return;
+    };
+    let project = candidate.project;
+    let expected = candidate.collapse_repository.clone();
+    let saved = crate::state::try_with_store(application, move |store| {
+        let changed = store
+            .backfill_collapse_issue_host(project, &expected)
+            .map_err(|error| error.to_string())?;
+        Ok((changed, changed.then(|| store.layout_refresh())))
+    })
+    .await;
+    let Ok((true, refresh)) = saved else {
+        return;
+    };
+    crate::diagnostics::record(
+        "collapse",
+        &format!(
+            "{}: kept issues on Collapse (import finished {finished_at})",
+            candidate.name
+        ),
+    );
+    if let Some(refresh) = refresh {
+        let handle = application.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            crate::layout::apply_refresh_and_publish(&handle, refresh)
+        })
+        .await;
+    }
+    velocity_github::IssueClient::invalidate_open_issues_for(
+        IssueHost::Collapse,
+        &candidate.collapse_repository,
+    );
+    crate::project_health::mark_collapse_issues_imported(
+        application,
+        project,
+        &candidate.collapse_repository,
+    );
+    crate::project_health::sync_host_source_change(application, project);
+    crate::base_ci::wake(application);
+}
+
+async fn reconcile_startup_host_sources(application: &AppHandle, project: u32, now_ms: u64) {
+    let drift = crate::state::try_with_store(application, move |store| {
+        store
+            .reconcile_host_sources(project, "Changed on startup", now_ms)
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    if matches!(drift, Ok(Some(_))) {
+        crate::project_health::sync_host_source_change(application, project);
+    }
 }
 
 async fn poll_after_lands(application: &AppHandle) {

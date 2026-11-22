@@ -379,6 +379,9 @@ struct Reader {
 }
 
 fn monitor(application: AppHandle) {
+    // Wait briefly on startup for Collapse issue-host backfill so pre-#612 projects do not
+    // dispatch against GitHub while their import status is being verified (#613).
+    crate::collapse_mirror::wait_for_issue_host_backfill(&application, Duration::from_secs(8));
     let mut readers = BTreeMap::new();
     let mut failed = BTreeMap::<u32, Instant>::new();
     let mut dependency_reads = BTreeMap::<u32, Instant>::new();

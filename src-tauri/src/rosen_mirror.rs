@@ -328,6 +328,20 @@ impl CatchUpProgress {
 
 /// Refresh on startup, mirror events and the periodic retry, one observation at a time.
 pub(crate) async fn refresh(application: &AppHandle, project: u32) -> Result<(), String> {
+    refresh_with_origin(application, project, false).await
+}
+
+/// Refresh triggered directly by an owner action (Mirror to Collapse, Move to Collapse,
+/// Open from Collapse, Unlink) so host/CI transitions are acknowledged as owner choice (#613).
+pub(crate) async fn refresh_for_owner(application: &AppHandle, project: u32) -> Result<(), String> {
+    refresh_with_origin(application, project, true).await
+}
+
+async fn refresh_with_origin(
+    application: &AppHandle,
+    project: u32,
+    owner_choice: bool,
+) -> Result<(), String> {
     let server = crate::rosen::server(application, project).await?;
     let initial = velocity_rosen::mirror_status(&server)
         .await
@@ -375,6 +389,7 @@ pub(crate) async fn refresh(application: &AppHandle, project: u32) -> Result<(),
             .as_deref()
             .and_then(velocity_core::collapse::repository_from_remote),
         live_state,
+        owner_choice,
     )?;
     let handle = application.clone();
     tauri::async_runtime::spawn_blocking(move || deliver_notices(&handle, project))
@@ -546,20 +561,35 @@ fn save_collapse_repository(
     project: u32,
     repository: Option<String>,
     live_state: Option<bool>,
+    owner_choice: bool,
 ) -> Result<(), String> {
     let mirrored = repository.is_some();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
     let (changed, refresh) = {
         let mut store = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
         )?;
         let changed = store
-            .save_collapse_repository(project, repository, live_state)
+            .save_collapse_repository_with_origin(
+                project,
+                repository,
+                live_state,
+                owner_choice,
+                now_ms,
+            )
             .map_err(|error| error.to_string())?;
         (changed, changed.then(|| store.layout_refresh()))
     };
     if let Some(refresh) = refresh {
         crate::layout::apply_refresh_and_publish(application, refresh)?;
+    }
+    if changed {
+        crate::project_health::sync_host_source_change(application, project);
+        crate::base_ci::wake(application);
     }
     if changed && mirrored {
         // The project just linked a Collapse mirror: read its initial dashboard state (#427, #572).

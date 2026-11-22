@@ -500,6 +500,9 @@ struct IssueReader {
 }
 
 fn monitor(application: AppHandle) {
+    // Wait briefly on startup for Collapse issue-host backfill so the issue panel does not
+    // flash GitHub issues for an already-imported Collapse project (#613).
+    crate::collapse_mirror::wait_for_issue_host_backfill(&application, Duration::from_secs(5));
     let mut previous = None;
     let mut refreshed = None::<Instant>;
     let mut cache_version = None::<u64>;
