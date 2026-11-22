@@ -70,6 +70,92 @@ def OpenProjected (slots : List WorkSlot) (index : Nat) : Prop :=
 -- A branchless AIRC claim excludes its work-item key from the F16 board (#531).
 def unreserved (key : Nat) (savedOwner : Bool) (heldKeys : List Nat) : Bool :=
   !savedOwner && !heldKeys.contains key
+
+-- F14/F16 initial reservation payload, known-file overlap exclusion, and racing-candidate
+-- retry semantics (#673): Rosen sends work-item identity alone (no branch, no path claims)
+-- while retaining known-file overlap checks against held pieces and held paths across races.
+inductive ChannelMode where | rosen | git deriving DecidableEq
+
+structure ReservationPayload where
+  pieceId : Nat
+  sendsBranch : Bool
+  paths : List Nat
+  deriving DecidableEq
+
+structure CandidateSlot where
+  pieceId : Nat
+  files : List Nat
+  deriving DecidableEq
+
+structure ClaimBoard where
+  heldPieces : List Nat
+  heldPaths : List Nat
+  deriving DecidableEq
+
+inductive ReservationOutcome where
+  | claimed (index : Nat) (payload : ReservationPayload) (refusals : List Nat)
+  | left (refusals : List Nat)
+  deriving DecidableEq
+
+def initialReservation (mode : ChannelMode) (c : CandidateSlot) : ReservationPayload :=
+  match mode with
+  | .rosen => { pieceId := c.pieceId, sendsBranch := false, paths := [] }
+  | .git => { pieceId := c.pieceId, sendsBranch := true, paths := c.files }
+
+def effectiveHeldPaths (all : List CandidateSlot) (board : ClaimBoard) : List Nat :=
+  board.heldPaths ++
+    (all.filter (fun c => board.heldPieces.contains c.pieceId)).flatMap (·.files)
+
+def candidateAllowed (all : List CandidateSlot) (board : ClaimBoard) (c : CandidateSlot) : Bool :=
+  let heldPaths := effectiveHeldPaths all board
+  !board.heldPieces.contains c.pieceId && !c.files.any (fun f => heldPaths.contains f)
+
+def CandidateClear (all : List CandidateSlot) (board : ClaimBoard) (c : CandidateSlot) : Prop :=
+  c.pieceId ∉ board.heldPieces /\
+  forall f, f ∈ c.files ->
+    f ∉ board.heldPaths /\
+    forall other, other ∈ all -> other.pieceId ∈ board.heldPieces -> f ∉ other.files
+
+def indexedSlots : Nat -> List CandidateSlot -> List (Nat × CandidateSlot)
+  | _, [] => []
+  | i, c :: rest => (i, c) :: indexedSlots (i + 1) rest
+
+def runReservationLoop (mode : ChannelMode) (all : List CandidateSlot) (raceWinners : List Nat) :
+    ClaimBoard -> List Nat -> List (Nat × CandidateSlot) -> ReservationOutcome
+  | _, refusals, [] => .left refusals
+  | board, refusals, (idx, c) :: rest =>
+      if !candidateAllowed all board c then
+        runReservationLoop mode all raceWinners board refusals rest
+      else if raceWinners.contains c.pieceId then
+        let board' := { board with heldPieces := c.pieceId :: board.heldPieces }
+        runReservationLoop mode all raceWinners board' (refusals ++ [idx]) rest
+      else
+        .claimed idx (initialReservation mode c) refusals
+
+def runReservation (mode : ChannelMode) (all : List CandidateSlot)
+    (initial : ClaimBoard) (raceWinners : List Nat) : ReservationOutcome :=
+  let available := (indexedSlots 0 all).filter (fun p => candidateAllowed all initial p.2)
+  runReservationLoop mode all raceWinners initial [] available
+
+def reservationPathClaimsLoop (mode : ChannelMode) (all : List CandidateSlot)
+    (raceWinners : List Nat) : ClaimBoard -> List (Nat × CandidateSlot) -> Nat
+  | _, [] => 0
+  | board, (_, c) :: rest =>
+      if !candidateAllowed all board c then
+        reservationPathClaimsLoop mode all raceWinners board rest
+      else
+        let sent := (initialReservation mode c).paths.length
+        if raceWinners.contains c.pieceId then
+          let board' := { board with heldPieces := c.pieceId :: board.heldPieces }
+          sent + reservationPathClaimsLoop mode all raceWinners board' rest
+        else
+          sent
+
+def reservationPathClaims (mode : ChannelMode) (all : List CandidateSlot)
+    (initial : ClaimBoard) (raceWinners : List Nat) : Nat :=
+  let available := (indexedSlots 0 all).filter (fun p => candidateAllowed all initial p.2)
+  reservationPathClaimsLoop mode all raceWinners initial available
+
 def Spec (grants : Nat -> Bool) (slots : List WorkSlot) (attempted : Nat) (keepGoing : Bool) : Prop :=
   (forall key owner held, unreserved key owner held = true <-> owner = false /\ key ∉ held) /\
   (forall s, projectedOpen s = true <-> EligibleSlot s) /\
@@ -82,7 +168,79 @@ def Spec (grants : Nat -> Bool) (slots : List WorkSlot) (attempted : Nat) (keepG
     (resolveProjected attempted .refused slots = .left <-> chooseProjected slots = .leave) /\
     (forall next, resolveProjected attempted .refused slots = .retry next -> OpenProjected slots next) /\
     (keepGoing = false -> decideAfterMergeProjected keepGoing slots = .stop) /\
-    (decideAfterMergeProjected true slots = .leaveEmpty <-> chooseProjected slots = .leave))
+    (decideAfterMergeProjected true slots = .leaveEmpty <-> chooseProjected slots = .leave)) /\
+  (forall c, (initialReservation .rosen c).sendsBranch = false /\ (initialReservation .rosen c).paths = [] /\
+    (initialReservation .git c).sendsBranch = true /\ (initialReservation .git c).paths = c.files) /\
+  (forall all board c, candidateAllowed all board c = true <-> CandidateClear all board c) /\
+  (forall all initial raceWinners index payload refusals,
+    runReservation .rosen all initial raceWinners = .claimed index payload refusals ->
+      payload.sendsBranch = false /\ payload.paths = [] /\ !raceWinners.contains payload.pieceId)
+
+lemma candidateAllowed_iff (all : List CandidateSlot) (board : ClaimBoard) (c : CandidateSlot) :
+    candidateAllowed all board c = true <-> CandidateClear all board c := by
+  unfold candidateAllowed effectiveHeldPaths CandidateClear
+  constructor
+  · intro h
+    have ⟨h1, h2⟩ := (Bool.and_eq_true _ _).mp h
+    have hpiece : c.pieceId ∉ board.heldPieces := by simpa using h1
+    have hfiles : ∀ f ∈ c.files,
+        f ∉ board.heldPaths ++ (all.filter (fun c => board.heldPieces.contains c.pieceId)).flatMap (·.files) := by
+      simpa using h2
+    refine ⟨hpiece, fun f hf => ?_⟩
+    have hnf := hfiles f hf
+    exact ⟨fun hp => hnf (List.mem_append.mpr (Or.inl hp)),
+      fun other ho hheld hfo => hnf (List.mem_append.mpr (Or.inr
+        (List.mem_flatMap.mpr ⟨other, List.mem_filter.mpr ⟨ho, by simpa using hheld⟩, hfo⟩)))⟩
+  · rintro ⟨not_piece, files_ok⟩
+    apply (Bool.and_eq_true _ _).mpr
+    refine ⟨by simpa using not_piece, ?_⟩
+    rw [Bool.not_eq_true', List.any_eq_false]
+    intro f hf hmem
+    have hmem' : f ∈ board.heldPaths ++
+        (all.filter (fun c => board.heldPieces.contains c.pieceId)).flatMap (·.files) := by
+      simpa using hmem
+    rcases List.mem_append.mp hmem' with hp | hflat
+    · exact (files_ok f hf).1 hp
+    · rcases List.mem_flatMap.mp hflat with ⟨other, hfilt, hfo⟩
+      rcases List.mem_filter.mp hfilt with ⟨ho, hheld⟩
+      exact (files_ok f hf).2 other ho (by simpa using hheld) hfo
+
+lemma runReservationLoop_rosen (all : List CandidateSlot) (raceWinners : List Nat)
+    (board : ClaimBoard) (refusals : List Nat) (queue : List (Nat × CandidateSlot))
+    (index : Nat) (payload : ReservationPayload) (outRefusals : List Nat)
+    (h : runReservationLoop .rosen all raceWinners board refusals queue =
+      .claimed index payload outRefusals) :
+    payload.sendsBranch = false /\ payload.paths = [] /\ !raceWinners.contains payload.pieceId := by
+  induction queue generalizing board refusals with
+  | nil => simp [runReservationLoop] at h
+  | cons head tail ih =>
+    rcases head with ⟨idx, c⟩
+    simp only [runReservationLoop] at h
+    split at h
+    · exact ih board refusals h
+    · split at h
+      · exact ih { board with heldPieces := c.pieceId :: board.heldPieces } (refusals ++ [idx]) h
+      · rename_i not_raced
+        cases h
+        refine ⟨rfl, rfl, ?_⟩
+        change (!raceWinners.contains c.pieceId) = true
+        cases hb : raceWinners.contains c.pieceId with
+        | false => rfl
+        | true => exact False.elim (not_raced hb)
+
+lemma reservationPathClaimsLoop_rosen (all : List CandidateSlot) (raceWinners : List Nat)
+    (board : ClaimBoard) (queue : List (Nat × CandidateSlot)) :
+    reservationPathClaimsLoop .rosen all raceWinners board queue = 0 := by
+  induction queue generalizing board with
+  | nil => rfl
+  | cons head tail ih =>
+    rcases head with ⟨_, c⟩
+    simp only [reservationPathClaimsLoop]
+    split
+    · exact ih board
+    · split
+      · simp [initialReservation, ih]
+      · rfl
 
 lemma projectedOpen_iff (s : WorkSlot) : projectedOpen s = true <-> EligibleSlot s := by
   cases s with | mk kind src own held proj reop upd =>
@@ -152,7 +310,10 @@ theorem correct (grants : Nat -> Bool) (slots : List WorkSlot) (attempted : Nat)
   have left_iff := runChoice_left (projectedBoard slots) grants; obtain ⟨claim_open, leave_iff⟩ := chooseOpen_spec (projectedBoard slots)
   refine ⟨(by intro key owner held; cases owner <;> simp [unreserved]), projectedOpen_iff, fun i h => ⟨(open_iff i).mp (claimed i h).1, (claimed i h).2.1⟩,
           fun i p h lt op => (claimed i h).2.2 p lt ((open_iff p).mpr op), by simp only [runProjected, left_iff, open_iff],
-          ⟨by simp only [chooseProjected, leave_iff, open_iff], rfl, ?_, ?_, (by intro off; subst off; rfl), ?_⟩⟩
+          ⟨by simp only [chooseProjected, leave_iff, open_iff], rfl, ?_, ?_, (by intro off; subst off; rfl), ?_⟩,
+          (by intro c; exact ⟨rfl, rfl, rfl, rfl⟩), candidateAllowed_iff,
+          (fun all initial raceWinners index payload refusals h =>
+            runReservationLoop_rosen all raceWinners initial [] _ index payload refusals h)⟩
   · simp only [resolveProjected, resolveAttempt, chooseProjected]; cases chooseOpen (projectedBoard slots) <;> simp
   · intro next eq; cases c : chooseOpen (projectedBoard slots) <;> simp [resolveProjected, resolveAttempt, c] at eq
     subst eq; exact (open_iff _).mp (claim_open _ c)
@@ -182,8 +343,11 @@ lemma cost_bound_board (grants : Nat -> Bool) (board : List Bool) :
 
 theorem cost_bound (grants : Nat -> Bool) (slots : List WorkSlot) :
     workItemLockAttemptCost grants slots <= openCount (projectedBoard slots) /\
-    workItemLockAttemptCost grants slots <= refusedCount grants (projectedBoard slots) + 1 :=
-  cost_bound_board grants (projectedBoard slots)
+    workItemLockAttemptCost grants slots <= refusedCount grants (projectedBoard slots) + 1 /\
+    (forall all initial raceWinners, reservationPathClaims .rosen all initial raceWinners = 0) :=
+  ⟨(cost_bound_board grants (projectedBoard slots)).1,
+   (cost_bound_board grants (projectedBoard slots)).2,
+   fun all initial raceWinners => reservationPathClaimsLoop_rosen all raceWinners initial _⟩
 
 -- Alternatives: priority-respecting lock-verified strategies with no hidden contention
 -- oracle. Claiming `index` locks `index` and probes every earlier projected-eligible slot
@@ -289,12 +453,37 @@ def projectedPools : List (List WorkSlot) := [
   [s .task true false false .landed, s .issue true false false .landed true true, s .task true false false .absent]]
 def identityRow (key : Nat) (owner : Bool) (held : Nat) : String :=
   s!"identity\t{key}\t{owner}:{held}\t{unreserved key owner [held]}\n"
+def encodeNats (xs : List Nat) : String :=
+  if xs.isEmpty then "-" else String.intercalate "," (xs.map toString)
+def modeName : ChannelMode -> String | .rosen => "rosen" | .git => "git"
+def encodeCandidate (c : CandidateSlot) : String := s!"{c.pieceId}:{encodeNats c.files}"
+def encodeReservationOutcome : ReservationOutcome -> String
+  | .claimed idx payload refusals =>
+      s!"claimed:{idx}:{payload.pieceId}:{payload.sendsBranch}:{encodeNats payload.paths}:{encodeNats refusals}"
+  | .left refusals => s!"left:{encodeNats refusals}"
+def reservationRow (mode : ChannelMode) (all : List CandidateSlot)
+    (initial : ClaimBoard) (raceWinners : List Nat) : String :=
+  let outcome := runReservation mode all initial raceWinners
+  s!"reservation\t{modeName mode}\t{String.intercalate ";" (all.map encodeCandidate)}\t{encodeNats initial.heldPieces}/{encodeNats initial.heldPaths}/{encodeNats raceWinners}\t{encodeReservationOutcome outcome}\n"
+def reservationFixtures : String :=
+  let c1 : CandidateSlot := { pieceId := 1, files := [10] }
+  let c2Overlap : CandidateSlot := { pieceId := 2, files := [10] }
+  let c2Free : CandidateSlot := { pieceId := 2, files := [20] }
+  let c3Free : CandidateSlot := { pieceId := 3, files := [20] }
+  let emptyBoard : ClaimBoard := { heldPieces := [], heldPaths := [] }
+  reservationRow .rosen [c1, c2Free] emptyBoard [] ++
+  reservationRow .git [c1, c2Free] emptyBoard [] ++
+  reservationRow .rosen [c1, c2Overlap, c3Free] emptyBoard [1] ++
+  reservationRow .rosen [c1, c2Overlap] emptyBoard [1] ++
+  reservationRow .rosen [c1, c2Free] { heldPieces := [], heldPaths := [10] } [] ++
+  reservationRow .rosen [c1, c2Overlap, c3Free] { heldPieces := [1], heldPaths := [] } [] ++
+  reservationRow .rosen [c1, c2Free] emptyBoard [1]
 def fixtures : String :=
   chooseRow [] ++ chooseRow [false, false] ++ chooseRow [true, false, true] ++ chooseRow [false, true, true] ++
   chooseRow [false, false, true] ++ attemptRow 0 .granted [false, true] ++ attemptRow 0 .refused [false, true, false] ++
   attemptRow 1 .refused [false, false, false] ++ mergeRow false [true, false] ++ mergeRow false [] ++
   mergeRow true [false, true] ++ mergeRow true [false, false] ++
   String.join (projectedCases.map projectedRow) ++ String.join (projectedPools.map projectedChooseRow) ++
-  identityRow 1 false 1 ++ identityRow 2 false 1 ++ identityRow 2 true 1
+  identityRow 1 false 1 ++ identityRow 2 false 1 ++ identityRow 2 true 1 ++ reservationFixtures
 #eval IO.FS.writeFile "fixtures/goal-swarm-work-choice.tsv" fixtures
 end GoalSwarmWorkChoice

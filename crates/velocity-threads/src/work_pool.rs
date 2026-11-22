@@ -864,7 +864,7 @@ mod tests {
                     projected_choose_rows += 1;
                     check_projected_choose_row(row_index, &fields, line)?;
                 }
-                Some("choose" | "attempt" | "merge" | "identity") => {}
+                Some("choose" | "attempt" | "merge" | "identity" | "reservation") => {}
                 other => return Err(format!("unknown fixture kind {other:?}").into()),
             }
         }

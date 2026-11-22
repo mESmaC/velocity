@@ -176,7 +176,8 @@ mod tests {
     // work after refusal, or stop a keep_going agent while open pieces remain.
     #[test]
     fn lean_work_choice_decisions() -> Result<(), Box<dyn std::error::Error>> {
-        let (mut projected_rows, mut projected_choose_rows) = (0usize, 0usize);
+        let (mut projected_rows, mut projected_choose_rows, mut reservation_rows) =
+            (0usize, 0usize, 0usize);
         for line in include_str!("../../../proofs/fixtures/goal-swarm-work-choice.tsv").lines() {
             let fields: Vec<_> = line.split('\t').collect();
             match fields[0] {
@@ -231,10 +232,14 @@ mod tests {
                     };
                     assert_eq!(choose_open_index(&flags), expected);
                 }
+                "reservation" => {
+                    // Production Rosen/git reservation & race checks run in velocity_threads::goal_swarm (#673).
+                    reservation_rows += 1;
+                }
                 other => return Err(format!("unknown fixture kind {other}").into()),
             }
         }
-        assert!(projected_rows > 0 && projected_choose_rows > 0);
+        assert!(projected_rows > 0 && projected_choose_rows > 0 && reservation_rows >= 7);
         Ok(())
     }
 }

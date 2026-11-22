@@ -96,6 +96,9 @@ pub enum KeepGoingOutcome {
     NextRound(GoalAgentSlot),
 }
 
+#[cfg(test)]
+type BeforeClaimHook<'a> = &'a dyn Fn(&WorkPiece) -> Result<(), velocity_airc::Error>;
+
 struct ClaimContext<'a> {
     store: &'a Mutex<StateStore>,
     channel: &'a Channel,
@@ -107,10 +110,15 @@ struct ClaimContext<'a> {
     worktree_path: &'a Path,
     initial_branch: &'a str,
     timestamp: &'a str,
+    rosen: bool,
+    #[cfg(test)]
+    before_claim: Option<BeforeClaimHook<'a>>,
 }
 
 /// Serialize the board read and claim between local members when using advisory subsystem
-/// classification. The channel itself decides the atomic piece and file locks.
+/// classification or Rosen identity-only reservations (where known-file overlaps are checked
+/// on the refreshed board rather than reserved as Rosen path claims). The channel itself
+/// decides the atomic piece lock (and file locks on legacy git channels).
 static SUBSYSTEM_CLAIM_STEP: Mutex<()> = Mutex::new(());
 
 pub trait GoalChoice {
@@ -199,6 +207,9 @@ pub fn choose_and_claim_selecting(
         worktree_path,
         initial_branch,
         timestamp,
+        rosen: channel.server_backed() || project.rosen_in_use(),
+        #[cfg(test)]
+        before_claim: None,
     };
     let inventory = read_goal_work_pool(&project, slot.sources, worktree_path)?;
     let candidates = candidates(
@@ -240,6 +251,9 @@ where
         worktree_path,
         initial_branch,
         timestamp,
+        rosen: channel.server_backed() || project.rosen_in_use(),
+        #[cfg(test)]
+        before_claim: None,
     };
     let pool = slot.sources.filter(pool_reader(&project)?);
     let candidates = candidates(
@@ -420,8 +434,8 @@ impl ClaimContext<'_> {
         candidates: &[Candidate],
         subsystems: Option<&SubsystemMap>,
     ) -> Result<Option<ClaimResult>, GoalSwarmError> {
-        let _step = subsystems
-            .map(|_| SUBSYSTEM_CLAIM_STEP.lock())
+        let _step = (self.rosen || subsystems.is_some())
+            .then(|| SUBSYSTEM_CLAIM_STEP.lock())
             .transpose()
             .map_err(|error| GoalSwarmError::LockPoisoned(error.to_string()))?;
         let held = HeldWork::new(
@@ -433,13 +447,25 @@ impl ClaimContext<'_> {
             return Ok(None);
         }
         let piece = &candidate.piece;
-        Ok(Some(self.channel.claim_goal_piece(
-            &self.member,
-            &piece.key.claim_piece(),
-            &piece.title,
-            self.initial_branch,
-            candidate.files.clone(),
-        )?))
+        #[cfg(test)]
+        if let Some(before_claim) = self.before_claim {
+            before_claim(piece)?;
+        }
+        // On Rosen projects, the initial AIRC reservation carries work-item identity only
+        // (no branch or path claims); Rosen owns path claims directly (F14, #531, #673).
+        let result = if self.rosen {
+            self.channel
+                .claim_work_item(&self.member, &piece.key.claim_piece(), &piece.title)?
+        } else {
+            self.channel.claim_goal_piece(
+                &self.member,
+                &piece.key.claim_piece(),
+                &piece.title,
+                self.initial_branch,
+                candidate.files.clone(),
+            )?
+        };
+        Ok(Some(result))
     }
 
     fn finalize_grant(
@@ -472,9 +498,6 @@ impl ClaimContext<'_> {
             &final_branch,
             change,
         )?;
-        let _ = self
-            .channel
-            .claim_work_item(&self.member, &key, &piece.title)?;
         let suffix = match &piece.key {
             WorkKey::Issue { number, .. } => format!(" \u{00b7} #{number}"),
             _ => String::new(),
@@ -783,6 +806,7 @@ mod tests {
     use std::sync::Mutex;
 
     use velocity_airc::Channel;
+    use velocity_core::goal_swarm::GoalEventKind;
     use velocity_core::work_pool::{WorkKey, WorkPiece, WorkPool, WorkSources, WorkStatus};
     use velocity_store::goal_swarms::{GoalAgentSlot, GoalSwarmMember, GoalSwarmRecord};
     use velocity_store::issues::ThreadIssue;
@@ -893,6 +917,8 @@ mod tests {
             worktree_path: worktree,
             initial_branch: "vel/work",
             timestamp: "10:00",
+            rosen: fixture.channel.server_backed() || project.rosen_in_use(),
+            before_claim: None,
         };
         Ok(context.choose(&project, &candidate_list, None, None)?)
     }
@@ -1002,6 +1028,385 @@ mod tests {
             }
             Ok::<_, velocity_store::projects::ProjectError>(())
         })?;
+        Ok(())
+    }
+
+    struct ReservationCase {
+        rosen: bool,
+        slots: Vec<(u32, Vec<String>)>,
+        held_pieces: Vec<u32>,
+        held_paths: Vec<String>,
+        race_winners: Vec<u32>,
+        expected: ExpectedReservation,
+    }
+
+    enum ExpectedReservation {
+        Claimed {
+            index: usize,
+            piece_id: u32,
+            sends_branch: bool,
+            paths: Vec<String>,
+            refusals: Vec<usize>,
+        },
+        Left {
+            refusals: Vec<usize>,
+        },
+    }
+
+    fn parse_nat_list(raw: &str) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+        if raw == "-" {
+            return Ok(Vec::new());
+        }
+        raw.split(',')
+            .map(|value| Ok(value.parse::<u32>()?))
+            .collect()
+    }
+
+    fn file_paths(ids: Vec<u32>) -> Vec<String> {
+        let mut paths: Vec<String> = ids
+            .into_iter()
+            .map(|id| format!("src/file_{id}.rs"))
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    fn parse_reservation_row(
+        fields: &[&str],
+    ) -> Result<ReservationCase, Box<dyn std::error::Error>> {
+        let rosen = match fields[1] {
+            "rosen" => true,
+            "git" => false,
+            other => return Err(format!("unknown channel mode {other}").into()),
+        };
+        let slots = fields[2]
+            .split(';')
+            .map(
+                |entry| -> Result<(u32, Vec<String>), Box<dyn std::error::Error>> {
+                    let (id, files) = entry.split_once(':').ok_or("missing candidate separator")?;
+                    Ok((id.parse()?, file_paths(parse_nat_list(files)?)))
+                },
+            )
+            .collect::<Result<Vec<_>, _>>()?;
+        let board: Vec<_> = fields[3].split('/').collect();
+        if board.len() != 3 {
+            return Err(format!("malformed reservation board {}", fields[3]).into());
+        }
+        let outcome: Vec<_> = fields[4].split(':').collect();
+        let expected = match outcome.as_slice() {
+            ["claimed", idx, piece_id, sends_branch, paths, refusals] => {
+                ExpectedReservation::Claimed {
+                    index: idx.parse()?,
+                    piece_id: piece_id.parse()?,
+                    sends_branch: sends_branch.parse()?,
+                    paths: file_paths(parse_nat_list(paths)?),
+                    refusals: parse_nat_list(refusals)?
+                        .into_iter()
+                        .map(|n| n as usize)
+                        .collect(),
+                }
+            }
+            ["left", refusals] => ExpectedReservation::Left {
+                refusals: parse_nat_list(refusals)?
+                    .into_iter()
+                    .map(|n| n as usize)
+                    .collect(),
+            },
+            _ => return Err(format!("malformed reservation outcome {}", fields[4]).into()),
+        };
+        Ok(ReservationCase {
+            rosen,
+            slots,
+            held_pieces: parse_nat_list(board[0])?,
+            held_paths: file_paths(parse_nat_list(board[1])?),
+            race_winners: parse_nat_list(board[2])?,
+            expected,
+        })
+    }
+
+    fn seed_reservation_project(root: &Path, rosen: bool) -> ProjectItem {
+        let mut project =
+            ProjectItem::new(1, "Demo".into(), root.join("repo").display().to_string());
+        project.version_control = if rosen {
+            VersionControl::Rosen
+        } else {
+            VersionControl::Git
+        };
+        project.spec_locked = true;
+        project.goal_swarms.push(GoalSwarmRecord {
+            id: 10,
+            prompt: "Implement the next unclaimed piece.".into(),
+            sources: WorkSources::default(),
+            keep_going: false,
+            started: "09:00".into(),
+            mix_summary: "1 Codex".into(),
+            members: vec![GoalSwarmMember {
+                nick: "codex-1".into(),
+                provider: ProviderKind::Codex,
+                model_name: "gpt-5.4".into(),
+                effort: EffortLevel::High,
+                speed: SpeedMode::Regular,
+                thread: None,
+                left_reason: None,
+                merged_threads: Vec::new(),
+            }],
+            feed: Vec::new(),
+        });
+        project
+    }
+
+    fn seed_reservation_case(
+        row_index: usize,
+        case: &ReservationCase,
+    ) -> Result<(ReopenedSwarmFixture, u32), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("velocity-goal-673-{row_index}-{unique}"));
+        let state_dir = root.join("state");
+        std::fs::create_dir_all(root.join("repo"))?;
+        std::fs::create_dir_all(root.join("wt"))?;
+        std::fs::create_dir_all(&state_dir)?;
+        let mut persisted = PersistedState::default();
+        persisted
+            .projects
+            .push(seed_reservation_project(&root, case.rosen));
+        std::fs::write(
+            state_dir.join("state.json"),
+            serde_json::to_vec(&persisted)?,
+        )?;
+        let mut store = StateStore::load_or_default(&state_dir)?;
+        let slot = GoalAgentSlot {
+            swarm_id: 10,
+            prompt: "Implement the next unclaimed piece.".into(),
+            sources: WorkSources::default(),
+            nick: "codex-1".into(),
+            provider: ProviderKind::Codex,
+            model_name: "gpt-5.4".into(),
+            effort: EffortLevel::High,
+            speed: SpeedMode::Regular,
+            keep_going: false,
+            previous_work_thread: None,
+        };
+        let thread = NewThread::new(
+            "Choosing work in AIRC".into(),
+            "vel/codex-1".into(),
+            root.join("wt").display().to_string(),
+            &store.settings(),
+        );
+        let thread_id = store.start_goal_member_thread(1, &slot, thread)?;
+        if case.rosen {
+            store.update_thread(1, thread_id, |saved| {
+                saved.rosen_change = Some("chg-codex-1".into());
+            })?;
+        }
+        let channel = Channel::open(&root.join("airc"), "1")?;
+        seed_reservation_channel(&channel, case)?;
+        Ok((
+            ReopenedSwarmFixture {
+                root,
+                store: Mutex::new(store),
+                channel,
+                slot,
+            },
+            thread_id,
+        ))
+    }
+
+    fn seed_reservation_channel(
+        channel: &Channel,
+        case: &ReservationCase,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if !case.held_pieces.is_empty() {
+            channel.join("pre-holder", "pre-holder")?;
+            for id in &case.held_pieces {
+                let _ = channel.claim_work_item(
+                    "pre-holder",
+                    &format!("issue:{id}"),
+                    &format!("Piece {id}"),
+                )?;
+            }
+        }
+        if !case.held_paths.is_empty() {
+            channel.join("path-holder", "path-holder")?;
+            let _ = channel.claim_piece(
+                "path-holder",
+                "issue:999",
+                "Path holder",
+                "vel/path-holder",
+                case.held_paths.clone(),
+            )?;
+        }
+        if !case.race_winners.is_empty() {
+            channel.join("racer", "racer")?;
+        }
+        Ok(())
+    }
+
+    fn refused_indices(
+        events: &[velocity_core::goal_swarm::GoalFeedEvent],
+        slots: &[(u32, Vec<String>)],
+    ) -> Vec<usize> {
+        events
+            .iter()
+            .filter(|event| event.kind == GoalEventKind::Refused)
+            .filter_map(|event| {
+                slots
+                    .iter()
+                    .position(|(id, _)| event.message.contains(&format!("Piece {id} was refused")))
+            })
+            .collect()
+    }
+
+    fn trigger_racer_claim(
+        channel: &Channel,
+        case: &ReservationCase,
+        piece: &WorkPiece,
+    ) -> Result<(), velocity_airc::Error> {
+        let WorkKey::Issue { number, .. } = piece.key else {
+            return Ok(());
+        };
+        if !case.race_winners.contains(&number) {
+            return Ok(());
+        }
+        if case.rosen {
+            let _ = channel.claim_work_item("racer", &piece.key.claim_piece(), &piece.title)?;
+        } else {
+            let files = case
+                .slots
+                .iter()
+                .find(|(id, _)| *id == number)
+                .map(|(_, files)| files.clone())
+                .unwrap_or_default();
+            let _ = channel.claim_goal_piece(
+                "racer",
+                &piece.key.claim_piece(),
+                &piece.title,
+                "vel/racer",
+                files,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn verify_reservation_case(
+        row_index: usize,
+        case: &ReservationCase,
+        line: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (fixture, thread_id) = seed_reservation_case(row_index, case)?;
+        let worktree = fixture.root.join("wt");
+        let project = read_project(&fixture.store, 1)?;
+        let (member, nick) = thread_identity(&project, thread_id, &fixture.slot.nick);
+        let pieces: Vec<_> = case
+            .slots
+            .iter()
+            .map(|(id, _)| {
+                WorkPiece::new(
+                    WorkKey::issue("owner/repo", *id),
+                    format!("Piece {id}"),
+                    format!("https://example.invalid/{id}"),
+                    None,
+                )
+            })
+            .collect();
+        let issue_files: HashMap<u32, Vec<String>> = case.slots.iter().cloned().collect();
+        let candidate_list = candidates(
+            WorkPool::new(1, pieces),
+            &worktree,
+            issue_files,
+            HashMap::new(),
+            None,
+        );
+        let race_hook = |piece: &WorkPiece| trigger_racer_claim(&fixture.channel, case, piece);
+        let context = ClaimContext {
+            store: &fixture.store,
+            channel: &fixture.channel,
+            member: member.clone(),
+            nick,
+            project_id: 1,
+            thread_id,
+            slot: &fixture.slot,
+            worktree_path: &worktree,
+            initial_branch: "vel/work",
+            timestamp: "10:00",
+            rosen: fixture.channel.server_backed() || project.rosen_in_use(),
+            before_claim: Some(&race_hook),
+        };
+        let outcome = context.choose(&project, &candidate_list, None, None)?;
+        assert_reservation_outcome(&fixture.channel, &member, case, outcome, line)?;
+        std::fs::remove_dir_all(fixture.root)?;
+        Ok(())
+    }
+
+    fn assert_reservation_outcome(
+        channel: &Channel,
+        member: &str,
+        case: &ReservationCase,
+        outcome: ClaimPhaseOutcome,
+        line: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let member_claims: Vec<_> = channel
+            .claims()?
+            .into_iter()
+            .filter(|claim| claim.member == member)
+            .collect();
+        match (&case.expected, outcome) {
+            (
+                ExpectedReservation::Claimed {
+                    index,
+                    piece_id,
+                    sends_branch,
+                    paths,
+                    refusals,
+                },
+                ClaimPhaseOutcome::Claimed(claimed),
+            ) => {
+                assert_eq!(claimed.piece.key, WorkKey::issue("owner/repo", *piece_id));
+                assert_eq!(case.slots[*index].0, *piece_id, "index mismatch for {line}");
+                assert_eq!(
+                    refused_indices(&claimed.feed_events, &case.slots),
+                    *refusals
+                );
+                assert_eq!(member_claims.len(), 1, "expected one claim for {line}");
+                let claim = &member_claims[0];
+                assert_eq!(!claim.branch.is_empty(), *sends_branch, "branch: {line}");
+                assert_eq!(claim.files, *paths, "claimed files mismatch for {line}");
+                let stored = serde_json::to_value(claim)?;
+                assert_eq!(stored.get("branch").is_some(), *sends_branch);
+                assert_eq!(stored.get("files").is_some(), !paths.is_empty());
+                Ok(())
+            }
+            (
+                ExpectedReservation::Left { refusals },
+                ClaimPhaseOutcome::Left { feed_events, .. },
+            ) => {
+                assert_eq!(refused_indices(&feed_events, &case.slots), *refusals);
+                assert!(member_claims.is_empty(), "left member held claim: {line}");
+                Ok(())
+            }
+            (_, other) => Err(format!("unexpected outcome {other:?} for {line}").into()),
+        }
+    }
+
+    // Risk (#673): Rosen Goal Swarm's first AIRC reservation must send work-item identity alone
+    // (no branch or path claims) while preserving known-file overlap checks and refusal retries
+    // against racing candidates across the production reservation path.
+    #[test]
+    fn lean_reservation_fixtures() -> Result<(), Box<dyn std::error::Error>> {
+        let mut reservation_rows = 0usize;
+        for (row_index, line) in include_str!("../../../proofs/fixtures/goal-swarm-work-choice.tsv")
+            .lines()
+            .enumerate()
+        {
+            let fields: Vec<_> = line.split('\t').collect();
+            if fields.first().copied() == Some("reservation") {
+                reservation_rows += 1;
+                let case = parse_reservation_row(&fields)?;
+                verify_reservation_case(row_index, &case, line)?;
+            }
+        }
+        assert!(reservation_rows >= 7);
         Ok(())
     }
 }

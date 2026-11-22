@@ -35,3 +35,10 @@ projected_choose	task:1:0:0:landed:0:0;issue:1:0:0:landed:1:1;task:1:0:0:absent:
 identity	1	false:1	false
 identity	2	false:1	true
 identity	2	true:1	false
+reservation	rosen	1:10;2:20	-/-/-	claimed:0:1:false:-:-
+reservation	git	1:10;2:20	-/-/-	claimed:0:1:true:10:-
+reservation	rosen	1:10;2:10;3:20	-/-/1	claimed:2:3:false:-:0
+reservation	rosen	1:10;2:10	-/-/1	left:0
+reservation	rosen	1:10;2:20	-/10/-	claimed:1:2:false:-:-
+reservation	rosen	1:10;2:10;3:20	1/-/-	claimed:2:3:false:-:-
+reservation	rosen	1:10;2:20	-/-/1	claimed:1:2:false:-:0
