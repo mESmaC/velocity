@@ -235,14 +235,15 @@ impl WorkflowClient {
         self.read(&format!("/actions/runs/{run}"))
     }
 
-    /// The jobs of the run's latest attempt.
+    /// The jobs of the run's latest attempt, following every page so large matrices are not
+    /// truncated at GitHub's 100-job page limit (#654).
     pub fn jobs(&self, run: u64) -> Result<Vec<WorkflowJob>, GitHubCommandError> {
-        #[derive(Deserialize)]
-        struct Jobs {
-            jobs: Vec<WorkflowJob>,
-        }
-        let path = format!("/actions/runs/{run}/jobs?per_page=100");
-        Ok(self.read::<Jobs>(&path)?.jobs)
+        collect_job_pages(|page| {
+            let path = format!(
+                "/actions/runs/{run}/jobs?filter=latest&per_page={JOBS_PER_PAGE}&page={page}"
+            );
+            self.read(&path)
+        })
     }
 
     /// A job is also a check run, and its annotations are filed under that.
@@ -328,5 +329,220 @@ impl WorkflowClient {
         );
         self.command
             .text(&["api", "-H", "Accept: application/vnd.github.raw", &endpoint])
+    }
+}
+
+/// GitHub's maximum `per_page` for `/actions/runs/{run}/jobs` (#654).
+const JOBS_PER_PAGE: usize = 100;
+/// Cap on job pages read for one workflow run so a misbehaving server cannot loop forever (#654).
+const MAX_JOB_PAGES: usize = 50;
+
+#[derive(Deserialize)]
+struct JobsPage {
+    #[serde(default)]
+    total_count: usize,
+    #[serde(default)]
+    jobs: Vec<WorkflowJob>,
+}
+
+/// Collects every page of jobs for a workflow run's latest attempt (#654).
+///
+/// Deduplicates non-zero job IDs in case jobs shift across pages while a run is still in
+/// progress, and stops once a page is short, yields no new jobs, or reaches `total_count`.
+fn collect_job_pages<F>(mut read_page: F) -> Result<Vec<WorkflowJob>, GitHubCommandError>
+where
+    F: FnMut(usize) -> Result<JobsPage, GitHubCommandError>,
+{
+    let mut jobs = Vec::new();
+    let mut seen_ids: BTreeMap<u64, usize> = BTreeMap::new();
+    for page in 1..=MAX_JOB_PAGES {
+        let response = read_page(page)?;
+        let received = response.jobs.len();
+        let before = jobs.len();
+        for job in response.jobs {
+            if job.id != 0
+                && let Some(&index) = seen_ids.get(&job.id)
+            {
+                jobs[index] = job;
+                continue;
+            }
+            if job.id != 0 {
+                seen_ids.insert(job.id, jobs.len());
+            }
+            jobs.push(job);
+        }
+        let exhausted_total = response.total_count > 0 && jobs.len() >= response.total_count;
+        let no_progress = page > 1 && jobs.len() == before;
+        if received < JOBS_PER_PAGE || exhausted_total || no_progress {
+            break;
+        }
+    }
+    Ok(jobs)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use serde_json::json;
+    use velocity_core::base_ci::{
+        self, BaseCiState, BaseRun, FailedJob, JobState, RunJob, RunState,
+    };
+
+    use super::{GitHubCommandError, JobsPage, WorkflowJob, collect_job_pages};
+
+    fn passing_job_json(number: u64) -> serde_json::Value {
+        json!({
+            "id": number,
+            "name": format!("test (shard {number})"),
+            "status": "completed",
+            "conclusion": "success",
+            "steps": [{"name": "Run tests", "conclusion": "success"}],
+            "labels": ["ubuntu-latest"]
+        })
+    }
+
+    fn to_run_job(job: WorkflowJob) -> RunJob {
+        match base_ci::job_state(job.status.as_deref(), job.conclusion.as_deref(), false) {
+            JobState::Passed => RunJob::Passed(job.name),
+            JobState::Failed => {
+                let step = job
+                    .steps
+                    .iter()
+                    .find(|step| base_ci::job_failed(step.conclusion.as_deref()))
+                    .map(|step| step.name.clone());
+                RunJob::Failed(FailedJob {
+                    id: job.id,
+                    job: job.name,
+                    step,
+                    runner: (!job.labels.is_empty()).then(|| job.labels.join(", ")),
+                    signature: None,
+                    timed_out: base_ci::job_timed_out_directly(job.conclusion.as_deref()),
+                    hung_test: None,
+                })
+            }
+            JobState::Running => RunJob::Running(job.name),
+            JobState::Undecided => RunJob::Undecided(job.name),
+        }
+    }
+
+    // Risk (#654): a failed workflow with 100 passing jobs on page 1 and a failing macOS job on
+    // page 2 must follow all pages so the failing job and step reach both the repair planner and
+    // the base CI state instead of falling back to a generic whole-run failure.
+    #[test]
+    fn jobs_pagination_collects_failing_job_on_page_two_for_base_ci_and_repair()
+    -> Result<(), GitHubCommandError> {
+        let first_page = json!({
+            "total_count": 101,
+            "jobs": (1..=100).map(passing_job_json).collect::<Vec<_>>()
+        });
+        let second_page = json!({
+            "total_count": 101,
+            "jobs": [{
+                "id": 101,
+                "name": "test (macOS, shard 101)",
+                "status": "completed",
+                "conclusion": "failure",
+                "steps": [{"name": "Run tests", "conclusion": "failure"}],
+                "labels": ["macos-latest"]
+            }]
+        });
+        let mut requested_pages = Vec::new();
+        let jobs = collect_job_pages(|page| {
+            requested_pages.push(page);
+            let payload = match page {
+                1 => &first_page,
+                2 => &second_page,
+                other => {
+                    return Err(GitHubCommandError::Invalid(format!(
+                        "unexpected page {other}"
+                    )));
+                }
+            };
+            Ok(serde_json::from_value::<JobsPage>(payload.clone())?)
+        })?;
+        assert_eq!(requested_pages, vec![1, 2]);
+        assert_eq!(jobs.len(), 101);
+
+        let run = BaseRun {
+            workflow: "CI".into(),
+            run: 507,
+            commit: "a".repeat(40),
+            url: "https://github.com/mESmaC/velocity/actions/runs/507".into(),
+            state: RunState::Failed,
+            detail: String::new(),
+        };
+        let run_jobs = BTreeMap::from([(run.run, jobs.into_iter().map(to_run_job).collect())]);
+        let verdict = base_ci::evaluate_jobs(&[run], &run_jobs);
+        let plan = base_ci::plan_for_verdict(&[], &verdict);
+        let view = base_ci::view_for_verdict(&verdict);
+
+        assert_eq!(plan.start.len(), 1);
+        assert_eq!(plan.start[0].jobs.len(), 1);
+        assert_eq!(plan.start[0].jobs[0].job, "test (macOS, shard 101)");
+        assert_eq!(plan.start[0].jobs[0].step.as_deref(), Some("Run tests"));
+        assert_eq!(
+            plan.start[0].jobs[0].runner.as_deref(),
+            Some("macos-latest")
+        );
+        assert_eq!(view.state, BaseCiState::Failed);
+        assert_eq!(view.failing, vec!["CI · test (macOS, shard 101)"]);
+        Ok(())
+    }
+
+    // Risk (#654): exact-100 runs must stop at `total_count` without an extra request, and jobs
+    // shifted across pages while a run is in progress must deduplicate by job ID.
+    #[test]
+    fn jobs_pagination_stops_at_total_count_and_deduplicates_shifted_jobs()
+    -> Result<(), GitHubCommandError> {
+        let exact_page = json!({
+            "total_count": 100,
+            "jobs": (1..=100).map(passing_job_json).collect::<Vec<_>>()
+        });
+        let mut exact_pages = Vec::new();
+        let exact = collect_job_pages(|page| {
+            exact_pages.push(page);
+            Ok(serde_json::from_value::<JobsPage>(exact_page.clone())?)
+        })?;
+        assert_eq!(exact_pages, vec![1]);
+        assert_eq!(exact.len(), 100);
+
+        let shifted_page_one = json!({
+            "total_count": 101,
+            "jobs": (1..=100).map(passing_job_json).collect::<Vec<_>>()
+        });
+        let shifted_page_two = json!({
+            "total_count": 101,
+            "jobs": [
+                {
+                    "id": 100,
+                    "name": "test (shard 100)",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "steps": [{"name": "Run tests", "conclusion": "failure"}],
+                    "labels": ["ubuntu-latest"]
+                },
+                passing_job_json(101)
+            ]
+        });
+        let mut shifted_pages = Vec::new();
+        let shifted = collect_job_pages(|page| {
+            shifted_pages.push(page);
+            let payload = match page {
+                1 => &shifted_page_one,
+                2 => &shifted_page_two,
+                other => {
+                    return Err(GitHubCommandError::Invalid(format!(
+                        "unexpected page {other}"
+                    )));
+                }
+            };
+            Ok(serde_json::from_value::<JobsPage>(payload.clone())?)
+        })?;
+        assert_eq!(shifted_pages, vec![1, 2]);
+        assert_eq!(shifted.len(), 101);
+        assert_eq!(shifted[99].id, 100);
+        assert_eq!(shifted[99].conclusion.as_deref(), Some("failure"));
+        Ok(())
     }
 }
