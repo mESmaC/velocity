@@ -423,8 +423,8 @@ mod tests {
         thread.queued_run_history.push(finished);
         assert!(crate::restart::turn_interrupted(&thread));
 
-        // Thread lands and transitions to Merged before the resume runs.
-        thread.state = ThreadState::Merged;
+        // Thread lands and transitions to Landed before the resume runs.
+        thread.state = ThreadState::Landed;
         let error = check_resumable(key, thread.state, ResumeOpeningKind::RestoredRuns)
             .err()
             .unwrap_or(ResumeError::Other(String::new()));
@@ -432,7 +432,7 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("1/207"), "{message}");
         assert!(message.contains("RestoredRuns"), "{message}");
-        assert!(message.contains("Merged"), "{message}");
+        assert!(message.contains("Landed"), "{message}");
 
         assert!(drop_pending_deliveries(&mut thread));
         assert!(thread.queued_runs.is_empty());
