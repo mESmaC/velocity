@@ -8,12 +8,14 @@ use crate::rosen::RosenProgress;
 use crate::threads::{ThreadError, thread_start_timestamp};
 use crate::{ProjectItem, StateStore, StoreError, TaskState, ThreadItem, ThreadState};
 
-/// Commit and diagnostic evidence carried by a Rosen land or revert event.
+/// Commit, timestamp and diagnostic evidence carried by a Rosen land or revert event.
 /// `commit` holds the landed commit for `Landed` and the reverted culprit commit for `Reverted`.
 #[derive(Clone, Copy, Default)]
 pub struct WorkEvidence<'a> {
     pub commit: Option<&'a str>,
     pub revert_reason: Option<&'a str>,
+    /// Server-assigned UTC millisecond timestamp when the event occurred (#644).
+    pub occurred_at_ms: Option<i64>,
 }
 
 /// Open-issue timestamps and optional title/body used to check whether a completed Rosen
@@ -1259,6 +1261,7 @@ mod tests {
         let evidence = WorkEvidence {
             commit,
             revert_reason: Some("the build failed"),
+            occurred_at_ms: None,
         };
         store.save_rosen_work_progress(1, sequence, change, (progress, ""), evidence)?;
         Ok(())

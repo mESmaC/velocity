@@ -363,6 +363,7 @@ mod tests {
             WorkEvidence {
                 commit: Some("second"),
                 revert_reason: None,
+                occurred_at_ms: None,
             },
         )?;
 
@@ -456,6 +457,7 @@ mod tests {
             WorkEvidence {
                 commit: Some("first"),
                 revert_reason: None,
+                occurred_at_ms: None,
             },
         )?;
         store.remove_thread(1, owner)?;
@@ -467,6 +469,7 @@ mod tests {
             WorkEvidence {
                 commit: Some("first"),
                 revert_reason: Some("check failed"),
+                occurred_at_ms: None,
             },
         )?;
         Ok((directory, store, task_1, task_2))

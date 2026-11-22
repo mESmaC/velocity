@@ -1328,6 +1328,11 @@ pub struct ProjectItem {
     #[serde(default, rename = "landed_day", alias = "merged_day")]
     #[specta(skip)]
     pub(crate) merged_day: u32,
+    /// Unique keys for lands already counted on `landed_day` so replays, restarts and
+    /// checkpoint + stream pairs count each land once (#644). Cleared on day rollover.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[specta(skip)]
+    pub(crate) landed_today_keys: Vec<String>,
     pub tasks: Vec<TaskItem>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[specta(skip)]
@@ -1520,6 +1525,7 @@ impl ProjectItem {
             active_thread_id: None,
             merged_today: 0,
             merged_day: 0,
+            landed_today_keys: Vec::new(),
             tasks: Vec::new(),
             task_undo: BTreeMap::new(),
             threads: Vec::new(),

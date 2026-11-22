@@ -983,6 +983,7 @@ mod tests {
             WorkEvidence {
                 commit: Some("4a63d3f"),
                 revert_reason: None,
+                occurred_at_ms: None,
             },
         )?;
         store.confirm_rosen_work_build(1, 2, &["4a63d3f".into()])?;

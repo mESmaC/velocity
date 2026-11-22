@@ -139,6 +139,53 @@ fn read_named_since(server: &ProjectServer, change: &str) -> Result<Option<u64>,
     Ok(created_ms.map(|ms| ms / 1000))
 }
 
+/// Server-assigned UTC millisecond timestamp for a change's `landed` event matching `commit`,
+/// read from Rosen's event log (#644).
+pub async fn landed_at_ms(
+    server: &ProjectServer,
+    change: &str,
+    commit: &str,
+) -> Result<Option<i64>, RosenError> {
+    let reading = server.clone();
+    let change = change.to_owned();
+    let commit = commit.to_owned();
+    tokio::task::spawn_blocking(move || read_landed_at_ms(&reading, &change, &commit))
+        .await
+        .map_err(|error| RosenError::StatusData(error.to_string()))?
+}
+
+fn read_landed_at_ms(
+    server: &ProjectServer,
+    change: &str,
+    commit: &str,
+) -> Result<Option<i64>, RosenError> {
+    let path = server.data_dir().join("metadata.sqlite");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(std::time::Duration::from_secs(2))?;
+    let has_events: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'events')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_events {
+        return Ok(None);
+    }
+    let created_ms: Option<i64> = connection
+        .query_row(
+            "SELECT created_at FROM events
+             WHERE change_id = ?1 AND kind = 'landed'
+               AND json_extract(detail, '$.commit') = ?2
+             ORDER BY seq DESC LIMIT 1",
+            [change, commit],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(created_ms.filter(|&millis| millis > 0))
+}
+
 /// Whether a queued notice still concerns a change that can be edited.
 pub async fn is_open(server: &ProjectServer, change: &str) -> Result<bool, RosenError> {
     let client = crate::connection::requests(server.endpoint()).await?;

@@ -10,7 +10,7 @@
 //! step can be repeated: a workspace that exists is kept, and a message already in the
 //! thread's saved transcript is not sent twice.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
@@ -106,11 +106,12 @@ async fn follow_connected(
     warm: Option<&std::sync::mpsc::SyncSender<()>>,
 ) {
     use velocity_rosen::ProjectEventKind::*;
+    let data_dir = stream.data_dir().to_owned();
     // Drive thread view refreshes directly from Rosen events instead of polling every 5 s (#555).
     while let Some(event) = stream.next().await {
         let superseded = replay.superseded(&event);
         if let Err(error) =
-            consume_connected(application, project, replay, &event, superseded).await
+            consume_connected(application, project, &data_dir, replay, &event, superseded).await
         {
             report::<()>(Err(error));
             break;
@@ -164,12 +165,20 @@ async fn follow_connected(
 async fn consume_connected(
     application: &AppHandle,
     project: u32,
+    data_dir: &Path,
     replay: &EventReplay,
     event: &velocity_rosen::ProjectEvent,
     superseded: bool,
 ) -> Result<(), String> {
     if !superseded {
-        consume(application, project, event, event.seq > replay.boundary()).await?;
+        consume(
+            application,
+            project,
+            data_dir,
+            event,
+            event.seq > replay.boundary(),
+        )
+        .await?;
     }
     // The last event of a rewind can be unrelated and carry no checkpoint of its own.
     if event.seq == replay.boundary() {
@@ -200,6 +209,7 @@ fn connection_state(application: &AppHandle, project: u32, reconnecting: bool) {
 async fn consume(
     application: &AppHandle,
     project: u32,
+    data_dir: &Path,
     event: &velocity_rosen::ProjectEvent,
     live: bool,
 ) -> Result<(), String> {
@@ -320,10 +330,16 @@ async fn consume(
             let output = velocity_rosen::revert_output(event);
             let commit = work_evidence.commit.map(str::to_owned);
             let revert_reason = work_evidence.revert_reason.map(str::to_owned);
+            let directory = (meaning == ChangeEvent::Landed).then(|| data_dir.to_path_buf());
             tauri::async_runtime::spawn_blocking(move || {
+                let occurred_at_ms = directory
+                    .as_deref()
+                    .and_then(|path| velocity_rosen::event_timestamp_ms(path, sequence).ok())
+                    .flatten();
                 let evidence = WorkEvidence {
                     commit: commit.as_deref(),
                     revert_reason: revert_reason.as_deref(),
+                    occurred_at_ms,
                 };
                 let result = take(
                     &handle,
@@ -592,10 +608,12 @@ async fn observe_work<'a>(
         IssueEvent::Landed(commit) => WorkEvidence {
             commit: Some(commit),
             revert_reason: None,
+            occurred_at_ms: None,
         },
         IssueEvent::Reverted { commit, reason } => WorkEvidence {
             commit: *commit,
             revert_reason: Some(reason),
+            occurred_at_ms: None,
         },
         _ => WorkEvidence::default(),
     };
@@ -1139,6 +1157,8 @@ pub(crate) fn record_landed(
     project: u32,
     change: &str,
     generation: u64,
+    commit: Option<&str>,
+    occurred_at_ms: Option<i64>,
 ) -> Result<(), String> {
     // Keep the cursor unchanged so the event follower still takes the land. Checkpointing
     // closes the gap before the follower catches up, but only for the lifecycle generation
@@ -1149,7 +1169,16 @@ pub(crate) fn record_landed(
             "persisted state",
         )?;
         store
-            .checkpoint_rosen_land(project, change, generation)
+            .checkpoint_rosen_land_with_evidence(
+                project,
+                change,
+                generation,
+                WorkEvidence {
+                    commit,
+                    revert_reason: None,
+                    occurred_at_ms,
+                },
+            )
             .map_err(|error| error.to_string())?;
         store.layout_refresh()
     };

@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use velocity_core::thread_view_model::{RosenChangeStage, RosenChangeView, TranscriptBlock};
 
 use crate::rosen_work::WorkEvidence;
-use crate::{AgentActivity, ReviewStage, StateStore, StoreError, ThreadItem, ThreadState};
+use crate::{
+    AgentActivity, ProjectItem, ReviewStage, StateStore, StoreError, ThreadItem, ThreadState,
+};
 
 /// What a Rosen event means for the thread whose change it names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -746,7 +748,30 @@ impl StateStore {
         change: &str,
         generation: u64,
     ) -> Result<Option<u32>, StoreError> {
-        self.checkpoint_rosen_progress(project, change, generation, (RosenProgress::Landed, ""))
+        self.checkpoint_rosen_land_with_evidence(
+            project,
+            change,
+            generation,
+            WorkEvidence::default(),
+        )
+    }
+
+    /// Checkpoint a landed change with its commit and occurrence timestamp so the pulse
+    /// counts it on its actual land day and deduplicates the matching stream event (#644).
+    pub fn checkpoint_rosen_land_with_evidence(
+        &mut self,
+        project: u32,
+        change: &str,
+        generation: u64,
+        evidence: WorkEvidence<'_>,
+    ) -> Result<Option<u32>, StoreError> {
+        self.checkpoint_rosen_progress(
+            project,
+            change,
+            generation,
+            (RosenProgress::Landed, ""),
+            evidence,
+        )
     }
 
     /// Record a refusal and queue its author message only for the generation that was refused.
@@ -762,6 +787,7 @@ impl StateStore {
             change,
             generation,
             (RosenProgress::ChangesRequested, message),
+            WorkEvidence::default(),
         )
     }
 
@@ -771,6 +797,7 @@ impl StateStore {
         change: &str,
         generation: u64,
         progress: (RosenProgress, &str),
+        evidence: WorkEvidence<'_>,
     ) -> Result<Option<u32>, StoreError> {
         let current = self.project(project).and_then(|project| {
             project.threads.iter().find(|thread| {
@@ -786,7 +813,7 @@ impl StateStore {
         if current.is_none() {
             return Ok(None);
         }
-        self.record_rosen_progress(project, 0, change, progress, None, WorkEvidence::default())
+        self.record_rosen_progress(project, 0, change, progress, None, evidence)
     }
 
     fn record_rosen_progress(
@@ -806,16 +833,23 @@ impl StateStore {
             return Ok(None);
         }
         item.rosen_event_cursor = item.rosen_event_cursor.max(seq);
+        let land_day = crate::landed_today::local_day_from_millis(evidence.occurred_at_ms);
+        let land_key = land_dedupe_key(item, seq, change, evidence.commit);
         let thread = item
             .threads
             .iter()
             .position(|thread| thread.rosen_change.as_deref() == Some(change));
         let Some(index) = thread else {
+            if progress == RosenProgress::Landed {
+                item.record_land(land_day, land_key.as_deref());
+            }
             crate::rosen_work::apply(item, change, progress, evidence);
             self.store_snapshot(next)?;
             return Ok(None);
         };
         let identifier = item.threads[index].id;
+        let replaced_land = progress == RosenProgress::Landed
+            && replaced_thread_land(item, &item.threads[index], change, evidence.commit);
         match progress {
             RosenProgress::Landed => {
                 if let Some(commit) = evidence.commit {
@@ -863,6 +897,9 @@ impl StateStore {
             named_commit,
             evidence.commit,
         ) {
+            if replaced_land {
+                item.record_land(land_day, land_key.as_deref());
+            }
             self.store_snapshot(next)?;
             return Ok(None);
         }
@@ -899,7 +936,7 @@ impl StateStore {
         let landed = apply_progress(thread, progress, message);
         queue_follow_up(thread, progress, message);
         if landed {
-            item.record_land(crate::landed_today::local_day());
+            item.record_land(land_day, land_key.as_deref());
         }
         crate::goal_rosen::apply(item, identifier, progress);
         crate::swarms::record_rosen_activity(item, identifier, progress);
@@ -986,6 +1023,53 @@ impl StateStore {
         self.project(project)
             .map_or(0, |project| project.rosen_event_cursor)
     }
+}
+
+/// Stable per-land deduplication key so replays, DB rewinds and checkpoint + stream pairs
+/// count each land once (#644). Prefers the landed commit hash when present.
+fn land_dedupe_key(
+    project: &ProjectItem,
+    seq: u64,
+    change: &str,
+    commit: Option<&str>,
+) -> Option<String> {
+    if let Some(commit) = commit.filter(|commit| !commit.is_empty()) {
+        return Some(format!("commit:{commit}"));
+    }
+    if seq != 0 {
+        let identity = project
+            .rosen_event_server_identity
+            .as_deref()
+            .unwrap_or("default");
+        return Some(format!("event:{identity}:{seq}:{change}"));
+    }
+    None
+}
+
+/// Whether `commit` is a distinct new land for a thread already marked `Merged` (for example
+/// after a cursor rewind skipped a superseded revert and delivered only the re-land).
+fn replaced_thread_land(
+    project: &ProjectItem,
+    thread: &ThreadItem,
+    change: &str,
+    commit: Option<&str>,
+) -> bool {
+    let Some(commit) = commit.filter(|commit| !commit.is_empty()) else {
+        return false;
+    };
+    if thread.state != ThreadState::Merged {
+        return false;
+    }
+    if let Some(saved) = thread.rosen_issue.landed_commit() {
+        return saved != commit;
+    }
+    project.rosen_work_items.iter().any(|work| {
+        work.change.as_deref() == Some(change)
+            && work
+                .landed_commit
+                .as_deref()
+                .is_some_and(|saved| saved != commit)
+    })
 }
 
 /// Recognizes and backfills pre-upgrade named/reverted events at or before the legacy
@@ -1476,6 +1560,7 @@ mod tests {
         WorkEvidence {
             commit: Some(culprit),
             revert_reason: Some("check exited with code 1"),
+            occurred_at_ms: None,
         }
     }
 
@@ -1492,6 +1577,7 @@ mod tests {
             WorkEvidence {
                 commit: Some("first land"),
                 revert_reason: None,
+                occurred_at_ms: None,
             },
         )?;
         store.save_rosen_work_progress(
@@ -1775,6 +1861,159 @@ mod tests {
         let thread = &loaded.state.projects[0].threads[0];
         assert!(thread.rosen_resolution_status.is_none());
         assert!(thread.rosen_follow_up_error.is_none());
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#644): detached Rosen lands must increment only their own project's daily pulse
+    // count, replays across local midnight must attribute each land to its occurrence day, and
+    // checkpoint + stream pairs or post-restart rewinds must count each land once.
+    #[test]
+    fn pulse_counts_detached_lands_by_occurrence_day_and_deduplicates_replays()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-pulse-644-{unique}"));
+        let mut store = checkpoint_store(&directory)?;
+        let second_project = ProjectItem::new(2, "Two".into(), r"C:\project two".into());
+        let mut next = store.state.clone();
+        next.projects.push(second_project);
+        store.store_snapshot(next)?;
+
+        let today_date = chrono::Local::now().date_naive();
+        let yesterday_date = today_date.pred_opt().ok_or("missing previous day")?;
+        let noon = chrono::NaiveTime::from_hms_opt(12, 0, 0).ok_or("invalid noon")?;
+        let now_ms =
+            chrono::TimeZone::from_local_datetime(&chrono::Local, &today_date.and_time(noon))
+                .earliest()
+                .ok_or("unrepresentable local today")?
+                .timestamp_millis();
+        let yesterday_ms =
+            chrono::TimeZone::from_local_datetime(&chrono::Local, &yesterday_date.and_time(noon))
+                .earliest()
+                .ok_or("unrepresentable local yesterday")?
+                .timestamp_millis();
+        let today = crate::landed_today::local_day();
+
+        // Yesterday's detached land replayed today must not count toward today's pulse.
+        store.save_rosen_work_progress(
+            2,
+            1,
+            "detached-yesterday",
+            (RosenProgress::Landed, ""),
+            WorkEvidence {
+                commit: Some("commit-y1"),
+                revert_reason: None,
+                occurred_at_ms: Some(yesterday_ms),
+            },
+        )?;
+        assert_eq!(store.state.projects[0].landed_on(today), 0);
+        assert_eq!(store.state.projects[1].landed_on(today), 0);
+
+        // Today's detached land increments only project 2.
+        store.save_rosen_work_progress(
+            2,
+            2,
+            "detached-today",
+            (RosenProgress::Landed, ""),
+            WorkEvidence {
+                commit: Some("commit-d1"),
+                revert_reason: None,
+                occurred_at_ms: Some(now_ms),
+            },
+        )?;
+        assert_eq!(store.state.projects[0].landed_on(today), 0);
+        assert_eq!(store.state.projects[1].landed_on(today), 1);
+
+        // Owned checkpoint followed by matching stream event counts once on project 1.
+        let generation = store.state.projects[0].threads[0].rosen_progress_generation;
+        store.checkpoint_rosen_land_with_evidence(
+            1,
+            "abc",
+            generation,
+            WorkEvidence {
+                commit: Some("commit-o1"),
+                revert_reason: None,
+                occurred_at_ms: Some(now_ms),
+            },
+        )?;
+        store.save_rosen_work_progress(
+            1,
+            3,
+            "abc",
+            (RosenProgress::Landed, ""),
+            WorkEvidence {
+                commit: Some("commit-o1"),
+                revert_reason: None,
+                occurred_at_ms: Some(now_ms),
+            },
+        )?;
+        assert_eq!(store.state.projects[0].landed_on(today), 1);
+        assert_eq!(store.state.projects[1].landed_on(today), 1);
+
+        // Reload and rewind both projects: replaying yesterday and today's already-counted
+        // lands must leave counts unchanged, while a new detached land still increments once.
+        let mut reloaded = StateStore::load_or_default(&directory)?;
+        assert_eq!(
+            reloaded.resume_rosen_events(1, "db-rebuilt", 10)?,
+            (0, 10, true)
+        );
+        assert_eq!(
+            reloaded.resume_rosen_events(2, "db-rebuilt", 10)?,
+            (0, 10, true)
+        );
+        // Delete thread 4 so "abc" is now detached on rewind too.
+        let mut stripped = reloaded.state.clone();
+        stripped.projects[0].threads.clear();
+        reloaded.store_snapshot(stripped)?;
+
+        reloaded.save_rosen_work_progress(
+            1,
+            1,
+            "abc",
+            (RosenProgress::Landed, ""),
+            WorkEvidence {
+                commit: Some("commit-o1"),
+                revert_reason: None,
+                occurred_at_ms: Some(now_ms),
+            },
+        )?;
+        reloaded.save_rosen_work_progress(
+            2,
+            1,
+            "detached-yesterday",
+            (RosenProgress::Landed, ""),
+            WorkEvidence {
+                commit: Some("commit-y1"),
+                revert_reason: None,
+                occurred_at_ms: Some(yesterday_ms),
+            },
+        )?;
+        reloaded.save_rosen_work_progress(
+            2,
+            2,
+            "detached-today",
+            (RosenProgress::Landed, ""),
+            WorkEvidence {
+                commit: Some("commit-d1"),
+                revert_reason: None,
+                occurred_at_ms: Some(now_ms),
+            },
+        )?;
+        reloaded.save_rosen_work_progress(
+            2,
+            3,
+            "detached-new",
+            (RosenProgress::Landed, ""),
+            WorkEvidence {
+                commit: Some("commit-d2"),
+                revert_reason: None,
+                occurred_at_ms: Some(now_ms),
+            },
+        )?;
+        assert_eq!(reloaded.state.projects[0].landed_on(today), 1);
+        assert_eq!(reloaded.state.projects[1].landed_on(today), 2);
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

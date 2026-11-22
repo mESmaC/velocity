@@ -80,8 +80,22 @@ impl LandingHost for TauriLandingHost {
         crate::continuous_dispatch::integration_idle(&self.0, project).unwrap_or(false)
     }
 
-    fn change_landed(&self, project: u32, change: &str, generation: u64) -> Result<(), String> {
-        crate::rosen_events::record_landed(&self.0, project, change, generation)
+    fn change_landed(
+        &self,
+        project: u32,
+        change: &str,
+        generation: u64,
+        commit: Option<&str>,
+        occurred_at_ms: Option<i64>,
+    ) -> Result<(), String> {
+        crate::rosen_events::record_landed(
+            &self.0,
+            project,
+            change,
+            generation,
+            commit,
+            occurred_at_ms,
+        )
     }
 
     fn land_refused(

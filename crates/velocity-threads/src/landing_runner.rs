@@ -34,7 +34,14 @@ pub trait LandingHost: Clone + Send + Sync + 'static {
     fn projects(&self) -> Vec<LandingProject>;
     fn integration_idle(&self, project: u32) -> bool;
     fn repair_builds(&self, project: u32, observation: BuildRepairs) -> Result<(), String>;
-    fn change_landed(&self, project: u32, change: &str, generation: u64) -> Result<(), String>;
+    fn change_landed(
+        &self,
+        project: u32,
+        change: &str,
+        generation: u64,
+        commit: Option<&str>,
+        occurred_at_ms: Option<i64>,
+    ) -> Result<(), String>;
     fn activity(&self, project: u32, actor: &str, kind: DutyEventKind, message: String);
     fn land_refused(
         &self,
@@ -256,8 +263,17 @@ impl RosenLanding {
         match landing::land(server, checker::CHECKER, change).await {
             Ok(LandOutcome::Landed { commit }) => {
                 self.lock().refusal_retries.remove(&(id, thread.id));
-                if let Err(error) = host.change_landed(id, change, thread.rosen_progress_generation)
-                {
+                let occurred_at_ms = landing::landed_at_ms(server, change, &commit)
+                    .await
+                    .ok()
+                    .flatten();
+                if let Err(error) = host.change_landed(
+                    id,
+                    change,
+                    thread.rosen_progress_generation,
+                    Some(&commit),
+                    occurred_at_ms,
+                ) {
                     eprintln!("Rosen land checkpoint for change {change}: {error}");
                 }
                 let message = rosen_checker::landed_line(change, &commit, started.elapsed());

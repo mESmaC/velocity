@@ -65,7 +65,7 @@ pub use agent::{
 pub use conflicts::{conflict_message, has_open_conflicts, regeneration_message};
 pub use events::{
     ChangeEvent, EventHead, EventReplay, EventStream, change_event, conflict_paths,
-    event_timestamps, regenerate_paths, revert_output,
+    event_timestamp_ms, event_timestamps, regenerate_paths, revert_output,
 };
 pub use events::{IssueEvent, issue_event};
 pub use issue::{change_source_issue, issue_build_coverage, record_work_sources};

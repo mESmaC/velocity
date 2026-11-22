@@ -2800,11 +2800,17 @@ async fn check_stalled_review_thread(
     }
     let attempt = match velocity_rosen::landing::land_check(server, change).await {
         Ok(LandCheckOutcome::AlreadyLanded { commit }) => {
+            let occurred_at_ms = velocity_rosen::landing::landed_at_ms(server, change, &commit)
+                .await
+                .ok()
+                .flatten();
             let _ = crate::rosen_events::record_landed(
                 application,
                 project,
                 change,
                 thread.rosen_progress_generation,
+                Some(&commit),
+                occurred_at_ms,
             );
             let action = format!(
                 "Change already landed at {} · synced thread state",

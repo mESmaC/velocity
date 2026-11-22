@@ -2,12 +2,12 @@
 //! landing in place of the GitHub PR watcher (Rosen R9, Velocity F6).
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use rosen_client::Client;
 use rosen_client::protocol::{Event, EventKind};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use tokio::sync::mpsc;
 
 use crate::{ProjectServer, RosenError};
@@ -218,6 +218,26 @@ pub fn event_timestamps(
     Ok((floor, timestamps))
 }
 
+/// Server-assigned UTC millisecond timestamp (`events.created_at`) for a single event (#644).
+/// Returns `None` when the metadata database is unavailable or does not contain `seq`.
+pub fn event_timestamp_ms(data_dir: &Path, seq: u64) -> Result<Option<i64>, RosenError> {
+    let database = data_dir.join("metadata.sqlite");
+    if !database.is_file() {
+        return Ok(None);
+    }
+    let connection = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(std::time::Duration::from_secs(2))?;
+    let seq = i64::try_from(seq).unwrap_or(i64::MAX);
+    let created_at: Option<i64> = connection
+        .query_row(
+            "SELECT created_at FROM events WHERE seq = ?1",
+            [seq],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(created_at.filter(|&millis| millis > 0))
+}
+
 /// The files a `conflict` event names (R5).
 pub fn conflict_paths(event: &Event) -> Vec<String> {
     event_paths(event, "paths")
@@ -256,6 +276,7 @@ pub fn revert_output(event: &Event) -> Option<String> {
 pub struct EventStream {
     // The connection the stream arrives on; it ends when this is dropped.
     _client: crate::connection::Connection,
+    data_dir: PathBuf,
     events: mpsc::Receiver<Event>,
 }
 
@@ -264,7 +285,7 @@ impl EventStream {
     /// the caller starts it.
     pub async fn open(server: &ProjectServer, after: u64) -> Result<Self, RosenError> {
         let client = crate::connection::Connection::dedicated(server.endpoint()).await?;
-        Self::subscribe(client, after).await
+        Self::subscribe(client, server.data_dir().to_owned(), after).await
     }
 
     /// Validate and open against the same connection so a replaced server cannot
@@ -281,12 +302,13 @@ impl EventStream {
             .map_err(|error| error.to_string())?;
         let (after, replay_through) = position(&head)?;
         let directory = server.data_dir().to_owned();
+        let replay_dir = directory.clone();
         let replay =
-            tokio::task::spawn_blocking(move || EventReplay::read(&directory, replay_through))
+            tokio::task::spawn_blocking(move || EventReplay::read(&replay_dir, replay_through))
                 .await
                 .map_err(|error| error.to_string())?
                 .map_err(|error| error.to_string())?;
-        let stream = Self::subscribe(client, after)
+        let stream = Self::subscribe(client, directory, after)
             .await
             .map_err(|error| error.to_string())?;
         Ok((stream, replay))
@@ -294,13 +316,20 @@ impl EventStream {
 
     async fn subscribe(
         client: crate::connection::Connection,
+        data_dir: PathBuf,
         after: u64,
     ) -> Result<Self, RosenError> {
         let events = client.subscribe(Some(after)).await?;
         Ok(Self {
             _client: client,
+            data_dir,
             events,
         })
+    }
+
+    /// The Rosen server's local data directory holding `metadata.sqlite` (#644).
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
     }
 
     /// The next event; `None` once the connection has closed.
