@@ -977,6 +977,7 @@ mod tests {
 
         // Un-reopened green issue is skipped with an explicit reason instead of disappearing.
         let mut still_green = sample_issue(39);
+        still_green.title = "Build web side".into();
         still_green.updated_at = "2026-11-18T11:30:00Z".into();
         assert!(!dispatchable_issue(
             project,
@@ -992,6 +993,7 @@ mod tests {
 
         // Reopened issue (newer updated_at / reopen event) is dispatchable again.
         let mut reopened = sample_issue(39);
+        reopened.title = "Build web side".into();
         reopened.updated_at = "2026-11-21T10:00:00Z".into();
         assert!(dispatchable_issue(
             project,
@@ -1003,6 +1005,7 @@ mod tests {
 
         // In-flight land stays held after Velocity's land comment bumps updated_at, and reports a reason.
         let mut awaiting = sample_issue(40);
+        awaiting.title = "Waiting for integration".into();
         awaiting.updated_at = "2026-11-21T09:00:05Z".into();
         assert!(!dispatchable_issue(
             project,
