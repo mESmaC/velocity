@@ -1,5 +1,5 @@
 use crate::{
-    Channel, Error,
+    Channel, DiscoveryKind, DiscoveryReportInput, Error, FrictionReport, ToolRequestReport,
     issue_tools::{self, IssueHandler},
     next_work_tools::{self, NextWorkHandler},
     read_tools::{self, MessageReader},
@@ -146,7 +146,7 @@ fn instructions(
         "Check ownership with airc_claims using the candidate task or piece as the task filter. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so check the next candidate. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file."
     };
     format!(
-        "You joined this project's AIRC channel as {nick}. {claim_rule} Messages require named recipients and an intent. Log readers (read_feed, read_events, read_ledger) return newest first (up to 50), filter by query or after/before sequence, return next_before for older matches, and read oversized entries by sequence with offset. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview.{issue_rule} Use append_ledger with velocity_issue only to report a problem in the Velocity IDE/tooling running your session (its worktrees, AIRC, duty tools, agent shells, build queue, code graph or desktop app), which Velocity files on mESmaC/velocity regardless of which project you are in; for issues on this project's repository (including when this project is mESmaC/velocity), use issue_create instead. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue instead and is filed on mESmaC/rosen. Use at most one ledger issue field. Search read_ledger with ledger discovery and the problem's terms before reporting it. An issue that waits on other issues names them in blocked_by, which records GitHub issue dependencies; never hold it with a label."
+        "You joined this project's AIRC channel as {nick}. {claim_rule} Messages require named recipients and an intent. Log readers (read_feed, read_events, read_ledger) return newest first (up to 50), filter by query or after/before sequence, return next_before for older matches, and read oversized entries by sequence with offset. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview.{issue_rule} Use append_ledger with velocity_issue only to report a problem in the Velocity IDE/tooling running your session (its worktrees, AIRC, duty tools, agent shells, build queue, code graph or desktop app), which Velocity files on mESmaC/velocity regardless of which project you are in; for issues on this project's repository (including when this project is mESmaC/velocity), use issue_create instead. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue and is filed on mESmaC/rosen; a discovery about Collapse (mESmaC/collapse.sh) uses collapse_issue and is filed on mESmaC/collapse.sh. Use at most one ledger issue field. Whenever something costs you more than about five minutes or a large amount of output without being a bug, log a one-line discovery via append_ledger with kind=\"friction\" (what happened, rough cost_minutes or cost_tokens, and tool_or_step) or kind=\"tool_request\" (tool_name, would_do, would_replace, saving_per_use), targeting velocity_issue, rosen_issue or collapse_issue; also log one before naming the change if anything did, and skip it when nothing went wrong. Search read_ledger with ledger discovery and the problem's terms before reporting it. An issue that waits on other issues names them in blocked_by, which records GitHub issue dependencies; never hold it with a label."
     )
 }
 
@@ -458,40 +458,145 @@ fn call_inner(
 }
 
 fn append_ledger(channel: &Channel, member: &str, arguments: &Value) -> Result<Value, Error> {
-    let title = |name: &str| {
-        arguments
-            .get(name)
-            .and_then(Value::as_str)
-            .filter(|title| !title.trim().is_empty())
-            .map(str::to_owned)
-    };
-    let velocity_issue = title("velocity_issue");
-    let rosen_issue = title("rosen_issue");
+    let target_ledger = ledger(arguments)?;
+    let kind = discovery_kind(arguments)?;
+    let velocity_issue = optional_text(arguments, "velocity_issue")?;
+    let rosen_issue = optional_text(arguments, "rosen_issue")?;
+    let collapse_issue = optional_text(arguments, "collapse_issue")?;
     let reported_velocity = velocity_issue.is_some();
     let reported_rosen = rosen_issue.is_some();
-    let blockers = report_blockers(arguments, reported_velocity || reported_rosen)?;
+    let reported_collapse = collapse_issue.is_some();
+    let blockers = report_blockers(
+        arguments,
+        reported_velocity || reported_rosen || reported_collapse,
+    )?;
+    let (friction, tool_request) = parse_feedback_fields(arguments, kind)?;
     // The blockers ride on the text's closing line, which the filing edge links (#511).
     let entry = with_declared_blockers(text(arguments, "text")?, &blockers);
-    channel.append_ledger_report(
-        member,
-        ledger(arguments)?,
-        &entry,
+    let details = DiscoveryReportInput {
+        kind,
         velocity_issue,
         rosen_issue,
-    )?;
-    Ok(
-        json!({"appended":true,"velocity_issue":reported_velocity,"rosen_issue":reported_rosen,
-        "blocked_by":blocker_list(&blockers)}),
-    )
+        collapse_issue,
+        friction,
+        tool_request,
+    };
+    channel.append_ledger_with_details(member, target_ledger, &entry, details)?;
+    Ok(json!({
+        "appended": true,
+        "kind": kind.as_str(),
+        "velocity_issue": reported_velocity,
+        "rosen_issue": reported_rosen,
+        "collapse_issue": reported_collapse,
+        "blocked_by": blocker_list(&blockers),
+    }))
+}
+
+fn discovery_kind(arguments: &Value) -> Result<DiscoveryKind, Error> {
+    let Some(value) = arguments.get("kind") else {
+        return Ok(DiscoveryKind::Problem);
+    };
+    let raw = value
+        .as_str()
+        .ok_or_else(|| Error::Invalid("kind must be problem, friction or tool_request".into()))?;
+    match raw {
+        "problem" => Ok(DiscoveryKind::Problem),
+        "friction" => Ok(DiscoveryKind::Friction),
+        "tool_request" => Ok(DiscoveryKind::ToolRequest),
+        _ => Err(Error::Invalid(
+            "kind must be problem, friction or tool_request".into(),
+        )),
+    }
+}
+
+fn parse_feedback_fields(
+    arguments: &Value,
+    kind: DiscoveryKind,
+) -> Result<(Option<FrictionReport>, Option<ToolRequestReport>), Error> {
+    let cost_minutes = optional_minutes(arguments, "cost_minutes")?;
+    let cost_tokens = optional_u32(arguments, "cost_tokens")?;
+    let tool_or_step = optional_text(arguments, "tool_or_step")?;
+    let tool_name = optional_text(arguments, "tool_name")?;
+    let would_do = optional_text(arguments, "would_do")?;
+    let would_replace = optional_text(arguments, "would_replace")?;
+    let saving_per_use = optional_text(arguments, "saving_per_use")?;
+    let has_friction = tool_or_step.is_some() || cost_tokens.is_some();
+    let has_tool_request = tool_name.is_some()
+        || would_do.is_some()
+        || would_replace.is_some()
+        || saving_per_use.is_some();
+    let friction = (kind == DiscoveryKind::Friction
+        || has_friction
+        || (kind == DiscoveryKind::Problem && cost_minutes.is_some()))
+    .then(|| FrictionReport {
+        cost_minutes,
+        cost_tokens,
+        tool_or_step: tool_or_step.unwrap_or_default(),
+    });
+    let tool_request =
+        (kind == DiscoveryKind::ToolRequest || has_tool_request).then(|| ToolRequestReport {
+            tool_name: tool_name.unwrap_or_default(),
+            would_do: would_do.unwrap_or_default(),
+            would_replace: would_replace.unwrap_or_default(),
+            saving_per_use: saving_per_use.unwrap_or_default(),
+            cost_minutes,
+        });
+    Ok((friction, tool_request))
+}
+
+fn optional_text(arguments: &Value, key: &str) -> Result<Option<String>, Error> {
+    let Some(value) = arguments.get(key) else {
+        return Ok(None);
+    };
+    let raw = value
+        .as_str()
+        .ok_or_else(|| Error::Invalid(format!("{key} must be a string")))?;
+    let trimmed = raw.trim();
+    Ok((!trimmed.is_empty()).then(|| trimmed.to_owned()))
+}
+
+fn optional_u32(arguments: &Value, key: &str) -> Result<Option<u32>, Error> {
+    let Some(value) = arguments.get(key) else {
+        return Ok(None);
+    };
+    let raw = value
+        .as_u64()
+        .ok_or_else(|| Error::Invalid(format!("{key} must be a non-negative integer")))?;
+    u32::try_from(raw)
+        .map(Some)
+        .map_err(|_| Error::Invalid(format!("{key} is too large")))
+}
+
+fn optional_minutes(arguments: &Value, key: &str) -> Result<Option<u32>, Error> {
+    let Some(value) = arguments.get(key) else {
+        return Ok(None);
+    };
+    if let Some(raw) = value.as_u64() {
+        return u32::try_from(raw)
+            .map(Some)
+            .map_err(|_| Error::Invalid(format!("{key} is too large")));
+    }
+    let Some(raw) = value
+        .as_f64()
+        .filter(|number| number.is_finite() && *number >= 0.0)
+    else {
+        return Err(Error::Invalid(format!(
+            "{key} must be a non-negative number"
+        )));
+    };
+    if raw > f64::from(u32::MAX) {
+        return Err(Error::Invalid(format!("{key} is too large")));
+    }
+    Ok(Some(raw.ceil() as u32))
 }
 
 /// The issues a reported discovery waits on. Each names its repository: the report is
-/// filed on Velocity's or Rosen's repository, not the project the agent works in.
+/// filed on Velocity's, Rosen's or Collapse's repository, not the project the agent works in.
 fn report_blockers(arguments: &Value, reported: bool) -> Result<Vec<IssueReference>, Error> {
     let names = issue_tools::blocked_by(arguments)?;
     if !names.is_empty() && !reported {
         return Err(Error::Invalid(
-            "blocked_by goes with velocity_issue or rosen_issue".into(),
+            "blocked_by goes with velocity_issue, rosen_issue or collapse_issue".into(),
         ));
     }
     let blockers = parse_blockers(&names).map_err(Error::Invalid)?;
@@ -605,14 +710,8 @@ fn writing_tools() -> Vec<Value> {
         ),
         tool(
             "append_ledger",
-            "Record a discovery or past work in the project ledger. To file an issue on this project's own repository (including spec questions, contradictions or code findings), use issue_create instead. Pass velocity_issue (a one-line title) only when a discovery reports a problem in the Velocity IDE/tooling running your session (its worktrees and paths, AIRC, the review swarm or Scout tools, agent shells and sandboxes, the build queue, the code graph, or the desktop app); Velocity files it on mESmaC/velocity (or adds it to a matching open issue) regardless of which project you are in. Pass rosen_issue instead for a problem in Rosen itself (its server, workspaces, durability, claims, rebases or landing) to file on mESmaC/rosen. Use at most one issue field, and leave both out when another agent already reported the same problem or when you already filed it with issue_create. When velocity_issue or rosen_issue waits on other issues, name them in blocked_by as owner/name#12 and Velocity links them as GitHub issue dependencies.",
-            json!({"ledger":ledger,"text":string.clone(),
-                "blocked_by":{"type":"array","items":{"type":"string"},
-                    "description":"Only with velocity_issue or rosen_issue: issues that must close first, each as owner/name#12"},
-                "velocity_issue":{"type":"string","minLength":1,"maxLength":200,
-                    "description":"One-line title to file this tooling discovery on mESmaC/velocity (for problems in the Velocity IDE/tooling running your session; use issue_create for this project's own issues, including when this project is mESmaC/velocity)"},
-                "rosen_issue":{"type":"string","minLength":1,"maxLength":200,
-                    "description":"One-line title to file this discovery on mESmaC/rosen (for problems in Rosen itself; cannot be combined with velocity_issue)"}}),
+            "Record a discovery or past work in the project ledger. To file an issue on this project's own repository (including spec questions, contradictions or code findings), use issue_create instead. Discovery entries accept an optional kind: problem (default), friction (time or token cost without a bug: pass cost_minutes or cost_tokens and tool_or_step) or tool_request (a tool you wish you had: pass tool_name, would_do, would_replace and saving_per_use). Pass velocity_issue (a one-line title) to target mESmaC/velocity (IDE/tooling: worktrees, AIRC, review swarm or Scout, agent shells, build queue, code graph or desktop app), rosen_issue to target mESmaC/rosen (server, workspaces, durability, claims, rebases or landing), or collapse_issue to target mESmaC/collapse.sh (Collapse hosting, issues, releases or API). Use at most one issue field, and leave it out for project-local problem discoveries or when another agent already reported the same problem. Friction and tool requests are grouped per target repository and filed as a self-improvement issue once three different agent sessions report them or total cost reaches 60 agent-minutes. When an issue destination waits on other issues, name them in blocked_by as owner/name#12.",
+            append_ledger_properties(ledger, string.clone()),
             &["ledger", "text"],
         ),
         tool(
@@ -623,6 +722,82 @@ fn writing_tools() -> Vec<Value> {
             &["to", "intent", "text"],
         ),
     ]
+}
+
+fn append_ledger_properties(ledger: Value, string: Value) -> Value {
+    json!({
+        "ledger": ledger,
+        "text": string,
+        "kind": {
+            "type": "string",
+            "enum": ["problem", "friction", "tool_request"],
+            "default": "problem",
+            "description": "Only for discovery entries: problem (default), friction (time or token cost without a bug) or tool_request (a tool you wish you had)"
+        },
+        "cost_minutes": {
+            "type": "number",
+            "minimum": 0,
+            "description": "For friction or tool_request discoveries: roughly how many agent-minutes it cost (or saves per use)"
+        },
+        "cost_tokens": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "For friction discoveries: roughly how many tokens it cost"
+        },
+        "tool_or_step": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "For friction discoveries: the tool or workflow step involved"
+        },
+        "tool_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "description": "For tool_request discoveries: proposed name for the tool"
+        },
+        "would_do": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "For tool_request discoveries: what the tool would do"
+        },
+        "would_replace": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "For tool_request discoveries: what current workflow or commands it would replace"
+        },
+        "saving_per_use": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "For tool_request discoveries: estimated time or token saving per use"
+        },
+        "blocked_by": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Only with velocity_issue, rosen_issue or collapse_issue: issues that must close first, each as owner/name#12"
+        },
+        "velocity_issue": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "One-line title to target mESmaC/velocity (for problems, friction or tool requests in the Velocity IDE/tooling running your session; use issue_create for this project's own issues, including when this project is mESmaC/velocity)"
+        },
+        "rosen_issue": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "One-line title to target mESmaC/rosen (for Rosen server, workspaces, durability, claims, rebases or landing; cannot be combined with other *_issue fields)"
+        },
+        "collapse_issue": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "One-line title to target mESmaC/collapse.sh (for Collapse hosting, issues, releases or API; cannot be combined with other *_issue fields)"
+        }
+    })
 }
 
 pub(crate) fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
@@ -1112,6 +1287,110 @@ mod tests {
                 vec![589],
             )]
         );
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    // Risk (#620): agents must be able to log friction, tool_request and collapse_issue
+    // discoveries, enforce one destination per entry, and receive friction/tool_request
+    // guidance in AIRC join instructions.
+    #[test]
+    fn append_ledger_supports_friction_tool_request_and_collapse_issue()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "velocity-airc-feedback-620-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let channel = Channel::open(&root, "1")?;
+
+        let replies = run_mcp(
+            &channel,
+            "thread-620",
+            "issue-620",
+            &[
+                json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"append_ledger","arguments":{
+                    "ledger":"discovery",
+                    "kind":"friction",
+                    "text":"Queued clippy waited 12 minutes in the queue.",
+                    "cost_minutes":12,
+                    "cost_tokens":1500,
+                    "tool_or_step":"velocity-run preflight",
+                    "velocity_issue":"Long wait times in preflight queue"
+                }}}),
+                json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"append_ledger","arguments":{
+                    "ledger":"discovery",
+                    "kind":"tool_request",
+                    "text":"Wish we could fetch just the failing test output.",
+                    "tool_name":"failing_test_output",
+                    "would_do":"Return only the failing test output from a verification run",
+                    "would_replace":"Reading full build logs in chunks",
+                    "saving_per_use":"10 minutes",
+                    "velocity_issue":"Return only the failing test output"
+                }}}),
+                json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"append_ledger","arguments":{
+                    "ledger":"discovery",
+                    "text":"Collapse issues endpoint returned 500 on empty labels.",
+                    "collapse_issue":"Issues API fails on empty label filter"
+                }}}),
+                json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"append_ledger","arguments":{
+                    "ledger":"discovery",
+                    "text":"Cannot target two repos.",
+                    "velocity_issue":"First title",
+                    "collapse_issue":"Second title"
+                }}}),
+                json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"append_ledger","arguments":{
+                    "ledger":"discovery",
+                    "kind":"friction",
+                    "text":"Missing required friction fields."
+                }}}),
+            ],
+        )?;
+
+        let join_text = replies[0]["result"]["instructions"].as_str().unwrap_or("");
+        assert!(join_text.contains("collapse_issue"));
+        assert!(join_text.contains("friction"));
+        assert!(join_text.contains("tool_request"));
+        assert!(join_text.contains("five minutes"));
+        assert!(join_text.contains("before naming the change"));
+
+        assert_eq!(replies[1]["result"]["isError"], json!(false));
+        assert_eq!(replies[2]["result"]["isError"], json!(false));
+        assert_eq!(replies[3]["result"]["isError"], json!(false));
+        assert_eq!(replies[4]["result"]["isError"], json!(true));
+        assert_eq!(replies[5]["result"]["isError"], json!(true));
+
+        let entries = channel.ledger("discovery", 0)?;
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].discovery_kind, Some(DiscoveryKind::Friction));
+        assert_eq!(
+            entries[0].friction.as_ref().and_then(|f| f.cost_minutes),
+            Some(12)
+        );
+        assert_eq!(
+            entries[0]
+                .friction
+                .as_ref()
+                .map(|f| f.tool_or_step.as_str()),
+            Some("velocity-run preflight")
+        );
+        assert_eq!(entries[1].discovery_kind, Some(DiscoveryKind::ToolRequest));
+        assert_eq!(
+            entries[1]
+                .tool_request
+                .as_ref()
+                .map(|t| t.tool_name.as_str()),
+            Some("failing_test_output")
+        );
+        assert_eq!(entries[2].discovery_kind, None);
+        assert_eq!(
+            entries[2].collapse_issue.as_deref(),
+            Some("Issues API fails on empty label filter")
+        );
+
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }

@@ -71,23 +71,28 @@ Velocity posts them; agents never type them.
 - **Log discoveries** that other agents need (environment quirks, platform bugs) to the Discoveries ledger.
   Velocity also fills the Discoveries ledger automatically with confirmed post-land failures and their causes (#540).
   Every land is appended to Past work.
-- **Report Velocity's and Rosen's own problems.**
+- **Report Velocity's, Rosen's and Collapse's own problems, friction and tool requests.**
   To file an issue on the project's own repository (including spec questions, contradictions or code findings, even when that project is `mESmaC/velocity`), agents use `issue_create` (#535).
-  When a discovery reports a problem in the Velocity IDE/tooling running the session (its workspaces and paths, AIRC, the Scout or review swarm tools, agent shells, the build queue, the code graph or the desktop app), the agent also passes `velocity_issue`, a one-line title of at most 200 characters, to `append_ledger`.
-  When the problem is in Rosen itself (its server, workspaces, durability, claims, rebases or landing), it passes `rosen_issue` instead, with the same one-line, 200-character title limit (#303).
-  Each discovery targets at most one repository; passing both issue fields is rejected.
+  Discovery entries in `append_ledger` take an optional `kind`: `problem` (the default), `friction` (time or token cost without a bug, recording what happened, rough `cost_minutes` or `cost_tokens`, and `tool_or_step`) or `tool_request` (a tool the agent wishes it had, recording `tool_name`, `would_do`, `would_replace`, `saving_per_use`, and optional `cost_minutes`) (#620).
+  When a discovery targets the Velocity IDE/tooling running the session (its workspaces and paths, AIRC, the Scout or review swarm tools, agent shells, the build queue, the code graph or the desktop app), the agent passes `velocity_issue`, a one-line title of at most 200 characters, to `append_ledger`.
+  When it targets Rosen itself (its server, workspaces, durability, claims, rebases or landing), it passes `rosen_issue` instead, with the same one-line, 200-character title limit (#303).
+  When it targets Collapse (`mESmaC/collapse.sh`), it passes `collapse_issue` instead, filing on `mESmaC/collapse.sh` using that project's issue host (GitHub today) (#620).
+  Each discovery targets at most one repository; passing more than one issue field is rejected.
   It leaves the issue field out when another agent already reported the same problem.
-  Only discoveries carry these fields.
-  Every 30 seconds Velocity reads each project's channel and files each marked discovery as an issue on `mESmaC/velocity` or `mESmaC/rosen`, with the agent, project, time and text.
+  Only discoveries carry `kind`, friction/tool-request fields or tool issue destinations.
+  Every 30 seconds Velocity reads each project's channel and files each marked `problem` discovery as an issue on `mESmaC/velocity`, `mESmaC/rosen` or `mESmaC/collapse.sh`, with the agent, project, time and text.
   Before filing, Velocity compares open issues and discoveries recorded within one hour of the report, within the same destination repository (#471).
   It compares titles and discovery text, using file and symbol references resolved through the destination's code graph when available.
   Matching reports add an **Also seen by** comment with the agent, project, recorded time and evidence on the existing open issue.
+  Friction and tool requests are grouped by target repository and #471 similarity instead of filing each one (#620).
+  A group files one issue labelled `self-improvement` (creating the label in the destination repository if needed) when three different agent sessions report it or its reported cost reaches 60 agent-minutes, whichever comes first, listing each report with its agent, project, time and total cost; later matching reports add an **Also seen by** comment.
+  The AIRC join instructions ask agents to log a one-line `friction` or `tool_request` entry whenever something costs more than about five minutes or a large amount of output, and before naming a change if anything did; when nothing went wrong, no report is expected (#620).
   A report quotes at most 20,000 characters of the discovery.
   A reported discovery that waits on other issues passes them to `append_ledger` as `blocked_by`, each as `owner/name#n` (#511).
   The entry carries them on a closing `Blocked by:` line, and Velocity links each one to the filed or matching issue as a GitHub issue dependency before it records the report.
   A blocker GitHub refuses, such as an issue that does not exist, is left out and logged, and any other failure is retried on the next pass.
   It uses GitHub's REST API, which keeps working when a swarm has spent the GraphQL budget.
-  A per-project cursor and each report's issue number, separated by destination repository, are saved in `velocity-reports.json` in the app data folder; existing Velocity records still load, and a failed report leaves the cursor in place and is retried on the next pass.
+  A per-project cursor, grouped friction/tool-request state and each report's issue number, separated by destination repository, are saved in `velocity-reports.json` in the app data folder; existing Velocity and Rosen records still load, and a failed report leaves the cursor in place and is retried on the next pass.
   Each report is marked pending before GitHub is asked and recorded as soon as it answers.
   A retried pending report checks for its original issue body or comment before posting again.
 
@@ -158,6 +163,7 @@ A line meant for one agent never reaches all of them.
   - **Discoveries** and **Past work** are the two ledgers.
     A discovery reported to Velocity ends with "Velocity issue: <title> · mESmaC/velocity#n", or "filing…" until it is filed.
     A discovery reported to Rosen uses "Rosen issue: <title> · mESmaC/rosen#n" with the same pending state.
+    A discovery reported to Collapse uses "Collapse issue: <title> · mESmaC/collapse.sh#n" with the same pending state (#620).
 - **Nick list:** grouped On duty / Choosing work / Working / named / Holding a claim / Left (last 4).
   Each nick shows what it is doing.
   Clicking a nick starts a `nick: ` line.
@@ -175,7 +181,7 @@ The project-id is the project's store identifier.
 Velocity posts events (the F14 tags) as `velocity` on behalf of the nick they name, without joining; an event about a PR also carries its number and head SHA, which the approval record (F7) reads.
 UTC daily JSONL logs and the Discoveries/Past work files share monotonically increasing sequence cursors; writes are serialized across processes and flushed before acknowledgement.
 Nicks allow up to 48 characters on word boundaries while preserving trailing numeric suffixes, with collision suffixes; `you` and `velocity` are reserved (#532).
-Tools available at this stage are `join`, `leave`, `list_nicks`, `read_feed`, `read_messages`, `send_message`, `append_ledger { ledger, text, velocity_issue?, rosen_issue? }`, and `read_ledger`.
+Tools available at this stage are `join`, `leave`, `list_nicks`, `read_feed`, `read_messages`, `send_message`, `append_ledger { ledger, text, kind?, cost_minutes?, cost_tokens?, tool_or_step?, tool_name?, would_do?, would_replace?, saving_per_use?, velocity_issue?, rosen_issue?, collapse_issue? }`, and `read_ledger`.
 The channel also exposes `airc_claims`, `airc_claim { piece?, task, branch, files }`, `airc_release { task }` and `airc_share { holder, file }`.
 Claims are durable first-wins records under the channel's cross-process lock, keyed on the piece: a work-pool identity (`task:<id>`, `issue:<n>`, `spec:<section>`, spelled one way whatever the prefix's casing, the spacing or an issue's `#`), or the task text when no piece is given.
 The task is display text, so two pieces with the same title never contend.

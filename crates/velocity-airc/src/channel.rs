@@ -50,12 +50,79 @@ pub struct Entry {
     /// A discovery about Rosen itself, filed on mESmaC/rosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rosen_issue: Option<String>,
+    /// A discovery about Collapse itself, filed on mESmaC/collapse.sh (#620).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collapse_issue: Option<String>,
+    /// Discovery category when not a default problem report (#620).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_kind: Option<DiscoveryKind>,
+    /// Structured cost and step details for `friction` discoveries (#620).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub friction: Option<FrictionReport>,
+    /// Structured proposal details for `tool_request` discoveries (#620).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_request: Option<ToolRequestReport>,
     /// The task and fields a `task_update_request` or `task_delete_request` names (F8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_change: Option<crate::TaskChange>,
     /// Structured event detail replacing raw JSON strings in `text` (#540).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<crate::EventPayload>,
+}
+
+/// Kind of discovery logged via `append_ledger` (#620).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryKind {
+    #[default]
+    Problem,
+    Friction,
+    ToolRequest,
+}
+
+impl DiscoveryKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Problem => "problem",
+            Self::Friction => "friction",
+            Self::ToolRequest => "tool_request",
+        }
+    }
+}
+
+/// Structured details for a `friction` discovery (#620).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct FrictionReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_minutes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_tokens: Option<u32>,
+    pub tool_or_step: String,
+}
+
+/// Structured details for a `tool_request` discovery (#620).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct ToolRequestReport {
+    pub tool_name: String,
+    pub would_do: String,
+    pub would_replace: String,
+    pub saving_per_use: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_minutes: Option<u32>,
+}
+
+/// Optional discovery metadata passed to [`Channel::append_ledger_with_details`] (#620).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiscoveryReportInput {
+    pub kind: DiscoveryKind,
+    pub velocity_issue: Option<String>,
+    pub rosen_issue: Option<String>,
+    pub collapse_issue: Option<String>,
+    pub friction: Option<FrictionReport>,
+    pub tool_request: Option<ToolRequestReport>,
 }
 
 impl Entry {
@@ -80,6 +147,14 @@ impl Entry {
 pub(crate) enum DiscoveryIssue {
     Velocity(String),
     Rosen(String),
+    Collapse(String),
+}
+
+pub(crate) struct ValidatedDiscovery {
+    pub kind: DiscoveryKind,
+    pub issue: Option<DiscoveryIssue>,
+    pub friction: Option<FrictionReport>,
+    pub tool_request: Option<ToolRequestReport>,
 }
 
 /// Event tags Velocity posts from what it observes (F14). Agents never type them.
@@ -465,41 +540,37 @@ impl Channel {
         velocity_issue: Option<String>,
         rosen_issue: Option<String>,
     ) -> Result<(), Error> {
+        self.append_ledger_with_details(
+            member,
+            ledger,
+            text,
+            DiscoveryReportInput {
+                velocity_issue,
+                rosen_issue,
+                ..DiscoveryReportInput::default()
+            },
+        )
+    }
+
+    /// Records a ledger entry with optional discovery kind, structured friction or
+    /// tool-request details, and at most one tool issue destination (#620).
+    pub fn append_ledger_with_details(
+        &self,
+        member: &str,
+        ledger: &str,
+        text: &str,
+        details: DiscoveryReportInput,
+    ) -> Result<(), Error> {
         if !matches!(ledger, "discovery" | "past_work") {
             return Err(Error::Invalid(
                 "Ledger must be discovery or past_work".into(),
             ));
         }
-        let velocity_issue = velocity_issue.filter(|title| !title.trim().is_empty());
-        let rosen_issue = rosen_issue.filter(|title| !title.trim().is_empty());
-        if velocity_issue.is_some() && rosen_issue.is_some() {
-            return Err(Error::Invalid(
-                "Choose either velocity_issue or rosen_issue".into(),
-            ));
-        }
-        let issue = match (velocity_issue, rosen_issue) {
-            (Some(title), _) => Some(DiscoveryIssue::Velocity(title.trim().into())),
-            (_, Some(title)) => Some(DiscoveryIssue::Rosen(title.trim().into())),
-            _ => None,
-        };
-        if issue.is_some() && ledger != "discovery" {
-            return Err(Error::Invalid(
-                "Only a discovery can be reported as a Velocity or Rosen issue".into(),
-            ));
-        }
-        let title = match &issue {
-            Some(DiscoveryIssue::Velocity(title) | DiscoveryIssue::Rosen(title)) => Some(title),
-            None => None,
-        };
-        if title.is_some_and(|title| title.contains(['\r', '\n']) || title.chars().count() > 200) {
-            return Err(Error::Invalid(
-                "The issue title must be one line of at most 200 characters".into(),
-            ));
-        }
+        let validated = validate_discovery_details(ledger, details)?;
         if let Some(remote) = &self.remote {
-            return remote.ledger(member, ledger, text, issue);
+            return remote.ledger(member, ledger, text, validated);
         }
-        self.post_with(member, ledger, text, Vec::new(), None, issue)
+        self.post_with(member, ledger, text, Vec::new(), None, validated)
     }
 
     /// Velocity records a Past work ledger entry (for example on every merge, F14)
@@ -625,7 +696,7 @@ impl Channel {
         text: &str,
         to: Vec<String>,
         intent: Option<String>,
-        issue: Option<DiscoveryIssue>,
+        discovery: Option<ValidatedDiscovery>,
     ) -> Result<(), Error> {
         require_text(text)?;
         let storage = Storage::open(self)?;
@@ -648,13 +719,173 @@ impl Channel {
         let mut record = entry(&entries, kind, member, &active.nick, text);
         record.to = to;
         record.intent = intent;
-        match issue {
-            Some(DiscoveryIssue::Velocity(title)) => record.velocity_issue = Some(title),
-            Some(DiscoveryIssue::Rosen(title)) => record.rosen_issue = Some(title),
-            None => {}
+        if let Some(discovery) = discovery {
+            if discovery.kind != DiscoveryKind::Problem {
+                record.discovery_kind = Some(discovery.kind);
+            }
+            match discovery.issue {
+                Some(DiscoveryIssue::Velocity(title)) => record.velocity_issue = Some(title),
+                Some(DiscoveryIssue::Rosen(title)) => record.rosen_issue = Some(title),
+                Some(DiscoveryIssue::Collapse(title)) => record.collapse_issue = Some(title),
+                None => {}
+            }
+            record.friction = discovery.friction;
+            record.tool_request = discovery.tool_request;
         }
         storage.append(&record)
     }
+}
+
+fn validate_discovery_details(
+    ledger: &str,
+    details: DiscoveryReportInput,
+) -> Result<Option<ValidatedDiscovery>, Error> {
+    let issue = validate_discovery_issue(
+        details.velocity_issue,
+        details.rosen_issue,
+        details.collapse_issue,
+    )?;
+    let has_discovery_metadata = issue.is_some()
+        || details.kind != DiscoveryKind::Problem
+        || details.friction.is_some()
+        || details.tool_request.is_some();
+    if ledger != "discovery" {
+        if has_discovery_metadata {
+            return Err(Error::Invalid(
+                "Only a discovery can set kind, friction/tool_request details, or an issue destination"
+                    .into(),
+            ));
+        }
+        return Ok(None);
+    }
+    let (friction, tool_request) =
+        validate_kind_payload(details.kind, details.friction, details.tool_request)?;
+    Ok(Some(ValidatedDiscovery {
+        kind: details.kind,
+        issue,
+        friction,
+        tool_request,
+    }))
+}
+
+fn validate_discovery_issue(
+    velocity_issue: Option<String>,
+    rosen_issue: Option<String>,
+    collapse_issue: Option<String>,
+) -> Result<Option<DiscoveryIssue>, Error> {
+    let clean = |value: Option<String>| {
+        value
+            .map(|title| title.trim().to_owned())
+            .filter(|title| !title.is_empty())
+    };
+    let velocity = clean(velocity_issue);
+    let rosen = clean(rosen_issue);
+    let collapse = clean(collapse_issue);
+    let count = usize::from(velocity.is_some())
+        + usize::from(rosen.is_some())
+        + usize::from(collapse.is_some());
+    if count > 1 {
+        return Err(Error::Invalid(
+            "Choose at most one of velocity_issue, rosen_issue or collapse_issue".into(),
+        ));
+    }
+    let issue = match (velocity, rosen, collapse) {
+        (Some(title), _, _) => Some(DiscoveryIssue::Velocity(title)),
+        (_, Some(title), _) => Some(DiscoveryIssue::Rosen(title)),
+        (_, _, Some(title)) => Some(DiscoveryIssue::Collapse(title)),
+        _ => None,
+    };
+    let title = match &issue {
+        Some(
+            DiscoveryIssue::Velocity(title)
+            | DiscoveryIssue::Rosen(title)
+            | DiscoveryIssue::Collapse(title),
+        ) => Some(title),
+        None => None,
+    };
+    if title.is_some_and(|title| title.contains(['\r', '\n']) || title.chars().count() > 200) {
+        return Err(Error::Invalid(
+            "The issue title must be one line of at most 200 characters".into(),
+        ));
+    }
+    Ok(issue)
+}
+
+fn validate_kind_payload(
+    kind: DiscoveryKind,
+    friction: Option<FrictionReport>,
+    tool_request: Option<ToolRequestReport>,
+) -> Result<(Option<FrictionReport>, Option<ToolRequestReport>), Error> {
+    match kind {
+        DiscoveryKind::Problem => {
+            if friction.is_some() || tool_request.is_some() {
+                return Err(Error::Invalid(
+                    "friction and tool_request fields require kind=\"friction\" or kind=\"tool_request\""
+                        .into(),
+                ));
+            }
+            Ok((None, None))
+        }
+        DiscoveryKind::Friction => {
+            if tool_request.is_some() {
+                return Err(Error::Invalid(
+                    "tool_request fields cannot be combined with kind=\"friction\"".into(),
+                ));
+            }
+            Ok((Some(validate_friction(friction)?), None))
+        }
+        DiscoveryKind::ToolRequest => {
+            if friction.is_some() {
+                return Err(Error::Invalid(
+                    "friction fields cannot be combined with kind=\"tool_request\"".into(),
+                ));
+            }
+            Ok((None, Some(validate_tool_request(tool_request)?)))
+        }
+    }
+}
+
+fn validate_friction(friction: Option<FrictionReport>) -> Result<FrictionReport, Error> {
+    let mut report = friction.ok_or_else(|| {
+        Error::Invalid(
+            "friction discoveries require tool_or_step and cost_minutes or cost_tokens".into(),
+        )
+    })?;
+    report.tool_or_step = report.tool_or_step.trim().to_owned();
+    if report.tool_or_step.is_empty()
+        || (report.cost_minutes.is_none() && report.cost_tokens.is_none())
+    {
+        return Err(Error::Invalid(
+            "friction discoveries require tool_or_step and cost_minutes or cost_tokens".into(),
+        ));
+    }
+    Ok(report)
+}
+
+fn validate_tool_request(
+    tool_request: Option<ToolRequestReport>,
+) -> Result<ToolRequestReport, Error> {
+    let mut report = tool_request.ok_or_else(|| {
+        Error::Invalid(
+            "tool_request discoveries require tool_name, would_do, would_replace and saving_per_use"
+                .into(),
+        )
+    })?;
+    report.tool_name = report.tool_name.trim().to_owned();
+    report.would_do = report.would_do.trim().to_owned();
+    report.would_replace = report.would_replace.trim().to_owned();
+    report.saving_per_use = report.saving_per_use.trim().to_owned();
+    if report.tool_name.is_empty()
+        || report.would_do.is_empty()
+        || report.would_replace.is_empty()
+        || report.saving_per_use.is_empty()
+    {
+        return Err(Error::Invalid(
+            "tool_request discoveries require tool_name, would_do, would_replace and saving_per_use"
+                .into(),
+        ));
+    }
+    Ok(report)
 }
 
 /// Uniform UTC RFC 3339 timestamp with millisecond precision (`Z` suffix) (#540).
@@ -702,6 +933,10 @@ pub(crate) fn entry(entries: &[Entry], kind: &str, member: &str, nick: &str, tex
         files: Vec::new(),
         velocity_issue: None,
         rosen_issue: None,
+        collapse_issue: None,
+        discovery_kind: None,
+        friction: None,
+        tool_request: None,
         task_change: None,
         payload: None,
     }

@@ -27,7 +27,10 @@ mod task_tools;
 mod tasks;
 pub mod waits;
 
-pub use channel::{Channel, EVENT_TAGS, Entry, Event, Presence};
+pub use channel::{
+    Channel, DiscoveryKind, DiscoveryReportInput, EVENT_TAGS, Entry, Event, FrictionReport,
+    Presence, ToolRequestReport,
+};
 pub use claims::{Claim, ClaimResult, piece_key};
 pub use delivery::{
     Delivery, DeliveryPriority, deliver_messages, deliver_targeted, message_for, prompt_lines,

@@ -1600,6 +1600,9 @@ export type DiscoveredSkill_Serialize = {
 	mirror: boolean,
 };
 
+/**  Kind of discovery logged via `append_ledger` (#620). */
+export type DiscoveryKind = "problem" | "friction" | "tool_request";
+
 /**  Dismiss one duty agent (F7): its session stops and it leaves the role. */
 export type DismissDutyAgentRequest = {
 	role: DutyRole,
@@ -1817,6 +1820,14 @@ export type Entry_Deserialize = {
 	velocity_issue?: string | null,
 	/**  A discovery about Rosen itself, filed on mESmaC/rosen. */
 	rosen_issue?: string | null,
+	/**  A discovery about Collapse itself, filed on mESmaC/collapse.sh (#620). */
+	collapse_issue?: string | null,
+	/**  Discovery category when not a default problem report (#620). */
+	discovery_kind?: DiscoveryKind | null,
+	/**  Structured cost and step details for `friction` discoveries (#620). */
+	friction?: FrictionReport_Deserialize | null,
+	/**  Structured proposal details for `tool_request` discoveries (#620). */
+	tool_request?: ToolRequestReport_Deserialize | null,
 	/**  The task and fields a `task_update_request` or `task_delete_request` names (F8). */
 	task_change?: TaskChange_Deserialize | null,
 	/**  Structured event detail replacing raw JSON strings in `text` (#540). */
@@ -1851,6 +1862,14 @@ export type Entry_Serialize = {
 	velocity_issue?: string,
 	/**  A discovery about Rosen itself, filed on mESmaC/rosen. */
 	rosen_issue?: string,
+	/**  A discovery about Collapse itself, filed on mESmaC/collapse.sh (#620). */
+	collapse_issue?: string,
+	/**  Discovery category when not a default problem report (#620). */
+	discovery_kind?: DiscoveryKind,
+	/**  Structured cost and step details for `friction` discoveries (#620). */
+	friction?: FrictionReport_Serialize,
+	/**  Structured proposal details for `tool_request` discoveries (#620). */
+	tool_request?: ToolRequestReport_Serialize,
 	/**  The task and fields a `task_update_request` or `task_delete_request` names (F8). */
 	task_change?: TaskChange_Serialize,
 	/**  Structured event detail replacing raw JSON strings in `text` (#540). */
@@ -1893,6 +1912,23 @@ export type Frame = {
 	jpeg: string,
 	width: number | null,
 	height: number | null,
+};
+
+/**  Structured details for a `friction` discovery (#620). */
+export type FrictionReport = FrictionReport_Serialize | FrictionReport_Deserialize;
+
+/**  Structured details for a `friction` discovery (#620). */
+export type FrictionReport_Deserialize = {
+	cost_minutes?: number | null,
+	cost_tokens?: number | null,
+	tool_or_step: string,
+};
+
+/**  Structured details for a `friction` discovery (#620). */
+export type FrictionReport_Serialize = {
+	cost_minutes?: number,
+	cost_tokens?: number,
+	tool_or_step: string,
 };
 
 export type GhRateRow = {
@@ -6290,6 +6326,27 @@ export type ToastView_Serialize = {
 	identifier: number,
 	message: string,
 	undo_deletion: number | null,
+};
+
+/**  Structured details for a `tool_request` discovery (#620). */
+export type ToolRequestReport = ToolRequestReport_Serialize | ToolRequestReport_Deserialize;
+
+/**  Structured details for a `tool_request` discovery (#620). */
+export type ToolRequestReport_Deserialize = {
+	tool_name: string,
+	would_do: string,
+	would_replace: string,
+	saving_per_use: string,
+	cost_minutes?: number | null,
+};
+
+/**  Structured details for a `tool_request` discovery (#620). */
+export type ToolRequestReport_Serialize = {
+	tool_name: string,
+	would_do: string,
+	would_replace: string,
+	saving_per_use: string,
+	cost_minutes?: number,
 };
 
 export type ToolStepRow = ToolStepRow_Serialize | ToolStepRow_Deserialize;

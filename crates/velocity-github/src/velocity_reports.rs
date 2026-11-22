@@ -1,8 +1,10 @@
 //! Tool issues from agents' discoveries (F14 Discoveries): marked discoveries are filed on
-//! Velocity's or Rosen's repository, keeping each destination's issues separate. A report
-//! that matches an open issue's problem is added to that issue as a comment instead of opening another.
-//! Everything goes through GitHub's REST API, which keeps working when a swarm has spent the
-//! GraphQL budget.
+//! Velocity's, Rosen's or Collapse's repository, keeping each destination's issues separate.
+//! Problem reports that match an open issue are added as an **Also seen by** comment;
+//! friction and tool_request reports are grouped per repository by #471 similarity and
+//! filed as a `self-improvement` issue once three distinct sessions report them or total
+//! cost reaches 60 agent-minutes (#620). Everything on GitHub goes through its REST API,
+//! which keeps working when a swarm has spent the GraphQL budget.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::Write;
@@ -17,15 +19,27 @@ use crate::command::gh;
 use crate::gh_command::GitHubCommandError;
 use crate::{GitHubIssue, IssueState};
 
-/// Where Velocity's own issues live.
+/// Where Velocity's, Rosen's and Collapse's own issues live.
 pub const VELOCITY_REPOSITORY: &str = "mESmaC/velocity";
 pub const ROSEN_REPOSITORY: &str = "mESmaC/rosen";
+pub const COLLAPSE_REPOSITORY: &str = "mESmaC/collapse.sh";
 
-/// A discovery reports a problem in one of the tools, independently of the project using it.
+/// Label applied to grouped friction and tool_request issues (#620).
+pub const SELF_IMPROVEMENT_LABEL: &str = "self-improvement";
+const SELF_IMPROVEMENT_LABEL_COLOR: &str = "1d76db";
+const SELF_IMPROVEMENT_LABEL_DESCRIPTION: &str =
+    "Tooling friction and tool requests reported by agents";
+
+/// Thresholds that turn a grouped friction/tool_request cluster into one issue (#620).
+pub const GROUP_SESSION_THRESHOLD: usize = 3;
+pub const GROUP_MINUTES_THRESHOLD: u32 = 60;
+
+/// A discovery targets one of the suite's tools, independently of the project using it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ReportRepository {
     Velocity,
     Rosen,
+    Collapse,
 }
 
 impl ReportRepository {
@@ -33,6 +47,16 @@ impl ReportRepository {
         match self {
             Self::Velocity => VELOCITY_REPOSITORY,
             Self::Rosen => ROSEN_REPOSITORY,
+            Self::Collapse => COLLAPSE_REPOSITORY,
+        }
+    }
+
+    /// Issue host to use when the destination repository is not registered as a Velocity
+    /// project. Collapse (`mESmaC/collapse.sh`) uses GitHub today (#620).
+    pub fn default_host(self, fallback: IssueHost) -> IssueHost {
+        match self {
+            Self::Collapse => IssueHost::GitHub,
+            Self::Velocity | Self::Rosen => fallback,
         }
     }
 }
@@ -53,7 +77,7 @@ const RECENT_SECONDS: u64 = 60 * 60;
 const STOP_WORDS: &[&str] = &[
     "the", "and", "for", "with", "that", "this", "from", "into", "when", "are", "but", "not",
     "its", "has", "can", "after", "before", "every", "all", "any", "some", "velocity", "rosen",
-    "under", "own", "their", "same", "issue", "thread", "task", "tool",
+    "collapse", "under", "own", "their", "same", "issue", "thread", "task", "tool",
 ];
 
 /// One discovery to report.
@@ -98,6 +122,172 @@ impl ReportOutcome {
     }
 }
 
+/// Kind of grouped self-improvement feedback discovery (#620).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackKind {
+    Friction,
+    ToolRequest,
+}
+
+/// One friction or tool_request discovery report (#620).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeedbackReport {
+    pub kind: FeedbackKind,
+    pub title: String,
+    pub text: String,
+    /// Stable agent session identifier (AIRC member ID, falling back to nick).
+    pub session: String,
+    pub nick: String,
+    pub project: String,
+    #[serde(default)]
+    pub project_id: u32,
+    #[serde(default)]
+    pub sequence: u64,
+    pub time: String,
+    #[serde(default)]
+    pub cost_minutes: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_or_step: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub would_do: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub would_replace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saving_per_use: Option<String>,
+}
+
+impl FeedbackReport {
+    pub fn evidence_text(&self) -> String {
+        let mut parts = vec![self.text.as_str()];
+        if let Some(step) = self.tool_or_step.as_deref() {
+            parts.push(step);
+        }
+        if let Some(name) = self.tool_name.as_deref() {
+            parts.push(name);
+        }
+        if let Some(would_do) = self.would_do.as_deref() {
+            parts.push(would_do);
+        }
+        if let Some(would_replace) = self.would_replace.as_deref() {
+            parts.push(would_replace);
+        }
+        if let Some(saving) = self.saving_per_use.as_deref() {
+            parts.push(saving);
+        }
+        parts.join("\n")
+    }
+
+    fn session_key(&self) -> (u32, String, String) {
+        let session = if self.session.trim().is_empty() {
+            self.nick.as_str()
+        } else {
+            self.session.as_str()
+        };
+        (
+            self.project_id,
+            self.project.to_ascii_lowercase(),
+            session.to_ascii_lowercase(),
+        )
+    }
+}
+
+/// Similar friction and tool_request reports grouped per target repository (#620).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeedbackGroup {
+    pub repository: ReportRepository,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<u32>,
+    #[serde(default)]
+    pub reports: Vec<FeedbackReport>,
+}
+
+impl FeedbackGroup {
+    pub fn distinct_sessions(&self) -> usize {
+        self.reports
+            .iter()
+            .map(FeedbackReport::session_key)
+            .collect::<HashSet<_>>()
+            .len()
+    }
+
+    pub fn total_minutes(&self) -> u32 {
+        self.reports
+            .iter()
+            .map(|report| report.cost_minutes)
+            .fold(0_u32, u32::saturating_add)
+    }
+
+    pub fn total_tokens(&self) -> u64 {
+        self.reports
+            .iter()
+            .filter_map(|report| report.cost_tokens.map(u64::from))
+            .fold(0_u64, u64::saturating_add)
+    }
+
+    pub fn meets_threshold(&self) -> bool {
+        self.distinct_sessions() >= GROUP_SESSION_THRESHOLD
+            || self.total_minutes() >= GROUP_MINUTES_THRESHOLD
+    }
+
+    fn contains_entry(&self, project_id: u32, sequence: u64) -> bool {
+        sequence != 0
+            && self
+                .reports
+                .iter()
+                .any(|report| report.project_id == project_id && report.sequence == sequence)
+    }
+
+    fn push_unique(&mut self, report: FeedbackReport) {
+        if !self.contains_entry(report.project_id, report.sequence) {
+            self.reports.push(report);
+        }
+    }
+
+    fn entry_refs(&self) -> Vec<(u32, u64)> {
+        self.reports
+            .iter()
+            .filter(|report| report.sequence != 0)
+            .map(|report| (report.project_id, report.sequence))
+            .collect()
+    }
+}
+
+/// What grouped feedback reporting did (#620).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FeedbackOutcome {
+    /// Stored in an unfiled group; threshold not reached yet.
+    Grouped,
+    /// Group reached threshold and filed a new `self-improvement` issue.
+    Filed {
+        issue: u32,
+        entries: Vec<(u32, u64)>,
+    },
+    /// Report joined an already-filed open issue via an **Also seen by** comment.
+    Joined(u32),
+    /// Group reached threshold and joined an existing open issue on the host.
+    JoinedGroup {
+        issue: u32,
+        entries: Vec<(u32, u64)>,
+    },
+}
+
+impl FeedbackOutcome {
+    pub fn issue(&self) -> Option<u32> {
+        match self {
+            Self::Grouped => None,
+            Self::Filed { issue, .. } | Self::Joined(issue) | Self::JoinedGroup { issue, .. } => {
+                Some(*issue)
+            }
+        }
+    }
+}
+
 /// What Velocity has reported from each project's discoveries, keyed by project identifier.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReportedDiscoveries {
@@ -105,6 +295,9 @@ pub struct ReportedDiscoveries {
     pub projects: BTreeMap<u32, ProjectReports>,
     #[serde(default)]
     pub recent: Vec<RecentDiscovery>,
+    /// Grouped friction and tool_request reports per target repository (#620).
+    #[serde(default)]
+    pub feedback_groups: Vec<FeedbackGroup>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +319,9 @@ pub struct ProjectReports {
     /// Discovery sequence → the Rosen issue. Existing Velocity records still load unchanged.
     #[serde(default)]
     pub rosen_issues: BTreeMap<u64, u32>,
+    /// Discovery sequence → the Collapse issue (#620). Existing records still load unchanged.
+    #[serde(default)]
+    pub collapse_issues: BTreeMap<u64, u32>,
     /// The discovery being reported, saved before GitHub is asked. Still set on the next pass
     /// means the last attempt may have reached GitHub without being recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,12 +330,22 @@ pub struct ProjectReports {
 
 impl ProjectReports {
     pub fn record_issue(&mut self, repository: ReportRepository, sequence: u64, issue: u32) {
+        self.record_issue_for_sequence(repository, sequence, issue);
+        self.cursor = sequence;
+        self.pending = None;
+    }
+
+    pub fn record_issue_for_sequence(
+        &mut self,
+        repository: ReportRepository,
+        sequence: u64,
+        issue: u32,
+    ) {
         match repository {
             ReportRepository::Velocity => self.issues.insert(sequence, issue),
             ReportRepository::Rosen => self.rosen_issues.insert(sequence, issue),
+            ReportRepository::Collapse => self.collapse_issues.insert(sequence, issue),
         };
-        self.cursor = sequence;
-        self.pending = None;
     }
 }
 
@@ -201,8 +407,148 @@ impl ReportedDiscoveries {
         let issues = match repository {
             ReportRepository::Velocity => &reports.issues,
             ReportRepository::Rosen => &reports.rosen_issues,
+            ReportRepository::Collapse => &reports.collapse_issues,
         };
         issues.get(&sequence).copied()
+    }
+}
+
+trait ReportBackend {
+    fn open_issues(&self) -> Result<Vec<OpenIssue>, GitHubCommandError>;
+    fn issue_is_open(&self, number: u32) -> Result<bool, GitHubCommandError>;
+    fn issue_comments(&self, number: u32) -> Result<Vec<String>, GitHubCommandError>;
+    fn ensure_label(
+        &self,
+        name: &str,
+        color: &str,
+        description: &str,
+    ) -> Result<(), GitHubCommandError>;
+    fn create_issue(
+        &self,
+        title: &str,
+        body: &str,
+        labels: &[&str],
+    ) -> Result<u32, GitHubCommandError>;
+    fn add_comment(&self, number: u32, body: &str) -> Result<(), GitHubCommandError>;
+}
+
+struct GitHubBackend<'a> {
+    repository: &'a str,
+}
+
+impl ReportBackend for GitHubBackend<'_> {
+    fn open_issues(&self) -> Result<Vec<OpenIssue>, GitHubCommandError> {
+        open_issues(self.repository)
+    }
+
+    fn issue_is_open(&self, number: u32) -> Result<bool, GitHubCommandError> {
+        issue_is_open(self.repository, number)
+    }
+
+    fn issue_comments(&self, number: u32) -> Result<Vec<String>, GitHubCommandError> {
+        let endpoint = format!("repos/{}/issues/{number}/comments", self.repository);
+        let comments = run(&[
+            "api",
+            "--paginate",
+            &endpoint,
+            "--jq",
+            ".[] | .body | @json",
+        ])?;
+        comments
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| Ok(serde_json::from_str::<String>(line)?))
+            .collect()
+    }
+
+    fn ensure_label(
+        &self,
+        name: &str,
+        color: &str,
+        description: &str,
+    ) -> Result<(), GitHubCommandError> {
+        ensure_github_label(self.repository, name, color, description)
+    }
+
+    fn create_issue(
+        &self,
+        title: &str,
+        body: &str,
+        labels: &[&str],
+    ) -> Result<u32, GitHubCommandError> {
+        file_issue_with_labels(self.repository, title, body, labels)
+    }
+
+    fn add_comment(&self, number: u32, body: &str) -> Result<(), GitHubCommandError> {
+        let endpoint = format!("repos/{}/issues/{number}/comments", self.repository);
+        run(&[
+            "api",
+            &endpoint,
+            "-f",
+            &format!("body={body}"),
+            "--jq",
+            ".id",
+        ])?;
+        Ok(())
+    }
+}
+
+struct CollapseBackend {
+    transport: CollapseIssueTransport,
+}
+
+impl ReportBackend for CollapseBackend {
+    fn open_issues(&self) -> Result<Vec<OpenIssue>, GitHubCommandError> {
+        Ok(self
+            .transport
+            .open_issues_fresh()?
+            .into_iter()
+            .map(|issue| OpenIssue {
+                number: issue.number,
+                title: issue.title,
+                body: issue.body,
+            })
+            .collect())
+    }
+
+    fn issue_is_open(&self, number: u32) -> Result<bool, GitHubCommandError> {
+        self.transport
+            .read_issue(number)
+            .map(|issue| issue.state == IssueState::Open)
+    }
+
+    fn issue_comments(&self, number: u32) -> Result<Vec<String>, GitHubCommandError> {
+        Ok(self
+            .transport
+            .issue_comments(number)?
+            .into_iter()
+            .map(|comment| comment.body)
+            .collect())
+    }
+
+    fn ensure_label(
+        &self,
+        name: &str,
+        color: &str,
+        description: &str,
+    ) -> Result<(), GitHubCommandError> {
+        self.transport.ensure_label_with(name, color, description)
+    }
+
+    fn create_issue(
+        &self,
+        title: &str,
+        body: &str,
+        labels: &[&str],
+    ) -> Result<u32, GitHubCommandError> {
+        let owned: Vec<String> = labels.iter().map(|label| (*label).to_owned()).collect();
+        self.transport
+            .create_issue(title, body, &owned, &[])
+            .map(|issue| issue.number)
+    }
+
+    fn add_comment(&self, number: u32, body: &str) -> Result<(), GitHubCommandError> {
+        self.transport.add_comment(number, body).map(drop)
     }
 }
 
@@ -238,8 +584,11 @@ pub fn report_to_host(
 ) -> Result<ReportOutcome, GitHubCommandError> {
     let repository = repository_override.unwrap_or_else(|| destination.repository());
     if host == IssueHost::Collapse {
-        return report_to_collapse(
-            repository,
+        let backend = CollapseBackend {
+            transport: CollapseIssueTransport::for_repository(repository)?,
+        };
+        return report_problem_with_backend(
+            &backend,
             destination,
             report,
             recent,
@@ -247,55 +596,318 @@ pub fn report_to_host(
             retry,
         );
     }
-    let open = open_issues(repository)?;
-    let body = issue_body(report);
-    if retry && let Some(previous) = open.iter().find(|issue| issue.body == body) {
-        return Ok(ReportOutcome::Filed(previous.number));
-    }
-    let candidates = matching_issues(destination, report, &open, recent, mentioned_paths);
-    for (number, _) in candidates {
-        if open.iter().any(|issue| issue.number == number) || issue_is_open(repository, number)? {
-            return join_issue(repository, number, report, retry);
-        }
-    }
-    file_issue(repository, report, &body).map(ReportOutcome::Filed)
+    let backend = GitHubBackend { repository };
+    report_problem_with_backend(
+        &backend,
+        destination,
+        report,
+        recent,
+        mentioned_paths,
+        retry,
+    )
 }
 
-fn report_to_collapse(
-    repository: &str,
+fn report_problem_with_backend(
+    backend: &dyn ReportBackend,
     destination: ReportRepository,
     report: &DiscoveryReport,
     recent: &[RecentDiscovery],
     mentioned_paths: impl FnOnce(&[(&str, &str)]) -> Vec<BTreeSet<String>>,
     retry: bool,
 ) -> Result<ReportOutcome, GitHubCommandError> {
-    let collapse = CollapseIssueTransport::for_repository(repository)?;
-    let open: Vec<OpenIssue> = collapse
-        .open_issues_fresh()?
-        .into_iter()
-        .map(|issue| OpenIssue {
-            number: issue.number,
-            title: issue.title,
-            body: issue.body,
-        })
-        .collect();
+    let open = backend.open_issues()?;
     let body = issue_body(report);
     if retry && let Some(previous) = open.iter().find(|issue| issue.body == body) {
         return Ok(ReportOutcome::Filed(previous.number));
     }
     let candidates = matching_issues(destination, report, &open, recent, mentioned_paths);
     for (number, _) in candidates {
-        let is_open = open.iter().any(|issue| issue.number == number)
-            || collapse
-                .read_issue(number)
-                .map(|issue| issue.state == IssueState::Open)?;
-        if is_open {
-            return join_collapse_issue(&collapse, number, report, retry);
+        if open.iter().any(|issue| issue.number == number) || backend.issue_is_open(number)? {
+            return join_problem_issue(backend, number, report, retry);
         }
     }
-    collapse
-        .create_issue(&report.title, &body, &[], &[])
-        .map(|issue| ReportOutcome::Filed(issue.number))
+    backend
+        .create_issue(&report.title, &body, &[])
+        .map(ReportOutcome::Filed)
+}
+
+/// Groups a friction or tool_request report per target repository by #471 similarity,
+/// filing one `self-improvement` issue once three distinct sessions report it or its
+/// reported cost reaches 60 agent-minutes, and posting **Also seen by** comments for
+/// later reports (#620).
+pub fn report_feedback_to_host(
+    host: IssueHost,
+    repository_override: Option<&str>,
+    destination: ReportRepository,
+    report: &FeedbackReport,
+    groups: &mut Vec<FeedbackGroup>,
+    mentioned_paths: impl Fn(&[(&str, &str)]) -> Vec<BTreeSet<String>>,
+    retry: bool,
+) -> Result<FeedbackOutcome, GitHubCommandError> {
+    let repository = repository_override.unwrap_or_else(|| destination.repository());
+    if host == IssueHost::Collapse {
+        let backend = CollapseBackend {
+            transport: CollapseIssueTransport::for_repository(repository)?,
+        };
+        return report_feedback_with_backend(
+            &backend,
+            destination,
+            report,
+            groups,
+            &mentioned_paths,
+            retry,
+        );
+    }
+    let backend = GitHubBackend { repository };
+    report_feedback_with_backend(
+        &backend,
+        destination,
+        report,
+        groups,
+        &mentioned_paths,
+        retry,
+    )
+}
+
+type PathResolver<'a> = &'a dyn Fn(&[(&str, &str)]) -> Vec<BTreeSet<String>>;
+
+fn report_feedback_with_backend(
+    backend: &dyn ReportBackend,
+    destination: ReportRepository,
+    report: &FeedbackReport,
+    groups: &mut Vec<FeedbackGroup>,
+    mentioned_paths: PathResolver<'_>,
+    retry: bool,
+) -> Result<FeedbackOutcome, GitHubCommandError> {
+    let matching = matching_feedback_groups(destination, report, groups, mentioned_paths);
+    for index in &matching {
+        let Some(number) = groups[*index].issue else {
+            continue;
+        };
+        if backend.issue_is_open(number)? {
+            let comment = feedback_also_seen_comment(report);
+            post_comment_once(backend, number, &comment, retry)?;
+            groups[*index].push_unique(report.clone());
+            return Ok(FeedbackOutcome::Joined(number));
+        }
+    }
+    let unfiled_index = matching
+        .into_iter()
+        .find(|index| groups[*index].issue.is_none());
+    let mut candidate = match unfiled_index {
+        Some(index) => groups[index].clone(),
+        None => FeedbackGroup {
+            repository: destination,
+            title: report.title.clone(),
+            issue: None,
+            reports: Vec::new(),
+        },
+    };
+    candidate.push_unique(report.clone());
+    if !candidate.meets_threshold() {
+        commit_feedback_group(groups, unfiled_index, candidate);
+        return Ok(FeedbackOutcome::Grouped);
+    }
+    let outcome = file_or_join_feedback_group(backend, &mut candidate, mentioned_paths, retry)?;
+    commit_feedback_group(groups, unfiled_index, candidate);
+    Ok(outcome)
+}
+
+fn commit_feedback_group(
+    groups: &mut Vec<FeedbackGroup>,
+    index: Option<usize>,
+    group: FeedbackGroup,
+) {
+    match index {
+        Some(index) => groups[index] = group,
+        None => groups.push(group),
+    }
+}
+
+fn file_or_join_feedback_group(
+    backend: &dyn ReportBackend,
+    group: &mut FeedbackGroup,
+    mentioned_paths: PathResolver<'_>,
+    retry: bool,
+) -> Result<FeedbackOutcome, GitHubCommandError> {
+    let open = backend.open_issues()?;
+    let body = feedback_group_body(group);
+    let entries = group.entry_refs();
+    if retry && let Some(previous) = open.iter().find(|issue| issue.body == body) {
+        group.issue = Some(previous.number);
+        return Ok(FeedbackOutcome::Filed {
+            issue: previous.number,
+            entries,
+        });
+    }
+    let group_evidence = group_evidence_text(group);
+    let probe = DiscoveryReport::new(&group.title, &group_evidence, "", "", "");
+    let candidates = matching_issues(group.repository, &probe, &open, &[], mentioned_paths);
+    if let Some((number, _)) = candidates.first().copied() {
+        let comment = feedback_group_also_seen_comment(group);
+        post_comment_once(backend, number, &comment, retry)?;
+        group.issue = Some(number);
+        return Ok(FeedbackOutcome::JoinedGroup {
+            issue: number,
+            entries,
+        });
+    }
+    backend.ensure_label(
+        SELF_IMPROVEMENT_LABEL,
+        SELF_IMPROVEMENT_LABEL_COLOR,
+        SELF_IMPROVEMENT_LABEL_DESCRIPTION,
+    )?;
+    let number = backend.create_issue(&group.title, &body, &[SELF_IMPROVEMENT_LABEL])?;
+    group.issue = Some(number);
+    Ok(FeedbackOutcome::Filed {
+        issue: number,
+        entries,
+    })
+}
+
+fn matching_feedback_groups(
+    destination: ReportRepository,
+    report: &FeedbackReport,
+    groups: &[FeedbackGroup],
+    mentioned_paths: PathResolver<'_>,
+) -> Vec<usize> {
+    let incoming_evidence = report.evidence_text();
+    let mut stored: Vec<(usize, String, String)> = Vec::new();
+    for (index, group) in groups.iter().enumerate() {
+        if group.repository != destination {
+            continue;
+        }
+        for item in &group.reports {
+            stored.push((index, item.title.clone(), item.evidence_text()));
+        }
+    }
+    if stored.is_empty() {
+        return Vec::new();
+    }
+    let mut descriptions = Vec::with_capacity(stored.len() + 1);
+    descriptions.push((report.title.as_str(), incoming_evidence.as_str()));
+    for (_, title, evidence) in &stored {
+        descriptions.push((title.as_str(), evidence.as_str()));
+    }
+    let mut paths = mentioned_paths(&descriptions).into_iter();
+    let wanted = IssueProblem::new(
+        &report.title,
+        &incoming_evidence,
+        paths.next().unwrap_or_default(),
+    );
+    let mut best_scores: BTreeMap<usize, f64> = BTreeMap::new();
+    for (index, title, evidence) in &stored {
+        let candidate = IssueProblem::new(title, evidence, paths.next().unwrap_or_default());
+        if let Some(score) = wanted.match_score(&candidate) {
+            let best = best_scores.entry(*index).or_default();
+            *best = f64::max(*best, score);
+        }
+    }
+    let mut ranked: Vec<_> = best_scores.into_iter().collect();
+    ranked.sort_by(|left, right| right.1.total_cmp(&left.1).then(left.0.cmp(&right.0)));
+    ranked.into_iter().map(|(index, _)| index).collect()
+}
+
+fn group_evidence_text(group: &FeedbackGroup) -> String {
+    group
+        .reports
+        .iter()
+        .map(FeedbackReport::evidence_text)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Infers the destination tool repository for a friction or tool_request entry when the
+/// agent did not specify an explicit `velocity_issue`, `rosen_issue` or `collapse_issue`.
+pub fn infer_feedback_repository(
+    text: &str,
+    tool_or_step: Option<&str>,
+    tool_name: Option<&str>,
+) -> ReportRepository {
+    let combined = format!(
+        "{} {} {}",
+        tool_or_step.unwrap_or_default(),
+        tool_name.unwrap_or_default(),
+        text
+    )
+    .to_ascii_lowercase();
+    let mentions_rosen = combined.contains("rosen");
+    let mentions_collapse = combined.contains("collapse");
+    let mentions_velocity = combined.contains("velocity");
+    if mentions_collapse && !mentions_rosen && !mentions_velocity {
+        ReportRepository::Collapse
+    } else if mentions_rosen && !mentions_collapse && !mentions_velocity {
+        ReportRepository::Rosen
+    } else {
+        ReportRepository::Velocity
+    }
+}
+
+/// Derives a concise single-line title (at most 200 chars) for a friction or tool_request
+/// discovery when no explicit `*_issue` title was supplied.
+pub fn default_feedback_title(
+    kind: FeedbackKind,
+    text: &str,
+    tool_or_step: Option<&str>,
+    tool_name: Option<&str>,
+    would_do: Option<&str>,
+) -> String {
+    let raw = match kind {
+        FeedbackKind::ToolRequest => match (tool_name, would_do) {
+            (Some(name), Some(action)) => format!("{name}: {action}"),
+            (Some(name), None) => name.to_owned(),
+            _ => first_line(text).to_owned(),
+        },
+        FeedbackKind::Friction => match tool_or_step {
+            Some(step) => format!("{step}: {}", first_line(text)),
+            None => first_line(text).to_owned(),
+        },
+    };
+    let clean = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    clean.chars().take(200).collect()
+}
+
+fn first_line(text: &str) -> &str {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or(text.trim())
+}
+
+/// Extracts an estimated duration in minutes from free-form text such as `"15 minutes"`,
+/// `"10m"`, or `"1.5 hours"`. Returns `None` when no explicit minute/hour unit appears.
+pub fn parse_minutes_from_text(text: &str) -> Option<u32> {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !bytes[index].is_ascii_digit() {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() && (bytes[index].is_ascii_digit() || bytes[index] == b'.') {
+            index += 1;
+        }
+        let number = text[start..index].parse::<f64>().ok()?;
+        let mut unit_start = index;
+        while unit_start < bytes.len() && bytes[unit_start].is_ascii_whitespace() {
+            unit_start += 1;
+        }
+        let mut unit_end = unit_start;
+        while unit_end < bytes.len() && bytes[unit_end].is_ascii_alphabetic() {
+            unit_end += 1;
+        }
+        let unit = text[unit_start..unit_end].to_ascii_lowercase();
+        let minutes = match unit.as_str() {
+            "m" | "min" | "mins" | "minute" | "minutes" => Some(number),
+            "h" | "hr" | "hrs" | "hour" | "hours" => Some(number * 60.0),
+            _ => None,
+        };
+        if let Some(minutes) = minutes.filter(|value| value.is_finite() && *value >= 0.0) {
+            return Some(minutes.ceil().min(f64::from(u32::MAX)) as u32);
+        }
+    }
+    None
 }
 
 /// Links the issues a discovery names on its `Blocked by:` lines to the issue it was
@@ -492,8 +1104,8 @@ fn recorded_second(time: &str) -> Option<i64> {
         .map(|time| time.as_second())
 }
 
-fn join_collapse_issue(
-    collapse: &CollapseIssueTransport,
+fn join_problem_issue(
+    backend: &dyn ReportBackend,
     number: u32,
     report: &DiscoveryReport,
     retry: bool,
@@ -508,58 +1120,168 @@ fn join_collapse_issue(
             "Seen again by `{}` in project `{}` ({}):\n\n{evidence}",
             report.nick, report.project, report.time
         );
-        let comments = collapse.issue_comments(number)?;
+        let comments = backend.issue_comments(number)?;
         if comments
             .iter()
-            .any(|comment| comment.body == body || comment.body == previous)
+            .any(|comment| comment == &body || comment == &previous)
         {
             return Ok(ReportOutcome::Joined(number));
         }
     }
-    collapse.add_comment(number, &body)?;
+    backend.add_comment(number, &body)?;
     Ok(ReportOutcome::Joined(number))
 }
 
-fn join_issue(
-    repository: &str,
+fn post_comment_once(
+    backend: &dyn ReportBackend,
     number: u32,
-    report: &DiscoveryReport,
+    body: &str,
     retry: bool,
-) -> Result<ReportOutcome, GitHubCommandError> {
-    let endpoint = format!("repos/{repository}/issues/{number}/comments");
-    let evidence = quote(&report.text);
-    let body = format!(
-        "Also seen by `{}` in `{}` ({}):\n\n{evidence}",
-        report.nick, report.project, report.time
-    );
+) -> Result<(), GitHubCommandError> {
     if retry {
-        let previous = format!(
-            "Seen again by `{}` in project `{}` ({}):\n\n{evidence}",
-            report.nick, report.project, report.time
-        );
-        let comments = run(&[
-            "api",
-            "--paginate",
-            &endpoint,
-            "--jq",
-            ".[] | .body | @json",
-        ])?;
-        if comments.lines().any(|line| {
-            serde_json::from_str::<String>(line)
-                .is_ok_and(|comment| comment == body || comment == previous)
-        }) {
-            return Ok(ReportOutcome::Joined(number));
+        let comments = backend.issue_comments(number)?;
+        if comments.iter().any(|comment| comment == body) {
+            return Ok(());
         }
     }
-    run(&[
-        "api",
-        &endpoint,
-        "-f",
-        &format!("body={body}"),
-        "--jq",
-        ".id",
-    ])?;
-    Ok(ReportOutcome::Joined(number))
+    backend.add_comment(number, body)
+}
+
+fn feedback_group_body(group: &FeedbackGroup) -> String {
+    let cost = format_total_cost(group.total_minutes(), group.total_tokens());
+    let mut lines = vec![
+        "Grouped self-improvement reports from AIRC discoveries.".to_owned(),
+        String::new(),
+        format!(
+            "- **Reports:** {} ({} sessions)",
+            group.reports.len(),
+            group.distinct_sessions()
+        ),
+        format!("- **Total cost:** {cost}"),
+        String::new(),
+        "### Reports".to_owned(),
+        String::new(),
+    ];
+    let per_report_limit = (QUOTED_TEXT_LIMIT / group.reports.len().max(1)).clamp(500, 4_000);
+    for (index, report) in group.reports.iter().enumerate() {
+        lines.push(format_feedback_item(index + 1, report, per_report_limit));
+    }
+    let body = lines.join("\n");
+    truncate_body(body, QUOTED_TEXT_LIMIT)
+}
+
+fn feedback_group_also_seen_comment(group: &FeedbackGroup) -> String {
+    let cost = format_total_cost(group.total_minutes(), group.total_tokens());
+    let mut lines = vec![format!(
+        "Also seen by {} agent sessions ({} reports, total cost: {cost}):",
+        group.distinct_sessions(),
+        group.reports.len()
+    )];
+    lines.push(String::new());
+    let per_report_limit = (QUOTED_TEXT_LIMIT / group.reports.len().max(1)).clamp(500, 4_000);
+    for (index, report) in group.reports.iter().enumerate() {
+        lines.push(format_feedback_item(index + 1, report, per_report_limit));
+    }
+    truncate_body(lines.join("\n"), QUOTED_TEXT_LIMIT)
+}
+
+fn feedback_also_seen_comment(report: &FeedbackReport) -> String {
+    let mut lines = vec![
+        format!(
+            "Also seen by `{}` in `{}` ({}):",
+            report.nick, report.project, report.time
+        ),
+        String::new(),
+    ];
+    append_feedback_metadata(&mut lines, report);
+    lines.push(String::new());
+    lines.push(quote_limited(&report.text, 4_000));
+    truncate_body(lines.join("\n"), QUOTED_TEXT_LIMIT)
+}
+
+fn format_feedback_item(number: usize, report: &FeedbackReport, text_limit: usize) -> String {
+    let kind_header = match report.kind {
+        FeedbackKind::Friction => match report.tool_or_step.as_deref() {
+            Some(step) => format!("**Friction** (`{step}`)"),
+            None => "**Friction**".to_owned(),
+        },
+        FeedbackKind::ToolRequest => match report.tool_name.as_deref() {
+            Some(name) => format!("**Tool request** (`{name}`)"),
+            None => "**Tool request**".to_owned(),
+        },
+    };
+    let cost = format_report_cost(report.cost_minutes, report.cost_tokens);
+    let mut lines = vec![format!(
+        "{number}. {kind_header} · Agent: `{}` · Project: `{}` · Recorded: {} · Cost: {cost}",
+        report.nick, report.project, report.time
+    )];
+    if let Some(would_do) = report.would_do.as_deref() {
+        lines.push(format!("   - **Would do:** {would_do}"));
+    }
+    if let Some(would_replace) = report.would_replace.as_deref() {
+        lines.push(format!("   - **Would replace:** {would_replace}"));
+    }
+    if let Some(saving) = report.saving_per_use.as_deref() {
+        lines.push(format!("   - **Estimated saving per use:** {saving}"));
+    }
+    lines.push(quote_limited(&report.text, text_limit));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn append_feedback_metadata(lines: &mut Vec<String>, report: &FeedbackReport) {
+    match report.kind {
+        FeedbackKind::Friction => {
+            lines.push(format!(
+                "- **Kind:** friction{}",
+                report
+                    .tool_or_step
+                    .as_deref()
+                    .map_or_else(String::new, |step| format!(" (`{step}`)"))
+            ));
+        }
+        FeedbackKind::ToolRequest => {
+            lines.push(format!(
+                "- **Kind:** tool_request{}",
+                report
+                    .tool_name
+                    .as_deref()
+                    .map_or_else(String::new, |name| format!(" (`{name}`)"))
+            ));
+        }
+    }
+    if let Some(would_do) = report.would_do.as_deref() {
+        lines.push(format!("- **Would do:** {would_do}"));
+    }
+    if let Some(would_replace) = report.would_replace.as_deref() {
+        lines.push(format!("- **Would replace:** {would_replace}"));
+    }
+    if let Some(saving) = report.saving_per_use.as_deref() {
+        lines.push(format!("- **Estimated saving per use:** {saving}"));
+    }
+    lines.push(format!(
+        "- **Cost:** {}",
+        format_report_cost(report.cost_minutes, report.cost_tokens)
+    ));
+}
+
+fn format_total_cost(minutes: u32, tokens: u64) -> String {
+    match (minutes, tokens) {
+        (mins, 0) => format!("{mins} agent-minutes"),
+        (0, toks) => format!("~{toks} tokens"),
+        (mins, toks) => format!("{mins} agent-minutes (~{toks} tokens)"),
+    }
+}
+
+fn format_report_cost(minutes: u32, tokens: Option<u32>) -> String {
+    format_total_cost(minutes, u64::from(tokens.unwrap_or(0)))
+}
+
+fn truncate_body(text: String, limit: usize) -> String {
+    match text.char_indices().nth(limit) {
+        Some((cut, _)) => format!("{}\n… (cut at {limit} characters)", &text[..cut]),
+        None => text,
+    }
 }
 
 fn issue_body(report: &DiscoveryReport) -> String {
@@ -572,21 +1294,57 @@ fn issue_body(report: &DiscoveryReport) -> String {
     )
 }
 
-fn file_issue(
+fn ensure_github_label(
     repository: &str,
-    report: &DiscoveryReport,
-    body: &str,
-) -> Result<u32, GitHubCommandError> {
-    let number = run(&[
+    name: &str,
+    color: &str,
+    description: &str,
+) -> Result<(), GitHubCommandError> {
+    let endpoint = format!("repos/{repository}/labels/{name}");
+    if run(&["api", &endpoint, "--jq", ".name"]).is_ok() {
+        return Ok(());
+    }
+    let create = format!("repos/{repository}/labels");
+    if let Err(error) = run(&[
         "api",
-        &format!("repos/{repository}/issues"),
+        "--method",
+        "POST",
+        &create,
         "-f",
-        &format!("title={}", report.title),
+        &format!("name={name}"),
         "-f",
-        &format!("body={body}"),
+        &format!("color={color}"),
+        "-f",
+        &format!("description={description}"),
         "--jq",
-        ".number",
-    ])?;
+        ".name",
+    ]) {
+        // Another process may have created the label concurrently (HTTP 422 already_exists).
+        run(&["api", &endpoint, "--jq", ".name"]).map_err(|_| error)?;
+    }
+    Ok(())
+}
+
+fn file_issue_with_labels(
+    repository: &str,
+    title: &str,
+    body: &str,
+    labels: &[&str],
+) -> Result<u32, GitHubCommandError> {
+    let endpoint = format!("repos/{repository}/issues");
+    let title_arg = format!("title={title}");
+    let body_arg = format!("body={body}");
+    let label_args: Vec<String> = labels
+        .iter()
+        .map(|label| format!("labels[]={label}"))
+        .collect();
+    let mut args = vec!["api", &endpoint, "-f", &title_arg, "-f", &body_arg];
+    for label_arg in &label_args {
+        args.push("-f");
+        args.push(label_arg);
+    }
+    args.extend(["--jq", ".number"]);
+    let number = run(&args)?;
     number
         .trim()
         .parse()
@@ -735,10 +1493,14 @@ fn significant_words(text: &str) -> HashSet<String> {
 }
 
 fn quote(text: &str) -> String {
-    let shortened = match text.char_indices().nth(QUOTED_TEXT_LIMIT) {
+    quote_limited(text, QUOTED_TEXT_LIMIT)
+}
+
+fn quote_limited(text: &str, limit: usize) -> String {
+    let shortened = match text.char_indices().nth(limit) {
         Some((cut, _)) => format!(
             "{}
-… (cut at {QUOTED_TEXT_LIMIT} characters)",
+… (cut at {limit} characters)",
             &text[..cut]
         ),
         None => text.to_owned(),
@@ -759,4 +1521,416 @@ fn run(arguments: &[&str]) -> Result<String, GitHubCommandError> {
         });
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct FakeBackend {
+        labels: RefCell<Vec<String>>,
+        issues: RefCell<Vec<FakeIssue>>,
+        comments: RefCell<Vec<(u32, String)>>,
+    }
+
+    struct FakeIssue {
+        number: u32,
+        title: String,
+        body: String,
+        labels: Vec<String>,
+        open: bool,
+    }
+
+    impl ReportBackend for FakeBackend {
+        fn open_issues(&self) -> Result<Vec<OpenIssue>, GitHubCommandError> {
+            Ok(self
+                .issues
+                .borrow()
+                .iter()
+                .filter(|issue| issue.open)
+                .map(|issue| OpenIssue {
+                    number: issue.number,
+                    title: issue.title.clone(),
+                    body: issue.body.clone(),
+                })
+                .collect())
+        }
+
+        fn issue_is_open(&self, number: u32) -> Result<bool, GitHubCommandError> {
+            Ok(self
+                .issues
+                .borrow()
+                .iter()
+                .find(|issue| issue.number == number)
+                .is_some_and(|issue| issue.open))
+        }
+
+        fn issue_comments(&self, number: u32) -> Result<Vec<String>, GitHubCommandError> {
+            Ok(self
+                .comments
+                .borrow()
+                .iter()
+                .filter(|(issue, _)| *issue == number)
+                .map(|(_, body)| body.clone())
+                .collect())
+        }
+
+        fn ensure_label(
+            &self,
+            name: &str,
+            _color: &str,
+            _description: &str,
+        ) -> Result<(), GitHubCommandError> {
+            let mut labels = self.labels.borrow_mut();
+            if !labels.iter().any(|existing| existing == name) {
+                labels.push(name.to_owned());
+            }
+            Ok(())
+        }
+
+        fn create_issue(
+            &self,
+            title: &str,
+            body: &str,
+            labels: &[&str],
+        ) -> Result<u32, GitHubCommandError> {
+            let mut issues = self.issues.borrow_mut();
+            let number = u32::try_from(issues.len() + 1).unwrap_or(u32::MAX);
+            issues.push(FakeIssue {
+                number,
+                title: title.to_owned(),
+                body: body.to_owned(),
+                labels: labels.iter().map(|label| (*label).to_owned()).collect(),
+                open: true,
+            });
+            Ok(number)
+        }
+
+        fn add_comment(&self, number: u32, body: &str) -> Result<(), GitHubCommandError> {
+            self.comments.borrow_mut().push((number, body.to_owned()));
+            Ok(())
+        }
+    }
+
+    fn tool_request(
+        session: &str,
+        project: &str,
+        sequence: u64,
+        title: &str,
+        minutes: u32,
+    ) -> FeedbackReport {
+        FeedbackReport {
+            kind: FeedbackKind::ToolRequest,
+            title: title.into(),
+            text: "Return only failing test output instead of full logs.".into(),
+            session: session.into(),
+            nick: session.into(),
+            project: project.into(),
+            project_id: 1,
+            sequence,
+            time: format!("2026-11-22T12:0{sequence}:00Z"),
+            cost_minutes: minutes,
+            cost_tokens: None,
+            tool_or_step: None,
+            tool_name: Some("failing_test_output".into()),
+            would_do: Some("Return only the failing test output".into()),
+            would_replace: Some("Scanning megabytes of integration logs".into()),
+            saving_per_use: Some(format!("{minutes} minutes")),
+        }
+    }
+
+    fn no_paths(_: &[(&str, &str)]) -> Vec<BTreeSet<String>> {
+        Vec::new()
+    }
+
+    // Risk (#620): three similar tool requests from distinct sessions must file one
+    // `self-improvement` issue (creating the label if needed), and a fourth must append
+    // an **Also seen by** comment instead of opening another issue.
+    #[test]
+    fn three_distinct_sessions_file_self_improvement_and_fourth_comments()
+    -> Result<(), GitHubCommandError> {
+        let backend = FakeBackend::default();
+        let mut groups = Vec::new();
+        let first = tool_request(
+            "issue-10-1",
+            "velocity",
+            1,
+            "Return only failing test output",
+            10,
+        );
+        let repeat_same_session = tool_request(
+            "issue-10-1",
+            "velocity",
+            2,
+            "Return only failing test output",
+            10,
+        );
+        let second = tool_request(
+            "issue-11-2",
+            "rosen",
+            3,
+            "Return only failing test output quickly",
+            12,
+        );
+        let third = tool_request(
+            "issue-12-3",
+            "collapse.sh",
+            4,
+            "Return only failing test output from runs",
+            8,
+        );
+        let fourth = tool_request(
+            "issue-13-4",
+            "velocity",
+            5,
+            "Return only failing test output in runs",
+            5,
+        );
+
+        assert_eq!(
+            report_feedback_with_backend(
+                &backend,
+                ReportRepository::Velocity,
+                &first,
+                &mut groups,
+                &no_paths,
+                false,
+            )?,
+            FeedbackOutcome::Grouped
+        );
+        assert_eq!(
+            report_feedback_with_backend(
+                &backend,
+                ReportRepository::Velocity,
+                &repeat_same_session,
+                &mut groups,
+                &no_paths,
+                false,
+            )?,
+            FeedbackOutcome::Grouped
+        );
+        assert_eq!(
+            report_feedback_with_backend(
+                &backend,
+                ReportRepository::Velocity,
+                &second,
+                &mut groups,
+                &no_paths,
+                false,
+            )?,
+            FeedbackOutcome::Grouped
+        );
+        assert!(backend.issues.borrow().is_empty());
+
+        let filed = report_feedback_with_backend(
+            &backend,
+            ReportRepository::Velocity,
+            &third,
+            &mut groups,
+            &no_paths,
+            false,
+        )?;
+        assert_eq!(
+            filed,
+            FeedbackOutcome::Filed {
+                issue: 1,
+                entries: vec![(1, 1), (1, 2), (1, 3), (1, 4)],
+            }
+        );
+        assert_eq!(
+            backend.labels.borrow().as_slice(),
+            &[SELF_IMPROVEMENT_LABEL]
+        );
+        {
+            let issues = backend.issues.borrow();
+            assert_eq!(issues.len(), 1);
+            assert_eq!(issues[0].labels, vec![SELF_IMPROVEMENT_LABEL]);
+            assert!(issues[0].body.contains("40 agent-minutes"));
+            assert!(issues[0].body.contains("`issue-10-1`"));
+            assert!(issues[0].body.contains("`issue-11-2`"));
+            assert!(issues[0].body.contains("`issue-12-3`"));
+            assert!(issues[0].body.contains("`collapse.sh`"));
+        }
+
+        let joined = report_feedback_with_backend(
+            &backend,
+            ReportRepository::Velocity,
+            &fourth,
+            &mut groups,
+            &no_paths,
+            false,
+        )?;
+        assert_eq!(joined, FeedbackOutcome::Joined(1));
+        let comments = backend.comments.borrow();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].0, 1);
+        assert!(
+            comments[0]
+                .1
+                .starts_with("Also seen by `issue-13-4` in `velocity`")
+        );
+        Ok(())
+    }
+
+    // Risk (#620): reaching 60 agent-minutes must file a `self-improvement` issue even
+    // before three distinct agent sessions report it.
+    #[test]
+    fn sixty_agent_minutes_threshold_files_before_three_sessions() -> Result<(), GitHubCommandError>
+    {
+        let backend = FakeBackend::default();
+        let mut groups = Vec::new();
+        let first = FeedbackReport {
+            kind: FeedbackKind::Friction,
+            title: "Build queue wait times during clippy".into(),
+            text: "Queued clippy waited 35 minutes.".into(),
+            session: "issue-20-1".into(),
+            nick: "issue-20-1".into(),
+            project: "velocity".into(),
+            project_id: 1,
+            sequence: 10,
+            time: "2026-11-22T12:10:00Z".into(),
+            cost_minutes: 35,
+            cost_tokens: Some(4_000),
+            tool_or_step: Some("velocity-run preflight".into()),
+            tool_name: None,
+            would_do: None,
+            would_replace: None,
+            saving_per_use: None,
+        };
+        let mut second = first.clone();
+        second.session = "issue-21-2".into();
+        second.nick = "issue-21-2".into();
+        second.sequence = 11;
+        second.cost_minutes = 25;
+        second.cost_tokens = Some(2_000);
+
+        assert_eq!(
+            report_feedback_with_backend(
+                &backend,
+                ReportRepository::Velocity,
+                &first,
+                &mut groups,
+                &no_paths,
+                false,
+            )?,
+            FeedbackOutcome::Grouped
+        );
+        let outcome = report_feedback_with_backend(
+            &backend,
+            ReportRepository::Velocity,
+            &second,
+            &mut groups,
+            &no_paths,
+            false,
+        )?;
+        assert_eq!(
+            outcome,
+            FeedbackOutcome::Filed {
+                issue: 1,
+                entries: vec![(1, 10), (1, 11)],
+            }
+        );
+        let issues = backend.issues.borrow();
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].body.contains("60 agent-minutes (~6000 tokens)"));
+        Ok(())
+    }
+
+    // Risk (#620): reports targeting different suite repositories must stay isolated,
+    // Collapse discoveries must route to `mESmaC/collapse.sh` using GitHub by default,
+    // and persisted records must remain backwards-compatible with older `velocity-reports.json`.
+    #[test]
+    fn repositories_stay_isolated_and_collapse_routes_to_collapse_repo()
+    -> Result<(), GitHubCommandError> {
+        let velocity_backend = FakeBackend::default();
+        let collapse_backend = FakeBackend::default();
+        let mut groups = Vec::new();
+
+        let velocity_report = tool_request("s1", "velocity", 1, "List open claims on a path", 20);
+        let rosen_report = tool_request("s2", "velocity", 2, "List open claims on a path", 20);
+        let collapse_report = tool_request("s3", "velocity", 3, "List open claims on a path", 20);
+
+        assert_eq!(
+            report_feedback_with_backend(
+                &velocity_backend,
+                ReportRepository::Velocity,
+                &velocity_report,
+                &mut groups,
+                &no_paths,
+                false,
+            )?,
+            FeedbackOutcome::Grouped
+        );
+        assert_eq!(
+            report_feedback_with_backend(
+                &velocity_backend,
+                ReportRepository::Rosen,
+                &rosen_report,
+                &mut groups,
+                &no_paths,
+                false,
+            )?,
+            FeedbackOutcome::Grouped
+        );
+        assert_eq!(
+            report_feedback_with_backend(
+                &collapse_backend,
+                ReportRepository::Collapse,
+                &collapse_report,
+                &mut groups,
+                &no_paths,
+                false,
+            )?,
+            FeedbackOutcome::Grouped
+        );
+        assert_eq!(groups.len(), 3);
+        assert!(velocity_backend.issues.borrow().is_empty());
+
+        let problem = DiscoveryReport::new(
+            "Collapse API 500 on empty label filter",
+            "GET /issues?labels= returns 500.",
+            "issue-620-369",
+            "velocity",
+            "2026-11-22T12:30:00Z",
+        );
+        let filed = report_problem_with_backend(
+            &collapse_backend,
+            ReportRepository::Collapse,
+            &problem,
+            &[],
+            no_paths,
+            false,
+        )?;
+        assert_eq!(filed, ReportOutcome::Filed(1));
+        assert_eq!(ReportRepository::Collapse.repository(), COLLAPSE_REPOSITORY);
+        assert_eq!(
+            ReportRepository::Collapse.default_host(IssueHost::Collapse),
+            IssueHost::GitHub
+        );
+        assert_eq!(
+            infer_feedback_repository("Collapse release endpoint times out", None, None),
+            ReportRepository::Collapse
+        );
+        assert_eq!(
+            infer_feedback_repository("Rebase failed", Some("rosen rebase"), None),
+            ReportRepository::Rosen
+        );
+        assert_eq!(
+            parse_minutes_from_text("15 minutes and 3k tokens"),
+            Some(15)
+        );
+        assert_eq!(parse_minutes_from_text("1.5 hours"), Some(90));
+        assert_eq!(parse_minutes_from_text("~8k tokens"), None);
+
+        let legacy = r#"{"projects":{"1":{"cursor":5,"issues":{"5":99}}}}"#;
+        let mut parsed: ReportedDiscoveries = serde_json::from_str(legacy)?;
+        parsed.feedback_groups = groups;
+        let roundtrip: ReportedDiscoveries =
+            serde_json::from_str(&serde_json::to_string(&parsed)?)?;
+        assert_eq!(roundtrip.issue(1, 5), Some(99));
+        assert_eq!(roundtrip.feedback_groups.len(), 3);
+        Ok(())
+    }
 }

@@ -117,6 +117,31 @@ fn matches_query(entry: &Entry, query: &str) -> bool {
             .chain(&entry.files)
             .any(|field| field.to_lowercase().contains(query))
         || entry
+            .discovery_kind
+            .is_some_and(|kind| kind.as_str().contains(query))
+        || [
+            &entry.velocity_issue,
+            &entry.rosen_issue,
+            &entry.collapse_issue,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|title| title.to_lowercase().contains(query))
+        || entry
+            .friction
+            .as_ref()
+            .is_some_and(|friction| friction.tool_or_step.to_lowercase().contains(query))
+        || entry.tool_request.as_ref().is_some_and(|request| {
+            [
+                &request.tool_name,
+                &request.would_do,
+                &request.would_replace,
+                &request.saving_per_use,
+            ]
+            .into_iter()
+            .any(|field| field.to_lowercase().contains(query))
+        })
+        || entry
             .change_id()
             .is_some_and(|change| change.to_lowercase().contains(query))
         || entry

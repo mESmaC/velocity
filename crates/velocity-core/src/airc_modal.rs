@@ -24,6 +24,7 @@ pub struct AircRecord {
     /// reported on once that is done.
     velocity_issue: Option<(String, Option<u32>)>,
     rosen_issue: Option<(String, Option<u32>)>,
+    collapse_issue: Option<(String, Option<u32>)>,
     task_undo_request: Option<String>,
     /// The commit a Rosen land made, for its event's Open on Collapse action (#429).
     land_commit: Option<String>,
@@ -43,6 +44,7 @@ impl AircRecord {
             is_event: false,
             velocity_issue: None,
             rosen_issue: None,
+            collapse_issue: None,
             task_undo_request: None,
             land_commit: None,
         }
@@ -66,6 +68,11 @@ impl AircRecord {
 
     pub fn with_rosen_issue(mut self, title: &str, issue: Option<u32>) -> Self {
         self.rosen_issue = Some((title.into(), issue));
+        self
+    }
+
+    pub fn with_collapse_issue(mut self, title: &str, issue: Option<u32>) -> Self {
+        self.collapse_issue = Some((title.into(), issue));
         self
     }
 
@@ -602,6 +609,7 @@ fn ledger_line(record: &AircRecord, nicks: &BTreeSet<String>) -> AircLineView {
     for (tool, repository, report) in [
         ("Velocity", "mESmaC/velocity", &record.velocity_issue),
         ("Rosen", "mESmaC/rosen", &record.rosen_issue),
+        ("Collapse", "mESmaC/collapse.sh", &record.collapse_issue),
     ] {
         if let Some((title, issue)) = report {
             let filed = issue.map_or_else(

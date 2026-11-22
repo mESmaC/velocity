@@ -1,7 +1,7 @@
 //! Rosen owns channel state. This adapter retains only connection configuration.
 use crate::{
-    Entry, Error, Presence,
-    channel::{DiscoveryIssue, entry},
+    DiscoveryKind, Entry, Error, FrictionReport, Presence, ToolRequestReport,
+    channel::{DiscoveryIssue, ValidatedDiscovery, entry},
 };
 use rosen_client::Endpoint;
 use rosen_client::protocol::channel::{AppendEntry, SendMessage};
@@ -61,25 +61,48 @@ pub(crate) struct Remote {
 
 pub(crate) const RECORD_PREFIX: &str = "velocity-airc/v1:";
 
-// The pinned Rosen protocol only has velocity_issue. Keep Rosen reports in its durable
-// discovery ledger with agent authorship until the protocol supports a native field.
+// The pinned Rosen protocol only has velocity_issue. Keep Rosen/Collapse reports and
+// structured friction/tool_request metadata in the durable discovery ledger with agent
+// authorship until the protocol supports native fields (#303, #620).
 pub(crate) const DISCOVERY_PREFIX: &str = "velocity-airc/discovery/v1:";
 
 #[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) struct RosenDiscovery {
+pub(crate) struct DiscoveryEnvelope {
     pub text: String,
-    pub rosen_issue: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub velocity_issue: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rosen_issue: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collapse_issue: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_kind: Option<DiscoveryKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub friction: Option<FrictionReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_request: Option<ToolRequestReport>,
 }
 
-impl RosenDiscovery {
-    fn encode(text: &str, title: String) -> Result<String, Error> {
-        let discovery = Self {
+impl DiscoveryEnvelope {
+    fn encode(text: &str, discovery: ValidatedDiscovery) -> Result<String, Error> {
+        let (velocity_issue, rosen_issue, collapse_issue) = match discovery.issue {
+            Some(DiscoveryIssue::Velocity(title)) => (Some(title), None, None),
+            Some(DiscoveryIssue::Rosen(title)) => (None, Some(title), None),
+            Some(DiscoveryIssue::Collapse(title)) => (None, None, Some(title)),
+            None => (None, None, None),
+        };
+        let envelope = Self {
             text: text.into(),
-            rosen_issue: title,
+            velocity_issue,
+            rosen_issue,
+            collapse_issue,
+            discovery_kind: (discovery.kind != DiscoveryKind::Problem).then_some(discovery.kind),
+            friction: discovery.friction,
+            tool_request: discovery.tool_request,
         };
         Ok(format!(
             "{DISCOVERY_PREFIX}{}",
-            serde_json::to_string(&discovery)?
+            serde_json::to_string(&envelope)?
         ))
     }
 }
@@ -314,13 +337,24 @@ impl Remote {
         member: &str,
         ledger: &str,
         text: &str,
-        issue: Option<DiscoveryIssue>,
+        discovery: Option<ValidatedDiscovery>,
     ) -> Result<(), Error> {
         crate::channel::require_text(text)?;
-        let (text, velocity_issue) = match issue {
-            Some(DiscoveryIssue::Velocity(title)) => (text.to_owned(), Some(title)),
-            Some(DiscoveryIssue::Rosen(title)) => (RosenDiscovery::encode(text, title)?, None),
-            None => (text.to_owned(), None),
+        let (text, velocity_issue) = match discovery {
+            Some(ValidatedDiscovery {
+                kind: DiscoveryKind::Problem,
+                issue: None,
+                friction: None,
+                tool_request: None,
+            })
+            | None => (text.to_owned(), None),
+            Some(ValidatedDiscovery {
+                kind: DiscoveryKind::Problem,
+                issue: Some(DiscoveryIssue::Velocity(title)),
+                friction: None,
+                tool_request: None,
+            }) => (text.to_owned(), Some(title)),
+            Some(other) => (DiscoveryEnvelope::encode(text, other)?, None),
         };
         let request: AppendEntry = wire(
             json!({"ledger":ledger,"author":{"kind":"agent","member":self.member(member)},"text":text,"velocity_issue":velocity_issue}),

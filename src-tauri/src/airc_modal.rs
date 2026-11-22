@@ -242,10 +242,17 @@ fn record(entry: &Entry, project: u32, reported: &ReportedDiscoveries) -> AircRe
         Some(title) => record.with_velocity_issue(title, reported.issue(project, entry.sequence)),
         None => record,
     };
-    match &entry.rosen_issue {
+    let record = match &entry.rosen_issue {
         Some(title) => record.with_rosen_issue(
             title,
             reported.issue_for(ReportRepository::Rosen, project, entry.sequence),
+        ),
+        None => record,
+    };
+    match &entry.collapse_issue {
+        Some(title) => record.with_collapse_issue(
+            title,
+            reported.issue_for(ReportRepository::Collapse, project, entry.sequence),
         ),
         None => record,
     }

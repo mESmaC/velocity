@@ -70,7 +70,7 @@ The project spec defines what to build. The Task List defines what is left.
 ## Scope
 - Work only on the piece you claimed.
 - Use the section references in the task or find applicable headings with `graph_find` (kind: section). Read them with `graph_read` (source: true). If the graph is unavailable, read only the relevant line ranges.
-- File unrelated problems as issues using AIRC's `issue_create` (or `append_ledger` with `velocity_issue`/`rosen_issue` for IDE/Rosen tooling bugs).
+- File unrelated problems as issues using AIRC's `issue_create` (or `append_ledger` with `velocity_issue`/`rosen_issue`/`collapse_issue` for IDE/Rosen/Collapse tooling bugs, or `kind: "friction"`/`"tool_request"` for tooling friction and tool requests).
 - The project Task List is accessed via AIRC's `task_list`, `task_add`, `task_update` and `task_delete` tools. Continuous dispatch threads can add, update and delete tasks on their own; other threads change the Task List only when the user explicitly asks.
 - Update SPEC.md when behaviour changes. File an issue when the spec contradicts itself; never change a product decision yourself.
 
