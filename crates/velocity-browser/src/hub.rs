@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -33,9 +33,22 @@ pub struct BrowserView {
     pub tabs: Vec<Tab>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingProfileDeletion {
+    pub path: PathBuf,
+    pub error: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    Removed,
+    Pending(PendingProfileDeletion),
+}
+
 #[derive(Default)]
 struct Registry {
     entries: HashMap<BrowserKey, Entry>,
+    pending_deletions: BTreeSet<PathBuf>,
     port: Option<u16>,
 }
 
@@ -113,6 +126,9 @@ impl BrowserHub {
 
     pub fn register(&self, key: BrowserKey, profile: std::result::Result<PathBuf, String>) {
         let mut registry = self.registry();
+        if let Ok(path) = &profile {
+            registry.pending_deletions.remove(path);
+        }
         let entry = registry.entries.entry(key).or_insert_with(|| Entry {
             token: None,
             profile: profile.clone(),
@@ -206,23 +222,75 @@ impl BrowserHub {
         }
     }
 
-    pub async fn delete(&self, key: BrowserKey, path: Option<&Path>) -> Result<()> {
+    pub fn queue_profile_deletion(&self, path: PathBuf) {
+        let mut registry = self.registry();
+        if !path_in_use(&registry.entries, &path) {
+            registry.pending_deletions.insert(path);
+        }
+    }
+
+    pub fn forget_profile_deletion(&self, path: &Path) {
+        self.registry().pending_deletions.remove(path);
+    }
+
+    pub fn pending_profile_deletions(&self) -> Vec<PathBuf> {
+        self.registry().pending_deletions.iter().cloned().collect()
+    }
+
+    pub async fn delete(&self, key: BrowserKey, path: Option<&Path>) -> DeleteOutcome {
         let entry = self.registry().entries.remove(&key);
         let profile = if let Some(entry) = &entry {
             let mut state = entry.state.lock().await;
             state.retired = true;
             entry.close(&mut state).await;
-            entry.profile.as_deref().ok().or(path)
+            entry
+                .profile
+                .as_deref()
+                .ok()
+                .or(path)
+                .map(Path::to_path_buf)
         } else {
-            path
+            path.map(Path::to_path_buf)
         };
-        match profile {
-            Some(profile) => remove_profile(profile).await,
-            None => Ok(()),
+        let Some(profile) = profile else {
+            return DeleteOutcome::Removed;
+        };
+        match remove_profile(&profile).await {
+            Ok(()) => {
+                self.forget_profile_deletion(&profile);
+                DeleteOutcome::Removed
+            }
+            Err(error) => {
+                self.queue_profile_deletion(profile.clone());
+                DeleteOutcome::Pending(PendingProfileDeletion {
+                    path: profile,
+                    error: error.to_string(),
+                })
+            }
         }
     }
 
-    pub async fn reap(&self) {
+    pub async fn retry_pending_deletions(&self) -> Vec<PathBuf> {
+        let pending: Vec<PathBuf> = {
+            let registry = self.registry();
+            registry
+                .pending_deletions
+                .iter()
+                .filter(|path| !path_in_use(&registry.entries, path))
+                .cloned()
+                .collect()
+        };
+        let mut removed = Vec::new();
+        for path in pending {
+            if try_remove_profile(&path).await.is_ok() {
+                self.forget_profile_deletion(&path);
+                removed.push(path);
+            }
+        }
+        removed
+    }
+
+    pub async fn reap(&self) -> Vec<PathBuf> {
         let entries: Vec<_> = self.registry().entries.values().cloned().collect();
         for entry in entries {
             if let Ok(mut state) = entry.state.try_lock()
@@ -232,6 +300,7 @@ impl BrowserHub {
                 entry.close(&mut state).await;
             }
         }
+        self.retry_pending_deletions().await
     }
 
     pub async fn open_view(&self, key: BrowserKey) -> Result<BrowserView> {
@@ -517,12 +586,25 @@ async fn wait(entry: &Entry, tab: Option<String>, args: &Value) -> Result<Output
     }
 }
 
+fn path_in_use(entries: &HashMap<BrowserKey, Entry>, path: &Path) -> bool {
+    entries
+        .values()
+        .any(|entry| entry.profile.as_deref().ok() == Some(path))
+}
+
+pub async fn try_remove_profile(profile: &Path) -> Result<()> {
+    match tokio::fs::remove_dir_all(profile).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 async fn remove_profile(profile: &Path) -> Result<()> {
     for attempt in 0..10 {
-        match tokio::fs::remove_dir_all(profile).await {
+        match try_remove_profile(profile).await {
             Ok(()) => return Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) if attempt == 9 => return Err(error.into()),
+            Err(error) if attempt == 9 => return Err(error),
             Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
         }
     }
@@ -540,5 +622,73 @@ fn with_notice(output: Output, notice: String, tabs: &[Tab]) -> Output {
             path: notice + &path,
             jpeg,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_profile_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("velocity-browser-{tag}-{}", Uuid::new_v4()))
+    }
+
+    // Risk (#634): a transient Windows sharing violation during thread deletion must not lose
+    // the browser profile path; BrowserHub must retain it for retry and delete it once the lock
+    // clears.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn delete_retains_and_retries_profile_after_sharing_violation()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let profile = unique_profile_dir("sharing-violation");
+        std::fs::create_dir_all(&profile)?;
+        let marker = profile.join("profile-marker");
+        let lease = std::fs::OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(&marker)?;
+
+        let hub = BrowserHub::default();
+        hub.register((1, 42), Ok(profile.clone()));
+
+        let outcome = hub.delete((1, 42), Some(&profile)).await;
+        assert!(matches!(
+            &outcome,
+            DeleteOutcome::Pending(pending) if pending.path == profile
+        ));
+        assert_eq!(hub.pending_profile_deletions(), vec![profile.clone()]);
+
+        // Still locked: retry keeps the pending deletion queued.
+        assert!(hub.reap().await.is_empty());
+        assert!(marker.exists());
+        assert_eq!(hub.pending_profile_deletions(), vec![profile.clone()]);
+
+        // Once the handle closes, retry deletes the profile directory and clears the queue.
+        drop(lease);
+        assert_eq!(hub.reap().await, vec![profile.clone()]);
+        assert!(!profile.exists());
+        assert!(hub.pending_profile_deletions().is_empty());
+        Ok(())
+    }
+
+    // Risk (#634): a profile deletion request re-queued after restart must remove the leftover
+    // directory once retried.
+    #[tokio::test]
+    async fn queued_profile_deletion_retries_after_restart()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let profile = unique_profile_dir("restart-retry");
+        std::fs::create_dir_all(&profile)?;
+        std::fs::write(profile.join("marker"), b"stale")?;
+
+        let hub = BrowserHub::default();
+        hub.queue_profile_deletion(profile.clone());
+        assert_eq!(hub.reap().await, vec![profile.clone()]);
+        assert!(!profile.exists());
+        assert!(hub.pending_profile_deletions().is_empty());
+        Ok(())
     }
 }

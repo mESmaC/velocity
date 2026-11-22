@@ -10,7 +10,10 @@ mod transport;
 
 pub use cdp::Frame;
 pub use engine::MEMORY_BUDGET;
-pub use hub::{BrowserHub, BrowserKey, BrowserView, Route};
+pub use hub::{
+    BrowserHub, BrowserKey, BrowserView, DeleteOutcome, PendingProfileDeletion, Route,
+    try_remove_profile,
+};
 pub use input::BrowserInput;
 pub use transport::{LAZY_FLAG, LOADER_TOOL, PORT_ENV, SERVER, SWITCH, TOKEN_ENV, serve_mcp};
 

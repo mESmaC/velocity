@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::deleted_browser_profiles::DeletedBrowserProfile;
 use crate::threads::{ThreadError, remove_thread_record};
 use crate::{StateStore, ThreadItem};
 
@@ -44,21 +45,27 @@ pub struct KeptWorktree {
 
 impl StateStore {
     /// Drops a deleted thread's record (as [`StateStore::remove_thread`] does) and, in the
-    /// same write, remembers its worktree when it is still on disk.
+    /// same write, remembers its worktree and browser profile when either is still on disk.
     pub fn remove_deleted_thread(
         &mut self,
         project: u32,
         thread: u32,
-        kept: Option<DeletedWorktree>,
+        kept_worktree: Option<DeletedWorktree>,
+        kept_browser_profile: Option<DeletedBrowserProfile>,
     ) -> Result<ThreadItem, ThreadError> {
         let mut next = self.state.clone();
         let removed = remove_thread_record(&mut next, project, thread)?;
-        if let Some(kept) = kept
-            && let Some(item) = next.projects.iter_mut().find(|item| item.id == project)
-        {
-            item.deleted_worktrees
-                .retain(|entry| entry.path != kept.path);
-            item.deleted_worktrees.push(kept);
+        if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
+            if let Some(kept) = kept_worktree {
+                item.deleted_worktrees
+                    .retain(|entry| entry.path != kept.path);
+                item.deleted_worktrees.push(kept);
+            }
+            if let Some(kept) = kept_browser_profile {
+                item.deleted_browser_profiles
+                    .retain(|entry| entry.path != kept.path);
+                item.deleted_browser_profiles.push(kept);
+            }
         }
         self.commit(next)?;
         Ok(removed)

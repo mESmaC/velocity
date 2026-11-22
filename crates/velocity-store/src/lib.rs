@@ -14,6 +14,7 @@ pub mod build_repairs;
 pub mod ci_repairs;
 pub mod claim_piece;
 pub mod continuous_dispatch;
+pub mod deleted_browser_profiles;
 pub mod deleted_worktrees;
 pub mod deploy_repairs;
 pub mod fleet_ledger;
@@ -1354,6 +1355,11 @@ pub struct ProjectItem {
     #[serde(default, rename = "deleted_workspaces", alias = "deleted_worktrees")]
     #[specta(skip)]
     pub deleted_worktrees: Vec<deleted_worktrees::DeletedWorktree>,
+    /// Deleted threads' browser profiles that are still on disk, retried in the background
+    /// (F20, #634).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[specta(skip)]
+    pub deleted_browser_profiles: Vec<deleted_browser_profiles::DeletedBrowserProfile>,
     /// The highest task number ever given out (F8). A deleted task's number is never
     /// reused, so AIRC claims (`task:<n>`) and feed lines keep meaning one task.
     #[serde(default)]
@@ -1523,6 +1529,7 @@ impl ProjectItem {
             goal_swarms: Vec::new(),
             airc_seen: 0,
             deleted_worktrees: Vec::new(),
+            deleted_browser_profiles: Vec::new(),
             last_task_identifier: 0,
             version_control: VersionControl::default(),
             rosen_migration_notice: None,

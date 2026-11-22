@@ -339,13 +339,13 @@ pub(crate) async fn land_thread(application: &AppHandle, key: ThreadKey) -> Vec<
     };
     let _stop = stop_agent(application, key).await;
     let mut problems = Vec::new();
-    if let Err(error) =
-        crate::browser::delete(application, key, thread.browser_location.as_deref()).await
-    {
-        problems.push(format!(
-            "its browser profile could not be removed ({error})"
-        ));
-    }
+    let kept_browser_profile = delete_browser_profile(
+        application,
+        key,
+        thread.browser_location.as_deref(),
+        &mut problems,
+    )
+    .await;
     if let Some(change) = &thread.rosen_change
         && let Err(error) = crate::rosen::abandon(application, key.0, &thread, change).await
     {
@@ -354,21 +354,63 @@ pub(crate) async fn land_thread(application: &AppHandle, key: ThreadKey) -> Vec<
     if let Err(error) = crate::airc_claims::release(application, key) {
         problems.push(format!("its claims were not released: {error}"));
     }
+    let persist_pending = kept_browser_profile.is_some();
     let removed = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     )
     .and_then(|mut store| {
         store
-            .remove_deleted_thread(key.0, key.1, None)
+            .remove_deleted_thread(key.0, key.1, None, kept_browser_profile)
             .map_err(|error| error.to_string())
     });
     match removed {
-        Ok(_) => problems
-            .into_iter()
-            .map(|problem| format!("Deleted “{}”, but {problem}", thread.title))
-            .collect(),
+        Ok(_) => {
+            if persist_pending && let Err(error) = crate::state::save_now(application) {
+                crate::diagnostics::record("browser", &error);
+            }
+            problems
+                .into_iter()
+                .map(|problem| format!("Deleted “{}”, but {problem}", thread.title))
+                .collect()
+        }
         Err(error) => Vec::from([format!("Could not delete “{}”: {error}", thread.title)]),
+    }
+}
+
+async fn delete_browser_profile(
+    application: &AppHandle,
+    key: ThreadKey,
+    location: Option<&str>,
+    problems: &mut Vec<String>,
+) -> Option<velocity_store::deleted_browser_profiles::DeletedBrowserProfile> {
+    match crate::browser::delete(application, key, location).await {
+        Ok(velocity_browser::DeleteOutcome::Removed) => None,
+        Ok(velocity_browser::DeleteOutcome::Pending(pending)) => {
+            crate::diagnostics::record(
+                "browser",
+                &format!(
+                    "Deferred browser profile cleanup for thread {}-{}: {}",
+                    key.0, key.1, pending.error
+                ),
+            );
+            problems.push(format!(
+                "its browser profile is still in use and will be removed in the background ({})",
+                pending.error
+            ));
+            Some(
+                velocity_store::deleted_browser_profiles::DeletedBrowserProfile::new(
+                    key.1,
+                    pending.path.to_string_lossy().into_owned(),
+                ),
+            )
+        }
+        Err(error) => {
+            problems.push(format!(
+                "its browser profile could not be removed ({error})"
+            ));
+            None
+        }
     }
 }
 

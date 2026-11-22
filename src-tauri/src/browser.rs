@@ -10,7 +10,7 @@ use specta::Type;
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use velocity_acp::client::SessionSetup;
-use velocity_browser::{BrowserHub, BrowserInput, BrowserKey, BrowserView, Frame};
+use velocity_browser::{BrowserHub, BrowserInput, BrowserKey, BrowserView, DeleteOutcome, Frame};
 
 use crate::{state::ManagedStateStore, threads::lock};
 
@@ -36,14 +36,108 @@ pub fn initialize(application: &AppHandle) -> anyhow::Result<()> {
     let _runtime = runtime.inner().enter();
     hub.start()?;
     application.manage(hub.clone());
+    let handle = application.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(15));
         loop {
             interval.tick().await;
             hub.reap().await;
+            cleanup_deleted_profiles(&handle, &hub).await;
         }
     });
     Ok(())
+}
+
+fn is_valid_profile_path(path: &Path, key: BrowserKey) -> bool {
+    let expected_name = format!("{}-{}", key.0, key.1);
+    if path.file_name().and_then(|value| value.to_str()) != Some(expected_name.as_str()) {
+        return false;
+    }
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if parent.file_name().and_then(|value| value.to_str()) != Some(".velocity-browser") {
+        return false;
+    }
+    parent
+        .parent()
+        .is_some_and(|root| check_location(root).is_ok())
+}
+
+async fn cleanup_deleted_profiles(application: &AppHandle, hub: &BrowserHub) {
+    let kept =
+        match crate::state::with_store(application, |store| store.kept_browser_profiles()).await {
+            Ok(kept) => kept,
+            Err(error) => {
+                crate::diagnostics::record("browser", &error);
+                return;
+            }
+        };
+    if kept.is_empty() {
+        return;
+    }
+    let mut forget = Vec::new();
+    for entry in kept {
+        let path = PathBuf::from(&entry.profile.path);
+        if entry.reused {
+            hub.forget_profile_deletion(&path);
+            forget.push((entry.project, entry.profile.path));
+            continue;
+        }
+        if !is_valid_profile_path(&path, (entry.project, entry.profile.thread)) {
+            crate::diagnostics::record(
+                "browser",
+                &format!(
+                    "Skipping unexpected browser profile path during cleanup: {}",
+                    entry.profile.path
+                ),
+            );
+            hub.forget_profile_deletion(&path);
+            forget.push((entry.project, entry.profile.path));
+            continue;
+        }
+        match velocity_browser::try_remove_profile(&path).await {
+            Ok(()) => {
+                hub.forget_profile_deletion(&path);
+                forget.push((entry.project, entry.profile.path));
+            }
+            Err(_) => {
+                hub.queue_profile_deletion(path);
+            }
+        }
+    }
+    forget_deleted_profiles(application, forget).await;
+}
+
+async fn forget_deleted_profiles(application: &AppHandle, entries: Vec<(u32, String)>) {
+    if entries.is_empty() {
+        return;
+    }
+    let changed = crate::state::try_with_store(application, move |store| {
+        let mut removed_any = false;
+        for (project, path) in entries {
+            if store
+                .forget_deleted_browser_profile(project, &path)
+                .map_err(|error| error.to_string())?
+            {
+                removed_any = true;
+            }
+        }
+        Ok(removed_any)
+    })
+    .await;
+    match changed {
+        Ok(true) => {
+            let handle = application.clone();
+            if let Ok(Err(error)) =
+                tauri::async_runtime::spawn_blocking(move || crate::state::save_now(&handle)).await
+            {
+                crate::diagnostics::record("browser", &error);
+            }
+        }
+        Ok(false) => {}
+        Err(error) => crate::diagnostics::record("browser", &error),
+    }
 }
 
 fn profile(root: &Path, key: BrowserKey) -> PathBuf {
@@ -159,19 +253,18 @@ pub async fn delete(
     application: &AppHandle,
     key: BrowserKey,
     root: Option<&str>,
-) -> Result<(), String> {
-    let path = root
+) -> Result<DeleteOutcome, String> {
+    let checked = root
         .map(|root| {
             let root = Path::new(root);
             check_location(root)?;
             Ok::<_, String>(velocity_store::extended_windows_path(&profile(root, key)))
         })
-        .transpose()?;
-    application
-        .state::<BrowserHub>()
-        .delete(key, path.as_deref())
-        .await
-        .map_err(|error| error.to_string())
+        .transpose();
+    let path = checked.as_ref().ok().and_then(|path| path.as_deref());
+    let outcome = application.state::<BrowserHub>().delete(key, path).await;
+    checked?;
+    Ok(outcome)
 }
 
 #[tauri::command]
