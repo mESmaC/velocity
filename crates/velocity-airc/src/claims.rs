@@ -135,7 +135,7 @@ impl Channel {
         branch: &str,
         files: Vec<String>,
     ) -> Result<ClaimResult, Error> {
-        self.claim_work(member, piece, task, branch, files, false)
+        self.claim_work(member, piece, task, Some(branch), files, false)
     }
 
     /// A goal swarm reserves its known files while claiming the piece. Other AIRC
@@ -147,7 +147,7 @@ impl Channel {
         piece: &str,
         task: &str,
     ) -> Result<ClaimResult, Error> {
-        self.claim_work(member, piece, task, "", Vec::new(), false)
+        self.claim_work(member, piece, task, None, Vec::new(), false)
     }
 
     pub fn claim_goal_piece(
@@ -158,7 +158,7 @@ impl Channel {
         branch: &str,
         files: Vec<String>,
     ) -> Result<ClaimResult, Error> {
-        self.claim_work(member, piece, task, branch, files, true)
+        self.claim_work(member, piece, task, Some(branch), files, true)
     }
 
     fn claim_work(
@@ -166,18 +166,20 @@ impl Channel {
         member: &str,
         piece: &str,
         task: &str,
-        branch: &str,
+        branch: Option<&str>,
         files: Vec<String>,
         require_clear_files: bool,
     ) -> Result<ClaimResult, Error> {
+        let requires_branch = self.remote.is_none() && branch.is_some();
+        let branch = branch.unwrap_or_default();
         if task.trim().is_empty()
-            || (self.remote.is_none() && branch.trim().is_empty())
+            || (requires_branch && branch.trim().is_empty())
             || files.iter().any(|file| file.trim().is_empty())
         {
-            return Err(Error::Invalid(if self.remote.is_some() {
-                "Claims need a task".into()
-            } else {
+            return Err(Error::Invalid(if requires_branch {
                 "Claims need a task and branch".into()
+            } else {
+                "Claims need a task".into()
             }));
         }
         if let Some(remote) = &self.remote {
@@ -861,6 +863,41 @@ mod tests {
         assert_eq!(rows[0]["task"].as_str(), Some(long_task));
         assert_eq!(rows[0]["change"].as_str(), Some(change_a));
         assert_eq!(rows[0]["details_omitted"].as_bool(), Some(true));
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk: work-item identity claims (`claim_work_item`) omit branch fields for Rosen
+    // projects (#531) and must still grant and enforce first-wins locks on local channels
+    // without relaxing branch validation for legacy `claim_piece` callers.
+    #[test]
+    fn claim_work_item_works_without_branch_on_local_channel()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::{Channel, ClaimResult, Error};
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "velocity-work-item-claim-{}-{stamp}",
+            std::process::id()
+        ));
+        let channel = Channel::open(&directory, "project")?;
+        channel.join("first", "first")?;
+        channel.join("second", "second")?;
+
+        let granted = channel.claim_work_item("first", "issue:7", "Fix issue")?;
+        assert!(matches!(granted, ClaimResult::Granted { ref claim } if claim.branch.is_empty()));
+        let refused = channel.claim_work_item("second", "issue:7", "Fix issue")?;
+        assert!(matches!(refused, ClaimResult::Refused { holder, .. } if holder == "first"));
+        assert!(matches!(
+            channel.claim_work_item("first", "issue:7", "   "),
+            Err(Error::Invalid(message)) if message == "Claims need a task"
+        ));
+        assert!(matches!(
+            channel.claim_piece("first", "issue:8", "Legacy", "", Vec::new()),
+            Err(Error::Invalid(message)) if message == "Claims need a task and branch"
+        ));
+
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }
