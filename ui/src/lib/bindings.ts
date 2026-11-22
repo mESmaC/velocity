@@ -76,9 +76,11 @@ export const commands = {
 	 *  `github_remote` pointing at GitHub (#574) and configures Collapse's downstream remote
 	 *  via `POST /api/downstream` (C4, #579), opening the Collapse GitHub App's install or
 	 *  permission page and showing a project health row if the App is missing or lacks write
-	 *  permissions.
+	 *  permissions. When the target name is held by a deleted copy pending purge (#610),
+	 *  returns `deleted_repository` so the caller can offer Restore and link, Purge now and
+	 *  create, or the repository settings page.
 	 */
-	mirrorToCollapse: (projectIdentifier: number) => __TAURI_INVOKE<null>("mirror_to_collapse", { projectIdentifier }),
+	mirrorToCollapse: (projectIdentifier: number, deletedAction: DeletedRepositoryAction | null) => __TAURI_INVOKE<MirrorToCollapseResult_Serialize>("mirror_to_collapse", { projectIdentifier, deletedAction }),
 	/**
 	 *  `send_collapse_live_state` (§3.1): for a project that already mirrors to Collapse
 	 *  without the `collapse` root (#517). Gives Rosen's state feed, ledger push and relay the
@@ -1311,6 +1313,58 @@ export type CustomAgent_Serialize = {
 	name: string,
 	command: AgentCommand_Serialize,
 };
+
+/**  A Collapse repository name held by a deleted copy pending purge (#610, collapse.sh#217). */
+export type DeletedCollapseRepository = DeletedCollapseRepository_Serialize | DeletedCollapseRepository_Deserialize;
+
+/**  A Collapse repository name held by a deleted copy pending purge (#610, collapse.sh#217). */
+export type DeletedCollapseRepository_Deserialize = {
+	/**  `<owner>/<name>` on Collapse. */
+	repository: string,
+	owner: string,
+	name: string,
+	/**  RFC 3339 deadline until which Collapse holds the deleted copy, when Collapse reported it. */
+	delete_after?: string | null,
+	/**  RFC 3339 deletion time, when Collapse reported it. */
+	deleted_at?: string | null,
+	/**
+	 *  `true` when Collapse returned a `deleted_pending` reply (collapse.sh#217);
+	 *  `false` when inferred from `409` on create followed by `404` on read.
+	 */
+	confirmed: boolean,
+	/**  `true` when Collapse supports immediate purge for this repository (collapse.sh#217). */
+	purge_available: boolean,
+	/**  Repository settings page on Collapse (`https://collapse.sh/<owner>/<name>/settings`). */
+	settings_url: string,
+};
+
+/**  A Collapse repository name held by a deleted copy pending purge (#610, collapse.sh#217). */
+export type DeletedCollapseRepository_Serialize = {
+	/**  `<owner>/<name>` on Collapse. */
+	repository: string,
+	owner: string,
+	name: string,
+	/**  RFC 3339 deadline until which Collapse holds the deleted copy, when Collapse reported it. */
+	delete_after: string | null,
+	/**  RFC 3339 deletion time, when Collapse reported it. */
+	deleted_at: string | null,
+	/**
+	 *  `true` when Collapse returned a `deleted_pending` reply (collapse.sh#217);
+	 *  `false` when inferred from `409` on create followed by `404` on read.
+	 */
+	confirmed: boolean,
+	/**  `true` when Collapse supports immediate purge for this repository (collapse.sh#217). */
+	purge_available: boolean,
+	/**  Repository settings page on Collapse (`https://collapse.sh/<owner>/<name>/settings`). */
+	settings_url: string,
+};
+
+/**  Owner choice when a target Collapse repository name is held by a deleted copy pending purge (#610). */
+export type DeletedRepositoryAction = 
+/**  Restore the deleted repository on Collapse, then link and fast-forward it from Rosen's base. */
+"restore" | 
+/**  Permanently purge the deleted repository on Collapse, then create a fresh copy. */
+"purge_and_create";
 
 export type DependencyWait = {
 	member: string,
@@ -3430,6 +3484,25 @@ export type MirrorStatus_Serialize = {
 	feed_error: string | null,
 };
 
+/**  Outcome of `mirror_to_collapse` (§3.1, #427, #610). */
+export type MirrorToCollapseResult = MirrorToCollapseResult_Serialize | MirrorToCollapseResult_Deserialize;
+
+/**  Outcome of `mirror_to_collapse` (§3.1, #427, #610). */
+export type MirrorToCollapseResult_Deserialize = {
+	ok: boolean,
+	message: string,
+	/**  Populated when the target Collapse name is held by a deleted copy pending purge (#610). */
+	deleted_repository?: DeletedCollapseRepository_Deserialize | null,
+};
+
+/**  Outcome of `mirror_to_collapse` (§3.1, #427, #610). */
+export type MirrorToCollapseResult_Serialize = {
+	ok: boolean,
+	message: string,
+	/**  Populated when the target Collapse name is held by a deleted copy pending purge (#610). */
+	deleted_repository: DeletedCollapseRepository_Serialize | null,
+};
+
 export type ModelCardView = {
 	provider: ProviderKind,
 	model: string,
@@ -3549,10 +3622,10 @@ export type ModelPillView_Serialize = {
 	preserve_requested_fast: boolean,
 };
 
-/**  Input for `move_to_collapse` (§3.1, #592). */
+/**  Input for `move_to_collapse` (§3.1, #592, #610). */
 export type MoveToCollapseRequest = MoveToCollapseRequest_Serialize | MoveToCollapseRequest_Deserialize;
 
-/**  Input for `move_to_collapse` (§3.1, #592). */
+/**  Input for `move_to_collapse` (§3.1, #592, #610). */
 export type MoveToCollapseRequest_Deserialize = {
 	project_identifier: number,
 	/**
@@ -3566,9 +3639,11 @@ export type MoveToCollapseRequest_Deserialize = {
 	keep_github_downstream: boolean,
 	/**  Optional transient GitHub token used only for the issue import request; never stored. */
 	github_import_token?: string | null,
+	/**  Optional owner choice when the Collapse name is held by a deleted copy pending purge (#610). */
+	deleted_action?: DeletedRepositoryAction | null,
 };
 
-/**  Input for `move_to_collapse` (§3.1, #592). */
+/**  Input for `move_to_collapse` (§3.1, #592, #610). */
 export type MoveToCollapseRequest_Serialize = {
 	project_identifier: number,
 	/**
@@ -3582,12 +3657,14 @@ export type MoveToCollapseRequest_Serialize = {
 	keep_github_downstream: boolean,
 	/**  Optional transient GitHub token used only for the issue import request; never stored. */
 	github_import_token: string | null,
+	/**  Optional owner choice when the Collapse name is held by a deleted copy pending purge (#610). */
+	deleted_action: DeletedRepositoryAction | null,
 };
 
-/**  Step-by-step outcome of `move_to_collapse` (§3.1, #592). */
+/**  Step-by-step outcome of `move_to_collapse` (§3.1, #592, #610). */
 export type MoveToCollapseResult = MoveToCollapseResult_Serialize | MoveToCollapseResult_Deserialize;
 
-/**  Step-by-step outcome of `move_to_collapse` (§3.1, #592). */
+/**  Step-by-step outcome of `move_to_collapse` (§3.1, #592, #610). */
 export type MoveToCollapseResult_Deserialize = {
 	ok: boolean,
 	collapse_repository?: string | null,
@@ -3595,9 +3672,11 @@ export type MoveToCollapseResult_Deserialize = {
 	steps: MoveToCollapseStepResult_Deserialize[],
 	collapse_check?: CollapseCheckSummary_Deserialize | null,
 	settings: ProjectCollapseSettings_Deserialize,
+	/**  Populated when the target Collapse name is held by a deleted repository pending purge (#610). */
+	deleted_repository?: DeletedCollapseRepository_Deserialize | null,
 };
 
-/**  Step-by-step outcome of `move_to_collapse` (§3.1, #592). */
+/**  Step-by-step outcome of `move_to_collapse` (§3.1, #592, #610). */
 export type MoveToCollapseResult_Serialize = {
 	ok: boolean,
 	collapse_repository: string | null,
@@ -3605,6 +3684,8 @@ export type MoveToCollapseResult_Serialize = {
 	steps: MoveToCollapseStepResult_Serialize[],
 	collapse_check: CollapseCheckSummary_Serialize | null,
 	settings: ProjectCollapseSettings_Serialize,
+	/**  Populated when the target Collapse name is held by a deleted repository pending purge (#610). */
+	deleted_repository: DeletedCollapseRepository_Serialize | null,
 };
 
 /**  Identifier for each step in the Move to Collapse cut-over (#592). */

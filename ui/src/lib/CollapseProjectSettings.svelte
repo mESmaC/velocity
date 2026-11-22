@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CollapseDeletedRepoNotice from './CollapseDeletedRepoNotice.svelte';
   import PaneState from './PaneState.svelte';
   import {
     collapseCommands,
@@ -6,6 +7,8 @@
     type CollapseCheckItemStatus,
     type CollapseFeedHealth,
     type CollapseRelayKind,
+    type DeletedCollapseRepository,
+    type DeletedRepositoryAction,
     type IssueHost,
     type MoveToCollapseResult,
     type MoveToCollapseStepStatus,
@@ -40,6 +43,7 @@
   let moveDefaultsLoadedFor = $state<number | null>(null);
   let moving = $state(false);
   let moveResult = $state<MoveToCollapseResult | null>(null);
+  let mirrorDeleted = $state<DeletedCollapseRepository | null>(null);
   let loadError = $state('');
   let actionError = $state('');
   let notice = $state('');
@@ -81,6 +85,7 @@
     moveGitHubTokenInput = '';
     moveKeepDownstream = false;
     moveResult = null;
+    mirrorDeleted = null;
     moving = false;
     loadError = '';
     actionError = '';
@@ -128,13 +133,16 @@
     }
   }
 
-  async function runMoveToCollapse() {
+  async function runMoveToCollapse(
+    deletedAction: DeletedRepositoryAction | null = null,
+  ) {
     if (busy || moving || !settings) return;
     const target = currentProject;
     moving = true;
     busy = true;
     actionError = '';
     notice = '';
+    mirrorDeleted = null;
     try {
       const result = await collapseCommands.moveToCollapse({
         project_identifier: target,
@@ -142,6 +150,7 @@
         github_repository: moveGitHubRepoInput.trim() || null,
         keep_github_downstream: moveKeepDownstream,
         github_import_token: moveGitHubTokenInput.trim() || null,
+        deleted_action: deletedAction,
       });
       if (target === currentProject) {
         moveResult = result;
@@ -153,9 +162,13 @@
         if (result.github_repository && moveKeepDownstream) {
           moveGitHubRepoInput = result.github_repository;
         }
-        notice = result.ok
-          ? 'Move to Collapse completed.'
-          : 'Move to Collapse finished with items that need attention.';
+        if (result.deleted_repository) {
+          notice = '';
+        } else {
+          notice = result.ok
+            ? 'Move to Collapse completed.'
+            : 'Move to Collapse finished with items that need attention.';
+        }
       }
     } catch (reason) {
       if (target === currentProject) actionError = formatError(reason);
@@ -244,7 +257,10 @@
     }
   }
 
-  async function linkProject(mode: 'mirror' | 'live') {
+  async function linkProject(
+    mode: 'mirror' | 'live',
+    deletedAction: DeletedRepositoryAction | null = null,
+  ) {
     if (busy) return;
     const target = currentProject;
     busy = true;
@@ -252,11 +268,19 @@
     notice = '';
     try {
       if (mode === 'mirror') {
-        await collapseCommands.mirror(target);
+        const result = await collapseCommands.mirror(target, deletedAction);
+        if (target === currentProject) {
+          mirrorDeleted = result.deleted_repository;
+          if (!result.deleted_repository) {
+            notice = result.message;
+            await load(target);
+          }
+        }
       } else {
+        mirrorDeleted = null;
         await collapseCommands.sendLiveState(target);
+        await load(target);
       }
-      await load(target);
     } catch (reason) {
       if (target === currentProject) actionError = formatError(reason);
     } finally {
@@ -567,6 +591,15 @@
           {/if}
         </div>
         {#if moveResult}
+          {#if moveResult.deleted_repository}
+            <CollapseDeletedRepoNotice
+              deleted={moveResult.deleted_repository}
+              busy={busy || moving}
+              onRestore={() => void runMoveToCollapse('restore')}
+              onPurgeAndCreate={() =>
+                void runMoveToCollapse('purge_and_create')}
+            />
+          {/if}
           <ol
             class="collapse-cutover-steps"
             aria-label="Move to Collapse steps"
@@ -676,6 +709,15 @@
             </button>
           {/if}
         </div>
+        {#if mirrorDeleted}
+          <CollapseDeletedRepoNotice
+            deleted={mirrorDeleted}
+            {busy}
+            onRestore={() => void linkProject('mirror', 'restore')}
+            onPurgeAndCreate={() =>
+              void linkProject('mirror', 'purge_and_create')}
+          />
+        {/if}
       </div>
 
       <div class="worktree-setting-row">

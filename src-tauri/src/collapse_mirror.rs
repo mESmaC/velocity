@@ -17,17 +17,23 @@ use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
-use velocity_collapse::{CollapseCredentials, MirrorRequest, RepositoryActivity};
-use velocity_core::collapse::{
-    CollapseFeedHealth, CollapseMirrorHealth, CollapseRelayKind, ForwarderState, IssueHost,
-    PushTokenStatus, dashboard_poll_active, dashboard_poll_delay,
+use velocity_collapse::{
+    CollapseCredentials, CollapseError, DeletedPendingRepository, MirrorRequest,
+    ProvisionDisposition, ProvisionedMirror, RepositoryActivity,
 };
+use velocity_core::collapse::{
+    CollapseFeedHealth, CollapseMirrorHealth, CollapseRelayKind, DeletedCollapseRepository,
+    DeletedRepositoryAction, ForwarderState, IssueHost, PushTokenStatus, allowed_settings_page,
+    dashboard_poll_active, dashboard_poll_delay,
+};
+use velocity_core::project_health::short_commit;
 use velocity_new_project::{
     NewProjectRequest, OpenProjectRequest, ProjectLocationRequest, ProjectMirror,
 };
 use velocity_rosen::collapse_link::{
-    CollapseLink, collapse_root, collapse_state, propose_collapse_channel, propose_collapse_link,
-    propose_collapse_unlink, set_collapse_relay as apply_collapse_relay,
+    CollapseLink, RemoteBaseComparison, collapse_root, collapse_state, probe_remote_against_base,
+    propose_collapse_channel, propose_collapse_link, propose_collapse_unlink,
+    set_collapse_relay as apply_collapse_relay,
 };
 use velocity_rosen::landing::{LandOutcome, LandRefusal};
 use velocity_rosen::workspace_settings::SETTINGS_AGENT;
@@ -206,7 +212,17 @@ pub(crate) async fn prepare_new_project(
         },
     )
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| match error {
+        CollapseError::DeletedPending(deleted) => {
+            let view = deleted_repository_view(*deleted);
+            format!(
+                "{}. Restore or manage it at {}, or choose another repository name.",
+                view.notice(),
+                view.settings_url
+            )
+        }
+        other => other.to_string(),
+    })?;
     let collapse_repository = provisioned.repository();
     *repository = collapse_repository.clone();
     let Some(github) = parsed_github else {
@@ -686,6 +702,34 @@ pub(crate) async fn read_project_collapse_settings(
     })
 }
 
+/// Outcome of `mirror_to_collapse` (§3.1, #427, #610).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
+pub struct MirrorToCollapseResult {
+    pub ok: bool,
+    pub message: String,
+    /// Populated when the target Collapse name is held by a deleted copy pending purge (#610).
+    #[serde(default)]
+    pub deleted_repository: Option<DeletedCollapseRepository>,
+}
+
+pub(crate) fn deleted_repository_view(
+    deleted: DeletedPendingRepository,
+) -> DeletedCollapseRepository {
+    let repository = deleted.repository();
+    let settings_url = allowed_settings_page(&repository, deleted.settings_url.as_deref())
+        .unwrap_or_else(|| format!("https://collapse.sh/{repository}/settings"));
+    DeletedCollapseRepository {
+        repository,
+        owner: deleted.owner,
+        name: deleted.name,
+        delete_after: deleted.delete_after,
+        deleted_at: deleted.deleted_at,
+        confirmed: deleted.confirmed,
+        purge_available: deleted.purge_available,
+        settings_url,
+    }
+}
+
 /// `mirror_to_collapse` (§3.1): makes Collapse the project's mirror. Creates the Collapse
 /// repository named after the project, stores its push token in git's credential helper,
 /// and lands a `rosen.toml` change pointing `[mirror] remote` at it and naming its
@@ -694,13 +738,16 @@ pub(crate) async fn read_project_collapse_settings(
 /// `github_remote` pointing at GitHub (#574) and configures Collapse's downstream remote
 /// via `POST /api/downstream` (C4, #579), opening the Collapse GitHub App's install or
 /// permission page and showing a project health row if the App is missing or lacks write
-/// permissions.
+/// permissions. When the target name is held by a deleted copy pending purge (#610),
+/// returns `deleted_repository` so the caller can offer Restore and link, Purge now and
+/// create, or the repository settings page.
 #[tauri::command]
 #[specta::specta]
 pub async fn mirror_to_collapse(
     application: AppHandle,
     project_identifier: u32,
-) -> Result<(), String> {
+    deleted_action: Option<DeletedRepositoryAction>,
+) -> Result<MirrorToCollapseResult, String> {
     let subject = mirror_subject(&application, project_identifier)?;
     if let Some(repository) = &subject.repository {
         return Err(format!(
@@ -711,18 +758,24 @@ pub async fn mirror_to_collapse(
     let credentials = load_credentials().await?.ok_or(NOT_CONNECTED)?;
     let name = velocity_core::collapse::repository_name_for(&subject.name)
         .ok_or("The project's name has no letters or digits to name a Collapse repository")?;
-    let provisioned = velocity_collapse::provision_mirror(
-        &credentials,
-        &MirrorRequest {
-            owner: None,
-            name: &name,
-            default_branch: &subject.branch,
-            description: "",
-        },
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    let provisioned =
+        match provision_for_mirror(&credentials, &name, &subject.branch, deleted_action).await {
+            Ok(provisioned) => provisioned,
+            Err(CollapseError::DeletedPending(deleted)) => {
+                let view = deleted_repository_view(*deleted);
+                let message = view.notice();
+                return Ok(MirrorToCollapseResult {
+                    ok: false,
+                    message,
+                    deleted_repository: Some(view),
+                });
+            }
+            Err(error) => return Err(error.to_string()),
+        };
     let server = crate::rosen::server(&application, project_identifier).await?;
+    if provisioned.disposition == ProvisionDisposition::Restored {
+        ensure_restored_fast_forwardable(&server, &provisioned).await?;
+    }
     let github_repository =
         preserve_github_remote(&application, project_identifier, &subject, &server).await?;
     let downstream = match github_repository.as_deref() {
@@ -745,10 +798,11 @@ pub async fn mirror_to_collapse(
         &subject.name,
         &collapse_repository,
         &link,
+        provisioned.disposition,
     )
     .await?;
     message.push_str(&downstream_note(downstream.as_ref()));
-    toast(&application, message)?;
+    toast(&application, message.clone())?;
     crate::rosen_mirror::refresh(&application, project_identifier).await?;
     finish_downstream_setup(
         &application,
@@ -756,7 +810,58 @@ pub async fn mirror_to_collapse(
         &collapse_repository,
         downstream,
     )?;
-    refresh_health(&application).await
+    refresh_health(&application).await?;
+    Ok(MirrorToCollapseResult {
+        ok: true,
+        message,
+        deleted_repository: None,
+    })
+}
+
+async fn provision_for_mirror(
+    credentials: &CollapseCredentials,
+    name: &str,
+    branch: &str,
+    deleted_action: Option<DeletedRepositoryAction>,
+) -> Result<ProvisionedMirror, CollapseError> {
+    let request = MirrorRequest {
+        owner: None,
+        name,
+        default_branch: branch,
+        description: "",
+    };
+    match deleted_action {
+        None => velocity_collapse::provision_mirror(credentials, &request).await,
+        Some(DeletedRepositoryAction::Restore) => {
+            velocity_collapse::restore_mirror(credentials, &credentials.account, name).await
+        }
+        Some(DeletedRepositoryAction::PurgeAndCreate) => {
+            velocity_collapse::purge_and_create_mirror(credentials, &request).await
+        }
+    }
+}
+
+async fn ensure_restored_fast_forwardable(
+    server: &velocity_rosen::ProjectServer,
+    provisioned: &ProvisionedMirror,
+) -> Result<(), String> {
+    let comparison = probe_remote_against_base(server, &provisioned.mirror_url)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let RemoteBaseComparison::NotAncestor {
+        branch,
+        base_commit,
+        remote_tip,
+    } = comparison
+    {
+        return Err(format!(
+            "Restored Collapse repository {} ({branch} at {}) has commits not in Rosen's base ({}) and cannot be fast-forwarded. Reconcile the Collapse branch or purge it first.",
+            provisioned.repository(),
+            short_commit(&remote_tip),
+            short_commit(&base_commit),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) async fn configure_downstream(
@@ -882,6 +987,7 @@ pub async fn send_collapse_live_state(
         &subject.name,
         &repository,
         &link,
+        ProvisionDisposition::Reused,
     )
     .await?;
     toast(&application, message)?;
@@ -928,6 +1034,7 @@ async fn share_push_token(
 
 /// Proposes and lands the `rosen.toml` link, then applies the project's relay allow-list;
 /// the toast says where it stands.
+#[allow(clippy::too_many_arguments)]
 async fn land_link(
     application: &AppHandle,
     project_identifier: u32,
@@ -935,6 +1042,7 @@ async fn land_link(
     project: &str,
     repository: &str,
     link: &CollapseLink<'_>,
+    disposition: ProvisionDisposition,
 ) -> Result<String, String> {
     let change = propose_collapse_link(server, link)
         .await
@@ -948,9 +1056,21 @@ async fn land_link(
                 .await
                 .map_err(|error| error.to_string())?;
             match outcome {
-                LandOutcome::Landed { .. } if mirroring => {
-                    format!("{project}: lands and live state now go to Collapse · {repository}")
-                }
+                LandOutcome::Landed { .. } if mirroring => match disposition {
+                    ProvisionDisposition::Restored => {
+                        format!(
+                            "{project}: restored {repository} and linked lands and live state to Collapse"
+                        )
+                    }
+                    ProvisionDisposition::PurgedAndCreated => {
+                        format!(
+                            "{project}: purged deleted {repository}, created a fresh copy, and linked lands and live state to Collapse"
+                        )
+                    }
+                    ProvisionDisposition::Created | ProvisionDisposition::Reused => {
+                        format!("{project}: lands and live state now go to Collapse · {repository}")
+                    }
+                },
                 LandOutcome::Landed { .. } => {
                     format!("{project}: Collapse now receives live state · {repository}")
                 }

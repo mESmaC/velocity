@@ -125,3 +125,6 @@
 .project-menu .enroll-offer strong {
   color: var(--text);
 }
+.project-menu .collapse-deleted-notice {
+  box-sizing: border-box;
+}

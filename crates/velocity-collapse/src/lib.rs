@@ -43,8 +43,9 @@ pub use issue_import::{
 };
 pub use post_land::{RepositoryPostLand, repository_post_land};
 pub use provision::{
-    MirrorRequest, ProvisionedMirror, check_push_token, ensure_mirror, prepare_existing_mirror,
-    provision_mirror, repository_exists, share_push_token,
+    DeletedPendingRepository, MirrorRequest, ProvisionDisposition, ProvisionedMirror,
+    check_push_token, ensure_mirror, prepare_existing_mirror, provision_mirror,
+    purge_and_create_mirror, repository_exists, restore_mirror, share_push_token,
 };
 
 /// Collapse's read-only MCP endpoint (Collapse C9), streamable HTTP with a bearer token.
@@ -69,6 +70,8 @@ pub enum CollapseError {
     Credential(String),
     #[error("Collapse sign-in needs the Windows credential store on this platform")]
     Unsupported,
+    #[error("{0}")]
+    DeletedPending(Box<DeletedPendingRepository>),
     #[error("{0}")]
     Api(String),
     #[error("{0}")]

@@ -10,11 +10,12 @@ use std::time::Duration;
 
 use tauri::AppHandle;
 use velocity_collapse::{
-    CollapseCredentials, GitHubIssueImportResult, MirrorRequest, ProvisionedMirror,
-    RepositoryActivity,
+    CollapseCredentials, CollapseError, GitHubIssueImportResult, MirrorRequest,
+    ProvisionDisposition, ProvisionedMirror, RepositoryActivity,
 };
 use velocity_core::collapse::{
-    CollapseCheckItemStatus, CollapseCheckSummary, ForwarderState, IssueHost, MoveToCollapseStepId,
+    CollapseCheckItemStatus, CollapseCheckSummary, DeletedCollapseRepository,
+    DeletedRepositoryAction, ForwarderState, IssueHost, MoveToCollapseStepId,
     MoveToCollapseStepResult, MoveToCollapseStepStatus, downstream_settings_page,
     github_repository_from_remote, repository_name_for,
 };
@@ -29,15 +30,16 @@ use velocity_rosen::workspace_settings::SETTINGS_AGENT;
 
 use crate::collapse_mirror::{
     DownstreamResult, MirrorSubject, NOT_CONNECTED, ProjectCollapseSettings, configure_downstream,
-    finish_downstream_setup, load_credentials, mirror_subject, read_project_collapse_settings,
-    refresh_health, refusal_reason, relay_note, saved_relay_allow, toast, typed_repository,
+    deleted_repository_view, finish_downstream_setup, load_credentials, mirror_subject,
+    read_project_collapse_settings, refresh_health, refusal_reason, relay_note, saved_relay_allow,
+    toast, typed_repository,
 };
 
 /// How long Move to Collapse waits for Rosen's background push to finish fast-forwarding
 /// an existing Collapse repository from Rosen's base.
 const MIRROR_SYNC_WAIT: Duration = Duration::from_secs(120);
 
-/// Input for `move_to_collapse` (§3.1, #592).
+/// Input for `move_to_collapse` (§3.1, #592, #610).
 #[derive(Clone, serde::Deserialize, specta::Type)]
 pub struct MoveToCollapseRequest {
     pub project_identifier: u32,
@@ -53,9 +55,12 @@ pub struct MoveToCollapseRequest {
     /// Optional transient GitHub token used only for the issue import request; never stored.
     #[serde(default)]
     pub github_import_token: Option<String>,
+    /// Optional owner choice when the Collapse name is held by a deleted copy pending purge (#610).
+    #[serde(default)]
+    pub deleted_action: Option<DeletedRepositoryAction>,
 }
 
-/// Step-by-step outcome of `move_to_collapse` (§3.1, #592).
+/// Step-by-step outcome of `move_to_collapse` (§3.1, #592, #610).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
 pub struct MoveToCollapseResult {
     pub ok: bool,
@@ -64,6 +69,9 @@ pub struct MoveToCollapseResult {
     pub steps: Vec<MoveToCollapseStepResult>,
     pub collapse_check: Option<CollapseCheckSummary>,
     pub settings: ProjectCollapseSettings,
+    /// Populated when the target Collapse name is held by a deleted repository pending purge (#610).
+    #[serde(default)]
+    pub deleted_repository: Option<DeletedCollapseRepository>,
 }
 
 /// `move_to_collapse` (§3.1): runs the full GitHub-to-Collapse cut-over for a Rosen project,
@@ -90,17 +98,32 @@ pub async fn move_to_collapse(
         request.collapse_repository.as_deref(),
         &dashboard,
     )?;
-    let provisioned = velocity_collapse::ensure_mirror(
+    let mirror_request = MirrorRequest {
+        owner: Some(&target_owner),
+        name: &target_name,
+        default_branch: &subject.branch,
+        description: "",
+    };
+    let provisioned = match provision_for_cutover(
         &credentials,
-        &MirrorRequest {
-            owner: Some(&target_owner),
-            name: &target_name,
-            default_branch: &subject.branch,
-            description: "",
-        },
+        &target_owner,
+        &target_name,
+        &mirror_request,
+        request.deleted_action,
     )
     .await
-    .map_err(|error| error.to_string())?;
+    {
+        Ok(provisioned) => provisioned,
+        Err(CollapseError::DeletedPending(deleted)) => {
+            let settings = read_project_collapse_settings(&application, project).await?;
+            return Ok(deleted_repository_result(
+                deleted_repository_view(*deleted),
+                github_repository,
+                settings,
+            ));
+        }
+        Err(error) => return Err(error.to_string()),
+    };
     let collapse_repository = provisioned.repository();
     let (steps, check) = run_cutover_steps(
         &application,
@@ -138,7 +161,79 @@ pub async fn move_to_collapse(
         steps,
         collapse_check: check,
         settings,
+        deleted_repository: None,
     })
+}
+
+async fn provision_for_cutover(
+    credentials: &CollapseCredentials,
+    owner: &str,
+    name: &str,
+    request: &MirrorRequest<'_>,
+    deleted_action: Option<DeletedRepositoryAction>,
+) -> Result<ProvisionedMirror, CollapseError> {
+    match deleted_action {
+        None => velocity_collapse::ensure_mirror(credentials, request).await,
+        Some(DeletedRepositoryAction::Restore) => {
+            velocity_collapse::restore_mirror(credentials, owner, name).await
+        }
+        Some(DeletedRepositoryAction::PurgeAndCreate) => {
+            velocity_collapse::purge_and_create_mirror(credentials, request).await
+        }
+    }
+}
+
+fn deleted_repository_result(
+    deleted: DeletedCollapseRepository,
+    github_repository: Option<String>,
+    settings: ProjectCollapseSettings,
+) -> MoveToCollapseResult {
+    let summary = deleted.notice();
+    let detail = if deleted.purge_available {
+        "Restore and link the deleted copy (fast-forwarding it from Rosen's base), purge it now and create a fresh repository, or manage it in repository settings."
+    } else {
+        "Restore and link the deleted copy (fast-forwarding it from Rosen's base) or manage it in repository settings."
+    };
+    let waiting = "Waiting for the deleted Collapse repository to be restored or purged.";
+    let steps = vec![
+        skipped_step(
+            MoveToCollapseStepId::ImportIssues,
+            "Import GitHub issues",
+            waiting,
+        ),
+        failed_step(
+            MoveToCollapseStepId::SwitchMirror,
+            "Switch mirror to Collapse",
+            summary,
+            Some(detail.into()),
+            Some(deleted.settings_url.clone()),
+            Some("Open repository settings".into()),
+        ),
+        skipped_step(
+            MoveToCollapseStepId::SetIssuesAndCi,
+            "Set Issues on Collapse & CI from Rosen",
+            waiting,
+        ),
+        skipped_step(
+            MoveToCollapseStepId::ConfigureDownstream,
+            "GitHub downstream mirror",
+            waiting,
+        ),
+        skipped_step(
+            MoveToCollapseStepId::CollapseCheck,
+            "Run rosen collapse check",
+            waiting,
+        ),
+    ];
+    MoveToCollapseResult {
+        ok: false,
+        collapse_repository: Some(deleted.repository.clone()),
+        github_repository,
+        steps,
+        collapse_check: None,
+        settings,
+        deleted_repository: Some(deleted),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -495,7 +590,7 @@ async fn step_switch_mirror(
     Ok(format_mirror_step(
         title,
         &repo,
-        provisioned.created,
+        provisioned.disposition,
         &comparison,
         sync,
         landed_note,
@@ -539,32 +634,23 @@ async fn propose_and_land_link(
 fn format_mirror_step(
     title: String,
     repo: &str,
-    created: bool,
+    disposition: ProvisionDisposition,
     comparison: &RemoteBaseComparison,
     sync: MirrorFastForwardOutcome,
     landed_note: String,
 ) -> MoveToCollapseStepResult {
+    let linked_prefix = match disposition {
+        ProvisionDisposition::Created => format!("Created and linked {repo}"),
+        ProvisionDisposition::PurgedAndCreated => {
+            format!("Purged deleted {repo}, created a fresh copy, and linked it")
+        }
+        ProvisionDisposition::Restored => format!("Restored and linked {repo}"),
+        ProvisionDisposition::Reused => format!("Linked {repo}"),
+    };
     match sync {
         MirrorFastForwardOutcome::Synced { base_commit } => {
             let tip = base_commit.as_deref().map(short_commit).unwrap_or("base");
-            let summary = match (created, comparison) {
-                (true, _) => format!("Created {repo} and pushed Rosen's base ({tip})."),
-                (false, RemoteBaseComparison::BehindBy { commits_behind, .. }) => format!(
-                    "Linked existing {repo} and fast-forwarded {commits_behind} {} to {tip}.",
-                    if *commits_behind == 1 {
-                        "commit"
-                    } else {
-                        "commits"
-                    }
-                ),
-                (false, RemoteBaseComparison::EmptyRemote { .. }) => {
-                    format!("Linked existing empty {repo} and pushed Rosen's base ({tip}).")
-                }
-                (false, RemoteBaseComparison::UpToDate { .. }) => {
-                    format!("Linked existing {repo} (already up to date at {tip}).")
-                }
-                (false, _) => format!("Linked existing {repo} and synced Rosen's base ({tip})."),
-            };
+            let summary = format_synced_summary(repo, disposition, comparison, tip);
             MoveToCollapseStepResult {
                 step: MoveToCollapseStepId::SwitchMirror,
                 title,
@@ -579,7 +665,7 @@ fn format_mirror_step(
             MoveToCollapseStepId::SwitchMirror,
             &title,
             format!(
-                "Linked {repo} in rosen.toml, but this Rosen server is not marked as mirror owner."
+                "{linked_prefix} in rosen.toml, but this Rosen server is not marked as mirror owner."
             ),
             Some(landed_note),
             None,
@@ -588,7 +674,7 @@ fn format_mirror_step(
         MirrorFastForwardOutcome::Rejected { error } => failed_step(
             MoveToCollapseStepId::SwitchMirror,
             &title,
-            format!("Linked {repo}, but Rosen's mirror push was rejected: {error}"),
+            format!("{linked_prefix}, but Rosen's mirror push was rejected: {error}"),
             Some(landed_note),
             None,
             None,
@@ -597,7 +683,7 @@ fn format_mirror_step(
             step: MoveToCollapseStepId::SwitchMirror,
             title,
             status: MoveToCollapseStepStatus::Warning,
-            summary: format!("Linked {repo}; Rosen is still pushing the base in the background."),
+            summary: format!("{linked_prefix}; Rosen is still pushing the base in the background."),
             detail: Some(match error {
                 Some(message) => format!("{landed_note} · {message}"),
                 None => landed_note,
@@ -605,6 +691,60 @@ fn format_mirror_step(
             action_url: None,
             action_label: None,
         },
+    }
+}
+
+fn format_synced_summary(
+    repo: &str,
+    disposition: ProvisionDisposition,
+    comparison: &RemoteBaseComparison,
+    tip: &str,
+) -> String {
+    match (disposition, comparison) {
+        (ProvisionDisposition::Created, _) => {
+            format!("Created {repo} and pushed Rosen's base ({tip}).")
+        }
+        (ProvisionDisposition::PurgedAndCreated, _) => {
+            format!("Purged deleted {repo}, created a fresh copy, and pushed Rosen's base ({tip}).")
+        }
+        (ProvisionDisposition::Restored, RemoteBaseComparison::BehindBy { commits_behind, .. }) => {
+            format!(
+                "Restored {repo} and fast-forwarded {commits_behind} {} to {tip}.",
+                if *commits_behind == 1 {
+                    "commit"
+                } else {
+                    "commits"
+                }
+            )
+        }
+        (ProvisionDisposition::Restored, RemoteBaseComparison::EmptyRemote { .. }) => {
+            format!("Restored empty {repo} and pushed Rosen's base ({tip}).")
+        }
+        (ProvisionDisposition::Restored, RemoteBaseComparison::UpToDate { .. }) => {
+            format!("Restored {repo} (already up to date at {tip}).")
+        }
+        (ProvisionDisposition::Restored, _) => {
+            format!("Restored {repo} and synced Rosen's base ({tip}).")
+        }
+        (ProvisionDisposition::Reused, RemoteBaseComparison::BehindBy { commits_behind, .. }) => {
+            format!(
+                "Linked existing {repo} and fast-forwarded {commits_behind} {} to {tip}.",
+                if *commits_behind == 1 {
+                    "commit"
+                } else {
+                    "commits"
+                }
+            )
+        }
+        (ProvisionDisposition::Reused, RemoteBaseComparison::EmptyRemote { .. }) => {
+            format!("Linked existing empty {repo} and pushed Rosen's base ({tip}).")
+        }
+        (ProvisionDisposition::Reused, RemoteBaseComparison::UpToDate { .. }) => {
+            format!("Linked existing {repo} (already up to date at {tip}).")
+        }
+        (ProvisionDisposition::Reused, _) => {
+            format!("Linked existing {repo} and synced Rosen's base ({tip}).")
+        }
     }
 }
 

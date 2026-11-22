@@ -6,8 +6,10 @@ import {
   type CollapseConnection,
   type CollapseLinkOpened_Serialize,
   type CollapseRelayKind,
+  type DeletedRepositoryAction,
   type IssueHost,
   type LayoutSnapshot_Serialize,
+  type MirrorToCollapseResult_Serialize,
   type MoveToCollapseRequest_Deserialize,
   type MoveToCollapseResult_Serialize,
   type ProjectCollapseSettings,
@@ -21,7 +23,10 @@ export type {
   CollapseFeedHealth,
   CollapseLinkOpened_Serialize as CollapseLinkOpened,
   CollapseRelayKind,
+  DeletedCollapseRepository_Serialize as DeletedCollapseRepository,
+  DeletedRepositoryAction,
   IssueHost,
+  MirrorToCollapseResult_Serialize as MirrorToCollapseResult,
   MoveToCollapseRequest_Deserialize as MoveToCollapseRequest,
   MoveToCollapseResult_Serialize as MoveToCollapseResult,
   MoveToCollapseStepId,
@@ -48,8 +53,11 @@ export type CollapseMirrorHealth = NonNullable<
 export const collapseCommands = {
   open: (project: number, commit: string | null = null) =>
     commands.openOnCollapse(project, commit),
-  mirror: (project: number): Promise<null> =>
-    commands.mirrorToCollapse(project),
+  mirror: (
+    project: number,
+    deletedAction: DeletedRepositoryAction | null = null,
+  ): Promise<MirrorToCollapseResult_Serialize> =>
+    commands.mirrorToCollapse(project, deletedAction),
   sendLiveState: (project: number): Promise<null> =>
     commands.sendCollapseLiveState(project),
   projectSettings: (project: number): Promise<ProjectCollapseSettings | null> =>

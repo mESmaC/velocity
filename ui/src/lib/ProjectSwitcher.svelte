@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import CollapseDeletedRepoNotice from './CollapseDeletedRepoNotice.svelte';
   import Icon from './Icon.svelte';
   import {
     collapseCommands,
@@ -13,6 +14,8 @@
   import type {
     CollapseRepository,
     CollapseRepositoryPickerView,
+    DeletedCollapseRepository,
+    DeletedRepositoryAction,
     LayoutAction,
     OpenProjectRequest,
     ProjectList,
@@ -157,15 +160,24 @@
   }
 
   // Rust creates the Collapse repository, stores its push token with git and
-  // lands the rosen.toml mirror change, then reports the outcome as a toast (#427).
+  // lands the rosen.toml mirror change, then reports the outcome as a toast (#427, #610).
   let mirroring = $state(false);
-  async function mirrorToCollapse(identifier: number) {
+  let mirrorDeleted = $state<DeletedCollapseRepository | null>(null);
+  async function mirrorToCollapse(
+    identifier: number,
+    deletedAction: DeletedRepositoryAction | null = null,
+  ) {
     if (mirroring) return;
     mirroring = true;
     error = '';
     try {
-      await collapseCommands.mirror(identifier);
-      menu.hidePopover();
+      const result = await collapseCommands.mirror(identifier, deletedAction);
+      if (result.deleted_repository) {
+        mirrorDeleted = result.deleted_repository;
+      } else {
+        mirrorDeleted = null;
+        menu.hidePopover();
+      }
     } catch (reason) {
       report(reason);
     } finally {
@@ -312,6 +324,7 @@
         generation += 1;
         projects = event.payload.projects;
         error = '';
+        mirrorDeleted = null;
         if (!event.payload.selection.menu_open && menu.matches(':popover-open'))
           menu.hidePopover();
       });
@@ -371,6 +384,7 @@
     else {
       showing = 'projects';
       enrollRepository = null;
+      mirrorDeleted = null;
     }
   }}
 >
@@ -600,6 +614,16 @@
           onclick={() => void mirrorToCollapse(identifier)}
           >Mirror to Collapse</button
         >
+        {#if mirrorDeleted}
+          <CollapseDeletedRepoNotice
+            deleted={mirrorDeleted}
+            compact
+            busy={mirroring}
+            onRestore={() => void mirrorToCollapse(identifier, 'restore')}
+            onPurgeAndCreate={() =>
+              void mirrorToCollapse(identifier, 'purge_and_create')}
+          />
+        {/if}
       {:else if !collapseLiveState}
         <button
           role="menuitem"

@@ -240,6 +240,39 @@ pub fn land_page(repository: &str, commit: &str) -> Option<String> {
     ))
 }
 
+/// The repository's Settings page on Collapse (`https://collapse.sh/<owner>/<name>/settings`) (#610).
+pub fn settings_page(repository: &str) -> Option<String> {
+    Some(format!("{}/settings", repository_page(repository)?))
+}
+
+/// Validates a Collapse-supplied repository settings URL, accepting relative paths under
+/// `https://collapse.sh` or HTTPS URLs on `collapse.sh`, and falling back to [`settings_page`] (#610).
+pub fn allowed_settings_page(repository: &str, supplied_url: Option<&str>) -> Option<String> {
+    supplied_url
+        .and_then(allowed_collapse_page)
+        .or_else(|| settings_page(repository))
+}
+
+fn allowed_collapse_page(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('\\')
+        || trimmed
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+    {
+        return None;
+    }
+    if let Some(rest) = strip_prefix_ignoring_case(trimmed, PAGE_HOST) {
+        return (!rest.is_empty()).then(|| format!("{PAGE_HOST}{rest}"));
+    }
+    if trimmed.starts_with('/') && !trimmed.starts_with("//") {
+        let rest = trimmed.trim_start_matches('/');
+        return (!rest.is_empty()).then(|| format!("{PAGE_HOST}{rest}"));
+    }
+    None
+}
+
 /// The repository's Settings → Downstream remote section on Collapse, used as a fallback
 /// when the GitHub App needs setup and Collapse did not return a direct App page (C4, #579).
 pub fn downstream_settings_page(repository: &str) -> Option<String> {
@@ -247,6 +280,68 @@ pub fn downstream_settings_page(repository: &str) -> Option<String> {
         "{}/settings#downstream",
         repository_page(repository)?
     ))
+}
+
+/// Owner choice when a target Collapse repository name is held by a deleted copy pending purge (#610).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[serde(rename_all = "snake_case")]
+pub enum DeletedRepositoryAction {
+    /// Restore the deleted repository on Collapse, then link and fast-forward it from Rosen's base.
+    Restore,
+    /// Permanently purge the deleted repository on Collapse, then create a fresh copy.
+    PurgeAndCreate,
+}
+
+/// A Collapse repository name held by a deleted copy pending purge (#610, collapse.sh#217).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct DeletedCollapseRepository {
+    /// `<owner>/<name>` on Collapse.
+    pub repository: String,
+    pub owner: String,
+    pub name: String,
+    /// RFC 3339 deadline until which Collapse holds the deleted copy, when Collapse reported it.
+    #[serde(default)]
+    pub delete_after: Option<String>,
+    /// RFC 3339 deletion time, when Collapse reported it.
+    #[serde(default)]
+    pub deleted_at: Option<String>,
+    /// `true` when Collapse returned a `deleted_pending` reply (collapse.sh#217);
+    /// `false` when inferred from `409` on create followed by `404` on read.
+    pub confirmed: bool,
+    /// `true` when Collapse supports immediate purge for this repository (collapse.sh#217).
+    pub purge_available: bool,
+    /// Repository settings page on Collapse (`https://collapse.sh/<owner>/<name>/settings`).
+    pub settings_url: String,
+}
+
+impl DeletedCollapseRepository {
+    /// Human-readable explanation shown in Move to Collapse and project mirror setup (#610).
+    pub fn notice(&self) -> String {
+        if let Some(deadline) = self
+            .delete_after
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            return format!(
+                "{} was deleted on Collapse and is held until {deadline}",
+                self.repository
+            );
+        }
+        if self.confirmed {
+            format!(
+                "{} was deleted on Collapse and is held until its purge deadline",
+                self.repository
+            )
+        } else {
+            format!(
+                "{} was probably deleted on Collapse (pending purge) and is held until its 7-day purge deadline",
+                self.repository
+            )
+        }
+    }
 }
 
 /// Project health signal shown while a Collapse-mirrored GitHub project still needs its
