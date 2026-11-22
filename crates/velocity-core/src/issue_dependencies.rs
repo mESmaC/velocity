@@ -59,7 +59,9 @@ impl IssueReference {
         let mut found = Self::in_text(text).into_iter();
         let reference = found.next()?;
         // Anything left over, such as a second issue or a sentence, is not one reference.
-        let exact = text == reference.to_string() || text.contains("github.com/");
+        let exact = text == reference.to_string()
+            || text.contains("github.com/")
+            || text.contains("collapse.sh/");
         (exact && found.next().is_none() && !text.contains(char::is_whitespace))
             .then_some(reference)
     }
@@ -71,6 +73,12 @@ impl IssueReference {
             .filter_map(|(position, _)| Some((position, Self::at_hash(text, position)?)))
             .chain(
                 text.match_indices("github.com/")
+                    .filter_map(|(position, host)| {
+                        Some((position, Self::in_address(&text[position + host.len()..])?))
+                    }),
+            )
+            .chain(
+                text.match_indices("collapse.sh/")
                     .filter_map(|(position, host)| {
                         Some((position, Self::in_address(&text[position + host.len()..])?))
                     }),
@@ -106,7 +114,10 @@ impl IssueReference {
             .find(|(_, character)| !is_repository_character(*character))
             .map_or(0, |(index, character)| index + character.len_utf8());
         let prefix = before[start..].trim_start_matches('/');
-        let prefix = prefix.strip_prefix("github.com/").unwrap_or(prefix);
+        let prefix = prefix
+            .strip_prefix("github.com/")
+            .or_else(|| prefix.strip_prefix("collapse.sh/"))
+            .unwrap_or(prefix);
         let number = rest[..digits].parse().ok()?;
         if prefix.is_empty() {
             Self::new(None, number)
@@ -304,6 +315,85 @@ pub fn with_declared_blockers(text: &str, blockers: &[IssueReference]) -> String
         text.trim_end(),
         blocker_list(blockers)
     )
+}
+
+/// Idempotently ensures every blocker in `blockers` appears on a `Blocked by:` line in
+/// `text`, extending an existing `Blocked by:` line when one is present and preserving
+/// trailing `<!-- velocity-... -->` markers (#624).
+pub fn upsert_declared_blockers(text: &str, blockers: &[IssueReference]) -> String {
+    let existing = declared_blockers(text);
+    let mut missing: Vec<IssueReference> = Vec::new();
+    for blocker in blockers {
+        let already_present = existing
+            .iter()
+            .chain(missing.iter())
+            .any(|item| references_same_issue(item, blocker));
+        if !already_present {
+            missing.push(blocker.clone());
+        }
+    }
+    if missing.is_empty() {
+        return text.to_owned();
+    }
+    let added = blocker_list(&missing);
+    if let Some((start, end, existing_tail)) = last_declared_blocker_line(text) {
+        let replacement = if existing_tail.trim().is_empty() {
+            format!("{BLOCKED_BY_LINE} {added}")
+        } else {
+            format!("{}, {added}", text[start..end].trim_end())
+        };
+        return format!("{}{replacement}{}", &text[..start], &text[end..]);
+    }
+    insert_declared_blocker_line(text, &added)
+}
+
+fn references_same_issue(left: &IssueReference, right: &IssueReference) -> bool {
+    left.number == right.number
+        && match (&left.repository, &right.repository) {
+            (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+            (None, None) => true,
+            _ => false,
+        }
+}
+
+fn last_declared_blocker_line(text: &str) -> Option<(usize, usize, &str)> {
+    let mut found = None;
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let content = line.trim_end_matches(['\r', '\n']);
+        let trimmed = content.trim();
+        if trimmed
+            .get(..BLOCKED_BY_LINE.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(BLOCKED_BY_LINE))
+        {
+            found = Some((
+                offset,
+                offset + content.len(),
+                &trimmed[BLOCKED_BY_LINE.len()..],
+            ));
+        }
+        offset += line.len();
+    }
+    found
+}
+
+fn insert_declared_blocker_line(text: &str, added: &str) -> String {
+    let trimmed = text.trim_end();
+    if trimmed.is_empty() {
+        return format!("{BLOCKED_BY_LINE} {added}");
+    }
+    let trailing_marker = trimmed.rsplit_once('\n').and_then(|(head, last)| {
+        let last_trimmed = last.trim();
+        (last_trimmed.starts_with("<!-- velocity-") && last_trimmed.ends_with(" -->"))
+            .then_some((head.trim_end(), last_trimmed))
+    });
+    if let Some((head, marker)) = trailing_marker {
+        if head.is_empty() {
+            return format!("{BLOCKED_BY_LINE} {added}\n\n{marker}");
+        }
+        return format!("{head}\n\n{BLOCKED_BY_LINE} {added}\n\n{marker}");
+    }
+    format!("{trimmed}\n\n{BLOCKED_BY_LINE} {added}")
 }
 
 /// The issues named on a text's `Blocked by:` lines.
@@ -918,5 +1008,46 @@ Ignore tilde fence #915\n\
         assert!(!is_owner_or_plan_comment(
             "## Ended with no change\n\nSaw #421.\n\n<!-- velocity-issue-no-change:abc -->"
         ));
+    }
+
+    #[test]
+    fn upsert_declared_blockers_is_idempotent_and_preserves_trailing_markers()
+    -> Result<(), &'static str> {
+        let first = IssueReference::parse("mESmaC/velocity#619").ok_or("first ref")?;
+        let second = IssueReference::parse("mESmaC/rosen#449").ok_or("second ref")?;
+        let third = IssueReference::parse("https://collapse.sh/mESmaC/velocity/issues/620")
+            .ok_or("collapse url ref")?;
+        assert_eq!(third.to_string(), "mESmaC/velocity#620");
+
+        let body = upsert_declared_blockers("Details.", &[first.clone(), second.clone()]);
+        assert_eq!(
+            body,
+            "Details.\n\nBlocked by: mESmaC/velocity#619, mESmaC/rosen#449"
+        );
+        assert_eq!(
+            declared_blockers(&body),
+            vec![first.clone(), second.clone()]
+        );
+        assert_eq!(
+            referenced_blockers_in_text(&body),
+            vec![first.clone(), second.clone()]
+        );
+
+        let same_case = IssueReference::parse("mesmac/velocity#619").ok_or("case ref")?;
+        assert_eq!(upsert_declared_blockers(&body, &[same_case]), body);
+
+        let extended = upsert_declared_blockers(&body, &[third]);
+        assert_eq!(
+            extended,
+            "Details.\n\nBlocked by: mESmaC/velocity#619, mESmaC/rosen#449, mESmaC/velocity#620"
+        );
+
+        let scout_body = "Finding body.\n\n<!-- velocity-scout:scout-1 -->";
+        let with_scout = upsert_declared_blockers(scout_body, &[first]);
+        assert_eq!(
+            with_scout,
+            "Finding body.\n\nBlocked by: mESmaC/velocity#619\n\n<!-- velocity-scout:scout-1 -->"
+        );
+        Ok(())
     }
 }

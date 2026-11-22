@@ -10,7 +10,7 @@ use velocity_core::text_budget::{json_text_page, preview};
 use velocity_core::work_pool::WorkKey;
 use velocity_github::{
     AgentIssueDraft, AgentIssueOutcome, GitHubCommandError, IssueClient, IssueDetail, IssueHost,
-    RepositoryName,
+    RepositoryName, SiblingIssueHost,
 };
 use velocity_rosen::ProjectServer;
 use velocity_store::{ProjectItem, VersionControl};
@@ -110,8 +110,52 @@ fn open_issue_project(
         Some((host, repository)) => IssueClient::for_host(directory, host, &repository),
         None => IssueClient::discover(directory),
     }
-    .map_err(IssueActivityFailure::from_github)?;
+    .map_err(IssueActivityFailure::from_github)?
+    .with_sibling_hosts(load_sibling_issue_hosts(app_data));
     Ok((project, client))
+}
+
+/// Builds the configured sibling issue-host table from Velocity's persisted project snapshots
+/// so cross-host `blocked_by` validation routes to each sibling project's actual host (#624).
+pub fn load_sibling_issue_hosts(app_data: &Path) -> Vec<SiblingIssueHost> {
+    let Ok(projects) = velocity_store::read_all_project_snapshots(app_data, false) else {
+        return Vec::new();
+    };
+    sibling_issue_hosts(&projects)
+}
+
+/// Maps every configured project's known repository names (Collapse repository and GitHub
+/// remote) to its effective issue host and canonical repository name (#624).
+pub fn sibling_issue_hosts(projects: &[ProjectItem]) -> Vec<SiblingIssueHost> {
+    let mut hosts = Vec::new();
+    for item in projects {
+        let effective_host = item.effective_issue_host();
+        let collapse = item
+            .collapse_repository
+            .as_deref()
+            .and_then(|remote| RepositoryName::parse(remote).ok());
+        let github = item
+            .github_remote
+            .as_deref()
+            .and_then(|remote| RepositoryName::parse(remote).ok())
+            .or_else(|| velocity_github::checkout_repository(Path::new(&item.repository_path)));
+        let canonical = match effective_host {
+            IssueHost::Collapse => collapse.as_ref().or(github.as_ref()),
+            IssueHost::GitHub => github.as_ref().or(collapse.as_ref()),
+        };
+        let Some(canonical) = canonical else {
+            continue;
+        };
+        let host_repository = canonical.full_name();
+        for alias in [collapse, github].into_iter().flatten() {
+            hosts.push(SiblingIssueHost {
+                repository: alias.full_name(),
+                host_repository: host_repository.clone(),
+                host: effective_host,
+            });
+        }
+    }
+    hosts
 }
 
 fn read_issue(
@@ -458,7 +502,8 @@ fn create_sibling_issue(
         sibling_host,
         &sibling_repo.full_name(),
     )
-    .map_err(IssueActivityFailure::from_github)?;
+    .map_err(IssueActivityFailure::from_github)?
+    .with_sibling_hosts(load_sibling_issue_hosts(app_data));
     sync_github_before_collapse_create(sibling_project, &sibling_client);
     let draft = AgentIssueDraft {
         title: create.title,
@@ -503,16 +548,6 @@ fn link_origin_blockers(
         return (Vec::new(), None);
     }
     let sibling_repo = sibling_client.repository();
-    if home_client.host() != sibling_client.host() {
-        return (
-            Vec::new(),
-            Some(format!(
-                "Recorded {sibling_repo}#{sibling_number} on {}, while this project uses {}; native cross-host blocked_by linking is unavailable.",
-                host_label(sibling_client.host()),
-                host_label(home_client.host()),
-            )),
-        );
-    }
     let Some(blocker_ref) =
         velocity_core::issue_dependencies::IssueReference::new(Some(sibling_repo), sibling_number)
     else {
@@ -530,13 +565,6 @@ fn link_origin_blockers(
     }
     let warning = (!warnings.is_empty()).then(|| warnings.join("; "));
     (linked, warning)
-}
-
-fn host_label(host: IssueHost) -> &'static str {
-    match host {
-        IssueHost::GitHub => "GitHub",
-        IssueHost::Collapse => "Collapse",
-    }
 }
 
 fn sibling_issue_byline(
@@ -819,5 +847,39 @@ mod tests {
 
         let _ = fs::remove_dir_all(&root);
         Ok(())
+    }
+
+    #[test]
+    fn sibling_issue_hosts_maps_collapse_and_github_projects() {
+        let mut velocity = ProjectItem::new(1, "velocity".into(), "C:/velocity".into());
+        velocity.github_remote = Some("mESmaC/velocity".into());
+        velocity.collapse_repository = Some("mESmaC/velocity".into());
+        velocity.issue_host = Some(IssueHost::Collapse);
+
+        let mut rosen = ProjectItem::new(2, "rosen".into(), "C:/rosen".into());
+        rosen.github_remote = Some("mESmaC/rosen".into());
+        rosen.collapse_repository = Some("mESmaC/rosen".into());
+        rosen.issue_host = Some(IssueHost::Collapse);
+
+        let mut collapse = ProjectItem::new(3, "collapse.sh".into(), "C:/collapse".into());
+        collapse.github_remote = Some("mESmaC/collapse.sh".into());
+        collapse.issue_host = Some(IssueHost::GitHub);
+
+        let hosts = sibling_issue_hosts(&[velocity, rosen, collapse]);
+        assert!(hosts.iter().any(|entry| {
+            entry.repository == "mESmaC/velocity"
+                && entry.host_repository == "mESmaC/velocity"
+                && entry.host == IssueHost::Collapse
+        }));
+        assert!(hosts.iter().any(|entry| {
+            entry.repository == "mESmaC/rosen"
+                && entry.host_repository == "mESmaC/rosen"
+                && entry.host == IssueHost::Collapse
+        }));
+        assert!(hosts.iter().any(|entry| {
+            entry.repository == "mESmaC/collapse.sh"
+                && entry.host_repository == "mESmaC/collapse.sh"
+                && entry.host == IssueHost::GitHub
+        }));
     }
 }

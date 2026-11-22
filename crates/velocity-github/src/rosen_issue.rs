@@ -147,8 +147,9 @@ impl IssueClient {
         ready: bool,
         blockers: &[IssueReference],
     ) -> Result<String, GitHubCommandError> {
+        let linked = self.link_blockers_classified(number, blockers)?;
+        let waits = waits_line_for(self.host(), &linked);
         let issue = self.read_issue(number)?;
-        let waits = waits_line_for(self.host(), &self.link_blockers(number, blockers)?);
         if ready {
             self.label_issue(number, READY_LABEL)?;
         }
@@ -388,7 +389,8 @@ impl IssueClient {
                 self.sync_rosen_issue(number, &marker, &body, Some(IssueState::Closed))
             }
             ParkedOutcome::Returned => {
-                let waits = waits_line_for(self.host(), &self.link_blockers(number, blockers)?);
+                let linked = self.link_blockers_classified(number, blockers)?;
+                let waits = waits_line_for(self.host(), &linked);
                 let body = format!("{reviewer} returned to dispatch.\n\n{evidence}{waits}");
                 self.sync_rosen_issue(number, &marker, &body, None)?;
                 self.remove_issue_label(number, Self::NO_CHANGE_LABEL)

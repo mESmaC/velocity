@@ -29,11 +29,26 @@ pub(crate) enum IssueBackend {
     Collapse(CollapseIssueTransport),
 }
 
+/// Configured issue host for a sibling project repository, used to validate and record
+/// cross-host `blocked_by` references instead of querying the subject's host (#624).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiblingIssueHost {
+    /// Repository name (`owner/name`) as an agent or issue text may reference it.
+    pub repository: String,
+    /// Canonical repository name (`owner/name`) on `host`.
+    pub host_repository: String,
+    /// Issue host backing this sibling repository.
+    pub host: IssueHost,
+}
+
 /// Reads and writes one repository's issues through its configured issue host (GitHub or
 /// Collapse C14), with long-path repository discovery on GitHub checkouts.
 pub struct IssueClient {
     pub(crate) backend: IssueBackend,
     pub(crate) directory: PathBuf,
+    pub(crate) sibling_hosts: BTreeMap<String, (IssueHost, String)>,
+    #[cfg(test)]
+    pub(crate) test_collapse_endpoint: Option<(String, Option<String>)>,
 }
 
 #[derive(Deserialize)]
@@ -402,6 +417,9 @@ impl IssueClient {
         Ok(Self {
             backend: IssueBackend::GitHub(RepositoryClient::discover(directory)?),
             directory: std::fs::canonicalize(directory)?,
+            sibling_hosts: BTreeMap::new(),
+            #[cfg(test)]
+            test_collapse_endpoint: None,
         })
     }
 
@@ -436,6 +454,9 @@ impl IssueClient {
         Ok(Self {
             backend,
             directory: canonical,
+            sibling_hosts: BTreeMap::new(),
+            #[cfg(test)]
+            test_collapse_endpoint: None,
         })
     }
 
@@ -455,7 +476,41 @@ impl IssueClient {
                 repository,
             )?),
             directory: canonical,
+            sibling_hosts: BTreeMap::new(),
+            #[cfg(test)]
+            test_collapse_endpoint: None,
         })
+    }
+
+    /// Registers configured sibling project issue hosts so cross-host `blocked_by`
+    /// references validate against their actual host (#624).
+    pub fn with_sibling_hosts(mut self, hosts: impl IntoIterator<Item = SiblingIssueHost>) -> Self {
+        self.set_sibling_hosts(hosts);
+        self
+    }
+
+    /// Replaces the configured sibling project issue hosts on this client (#624).
+    pub fn set_sibling_hosts(&mut self, hosts: impl IntoIterator<Item = SiblingIssueHost>) {
+        self.sibling_hosts.clear();
+        for entry in hosts {
+            let key = entry.repository.trim().to_ascii_lowercase();
+            let host_repository = entry.host_repository.trim();
+            if !key.is_empty() && !host_repository.is_empty() {
+                self.sibling_hosts
+                    .insert(key, (entry.host, host_repository.to_owned()));
+            }
+        }
+    }
+
+    /// Resolves which issue host and canonical repository name hold `repository` (#624).
+    pub(crate) fn blocker_host(&self, repository: &str) -> (IssueHost, String) {
+        if repository.eq_ignore_ascii_case(self.repository()) {
+            return (self.host(), self.repository().to_owned());
+        }
+        self.sibling_hosts
+            .get(&repository.to_ascii_lowercase())
+            .cloned()
+            .unwrap_or_else(|| (self.host(), repository.to_owned()))
     }
 
     /// Reads GitHub issues (open and closed, excluding PRs) opened or changed at or after

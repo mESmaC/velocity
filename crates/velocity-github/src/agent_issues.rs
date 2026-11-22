@@ -5,7 +5,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use velocity_core::issue_dependencies::IssueReference;
+use velocity_core::issue_dependencies::{IssueReference, upsert_declared_blockers};
 use velocity_core::issue_holds::{
     BLOCKED_UPSTREAM_LABEL, HOLD_LABEL, TRACKING_LABEL, parse_explicit_person_hold,
     parse_upstream_target, refuse_retired_label, validate_person_hold,
@@ -219,29 +219,35 @@ impl IssueClient {
     }
 
     /// Files an agent issue on the project's configured issue host after checking for
-    /// duplicates (#471) and linking any `blocked_by` issues as dependencies (#511, #589, #608).
+    /// duplicates (#471) and linking any `blocked_by` issues as dependencies (#511, #589, #608, #624).
     pub fn create_agent_issue(
         &self,
         draft: &AgentIssueDraft<'_>,
         mentioned_paths: impl FnOnce(&[(&str, &str)]) -> Vec<BTreeSet<String>>,
     ) -> Result<AgentIssueOutcome, GitHubCommandError> {
         let (title, body, full_body, labels) = validate_draft(draft)?;
-        if let IssueBackend::Collapse(collapse) = &self.backend {
-            return self.create_collapse_agent_issue(
-                collapse,
-                (title, body, &full_body, &labels),
-                draft.blocked_by,
-                draft.existing_labels_only,
-                mentioned_paths,
-            );
-        }
-        let label_ids = self.resolve_agent_labels(&labels, !draft.existing_labels_only)?;
-        // Refuse invalid blockers before running the duplicate scan or creating the issue (#511).
+        // Refuse invalid blockers before running the duplicate scan or creating the issue (#511, #624).
         let blockers = self.resolve_blockers(draft.blocked_by)?;
         let blocked_by: Vec<String> = blockers
             .iter()
             .map(|blocker| blocker.name.clone())
             .collect();
+        let full_body = append_textual_blockers(&full_body, &blockers)?;
+        if let IssueBackend::Collapse(collapse) = &self.backend {
+            let native_blockers: Vec<String> = blockers
+                .iter()
+                .filter(|blocker| blocker.is_native())
+                .map(|blocker| blocker.name.clone())
+                .collect();
+            return self.create_collapse_agent_issue(
+                collapse,
+                (title, body, &full_body, &labels),
+                (&native_blockers, blocked_by),
+                draft.existing_labels_only,
+                mentioned_paths,
+            );
+        }
+        let label_ids = self.resolve_agent_labels(&labels, !draft.existing_labels_only)?;
         let lock = agent_filing_lock(self.repository())?;
         let _guard = lock
             .lock()
@@ -279,12 +285,11 @@ impl IssueClient {
         &self,
         collapse: &crate::collapse_issues::CollapseIssueTransport,
         (title, body, full_body, labels): (&str, &str, &str, &[String]),
-        raw_blockers: &[IssueReference],
+        (native_blockers, all_blockers): (&[String], Vec<String>),
         existing_labels_only: bool,
         mentioned_paths: impl FnOnce(&[(&str, &str)]) -> Vec<BTreeSet<String>>,
     ) -> Result<AgentIssueOutcome, GitHubCommandError> {
         let resolved_labels = resolve_collapse_labels(collapse, labels, !existing_labels_only)?;
-        let blocked_by = collapse.validate_blockers(raw_blockers)?;
         let lock = agent_filing_lock(&format!("collapse:{}", self.repository()))?;
         let _guard = lock
             .lock()
@@ -296,10 +301,10 @@ impl IssueClient {
                 issue: existing.clone(),
             });
         }
-        let issue = collapse.create_issue(title, full_body, &resolved_labels, &blocked_by)?;
+        let issue = collapse.create_issue(title, full_body, &resolved_labels, native_blockers)?;
         Ok(AgentIssueOutcome::Filed {
             issue,
-            blocked_by,
+            blocked_by: all_blockers,
             unlinked: None,
         })
     }
@@ -402,6 +407,27 @@ impl IssueClient {
         }
         Ok(())
     }
+}
+
+fn append_textual_blockers(
+    full_body: &str,
+    blockers: &[crate::issue_dependencies::ResolvedBlocker],
+) -> Result<String, GitHubCommandError> {
+    let textual_blockers: Vec<IssueReference> = blockers
+        .iter()
+        .filter_map(crate::issue_dependencies::ResolvedBlocker::cross_host_reference)
+        .cloned()
+        .collect();
+    if textual_blockers.is_empty() {
+        return Ok(full_body.to_owned());
+    }
+    let updated = upsert_declared_blockers(full_body, &textual_blockers);
+    if updated.len() > MAX_BODY_BYTES {
+        return Err(GitHubCommandError::Invalid(
+            "Issue body exceeds 65000 UTF-8 bytes; shorten the description".into(),
+        ));
+    }
+    Ok(updated)
 }
 
 fn resolve_collapse_labels(

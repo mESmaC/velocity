@@ -95,8 +95,19 @@ impl IssueClient {
             .iter()
             .map(|blocker| blocker.name.clone())
             .collect();
+        let textual_blockers: Vec<IssueReference> = blockers
+            .iter()
+            .filter_map(crate::issue_dependencies::ResolvedBlocker::cross_host_reference)
+            .cloned()
+            .collect();
         let evidence = finding.reproduction.run(&self.directory)?;
-        let body = finding.body(&evidence.attachment)?;
+        let mut body = finding.body(&evidence.attachment)?;
+        if !textual_blockers.is_empty() {
+            body = velocity_core::issue_dependencies::upsert_declared_blockers(
+                &body,
+                &textual_blockers,
+            );
+        }
         let filing_lock = filing_lock(&format!("{:?}:{}", self.host(), inventory.repository))?;
         let _filing = filing_lock
             .lock()

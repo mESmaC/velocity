@@ -279,8 +279,9 @@ impl IssueClient {
         reason: &str,
         blockers: &[IssueReference],
     ) -> Result<String, GitHubCommandError> {
+        let linked = self.link_blockers_classified(number, blockers)?;
+        let waits = waits_line_for(self.host(), &linked);
         let issue = self.read_issue(number)?;
-        let waits = waits_line_for(self.host(), &self.link_blockers(number, blockers)?);
         let updated_body = upsert_upstream_block(&issue.body, target);
         if updated_body != issue.body {
             self.update_issue_body(number, &issue.id, &updated_body)?;
@@ -311,8 +312,9 @@ impl IssueClient {
     ) -> Result<String, GitHubCommandError> {
         let hold =
             validate_person_hold(reason, release_action).map_err(GitHubCommandError::Invalid)?;
+        let linked = self.link_blockers_classified(number, blockers)?;
+        let waits = waits_line_for(self.host(), &linked);
         let issue = self.read_issue(number)?;
-        let waits = waits_line_for(self.host(), &self.link_blockers(number, blockers)?);
         let updated_body = upsert_person_hold_block(&issue.body, &hold);
         if updated_body != issue.body {
             self.update_issue_body(number, &issue.id, &updated_body)?;

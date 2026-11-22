@@ -113,12 +113,14 @@ pub struct ReviewSwarmServer {
 impl ReviewSwarmServer {
     pub fn open(path: &Path) -> Result<Self, String> {
         let launch = SwarmLaunch::read(path)?;
+        let sibling_hosts = crate::issue_activity::load_sibling_issue_hosts(&launch.app_data);
         let client = launch
             .repository
             .as_deref()
             .ok_or_else(|| "This project has no issue repository for findings".to_owned())
             .and_then(|repository| {
                 IssueClient::for_host(&launch.workspace, launch.issue_host, repository)
+                    .map(|client| client.with_sibling_hosts(sibling_hosts))
                     .map_err(|error| error.to_string())
             });
         let scout = ScoutServer::new(client, launch.nickname.clone(), Some(launch.report.clone()));
@@ -194,6 +196,11 @@ impl ReviewSwarmServer {
             .ok_or("The project has no issue repository")?;
         let client =
             IssueClient::for_host(&self.launch.workspace, self.launch.issue_host, repository)
+                .map(|client| {
+                    client.with_sibling_hosts(crate::issue_activity::load_sibling_issue_hosts(
+                        &self.launch.app_data,
+                    ))
+                })
                 .map_err(|error| error.to_string())?;
         match request {
             NoChangeReview::List { offset } => {

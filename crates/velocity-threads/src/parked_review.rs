@@ -95,6 +95,8 @@ pub struct ParkedReviews {
 struct ParkedLaunch {
     workspace: PathBuf,
     #[serde(default)]
+    app_data: Option<PathBuf>,
+    #[serde(default)]
     host: IssueHost,
     repository: String,
     issue: u32,
@@ -186,6 +188,7 @@ impl ParkedReviews {
             .join(format!("{}-{}.json", request.project.id, request.issue));
         let record = ParkedLaunch {
             workspace: workspace.root.clone(),
+            app_data: Some(self.app_data.clone()),
             host: request.project.effective_issue_host(),
             repository: request.repository.clone(),
             issue: request.issue,
@@ -381,12 +384,16 @@ impl ParkedReviewServer {
     }
 
     fn client(&self) -> Result<IssueClient, String> {
-        IssueClient::for_host(
+        let mut client = IssueClient::for_host(
             &self.launch.workspace,
             self.launch.host,
             &self.launch.repository,
         )
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        if let Some(app_data) = &self.launch.app_data {
+            client.set_sibling_hosts(crate::issue_activity::load_sibling_issue_hosts(app_data));
+        }
+        Ok(client)
     }
 
     fn read(&self) -> Result<Value, String> {

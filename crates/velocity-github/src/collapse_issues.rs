@@ -649,6 +649,26 @@ impl CollapseIssueTransport {
         Ok(())
     }
 
+    /// Confirms that one issue exists on Collapse for cross-host `blocked_by` validation (#624).
+    pub(crate) fn validate_issue_exists(
+        &self,
+        number: u32,
+        label: &str,
+    ) -> Result<(), GitHubCommandError> {
+        let api = self.api()?;
+        let token = self.read_token()?;
+        let owner = self.owner.clone();
+        let name = self.name.clone();
+        block_on_worker(async move {
+            api.get_issue(token.as_deref(), &owner, &name, number, None)
+                .await
+        })
+        .map_err(|error| {
+            GitHubCommandError::Invalid(format!("Could not read blocker {label}: {error}"))
+        })?;
+        Ok(())
+    }
+
     pub(crate) fn validate_blockers(
         &self,
         blockers: &[IssueReference],
