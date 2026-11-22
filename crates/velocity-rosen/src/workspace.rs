@@ -159,6 +159,19 @@ pub fn has_workspace(root: &Path) -> bool {
     root.is_dir() && rosen_client::snapshot::WorkspaceMarker::path(root).is_file()
 }
 
+/// Clears an existing directory that holds only empty subdirectories and no files,
+/// matching [`prepare_root`] when recreating a workspace after guarded deletion.
+pub(crate) fn clear_empty_root(root: &Path) -> Result<(), RosenError> {
+    if !root.exists() {
+        return Ok(());
+    }
+    remove_empty_folders(root).map_err(|source| RosenError::Io {
+        action: "replace",
+        path: root.to_path_buf(),
+        source,
+    })
+}
+
 /// Readies `root` for a workspace. `true` when it already is one, which is kept as it is.
 /// Folders a guarded deletion left behind, empty of files, are cleared; a folder that
 /// holds files is never replaced.
@@ -166,13 +179,7 @@ fn prepare_root(root: &Path) -> Result<bool, RosenError> {
     if has_workspace(root) {
         return Ok(true);
     }
-    if root.exists() {
-        remove_empty_folders(root).map_err(|source| RosenError::Io {
-            action: "replace",
-            path: root.to_path_buf(),
-            source,
-        })?;
-    }
+    clear_empty_root(root)?;
     if let Some(parent) = root.parent() {
         std::fs::create_dir_all(parent).map_err(|source| RosenError::Io {
             action: "create",

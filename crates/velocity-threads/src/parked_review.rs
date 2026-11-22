@@ -172,14 +172,7 @@ impl ParkedReviews {
             .project_root()
             .map_err(|error| error.to_string())?
             .join(format!("parked-review-{}", request.issue));
-        if root.join(".rosen").exists() {
-            // An interrupted run left its workspace. Its base may be stale, so it goes.
-            let stale = review_swarm::open_workspace(server, REVIEWER, &root)
-                .await
-                .map_err(|error| error.to_string())?;
-            discard(server, &stale).await?;
-        }
-        let workspace = velocity_rosen::create_workspace(server, REVIEWER, &root, None)
+        let workspace = review_swarm::replace_workspace(server, REVIEWER, &root)
             .await
             .map_err(|error| error.to_string())?;
         std::fs::create_dir_all(&self.launches).map_err(|error| error.to_string())?;

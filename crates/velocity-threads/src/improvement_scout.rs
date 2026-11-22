@@ -352,16 +352,9 @@ impl ImprovementScouts {
                 .project_root()
                 .map_err(|error| error.to_string())?
                 .join(IMPROVEMENT_SCOUT_NICK);
-            if root.join(".rosen").exists()
-                && let Ok(stale) =
-                    review_swarm::open_workspace(&server, IMPROVEMENT_SCOUT_NICK, &root).await
-            {
-                let _ = discard_workspace(&server, &stale).await;
-            }
-            let workspace =
-                velocity_rosen::create_workspace(&server, IMPROVEMENT_SCOUT_NICK, &root, None)
-                    .await
-                    .map_err(|error| error.to_string())?;
+            let workspace = review_swarm::replace_workspace(&server, IMPROVEMENT_SCOUT_NICK, &root)
+                .await
+                .map_err(|error| error.to_string())?;
             return Ok((workspace.root.clone(), Some((server, workspace))));
         }
         let fallback = run_dir.join("workspace");

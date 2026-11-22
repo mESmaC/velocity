@@ -1,7 +1,7 @@
 //! Review coverage and claims after landing (F7, #382). None of these calls participates
 //! in the landing gate. A claim names a review, never a source path needed by builders.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rosen_client::protocol::{LogRequest, MarkReviewed};
 use rosen_client::{ChangeState, ChannelMembership};
@@ -257,17 +257,53 @@ pub async fn mark(
     Ok(true)
 }
 
-/// Reuses an interrupted worker's workspace without discarding its proof or fix. A
-/// workspace owned by anyone else is never adopted.
-pub async fn open_workspace(
-    server: &ProjectServer,
-    nickname: &str,
-    root: &Path,
-) -> Result<crate::AgentWorkspace, RosenError> {
-    let marker = rosen_client::snapshot::WorkspaceMarker::path(root);
-    if !marker.is_file() {
-        return crate::create_workspace(server, nickname, root, None).await;
+const MAX_SIBLING_WORKSPACES: usize = 32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkspaceOpenAction {
+    Recover,
+    ReplaceClosed,
+    RejectOwner,
+}
+
+/// Decides how `open_workspace` handles an existing marker on disk (#632).
+///
+/// Unfinished `Open` and `Ready` changes owned by the same worker are recovered so
+/// interrupted proofs, fixes and conflict resolutions stay intact. Closed (`Landed` or
+/// `Abandoned`) changes refuse new claims and edits, so a new job must replace them with
+/// a fresh writable change.
+fn workspace_open_action(owner: &str, state: ChangeState, nickname: &str) -> WorkspaceOpenAction {
+    if owner != nickname {
+        return WorkspaceOpenAction::RejectOwner;
     }
+    if state.is_closed() {
+        return WorkspaceOpenAction::ReplaceClosed;
+    }
+    WorkspaceOpenAction::Recover
+}
+
+fn sibling_workspace_root(root: &Path, attempt: usize) -> Option<PathBuf> {
+    let name = root.file_name()?.to_str()?;
+    let base = strip_revision_suffix(name);
+    Some(root.with_file_name(format!("{base}-r{attempt}")))
+}
+
+fn strip_revision_suffix(name: &str) -> &str {
+    let Some((prefix, suffix)) = name.rsplit_once("-r") else {
+        return name;
+    };
+    if !prefix.is_empty() && !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        prefix
+    } else {
+        name
+    }
+}
+
+async fn load_marked_change(
+    client: &rosen_client::Client,
+    root: &Path,
+) -> Result<(String, Change), RosenError> {
     let marker =
         rosen_client::snapshot::WorkspaceMarker::read(root).map_err(|source| RosenError::Io {
             action: "read",
@@ -275,23 +311,143 @@ pub async fn open_workspace(
             source,
         })?;
     let change = marker.change.to_string();
-    let record = crate::connection::requests(server.endpoint())
-        .await?
-        .change_show(&change)
-        .await?
-        .change;
-    if record.owner.as_str() != nickname {
-        return Err(RosenError::AgentName(format!(
+    let record = client.change_show(&change).await?.change;
+    Ok((change, record))
+}
+
+async fn remove_closed_workspace(
+    client: &rosen_client::Client,
+    root: &Path,
+) -> Result<(), RosenError> {
+    match client.workspace_delete(root).await {
+        Ok(()) => {
+            workspace::clear_empty_root(root)?;
+            Ok(())
+        }
+        Err(_) if !root.exists() => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn create_after_closed(
+    server: &ProjectServer,
+    client: &rosen_client::Client,
+    nickname: &str,
+    root: &Path,
+) -> Result<crate::AgentWorkspace, RosenError> {
+    match remove_closed_workspace(client, root).await {
+        Ok(()) => crate::create_workspace(server, nickname, root, None).await,
+        Err(delete_error) => {
+            create_sibling_workspace(server, client, nickname, root, delete_error).await
+        }
+    }
+}
+
+async fn create_sibling_workspace(
+    server: &ProjectServer,
+    client: &rosen_client::Client,
+    nickname: &str,
+    root: &Path,
+    delete_error: RosenError,
+) -> Result<crate::AgentWorkspace, RosenError> {
+    for attempt in 2..=MAX_SIBLING_WORKSPACES {
+        let Some(candidate) = sibling_workspace_root(root, attempt) else {
+            break;
+        };
+        if candidate == root {
+            continue;
+        }
+        if !candidate.exists() {
+            return crate::create_workspace(server, nickname, &candidate, None).await;
+        }
+        if !rosen_client::snapshot::WorkspaceMarker::path(&candidate).is_file() {
+            if workspace::clear_empty_root(&candidate).is_ok() {
+                return crate::create_workspace(server, nickname, &candidate, None).await;
+            }
+            continue;
+        }
+        let Ok((_, record)) = load_marked_change(client, &candidate).await else {
+            continue;
+        };
+        if workspace_open_action(record.owner.as_str(), record.state, nickname)
+            == WorkspaceOpenAction::ReplaceClosed
+            && remove_closed_workspace(client, &candidate).await.is_ok()
+        {
+            return crate::create_workspace(server, nickname, &candidate, None).await;
+        }
+    }
+    Err(delete_error)
+}
+
+async fn cleanup_closed_workspace(client: &rosen_client::Client, change: &str, root: &Path) {
+    let matches_change = rosen_client::snapshot::WorkspaceMarker::read(root)
+        .is_ok_and(|marker| marker.change.to_string() == change);
+    if matches_change {
+        let _ = client.workspace_delete(root).await;
+    }
+}
+
+/// Reuses an interrupted worker's open workspace without discarding its proof or fix.
+/// When the recorded change is already closed (`Landed` or `Abandoned`), cleans it up
+/// through Rosen's deletion guard and creates a fresh writable change (#632). A workspace
+/// owned by anyone else is never adopted.
+pub async fn open_workspace(
+    server: &ProjectServer,
+    nickname: &str,
+    root: &Path,
+) -> Result<crate::AgentWorkspace, RosenError> {
+    let marker = rosen_client::snapshot::WorkspaceMarker::path(root);
+    if !marker.is_file() {
+        workspace::clear_empty_root(root)?;
+        return crate::create_workspace(server, nickname, root, None).await;
+    }
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let (change, record) = load_marked_change(&client, root).await?;
+    match workspace_open_action(record.owner.as_str(), record.state, nickname) {
+        WorkspaceOpenAction::RejectOwner => Err(RosenError::AgentName(format!(
             "workspace belongs to {}",
             record.owner
-        )));
+        ))),
+        WorkspaceOpenAction::Recover => Ok(crate::AgentWorkspace::new(
+            change,
+            root.into(),
+            "recovered",
+            false,
+        )),
+        WorkspaceOpenAction::ReplaceClosed => {
+            create_after_closed(server, &client, nickname, root).await
+        }
     }
-    Ok(crate::AgentWorkspace::new(
-        change,
-        root.into(),
-        "recovered",
-        false,
-    ))
+}
+
+/// Discards any stale workspace owned by `nickname` at `root` (whether open or already
+/// closed) and creates a fresh workspace at the current base (#632).
+pub async fn replace_workspace(
+    server: &ProjectServer,
+    nickname: &str,
+    root: &Path,
+) -> Result<crate::AgentWorkspace, RosenError> {
+    let marker = rosen_client::snapshot::WorkspaceMarker::path(root);
+    if !marker.is_file() {
+        workspace::clear_empty_root(root)?;
+        return crate::create_workspace(server, nickname, root, None).await;
+    }
+    let session = workspace::session(server, nickname).await?;
+    let (change, record) = load_marked_change(session.client(), root).await?;
+    match workspace_open_action(record.owner.as_str(), record.state, nickname) {
+        WorkspaceOpenAction::RejectOwner => Err(RosenError::AgentName(format!(
+            "workspace belongs to {}",
+            record.owner
+        ))),
+        WorkspaceOpenAction::Recover => {
+            let _ = session.snapshot(root, None).await;
+            session.abandon(&change).await?;
+            create_after_closed(server, session.client(), nickname, root).await
+        }
+        WorkspaceOpenAction::ReplaceClosed => {
+            create_after_closed(server, session.client(), nickname, root).await
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -365,12 +521,20 @@ pub async fn finish_workspace(
     let session = workspace::session(server, nickname).await?;
     let record = session.client().change_show(change).await?.change;
     if record.state == ChangeState::Landed {
-        return Ok(expected_head.is_none_or(|expected| record.head.to_string() == expected));
+        let finished = expected_head.is_none_or(|expected| record.head.to_string() == expected);
+        if finished {
+            cleanup_closed_workspace(session.client(), change, root).await;
+        }
+        return Ok(finished);
     }
     if record.state == ChangeState::Abandoned {
-        return Ok(change_details::changed_paths(server, change)
+        let finished = change_details::changed_paths(server, change)
             .await?
-            .is_empty());
+            .is_empty();
+        if finished {
+            cleanup_closed_workspace(session.client(), change, root).await;
+        }
+        return Ok(finished);
     }
     session.snapshot(root, None).await?;
     let record = session.client().change_show(change).await?.change;
@@ -392,7 +556,13 @@ pub async fn finish_workspace(
         action = workspace_finish_action(&record, expected_head, empty_diff, false);
     }
     match action {
-        WorkspaceFinishAction::Land => land_review_workspace(server, change).await,
+        WorkspaceFinishAction::Land => {
+            let landed = land_review_workspace(server, change).await?;
+            if landed {
+                cleanup_closed_workspace(session.client(), change, root).await;
+            }
+            Ok(landed)
+        }
         WorkspaceFinishAction::Abandon => {
             session.abandon(change).await?;
             Ok(true)
@@ -622,5 +792,62 @@ mod issue_closure_tests {
             WorkspaceFinishAction::Keep
         );
         Ok(())
+    }
+
+    // #632: A review worker whose previous proof change landed received the same closed change
+    // on the next job because `open_workspace` checked only ownership and ignored `record.state`.
+    #[test]
+    fn open_action_replaces_closed_changes_and_recovers_open_work() {
+        assert_eq!(
+            workspace_open_action("scout-1", ChangeState::Open, "scout-1"),
+            WorkspaceOpenAction::Recover
+        );
+        assert_eq!(
+            workspace_open_action("scout-1", ChangeState::Ready, "scout-1"),
+            WorkspaceOpenAction::Recover
+        );
+        assert_eq!(
+            workspace_open_action("scout-1", ChangeState::Landed, "scout-1"),
+            WorkspaceOpenAction::ReplaceClosed
+        );
+        assert_eq!(
+            workspace_open_action("scout-1", ChangeState::Abandoned, "scout-1"),
+            WorkspaceOpenAction::ReplaceClosed
+        );
+        for state in [
+            ChangeState::Open,
+            ChangeState::Ready,
+            ChangeState::Landed,
+            ChangeState::Abandoned,
+        ] {
+            assert_eq!(
+                workspace_open_action("scout-2", state, "scout-1"),
+                WorkspaceOpenAction::RejectOwner
+            );
+        }
+    }
+
+    // #632: Sibling fallback paths for deletion-guarded closed workspaces must preserve worker
+    // nicknames ending in `-1` without chaining `-r2-r3` suffixes across retries.
+    #[test]
+    fn sibling_workspace_root_avoids_suffix_chaining() {
+        let base = Path::new("workspaces").join("review-scout-1");
+        let second = sibling_workspace_root(&base, 2);
+        assert_eq!(
+            second,
+            Some(Path::new("workspaces").join("review-scout-1-r2"))
+        );
+        let third = second
+            .as_deref()
+            .and_then(|path| sibling_workspace_root(path, 3));
+        assert_eq!(
+            third,
+            Some(Path::new("workspaces").join("review-scout-1-r3"))
+        );
+        let named = Path::new("workspaces").join("review-scout-raw");
+        assert_eq!(
+            sibling_workspace_root(&named, 2),
+            Some(Path::new("workspaces").join("review-scout-raw-r2"))
+        );
     }
 }

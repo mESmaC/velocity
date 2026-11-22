@@ -145,6 +145,7 @@ impl Job {
         let workspace = review_swarm::open_workspace(server, &key.1, &launch.workspace)
             .await
             .map_err(|error| error.to_string())?;
+        launch.workspace = workspace.root;
         launch.change = workspace.change;
         launch.save(&self.runner.job_path(key))?;
         let _ = std::fs::remove_file(&launch.completion);
