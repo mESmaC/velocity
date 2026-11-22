@@ -55,6 +55,7 @@ impl RunQueue {
         launch: &AgentLaunch,
         restored: Vec<QueuedRunRecord>,
         history: Vec<QueuedRunRecord>,
+        agent_events: &UnboundedSender<AgentEvent>,
     ) -> io::Result<Option<(Self, RunResults)>> {
         let Some(executable) = EXECUTABLE.get() else {
             return Ok(None);
@@ -100,8 +101,14 @@ impl RunQueue {
             registry: Some(registry),
             ..RunResults::default()
         };
-        host.start_restored(restored, history, &mut initial_runs, &mut results)
-            .await;
+        host.start_restored(
+            restored,
+            history,
+            &mut initial_runs,
+            &mut results,
+            agent_events,
+        )
+        .await;
         let worker = tokio::spawn(host.serve(listener, initial_runs));
         Ok(Some((Self { stop, worker }, results)))
     }
@@ -158,7 +165,6 @@ pub(super) enum QueueEvent {
     Updated(QueuedRunRecord),
     Started(Box<SessionUpdate>),
     Finished(RunResult),
-    Cleared(QueuedRunRecord),
 }
 
 pub(super) struct RestartNotice {
@@ -180,6 +186,10 @@ pub(super) struct RunResults {
 }
 
 impl RunResults {
+    pub fn registry(&self) -> Option<Arc<Mutex<RunRegistry>>> {
+        self.registry.as_ref().map(Arc::clone)
+    }
+
     pub async fn receive(&mut self) -> Option<QueueEvent> {
         match &mut self.receiver {
             Some(receiver) => receiver.recv().await,
@@ -212,7 +222,8 @@ impl RunResults {
             failed.phase = QueuedRunPhase::Failed;
             failed.queue_reason = None;
             failed.exit_status = Some(format!("could not restart: {reason}"));
-            failed.delivered = true;
+            failed.delivered = false;
+            self.push_delivered_id(&failed.id);
             let _ = events.send(AgentEvent::QueuedRunFinished(failed));
         }
         for result in pre_shutdown_results {
@@ -243,9 +254,6 @@ impl RunResults {
             }
             Some(QueueEvent::Updated(record)) => {
                 shared.emit(AgentEvent::QueuedRunUpdated(record));
-            }
-            Some(QueueEvent::Cleared(record)) => {
-                shared.emit(AgentEvent::QueuedRunFinished(record));
             }
             Some(QueueEvent::Started(update)) => shared.record(*update),
             Some(QueueEvent::Finished(result)) => {
@@ -282,16 +290,7 @@ impl RunResults {
     }
 
     pub fn take_delivered_ids(&mut self) -> Vec<String> {
-        let ids = std::mem::take(&mut self.delivered_ids);
-        if !ids.is_empty()
-            && let Some(registry) = &self.registry
-        {
-            registry
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .mark_delivered(&ids);
-        }
-        ids
+        std::mem::take(&mut self.delivered_ids)
     }
 
     pub fn outstanding(&self) -> bool {
@@ -323,7 +322,7 @@ pub(super) struct RunRegistry {
 }
 
 impl RunRegistry {
-    fn from_history(history: &[QueuedRunRecord]) -> Self {
+    pub(super) fn from_history(history: &[QueuedRunRecord]) -> Self {
         let runs = history
             .iter()
             .cloned()
@@ -385,12 +384,20 @@ impl RunRegistry {
         self.trim_history();
     }
 
-    fn mark_delivered(&mut self, ids: &[String]) {
+    pub(super) fn mark_delivered(&mut self, ids: &[String]) {
         for run in &mut self.runs {
             if ids.iter().any(|id| id == &run.record.id) {
                 run.record.delivered = true;
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_delivered(&self, id: &str) -> bool {
+        self.runs
+            .iter()
+            .find(|run| run.record.id == id)
+            .is_some_and(|run| run.record.delivered)
     }
 
     fn pending_count_before(&self, run_id: Option<&str>) -> usize {
@@ -555,6 +562,7 @@ impl QueueHost {
         history: Vec<QueuedRunRecord>,
         runs: &mut JoinSet<RunResult>,
         results: &mut RunResults,
+        agent_events: &UnboundedSender<AgentEvent>,
     ) {
         let pre_shutdown_results: Vec<QueuedRunRecord> = history
             .into_iter()
@@ -582,7 +590,7 @@ impl QueueHost {
             match self.spawn_restored(&record, runs).await {
                 Ok(()) => restarted.push(record),
                 Err(reason) => {
-                    self.record_lost_restored(&record, &reason);
+                    self.record_lost_restored(&record, &reason, agent_events, results);
                     lost.push(record);
                     if !reasons.contains(&reason) {
                         reasons.push(reason);
@@ -593,17 +601,24 @@ impl QueueHost {
         apply_restored_notices(results, restarted, lost, &reasons, pre_shutdown_results);
     }
 
-    fn record_lost_restored(&self, record: &QueuedRunRecord, reason: &str) {
+    fn record_lost_restored(
+        &self,
+        record: &QueuedRunRecord,
+        reason: &str,
+        agent_events: &UnboundedSender<AgentEvent>,
+        results: &mut RunResults,
+    ) {
         let mut failed = record.clone();
         failed.phase = QueuedRunPhase::Failed;
         failed.queue_reason = None;
         failed.exit_status = Some(format!("could not restart: {reason}"));
-        failed.delivered = true;
+        failed.delivered = false;
         self.registry
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .finish(failed.clone());
-        let _ = self.events.send(QueueEvent::Cleared(failed));
+        results.push_delivered_id(&failed.id);
+        let _ = agent_events.send(AgentEvent::QueuedRunFinished(failed));
     }
 
     async fn spawn_restored(
@@ -1105,5 +1120,147 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
+    }
+
+    // Risk (#663): lost-run notices created before the provider prompt is accepted must stay
+    // undelivered so a shutdown or prompt failure before delivery preserves automatic recovery.
+    #[test]
+    fn lost_runs_stay_undelivered_until_prompt_acceptance() {
+        use velocity_core::queued_runs::QueuedRunClass;
+
+        let lost = QueuedRunRecord::new(
+            "velocity-run-lost".into(),
+            "cargo".into(),
+            vec!["check".into(), "-p".into(), "velocity-acp".into()],
+            None,
+            QueuedRunClass::Build,
+        );
+        let mut finished = QueuedRunRecord::new(
+            "velocity-run-finished".into(),
+            "cargo".into(),
+            vec!["check".into(), "-p".into(), "velocity-core".into()],
+            None,
+            QueuedRunClass::Build,
+        );
+        finished.phase = QueuedRunPhase::Completed;
+
+        let (sender, mut receiver) = unbounded_channel();
+        let mut results = RunResults::default();
+        results.record_lost_runs(
+            &[lost],
+            &[finished],
+            "the queued run tool is unavailable",
+            &sender,
+        );
+
+        let event = receiver.try_recv().ok();
+        assert!(matches!(
+            event,
+            Some(AgentEvent::QueuedRunFinished(ref record))
+                if record.id == "velocity-run-lost"
+                    && record.phase == QueuedRunPhase::Failed
+                    && !record.delivered
+        ));
+        assert!(receiver.try_recv().is_err());
+        assert!(results.waiting);
+        assert_eq!(results.ready.len(), 1);
+        assert_eq!(
+            results.take_delivered_ids(),
+            vec![
+                "velocity-run-lost".to_owned(),
+                "velocity-run-finished".to_owned(),
+            ]
+        );
+    }
+
+    // Risk (#663): restored runs that cannot be restarted must persist delivered=false until
+    // the provider accepts the lost-run notice prompt, and take_delivered_ids must not mark
+    // RunRegistry entries delivered before acceptance.
+    #[tokio::test]
+    async fn lost_restored_runs_stay_undelivered_until_prompt_acceptance() {
+        use velocity_core::queued_runs::QueuedRunClass;
+
+        let lost = QueuedRunRecord::new(
+            "velocity-run-lost-restored".into(),
+            "cargo".into(),
+            vec!["check".into(), "-p".into(), "velocity-acp".into()],
+            Some("missing-directory-for-663-test".into()),
+            QueuedRunClass::Build,
+        );
+        let mut pre_shutdown = QueuedRunRecord::new(
+            "velocity-run-pre-shutdown".into(),
+            "cargo".into(),
+            vec!["check".into(), "-p".into(), "velocity-core".into()],
+            None,
+            QueuedRunClass::Build,
+        );
+        pre_shutdown.phase = QueuedRunPhase::Completed;
+
+        let worktree = std::env::temp_dir().join(format!(
+            "velocity-663-lost-restored-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&worktree).ok();
+        let registry = Arc::new(Mutex::new(RunRegistry::from_history(std::slice::from_ref(
+            &pre_shutdown,
+        ))));
+        let (queue_events, receiver) = unbounded_channel();
+        let (released, turn_ended) = watch::channel(());
+        let outstanding = Arc::new(AtomicUsize::new(0));
+        let host = QueueHost {
+            token: "test".into(),
+            rosen: PathBuf::from("rosen"),
+            worktree: worktree.clone(),
+            launch: AgentLaunch::new(PathBuf::from("agent")),
+            graph_context: None,
+            stop: CancellationToken::new(),
+            events: queue_events,
+            outstanding: Arc::clone(&outstanding),
+            turn_ended,
+            registry: Arc::clone(&registry),
+        };
+        let mut runs = JoinSet::new();
+        let mut results = RunResults {
+            outstanding,
+            receiver: Some(receiver),
+            released: Some(released),
+            registry: Some(Arc::clone(&registry)),
+            ..RunResults::default()
+        };
+        let (agent_sender, mut agent_receiver) = unbounded_channel();
+
+        host.start_restored(
+            vec![lost],
+            vec![pre_shutdown],
+            &mut runs,
+            &mut results,
+            &agent_sender,
+        )
+        .await;
+
+        let event = agent_receiver.try_recv().ok();
+        assert!(matches!(
+            event,
+            Some(AgentEvent::QueuedRunFinished(ref record))
+                if record.id == "velocity-run-lost-restored"
+                    && record.phase == QueuedRunPhase::Failed
+                    && !record.delivered
+        ));
+        assert!(agent_receiver.try_recv().is_err());
+        assert!(results.waiting);
+        assert_eq!(results.ready.len(), 1);
+        assert_eq!(
+            results.take_delivered_ids(),
+            vec![
+                "velocity-run-pre-shutdown".to_owned(),
+                "velocity-run-lost-restored".to_owned(),
+            ]
+        );
+        let guard = registry.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(!guard.is_delivered("velocity-run-pre-shutdown"));
+        assert!(!guard.is_delivered("velocity-run-lost-restored"));
+        drop(guard);
+
+        let _ = std::fs::remove_dir_all(&worktree);
     }
 }

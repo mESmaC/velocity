@@ -196,6 +196,12 @@ pub enum AgentEvent {
     Log(String),
 }
 
+#[derive(Default)]
+struct PendingRunDeliveries {
+    token: u64,
+    ids: Vec<String>,
+}
+
 /// State the connection's handlers share.
 struct Shared {
     worktree: PathBuf,
@@ -209,6 +215,10 @@ struct Shared {
     prompt_sent: AtomicBool,
     /// Set once the agent shows activity after a prompt was sent (#658).
     prompt_accepted: AtomicBool,
+    /// Queued-run IDs carried by the currently in-flight `session/prompt`, acknowledged only
+    /// once the agent shows activity or accepts the prompt (#663).
+    pending_run_deliveries: Mutex<PendingRunDeliveries>,
+    run_registry: Option<Arc<Mutex<queued_runs::RunRegistry>>>,
     mode_selection: Mutex<Option<session::ModeSelection>>,
     provider: Option<crate::Provider>,
     account: u32,
@@ -230,6 +240,8 @@ impl Shared {
             replaying: AtomicBool::new(false),
             prompt_sent: AtomicBool::new(false),
             prompt_accepted: AtomicBool::new(false),
+            pending_run_deliveries: Mutex::default(),
+            run_registry: None,
             mode_selection: Mutex::default(),
             provider: None,
             account: 0,
@@ -246,11 +258,51 @@ impl Shared {
     }
 
     pub(super) fn note_prompt_accepted(&self) {
-        if !self.replaying.load(Ordering::Acquire)
-            && self.prompt_sent.load(Ordering::Acquire)
-            && !self.prompt_accepted.swap(true, Ordering::AcqRel)
-        {
-            self.emit(AgentEvent::PromptAccepted);
+        if !self.replaying.load(Ordering::Acquire) && self.prompt_sent.load(Ordering::Acquire) {
+            if !self.prompt_accepted.swap(true, Ordering::AcqRel) {
+                self.emit(AgentEvent::PromptAccepted);
+            }
+            self.acknowledge_run_deliveries();
+        }
+    }
+
+    fn arm_run_deliveries(&self, ids: Vec<String>) -> u64 {
+        let mut pending = self
+            .pending_run_deliveries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        pending.token = pending.token.wrapping_add(1);
+        pending.ids = ids;
+        pending.token
+    }
+
+    fn acknowledge_run_deliveries(&self) {
+        let ids = {
+            let mut pending = self
+                .pending_run_deliveries
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if pending.ids.is_empty() {
+                return;
+            }
+            std::mem::take(&mut pending.ids)
+        };
+        if let Some(registry) = &self.run_registry {
+            registry
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .mark_delivered(&ids);
+        }
+        self.emit(AgentEvent::QueuedRunsDelivered { ids });
+    }
+
+    fn cancel_run_deliveries(&self, token: u64) {
+        let mut pending = self
+            .pending_run_deliveries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if pending.token == token {
+            pending.ids.clear();
         }
     }
 
@@ -452,46 +504,53 @@ async fn run_admitted_session(
     let _ = live_limits::prepare(&mut launch).await;
     let restored = std::mem::take(&mut setup.restored_runs);
     let run_history = std::mem::take(&mut setup.run_history);
-    let (mut queue, results) = if setup.read_only
-        || !velocity_core::tool_policy::allows_queued_runs(setup.role)
-    {
-        (None, RunResults::default())
-    } else {
-        match RunQueue::start(&mut setup, &launch, restored.clone(), run_history.clone()).await {
-            Ok(Some((queue, results))) => (Some(queue), results),
-            unavailable => {
-                let reason = unavailable.as_ref().err().map(ToString::to_string);
-                if let Some(error) = &reason {
-                    let _ = events.send(AgentEvent::Log(format!(
-                        "Could not start the queued run tool: {error}"
-                    )));
+    let (mut queue, results) =
+        if setup.read_only || !velocity_core::tool_policy::allows_queued_runs(setup.role) {
+            (None, RunResults::default())
+        } else {
+            match RunQueue::start(
+                &mut setup,
+                &launch,
+                restored.clone(),
+                run_history.clone(),
+                &events,
+            )
+            .await
+            {
+                Ok(Some((queue, results))) => (Some(queue), results),
+                unavailable => {
+                    let reason = unavailable.as_ref().err().map(ToString::to_string);
+                    if let Some(error) = &reason {
+                        let _ = events.send(AgentEvent::Log(format!(
+                            "Could not start the queued run tool: {error}"
+                        )));
+                    }
+                    if let Some(card) = setup.session_card.as_mut() {
+                        card.push_unavailable_tool(
+                            "velocity-run (fall back to `rosen run -- <command>`)",
+                        );
+                    } else {
+                        setup.preface = run_queue::preface(&launch, setup.preface.take());
+                    }
+                    let mut results = RunResults::default();
+                    let pre_shutdown_results: Vec<_> = run_history
+                        .into_iter()
+                        .filter(|record| !record.delivered)
+                        .collect();
+                    if !restored.is_empty() || !pre_shutdown_results.is_empty() {
+                        results.record_lost_runs(
+                            &restored,
+                            &pre_shutdown_results,
+                            reason
+                                .as_deref()
+                                .unwrap_or("the queued run tool is unavailable"),
+                            &events,
+                        );
+                    }
+                    (None, results)
                 }
-                if let Some(card) = setup.session_card.as_mut() {
-                    card.push_unavailable_tool(
-                        "velocity-run (fall back to `rosen run -- <command>`)",
-                    );
-                } else {
-                    setup.preface = run_queue::preface(&launch, setup.preface.take());
-                }
-                let mut results = RunResults::default();
-                let pre_shutdown_results: Vec<_> = run_history
-                    .into_iter()
-                    .filter(|record| !record.delivered)
-                    .collect();
-                if !restored.is_empty() || !pre_shutdown_results.is_empty() {
-                    results.record_lost_runs(
-                        &restored,
-                        &pre_shutdown_results,
-                        reason
-                            .as_deref()
-                            .unwrap_or("the queued run tool is unavailable"),
-                        &events,
-                    );
-                }
-                (None, results)
             }
-        }
-    };
+        };
     if let Some(note) = run_queue::provider_note(&launch) {
         if let Some(card) = setup.session_card.as_mut() {
             card.push_note(note);
@@ -517,6 +576,7 @@ async fn run_admitted_session(
     if let Some(line) = velocity_core::agent_env::format_withheld_log(&withheld) {
         let _ = events.send(AgentEvent::Log(line));
     }
+    let run_registry = results.registry();
     let shared = Arc::new(Shared {
         worktree: setup.worktree.clone(),
         terminals: Terminals::with_launch(setup.worktree.clone(), &launch),
@@ -526,6 +586,8 @@ async fn run_admitted_session(
         replaying: AtomicBool::new(false),
         prompt_sent: AtomicBool::new(false),
         prompt_accepted: AtomicBool::new(false),
+        pending_run_deliveries: Mutex::default(),
+        run_registry,
         mode_selection: Mutex::default(),
         provider: launch.concurrency_provider.or(launch.own_config),
         account: launch.account,
@@ -686,6 +748,7 @@ async fn drive(
         turn_sender: &turn_sender,
         preface: &mut preface,
         coordination: &mut coordination,
+        pending_run_deliveries: Vec::new(),
     };
     turn.drive_turns(
         inputs,
@@ -915,6 +978,7 @@ struct Turn<'session> {
     turn_sender: &'session UnboundedSender<PromptResult>,
     preface: &'session mut Vec<ContentBlock>,
     coordination: &'session mut coordination::Coordination,
+    pending_run_deliveries: Vec<String>,
 }
 
 impl Turn<'_> {
@@ -1015,11 +1079,6 @@ impl Turn<'_> {
         if let Some(notice) = runs.take_restart_notice() {
             runs.ready.push(notice);
         }
-        let delivered = runs.take_delivered_ids();
-        if !delivered.is_empty() {
-            self.shared
-                .emit(AgentEvent::QueuedRunsDelivered { ids: delivered });
-        }
         if runs.ready.is_empty() {
             if let Some(outcome) = deferred_outcome {
                 self.shared.emit(AgentEvent::TurnEnded(outcome));
@@ -1039,6 +1098,8 @@ impl Turn<'_> {
                 .record(queued_run_command::completion_notice(block.clone()));
         }
         self.preface.append(&mut runs.ready);
+        self.pending_run_deliveries
+            .extend(runs.take_delivered_ids());
         let effect = if steering.is_busy() {
             match steering.step(SteeringInput::TurnEnded) {
                 SteeringEffect::Nothing => steering.step(SteeringInput::Send(Vec::new())),
@@ -1109,10 +1170,15 @@ impl Turn<'_> {
             sent.append(&mut blocks);
             blocks = session_card::join_adjacent_text_blocks(sent);
         }
-        self.request(blocks)
+        let delivered = std::mem::take(&mut self.pending_run_deliveries);
+        self.request(blocks, delivered)
     }
 
-    fn request(&self, blocks: Vec<ContentBlock>) -> Result<(), agent_client_protocol::Error> {
+    fn request(
+        &self,
+        blocks: Vec<ContentBlock>,
+        delivered: Vec<String>,
+    ) -> Result<(), agent_client_protocol::Error> {
         self.shared
             .token_capture
             .lock()
@@ -1121,12 +1187,16 @@ impl Turn<'_> {
         let turn_sender = self.turn_sender.clone();
         let started = std::time::Instant::now();
         self.shared.prompt_sent.store(true, Ordering::Release);
+        let delivery_token = self.shared.arm_run_deliveries(delivered);
         let shared = Arc::clone(self.shared);
-        self.connection
+        let send = self
+            .connection
             .send_request(PromptRequest::new(self.session_id.clone(), blocks))
             .on_receiving_result(move |result| async move {
                 if result.is_ok() {
                     shared.note_prompt_accepted();
+                } else {
+                    shared.cancel_run_deliveries(delivery_token);
                 }
                 let usage = result
                     .as_ref()
@@ -1142,6 +1212,97 @@ impl Turn<'_> {
                     elapsed: started.elapsed(),
                 });
                 Ok(())
+            });
+        if send.is_err() {
+            self.shared.cancel_run_deliveries(delivery_token);
+        }
+        send
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use velocity_core::queued_runs::{QueuedRunClass, QueuedRunPhase, QueuedRunRecord};
+
+    // Risk (#663): queued run results must not be marked delivered before the provider accepts
+    // the continuation prompt, or a shutdown or prompt failure before delivery loses automatic
+    // restart recovery.
+    #[test]
+    fn run_deliveries_wait_for_prompt_acceptance_and_survive_failure() {
+        let mut first = QueuedRunRecord::new(
+            "velocity-run-1".into(),
+            "cargo".into(),
+            vec!["check".into()],
+            None,
+            QueuedRunClass::Build,
+        );
+        first.phase = QueuedRunPhase::Completed;
+        let mut second = QueuedRunRecord::new(
+            "velocity-run-2".into(),
+            "cargo".into(),
+            vec!["check".into()],
+            None,
+            QueuedRunClass::Build,
+        );
+        second.phase = QueuedRunPhase::Completed;
+
+        let registry = Arc::new(Mutex::new(queued_runs::RunRegistry::from_history(&[
+            first, second,
+        ])));
+        let (sender, mut receiver) = unbounded_channel();
+        let mut shared = Shared::new(PathBuf::from("."), sender);
+        shared.run_registry = Some(Arc::clone(&registry));
+
+        let failed_token = shared.arm_run_deliveries(vec!["velocity-run-1".into()]);
+        shared.cancel_run_deliveries(failed_token);
+        assert!(receiver.try_recv().is_err());
+        assert!(
+            !registry
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_delivered("velocity-run-1")
+        );
+
+        shared.prompt_sent.store(true, Ordering::Release);
+        let _ = shared.arm_run_deliveries(vec!["velocity-run-1".into()]);
+        shared.note_prompt_accepted();
+        assert_eq!(receiver.try_recv().ok(), Some(AgentEvent::PromptAccepted));
+        assert_eq!(
+            receiver.try_recv().ok(),
+            Some(AgentEvent::QueuedRunsDelivered {
+                ids: vec!["velocity-run-1".into()],
             })
+        );
+        assert!(receiver.try_recv().is_err());
+        assert!(
+            registry
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_delivered("velocity-run-1")
+        );
+        assert!(
+            !registry
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_delivered("velocity-run-2")
+        );
+
+        // Subsequent turns still acknowledge new queued-run deliveries after PromptAccepted fired.
+        let _ = shared.arm_run_deliveries(vec!["velocity-run-2".into()]);
+        shared.note_prompt_accepted();
+        assert_eq!(
+            receiver.try_recv().ok(),
+            Some(AgentEvent::QueuedRunsDelivered {
+                ids: vec!["velocity-run-2".into()],
+            })
+        );
+        assert!(receiver.try_recv().is_err());
+        assert!(
+            registry
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_delivered("velocity-run-2")
+        );
     }
 }

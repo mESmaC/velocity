@@ -125,7 +125,7 @@ impl Turn<'_> {
                 .handoff_text
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = Some(String::new());
-            if let Err(error) = self.request(vec![ContentBlock::from(PROMPT)]) {
+            if let Err(error) = self.request(vec![ContentBlock::from(PROMPT)], Vec::new()) {
                 self.shared
                     .handoff_text
                     .lock()
