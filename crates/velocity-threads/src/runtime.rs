@@ -1327,6 +1327,63 @@ pub fn spawn_session(
     }
 }
 
+// Risk (#514): dispatch can abandon a finished change while its workspace or agent is starting.
+#[cfg(test)]
+#[test]
+fn dispatch_cleanup_boundary_matches_lean_fixtures() -> Result<(), Box<dyn std::error::Error>> {
+    let fixtures = include_str!("../../../proofs/fixtures/dispatch_cleanup.tsv");
+    let key = (1, 2);
+    for line in fixtures.lines() {
+        let (phase, bits) = line
+            .split_once('\t')
+            .ok_or("missing cleanup fixture phase")?;
+        let bits = bits
+            .split('\t')
+            .map(str::parse)
+            .collect::<Result<Vec<bool>, _>>()?;
+        let &[blocked, busy, queued, pending, expected] = bits.as_slice() else {
+            return Err("invalid cleanup fixture width".into());
+        };
+        // A pending send and an AIRC wake each prevent cleanup. A wait for shutdown
+        // and a workspace update also each prevent it.
+        for alternate in [false, true] {
+            let mut runtimes = ThreadRuntimes::default();
+            if phase != "absent" {
+                let _inputs = runtimes.start(key, "checkout", "start");
+                let thread = runtimes.threads.get_mut(&key).ok_or("missing runtime")?;
+                thread.phase = match phase {
+                    "setup" => SessionPhase::SettingUp,
+                    "selecting" => SessionPhase::Selecting,
+                    "running" | "handoff" => SessionPhase::Running,
+                    "ended" => SessionPhase::Ended,
+                    _ => return Err("invalid cleanup fixture phase".into()),
+                };
+                thread.busy = busy;
+                thread.pending_inputs.clear();
+                if pending && alternate {
+                    thread.deliveries.stage_airc("airc:fixture".into(), true);
+                } else if pending {
+                    thread.pending_inputs.push_back(PendingInput::Opening);
+                }
+                if queued {
+                    thread.transcript.queue("queued");
+                }
+                if phase == "handoff" {
+                    runtimes.reserve_handoff(key);
+                }
+            }
+            if blocked && alternate {
+                runtimes.workspace_updates.insert(key);
+            } else if blocked {
+                runtimes.stopping.insert(key, Vec::new());
+            }
+            assert_eq!(runtimes.is_at_step_boundary(key), expected, "{line}");
+        }
+    }
+    assert_eq!(fixtures.lines().count(), 96);
+    Ok(())
+}
+
 // #261: failed sessions must retain queued user messages across follow-through restart.
 #[cfg(test)]
 #[test]
