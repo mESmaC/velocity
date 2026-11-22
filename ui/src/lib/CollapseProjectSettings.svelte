@@ -11,6 +11,7 @@
     type DeletedRepositoryAction,
     type IssueHost,
     type MoveToCollapseResult,
+    type MoveToCollapseStepResult,
     type MoveToCollapseStepStatus,
     type ProjectCollapseSettings,
     type PushTokenStatus,
@@ -42,7 +43,9 @@
   let moveKeepDownstream = $state(false);
   let moveDefaultsLoadedFor = $state<number | null>(null);
   let moving = $state(false);
+  let reimporting = $state(false);
   let moveResult = $state<MoveToCollapseResult | null>(null);
+  let reimportResult = $state<MoveToCollapseStepResult | null>(null);
   let mirrorDeleted = $state<DeletedCollapseRepository | null>(null);
   let loadError = $state('');
   let actionError = $state('');
@@ -85,8 +88,10 @@
     moveGitHubTokenInput = '';
     moveKeepDownstream = false;
     moveResult = null;
+    reimportResult = null;
     mirrorDeleted = null;
     moving = false;
+    reimporting = false;
     loadError = '';
     actionError = '';
     notice = '';
@@ -175,6 +180,45 @@
     } finally {
       if (target === currentProject) {
         moving = false;
+        busy = false;
+      }
+    }
+  }
+
+  async function runReimportIssues() {
+    if (busy || moving || reimporting || !settings) return;
+    if (
+      !globalThis.confirm(
+        'Import GitHub issues into Collapse again? This can overwrite Collapse issues from GitHub, including reopening issues already closed on Collapse.',
+      )
+    )
+      return;
+    const target = currentProject;
+    reimporting = true;
+    busy = true;
+    actionError = '';
+    notice = '';
+    reimportResult = null;
+    try {
+      const step = await collapseCommands.reimportIssues({
+        project_identifier: target,
+        github_repository: moveGitHubRepoInput.trim() || null,
+        github_import_token: moveGitHubTokenInput.trim() || null,
+      });
+      if (target === currentProject) {
+        reimportResult = step;
+        moveGitHubTokenInput = '';
+        await load(target);
+        notice =
+          step.status === 'passed'
+            ? step.summary
+            : 'GitHub issue re-import finished with items that need attention.';
+      }
+    } catch (reason) {
+      if (target === currentProject) actionError = formatError(reason);
+    } finally {
+      if (target === currentProject) {
+        reimporting = false;
         busy = false;
       }
     }
@@ -563,10 +607,10 @@
         <div class="collapse-relay-header">
           <span>Move to Collapse</span>
           <span class="hint">
-            Import GitHub issues, link and fast-forward an existing Collapse
-            repository (or create one), set Issues on Collapse and CI from
-            Rosen, configure GitHub downstream, and run
-            <code>rosen collapse check</code>. Safe to re-run.
+            Import GitHub issues (skipped when already done), link and
+            fast-forward an existing Collapse repository (or create one), set
+            Issues on Collapse and CI from Rosen, configure GitHub downstream,
+            and run <code>rosen collapse check</code>. Safe to re-run.
           </span>
         </div>
         <div class="collapse-cutover-fields">
@@ -670,6 +714,67 @@
             </span>
           {/if}
         </div>
+        {#if settings.collapse_repository && settings.issue_import_finished}
+          <div class="collapse-row-value">
+            <button
+              type="button"
+              class="worktree-button mini collapse-danger"
+              disabled={busy ||
+                moving ||
+                reimporting ||
+                !settings.collapse_connected ||
+                Boolean(settings.config_error)}
+              onclick={() => void runReimportIssues()}
+            >
+              {reimporting ? 'Importing again…' : 'Import again'}
+            </button>
+            <span class="hint">
+              Issues were already imported{#if settings.issue_import_finished_at}
+                ({new Date(
+                  settings.issue_import_finished_at,
+                ).toLocaleString()}){/if}; re-running Move to Collapse skips
+              Step 1. Import again can overwrite Collapse issues from GitHub.
+            </span>
+          </div>
+          {#if reimportResult}
+            {@const reimportUrl = safeExternalUrl(reimportResult.action_url)}
+            <div class="collapse-cutover-step">
+              <div class="collapse-cutover-step-head">
+                <span
+                  class="collapse-cutover-badge"
+                  class:collapse-status-ok={reimportResult.status === 'passed'}
+                  class:collapse-status-warn={reimportResult.status ===
+                    'warning'}
+                  class:collapse-status-err={reimportResult.status === 'failed'}
+                  class:hint={reimportResult.status === 'skipped'}
+                >
+                  {stepStatusLabel(reimportResult.status)}
+                </span>
+                <strong>{reimportResult.title}</strong>
+              </div>
+              <p class="collapse-cutover-summary">{reimportResult.summary}</p>
+              {#if reimportResult.detail}
+                <p class="hint collapse-cutover-detail">
+                  {reimportResult.detail}
+                </p>
+              {/if}
+              {#if reimportUrl}
+                <a
+                  href={reimportUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="worktree-button mini collapse-cutover-link"
+                  onclick={(event) => {
+                    event.preventDefault();
+                    void collapseCommands.openPage(reimportUrl);
+                  }}
+                >
+                  {reimportResult.action_label ?? 'Open on Collapse'} ↗
+                </a>
+              {/if}
+            </div>
+          {/if}
+        {/if}
         {#if moveResult}
           {#if moveResult.deleted_repository}
             <CollapseDeletedRepoNotice

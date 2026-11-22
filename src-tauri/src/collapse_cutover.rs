@@ -16,10 +16,10 @@ use velocity_collapse::{
 };
 use velocity_core::collapse::{
     CollapseCheckItemStatus, CollapseCheckSummary, DeletedCollapseRepository,
-    DeletedRepositoryAction, ForwarderState, IssueHost, MoveToCollapseStepId,
-    MoveToCollapseStepResult, MoveToCollapseStepStatus, collapse_forwarding_signal,
-    downstream_settings_page, github_repository_from_remote, move_to_collapse_can_switch_mirror,
-    repository_name_for,
+    DeletedRepositoryAction, ForwarderState, ImportStepDecision, IssueHost, MoveToCollapseStepId,
+    MoveToCollapseStepResult, MoveToCollapseStepStatus, already_done_import_step,
+    collapse_forwarding_signal, downstream_settings_page, github_repository_from_remote,
+    move_to_collapse_can_switch_mirror, plan_move_to_collapse_import, repository_name_for,
 };
 use velocity_core::project_health::short_commit;
 use velocity_rosen::ProjectServer;
@@ -60,6 +60,18 @@ pub struct MoveToCollapseRequest {
     /// Optional owner choice when the Collapse name is held by a deleted copy pending purge (#610).
     #[serde(default)]
     pub deleted_action: Option<DeletedRepositoryAction>,
+}
+
+/// Input for `reimport_collapse_issues` (§3.1, #615).
+#[derive(Clone, serde::Deserialize, specta::Type)]
+pub struct ReimportCollapseIssuesRequest {
+    pub project_identifier: u32,
+    /// Optional explicit GitHub `owner/name` to import issues from.
+    #[serde(default)]
+    pub github_repository: Option<String>,
+    /// Optional transient GitHub token used only for this import request; never stored.
+    #[serde(default)]
+    pub github_import_token: Option<String>,
 }
 
 /// Step-by-step outcome of `move_to_collapse` (§3.1, #592, #610).
@@ -186,6 +198,33 @@ pub async fn import_collapse_issues(
     application: AppHandle,
     project_identifier: u32,
 ) -> Result<MoveToCollapseStepResult, String> {
+    run_explicit_collapse_import(application, project_identifier, None, None).await
+}
+
+/// `reimport_collapse_issues` (§3.1): explicitly runs Collapse's GitHub issue import again
+/// on a project whose import already finished, warning that it can overwrite Collapse issues
+/// from GitHub (#615).
+#[tauri::command]
+#[specta::specta]
+pub async fn reimport_collapse_issues(
+    application: AppHandle,
+    request: ReimportCollapseIssuesRequest,
+) -> Result<MoveToCollapseStepResult, String> {
+    run_explicit_collapse_import(
+        application,
+        request.project_identifier,
+        request.github_repository.as_deref(),
+        request.github_import_token.as_deref(),
+    )
+    .await
+}
+
+async fn run_explicit_collapse_import(
+    application: AppHandle,
+    project_identifier: u32,
+    explicit_github_repository: Option<&str>,
+    github_import_token: Option<&str>,
+) -> Result<MoveToCollapseStepResult, String> {
     let subject = mirror_subject(&application, project_identifier)?;
     let collapse_repository = subject
         .repository
@@ -200,7 +239,7 @@ pub async fn import_collapse_issues(
         project_identifier,
         &subject,
         &server,
-        None,
+        explicit_github_repository,
     )
     .await?;
     if github_repository.is_none()
@@ -213,7 +252,7 @@ pub async fn import_collapse_issues(
         owner,
         name,
         github_repository.as_deref(),
-        None,
+        github_import_token,
     )
     .await;
     if step.status == MoveToCollapseStepStatus::Passed {
@@ -332,14 +371,16 @@ async fn run_cutover_steps(
     dashboard: &[RepositoryActivity],
 ) -> Result<(Vec<MoveToCollapseStepResult>, Option<CollapseCheckSummary>), String> {
     let mut steps = Vec::with_capacity(5);
-    let (import_step, high_water, import_finished_at) = run_import_issues(
-        &subject.repository_path,
-        &provisioned.owner,
-        &provisioned.name,
-        github_repository,
-        request.github_import_token.as_deref(),
-    )
-    .await;
+    let (import_step, high_water, import_finished_at, import_already_done) =
+        step_import_issues_for_cutover(
+            application,
+            request.project_identifier,
+            subject,
+            provisioned,
+            github_repository,
+            request.github_import_token.as_deref(),
+        )
+        .await;
     let can_switch = move_to_collapse_can_switch_mirror(import_step.status);
     steps.push(import_step);
     if !can_switch {
@@ -398,6 +439,7 @@ async fn run_cutover_steps(
                 github_repository,
                 high_water,
                 import_finished_at.as_deref(),
+                import_already_done,
             )
             .await?,
         );
@@ -568,6 +610,123 @@ fn match_dashboard_casing(
         return (row.owner.clone(), row.name.clone());
     }
     (owner.to_owned(), name.to_owned())
+}
+
+/// Runs Step 1 of Move to Collapse, skipping `POST .../issues/import` when Collapse has
+/// already finished importing issues for this repository so re-runs never overwrite or
+/// reopen Collapse issues (#615).
+async fn step_import_issues_for_cutover(
+    application: &AppHandle,
+    project: u32,
+    subject: &MirrorSubject,
+    provisioned: &ProvisionedMirror,
+    github_repository: Option<&str>,
+    github_import_token: Option<&str>,
+) -> (MoveToCollapseStepResult, Option<u32>, Option<String>, bool) {
+    let collapse_repo = provisioned.repository();
+    let fresh_repo = matches!(
+        provisioned.disposition,
+        ProvisionDisposition::Created | ProvisionDisposition::PurgedAndCreated
+    );
+    let (local_finished, local_finished_at, local_high_water) = if fresh_repo {
+        (false, None, None)
+    } else {
+        local_import_finished_state(application, project, &collapse_repo).await
+    };
+    let remote_status = read_existing_import_status(&provisioned.owner, &provisioned.name).await;
+    let remote_finished = remote_status
+        .as_ref()
+        .map(|status| status.has_finished() && !status.running);
+    if plan_move_to_collapse_import(remote_finished, local_finished, false)
+        == ImportStepDecision::AlreadyDone
+    {
+        let finished_at = remote_status
+            .as_ref()
+            .and_then(|status| {
+                status
+                    .finished_without_error_at()
+                    .or(status.last_synced_at.as_deref())
+                    .map(str::to_owned)
+            })
+            .or(local_finished_at);
+        let high_water = remote_status
+            .as_ref()
+            .and_then(|status| status.result.as_ref())
+            .filter(|counts| counts.next_number > 1)
+            .and_then(|counts| u32::try_from(counts.next_number.saturating_sub(1)).ok())
+            .or(local_high_water);
+        let source_github = github_repository.or_else(|| {
+            remote_status
+                .as_ref()
+                .map(|status| status.github_repository.trim())
+                .filter(|value| !value.is_empty())
+        });
+        let step = already_done_import_step(source_github, finished_at.as_deref());
+        return (step, high_water, finished_at, true);
+    }
+    let (step, high_water, finished_at) = run_import_issues(
+        &subject.repository_path,
+        &provisioned.owner,
+        &provisioned.name,
+        github_repository,
+        github_import_token,
+    )
+    .await;
+    (step, high_water, finished_at, false)
+}
+
+async fn read_existing_import_status(
+    owner: &str,
+    name: &str,
+) -> Option<velocity_collapse::GitHubIssueImportStatus> {
+    let token = tauri::async_runtime::spawn_blocking(velocity_collapse::resolve_issues_token)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten()?;
+    velocity_collapse::get_issue_import_status(&token, owner, name)
+        .await
+        .ok()
+}
+
+async fn local_import_finished_state(
+    application: &AppHandle,
+    project: u32,
+    collapse_repository: &str,
+) -> (bool, Option<String>, Option<u32>) {
+    let health_finished =
+        crate::project_health::collapse_import_finished(application, project, collapse_repository);
+    let target = collapse_repository.to_owned();
+    let stored = crate::state::with_store(application, move |store| {
+        let item = store.project(project)?;
+        let same_repo = item
+            .collapse_repository
+            .as_deref()
+            .is_some_and(|existing| existing.eq_ignore_ascii_case(&target));
+        if !same_repo {
+            return None;
+        }
+        let sync = item.github_issue_sync.as_ref()?;
+        let finished_at = sync
+            .import_finished_at
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        let high_water = (sync.high_water_number > 0).then_some(sync.high_water_number);
+        Some((finished_at, high_water))
+    })
+    .await
+    .ok()
+    .flatten();
+    match stored {
+        Some((finished_at, high_water)) => (
+            health_finished || finished_at.is_some(),
+            finished_at,
+            high_water,
+        ),
+        None => (health_finished, None, None),
+    }
 }
 
 async fn run_import_issues(
@@ -969,6 +1128,7 @@ async fn step_set_issues_and_ci(
     github_repository: Option<&str>,
     high_water_number: Option<u32>,
     import_finished_at: Option<&str>,
+    respect_explicit_sync_disable: bool,
 ) -> Result<MoveToCollapseStepResult, String> {
     let repo = provisioned.repository();
     let refresh = crate::state::try_with_store(application, move |store| {
@@ -997,7 +1157,7 @@ async fn step_set_issues_and_ci(
             github,
             high_water_number,
             import_finished_at,
-            false,
+            respect_explicit_sync_disable,
         )
         .await;
     }

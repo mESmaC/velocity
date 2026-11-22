@@ -929,3 +929,77 @@ pub async fn recent_base_commits(
         })
         .collect())
 }
+
+/// Returns the current base tip commit SHA for this project's Rosen server (#615).
+pub async fn current_base_tip(server: &ProjectServer) -> Result<Option<String>, RosenError> {
+    let client = crate::connection::requests(server.endpoint()).await?;
+    Ok(base_tip(&client).await?.map(|(_, tip)| tip))
+}
+
+/// Reads recent base commits from Rosen's land history together with server-recorded
+/// reverted commits from `metadata.sqlite` so dispatch can guard reopened issues (#615).
+pub async fn recent_land_history(
+    server: &ProjectServer,
+    limit: u32,
+) -> Result<
+    (
+        Option<String>,
+        Vec<velocity_core::reopened_land::LandHistoryEntry>,
+        std::collections::HashSet<String>,
+    ),
+    RosenError,
+> {
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let log = client
+        .log(LogRequest {
+            at: None,
+            paths: Vec::new(),
+            limit: Some(limit),
+        })
+        .await?;
+    let tip = log.entries.first().map(|entry| entry.commit.to_string());
+    let entries: Vec<velocity_core::reopened_land::LandHistoryEntry> = log
+        .entries
+        .into_iter()
+        .map(|entry| velocity_core::reopened_land::LandHistoryEntry {
+            commit: entry.commit.to_string(),
+            landed_at: u64::try_from(entry.time).unwrap_or(0),
+            summary: entry.summary,
+        })
+        .collect();
+    let metadata = server.data_dir().join("metadata.sqlite");
+    let reverted = tokio::task::spawn_blocking(move || read_auto_reverted_commits(&metadata))
+        .await
+        .map_err(|error| RosenError::StatusData(error.to_string()))??;
+    Ok((tip, entries, reverted))
+}
+
+fn read_auto_reverted_commits(
+    metadata: &Path,
+) -> Result<std::collections::HashSet<String>, RosenError> {
+    use rusqlite::{Connection, OpenFlags};
+    let mut commits = std::collections::HashSet::new();
+    if !metadata.is_file() {
+        return Ok(commits);
+    }
+    let connection = Connection::open_with_flags(metadata, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(std::time::Duration::from_secs(2))?;
+    let has_table: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auto_reverts')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_table {
+        return Ok(commits);
+    }
+    let mut statement = connection.prepare("SELECT culprit, commit_id FROM auto_reverts")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (culprit, commit_id) = row?;
+        commits.insert(culprit.trim().to_ascii_lowercase());
+        commits.insert(commit_id.trim().to_ascii_lowercase());
+    }
+    Ok(commits)
+}

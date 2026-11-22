@@ -3,6 +3,7 @@
 mod holds;
 pub(crate) mod overlap;
 mod parked;
+pub(crate) mod reopened_land;
 pub(crate) mod restart_wait;
 
 use crate::state::ManagedStateStore;
@@ -346,6 +347,7 @@ pub fn initialize(application: &AppHandle) {
     application.manage(Dependencies::default());
     application.manage(IntegrationRecords::default());
     application.manage(LastDispatched::default());
+    reopened_land::initialize(application);
     restart_wait::initialize(application);
     // Without its executable or data folder Velocity cannot start a bounded review; a
     // parked issue then returns to dispatch when its report passes the limit (#506).
@@ -535,6 +537,7 @@ fn projects(application: &AppHandle) -> Result<Vec<ProjectItem>, String> {
                 || !project.continuous_dispatch.issue_overlaps.is_empty()
                 || !project.continuous_dispatch.landed_holds.is_empty()
                 || !project.continuous_dispatch.remote_work_holds.is_empty()
+                || !project.continuous_dispatch.reopened_landed_holds.is_empty()
                 || (project.version_control == VersionControl::Rosen
                     && (project.continuous_dispatch.slots > 0
                         || project
@@ -569,6 +572,7 @@ fn pass(
     }
     refresh_backlog(application, project.id, reader)?;
     holds::refresh(reader);
+    reopened_land::refresh(application, project, &reader.backlog);
     let claimed = claimed_pieces(application, project.id).unwrap_or_default();
     restart_wait::refresh(application, project, &reader.backlog, &claimed);
     overlap::refresh(application, project.id, reader)?;
@@ -665,6 +669,9 @@ fn try_start_issue(
         .project(identifier)
         .cloned();
     if let Some(project) = fresh_project {
+        if reopened_land::check_issue(application, &project, &repository, &fresh).is_some() {
+            return Ok(());
+        }
         let claimed = claimed_pieces(application, identifier).unwrap_or_default();
         if restart_wait::check_issue(application, &project, &repository, &fresh, &claimed).is_some()
         {

@@ -35,6 +35,12 @@ pub struct GitHubIssue {
     /// issue is recognized even before its previous completed work item is replaced (#602).
     #[serde(default)]
     pub reopened_at: Option<String>,
+    /// `true` when Collapse's change feed observed a GitHub import reopening this issue (#615).
+    #[serde(default)]
+    pub reopened_by_import: bool,
+    /// `true` when the issue host's latest reopen event was performed by a non-person actor (#615).
+    #[serde(default)]
+    pub reopened_by_non_person: bool,
     #[serde(default)]
     pub labels: Vec<String>,
     pub scout: Option<String>,

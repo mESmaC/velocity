@@ -109,6 +109,7 @@ fn bindings() -> Builder<tauri::Wry> {
         collapse_connection::set_collapse_mcp,
         collapse_cutover::import_collapse_issues,
         collapse_cutover::move_to_collapse,
+        collapse_cutover::reimport_collapse_issues,
         collapse_issue_sync::set_github_issue_sync,
         collapse_issue_sync::sync_github_issues_now,
         collapse_mirror::clear_collapse_issues_token,

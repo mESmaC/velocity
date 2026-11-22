@@ -460,6 +460,74 @@ pub fn move_to_collapse_can_switch_mirror(import_status: MoveToCollapseStepStatu
     import_status == MoveToCollapseStepStatus::Passed
 }
 
+/// Whether Move to Collapse Step 1 should run `POST .../issues/import` or skip it (#615).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImportStepDecision {
+    /// Import already finished; skip `POST .../issues/import` so Collapse issue states stay untouched.
+    AlreadyDone,
+    /// Run the GitHub issue import (`POST .../issues/import`).
+    RunImport,
+}
+
+/// Decides whether Move to Collapse Step 1 should run the GitHub issue import (#615).
+///
+/// When Collapse already recorded a finished import (or Velocity's local state recorded one
+/// and the remote status could not be checked), Move to Collapse skips Step 1 so re-running
+/// cut-over never overwrites or reopens Collapse issues. Only an explicit `force_reimport`
+/// ("Import again") runs the import again.
+pub fn plan_move_to_collapse_import(
+    remote_import_finished: Option<bool>,
+    local_import_finished: bool,
+    force_reimport: bool,
+) -> ImportStepDecision {
+    if force_reimport {
+        return ImportStepDecision::RunImport;
+    }
+    match remote_import_finished {
+        Some(true) => ImportStepDecision::AlreadyDone,
+        Some(false) => ImportStepDecision::RunImport,
+        None if local_import_finished => ImportStepDecision::AlreadyDone,
+        None => ImportStepDecision::RunImport,
+    }
+}
+
+/// Formats Step 1 of Move to Collapse when Collapse's GitHub issue import already finished (#615).
+pub fn already_done_import_step(
+    github_repository: Option<&str>,
+    finished_at: Option<&str>,
+) -> MoveToCollapseStepResult {
+    let source = github_repository
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let finished = finished_at.map(str::trim).filter(|value| !value.is_empty());
+    let summary = match (source, finished) {
+        (Some(github), Some(at)) => {
+            format!("Already done — issues from {github} were imported ({at}); skipped re-import.")
+        }
+        (Some(github), None) => {
+            format!("Already done — issues from {github} were already imported; skipped re-import.")
+        }
+        (None, Some(at)) => {
+            format!("Already done — Collapse issue import finished ({at}); skipped re-import.")
+        }
+        (None, None) => {
+            "Already done — Collapse issue import already finished; skipped re-import.".to_owned()
+        }
+    };
+    MoveToCollapseStepResult {
+        step: MoveToCollapseStepId::ImportIssues,
+        title: "Import GitHub issues".to_owned(),
+        status: MoveToCollapseStepStatus::Passed,
+        summary,
+        detail: Some(
+            "Skipped re-import so Collapse issue states are not overwritten. Use \"Import again\" only if you want to overwrite Collapse issues from GitHub."
+                .to_owned(),
+        ),
+        action_url: None,
+        action_label: None,
+    }
+}
+
 /// Hidden idempotency marker appended to GitHub issues mirrored one-way into Collapse (#612).
 pub fn github_sync_marker(github_repository: &str, number: u32) -> String {
     format!("<!-- velocity-github-sync: {github_repository}#{number} -->")
@@ -1316,5 +1384,51 @@ mod tests {
             "Edited title on Collapse",
             &synced_body
         ));
+    }
+
+    #[test]
+    fn move_to_collapse_skips_finished_import_unless_forced() {
+        use super::{
+            ImportStepDecision, MoveToCollapseStepId, MoveToCollapseStepStatus,
+            already_done_import_step, move_to_collapse_can_switch_mirror,
+            plan_move_to_collapse_import,
+        };
+
+        // Re-running Move to Collapse when Collapse reports a finished import skips Step 1.
+        assert_eq!(
+            plan_move_to_collapse_import(Some(true), false, false),
+            ImportStepDecision::AlreadyDone
+        );
+        // Local finished-import state protects against re-importing when remote GET is unavailable.
+        assert_eq!(
+            plan_move_to_collapse_import(None, true, false),
+            ImportStepDecision::AlreadyDone
+        );
+        // Fresh or purged Collapse repo whose remote GET reports unfinished runs import.
+        assert_eq!(
+            plan_move_to_collapse_import(Some(false), true, false),
+            ImportStepDecision::RunImport
+        );
+        assert_eq!(
+            plan_move_to_collapse_import(None, false, false),
+            ImportStepDecision::RunImport
+        );
+        // Explicit "Import again" always runs the import.
+        assert_eq!(
+            plan_move_to_collapse_import(Some(true), true, true),
+            ImportStepDecision::RunImport
+        );
+
+        let step = already_done_import_step(Some("mESmaC/velocity"), Some("2026-11-22T10:00:00Z"));
+        assert_eq!(step.step, MoveToCollapseStepId::ImportIssues);
+        assert_eq!(step.status, MoveToCollapseStepStatus::Passed);
+        assert!(move_to_collapse_can_switch_mirror(step.status));
+        assert!(step.summary.contains("Already done"));
+        assert!(step.summary.contains("skipped re-import"));
+        assert!(
+            step.detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("Import again"))
+        );
     }
 }

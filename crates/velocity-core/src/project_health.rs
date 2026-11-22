@@ -53,6 +53,7 @@ pub enum HealthSignalKind {
     HostSourceChanged,
     HostIssueMissing,
     HostIssueMismatch,
+    ReopenedAlreadyLanded,
     IntegrationUncovered,
     BaseRed,
     LandedIssuesWaiting,
@@ -308,6 +309,69 @@ fn ci_short_label(source: BaseCiSource) -> &'static str {
 /// Stable project-health key for a missing or mismatched host issue (#614).
 pub fn host_issue_problem_key(number: u32) -> String {
     format!("host-issue:{number}")
+}
+
+/// Stable project-health key for a reopened issue whose fix already landed (#615).
+pub fn reopened_already_landed_key(number: u32) -> String {
+    format!("reopened-landed:{number}")
+}
+
+/// Inputs for formatting a reopened-already-landed project health row (#615).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReopenedLandedNotice<'a> {
+    pub issue_number: u32,
+    pub commit: &'a str,
+    pub land_summary: &'a str,
+    pub issue_title: Option<&'a str>,
+    pub issue_url: Option<&'a str>,
+    pub reopened_by_import: bool,
+    pub detected_at_ms: u64,
+}
+
+/// Formats a reopened issue whose fix is already in Rosen land history as a project health row (#615).
+pub fn reopened_already_landed_item(notice: ReopenedLandedNotice<'_>) -> ProjectHealthItem {
+    let short = short_commit(notice.commit);
+    let signal = format!(
+        "#{} reopened, already landed in {short}",
+        notice.issue_number
+    );
+    let action = if notice.reopened_by_import {
+        "Reopened by import · held from dispatch (close on Collapse or edit to re-dispatch)"
+            .to_owned()
+    } else {
+        "Held from dispatch · land history already contains a fix after the last reopen".to_owned()
+    };
+    let mut detail_parts = Vec::new();
+    let land_summary = notice.land_summary.trim();
+    if !land_summary.is_empty() {
+        detail_parts.push(land_summary.to_owned());
+    }
+    if let Some(title) = notice
+        .issue_title
+        .map(str::trim)
+        .filter(|title| !title.is_empty() && !title.eq_ignore_ascii_case(land_summary))
+    {
+        detail_parts.push(title.to_owned());
+    }
+    let mut item = ProjectHealthItem::new(
+        reopened_already_landed_key(notice.issue_number),
+        HealthSignalKind::ReopenedAlreadyLanded,
+        HealthSeverity::Warning,
+        signal,
+        action,
+        notice.detected_at_ms,
+    )
+    .with_detail((!detail_parts.is_empty()).then(|| detail_parts.join(" · ")));
+    if let Some(url) = notice
+        .issue_url
+        .filter(|value| value.starts_with("https://"))
+    {
+        item = item.with_action_link(
+            Some(url.to_owned()),
+            format!("Open #{}", notice.issue_number),
+        );
+    }
+    item
 }
 
 /// Optional remediation metadata for `HostIssueMissing` and `HostIssueMismatch` signals (#614).
@@ -766,5 +830,28 @@ test gamma::stalled_case has been running for over 60 seconds
         };
         assert!(!host_source_change_can_switch_back(&ci_change, true, true));
         assert!(host_source_change_can_switch_back(&ci_change, false, true));
+    }
+
+    #[test]
+    fn reopened_already_landed_item_shows_commit_and_import_context() {
+        let item = reopened_already_landed_item(ReopenedLandedNotice {
+            issue_number: 609,
+            commit: "9b7f817abcdef1234567890abcdef12345678901",
+            land_summary: "Fix Move to Collapse (#609)",
+            issue_title: Some("Move to Collapse issue"),
+            issue_url: Some("https://collapse.sh/mESmaC/velocity/issues/609"),
+            reopened_by_import: true,
+            detected_at_ms: 1_700_000_000_000,
+        });
+        assert_eq!(item.key, "reopened-landed:609");
+        assert_eq!(item.kind, HealthSignalKind::ReopenedAlreadyLanded);
+        assert_eq!(item.severity, HealthSeverity::Warning);
+        assert_eq!(item.signal, "#609 reopened, already landed in 9b7f817abcde");
+        assert!(item.action.contains("Reopened by import"));
+        assert_eq!(
+            item.action_url.as_deref(),
+            Some("https://collapse.sh/mESmaC/velocity/issues/609")
+        );
+        assert_eq!(item.action_label.as_deref(), Some("Open #609"));
     }
 }

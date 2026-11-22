@@ -67,6 +67,12 @@ export const commands = {
 	 */
 	moveToCollapse: (request: MoveToCollapseRequest_Deserialize) => __TAURI_INVOKE<MoveToCollapseResult_Serialize>("move_to_collapse", { request }),
 	/**
+	 *  `reimport_collapse_issues` (§3.1): explicitly runs Collapse's GitHub issue import again
+	 *  on a project whose import already finished, warning that it can overwrite Collapse issues
+	 *  from GitHub (#615).
+	 */
+	reimportCollapseIssues: (request: ReimportCollapseIssuesRequest_Deserialize) => __TAURI_INVOKE<MoveToCollapseStepResult_Serialize>("reimport_collapse_issues", { request }),
+	/**
 	 *  `set_github_issue_sync` (§3.1): turns the one-way GitHub-to-Collapse issue sync on or
 	 *  off for a Collapse-hosted project (#612, #614).
 	 */
@@ -2435,7 +2441,7 @@ export type GraphStatus_Serialize = {
 
 export type HealthSeverity = "Info" | "Warning" | "Error";
 
-export type HealthSignalKind = "MirrorBehind" | "CollapseProactiveAuth" | "CollapseForwarding" | "CollapseIssuesNotImported" | "HostSourceChanged" | "HostIssueMissing" | "HostIssueMismatch" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "PostLandStalled" | "UpdaterManifestBehind" | "ReleaseGateRefused" | "AircIssueToolFailed" | "Deploy" | "LocalBuildRestartFailed";
+export type HealthSignalKind = "MirrorBehind" | "CollapseProactiveAuth" | "CollapseForwarding" | "CollapseIssuesNotImported" | "HostSourceChanged" | "HostIssueMissing" | "HostIssueMismatch" | "ReopenedAlreadyLanded" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "PostLandStalled" | "UpdaterManifestBehind" | "ReleaseGateRefused" | "AircIssueToolFailed" | "Deploy" | "LocalBuildRestartFailed";
 
 /**  A model you hid from the pickers by clicking its chip (F15 Models). */
 export type HiddenModel = {
@@ -4274,6 +4280,10 @@ export type ProjectCollapseSettings_Deserialize = {
 	downstream_github?: string | null,
 	/**  Status of post-switch one-way sync of newly opened GitHub issues into Collapse (#612). */
 	github_issue_sync?: GitHubIssueSyncView_Deserialize | null,
+	/**  Whether Collapse's GitHub issue import has already finished for this project (#615). */
+	issue_import_finished: boolean,
+	/**  RFC 3339 timestamp of the completed GitHub issue import, when known (#615). */
+	issue_import_finished_at?: string | null,
 };
 
 /**  Project settings view for the Collapse section (#576, #589, #592). */
@@ -4301,6 +4311,10 @@ export type ProjectCollapseSettings_Serialize = {
 	downstream_github: string | null,
 	/**  Status of post-switch one-way sync of newly opened GitHub issues into Collapse (#612). */
 	github_issue_sync: GitHubIssueSyncView_Serialize | null,
+	/**  Whether Collapse's GitHub issue import has already finished for this project (#615). */
+	issue_import_finished: boolean,
+	/**  RFC 3339 timestamp of the completed GitHub issue import, when known (#615). */
+	issue_import_finished_at: string | null,
 };
 
 /**  Project settings view for `[deploy]` steps and Windows Credential Manager secrets (#594). */
@@ -5175,6 +5189,27 @@ export type RailSlice_Serialize = {
 	tasks_draft: boolean,
 	task_count_label: string,
 	rosen_work: RosenWorkView_Serialize | null,
+};
+
+/**  Input for `reimport_collapse_issues` (§3.1, #615). */
+export type ReimportCollapseIssuesRequest = ReimportCollapseIssuesRequest_Serialize | ReimportCollapseIssuesRequest_Deserialize;
+
+/**  Input for `reimport_collapse_issues` (§3.1, #615). */
+export type ReimportCollapseIssuesRequest_Deserialize = {
+	project_identifier: number,
+	/**  Optional explicit GitHub `owner/name` to import issues from. */
+	github_repository?: string | null,
+	/**  Optional transient GitHub token used only for this import request; never stored. */
+	github_import_token?: string | null,
+};
+
+/**  Input for `reimport_collapse_issues` (§3.1, #615). */
+export type ReimportCollapseIssuesRequest_Serialize = {
+	project_identifier: number,
+	/**  Optional explicit GitHub `owner/name` to import issues from. */
+	github_repository: string | null,
+	/**  Optional transient GitHub token used only for this import request; never stored. */
+	github_import_token: string | null,
 };
 
 /**

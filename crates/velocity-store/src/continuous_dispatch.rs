@@ -48,6 +48,11 @@ pub struct ContinuousDispatch {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[specta(skip)]
     pub remote_work_holds: BTreeMap<u32, RemoteWorkHold>,
+    /// Open issues held out of dispatch because Rosen's land history already has a
+    /// non-reverted commit named `(#N)` after the issue's last reopen by a person (#615).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[specta(skip)]
+    pub reopened_landed_holds: BTreeMap<u32, ReopenedLandedHold>,
     /// Dispatch threads that failed before their agent's first turn (#514), by thread.
     /// The issue is already back in dispatch; the reason still has to reach it as a
     /// comment, across restarts and failed GitHub calls.
@@ -143,6 +148,30 @@ pub struct RemoteWorkHold {
     /// Unix seconds when this hold expires so a stalled remote run is retried.
     #[serde(default)]
     pub expires_at: u64,
+}
+
+/// An open issue held out of dispatch because Rosen's land history already contains a
+/// non-reverted commit named `(#N)` after the issue's last reopen by a person (#615).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReopenedLandedHold {
+    pub issue: ThreadIssue,
+    #[serde(default)]
+    pub commit: String,
+    /// Commit author/land timestamp in UTC Unix seconds.
+    #[serde(default)]
+    pub landed_at: u64,
+    /// First line of the landed commit message.
+    #[serde(default)]
+    pub land_summary: String,
+    /// Issue `updated_at` timestamp when this hold was recorded.
+    #[serde(default)]
+    pub updated_at: String,
+    /// `true` when Collapse's change feed observed an import reopening this issue.
+    #[serde(default)]
+    pub reopened_by_import: bool,
+    /// Unix milliseconds when Velocity first recorded this hold.
+    #[serde(default)]
+    pub detected_at_ms: u64,
 }
 
 impl RemoteWorkHold {
@@ -430,6 +459,70 @@ impl ProjectItem {
                     && hold.is_active(now)
                     && updated_at.is_none_or(|version| hold.updated_at == version)
             })
+    }
+
+    /// Whether Rosen's land history already has a non-reverted fix for `issue` after its
+    /// last reopen by a person, keeping it held out of continuous dispatch (#615).
+    pub fn reopened_landed_hold(
+        &self,
+        issue: &ThreadIssue,
+        version: crate::rosen_work::IssueVersion<'_>,
+    ) -> Option<&ReopenedLandedHold> {
+        let hold = self
+            .continuous_dispatch
+            .reopened_landed_holds
+            .get(&issue.number)?;
+        if !same_issue(&hold.issue, issue) {
+            return None;
+        }
+        if version
+            .reopened_at
+            .and_then(crate::rosen_work::parse_timestamp_seconds)
+            .is_some_and(|reopened| reopened > hold.landed_at)
+        {
+            return None;
+        }
+        let version_matches = version.updated_at.is_none_or(|updated| {
+            hold.updated_at == updated
+                || (version.reopened_at.is_none()
+                    && crate::rosen_work::parse_timestamp_seconds(updated)
+                        .is_some_and(|updated_secs| updated_secs <= hold.landed_at))
+        });
+        if !version_matches {
+            return None;
+        }
+        crate::rosen_work::host_issue_matches_work_title(
+            hold.issue.title.as_deref(),
+            &issue.repository,
+            issue.number,
+            version,
+        )
+        .then_some(hold)
+    }
+
+    /// Whether a local thread or retained issue progress still has a pending automatic
+    /// post-land close queued for `issue` (for example during the 30-minute review window) (#615).
+    pub fn has_pending_rosen_close(&self, issue: &ThreadIssue) -> bool {
+        let thread_closing = self.threads.iter().any(|thread| {
+            thread
+                .issue
+                .as_ref()
+                .is_some_and(|assigned| same_issue(assigned, issue))
+                && thread
+                    .rosen_issue
+                    .pending
+                    .iter()
+                    .any(crate::rosen_issue::IssueAction::is_close)
+        });
+        let retained_closing = self.retained_rosen_issues.values().any(|retained| {
+            same_issue(&retained.issue, issue)
+                && retained
+                    .progress
+                    .pending
+                    .iter()
+                    .any(crate::rosen_issue::IssueAction::is_close)
+        });
+        thread_closing || retained_closing
     }
 
     /// Mirrored landed holds that no local thread or retained issue record on this machine
@@ -735,6 +828,92 @@ impl StateStore {
                         hold.issue.repository.eq_ignore_ascii_case(repository) && keep(*number)
                     });
                 Ok((item.continuous_dispatch.landed_holds.len() != before, ()))
+            },
+        )
+    }
+
+    /// Replaces the project's reopened-already-landed holds in one save, preserving existing
+    /// `detected_at_ms` timestamps for unchanged entries (#615). Returns `true` when changed.
+    pub fn save_reopened_landed_holds(
+        &mut self,
+        project: u32,
+        mut holds: BTreeMap<u32, ReopenedLandedHold>,
+    ) -> Result<bool, ThreadError> {
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                for (number, next) in &mut holds {
+                    if let Some(existing) =
+                        item.continuous_dispatch.reopened_landed_holds.get(number)
+                        && existing.commit == next.commit
+                        && same_issue(&existing.issue, &next.issue)
+                    {
+                        next.detected_at_ms = existing.detected_at_ms;
+                        next.reopened_by_import |= existing.reopened_by_import;
+                    }
+                }
+                if item.continuous_dispatch.reopened_landed_holds == holds {
+                    return Ok((false, false));
+                }
+                item.continuous_dispatch.reopened_landed_holds = holds;
+                Ok((true, true))
+            },
+        )
+    }
+
+    /// Inserts or updates a single reopened-already-landed hold (#615). Returns `true` when changed.
+    pub fn upsert_reopened_landed_hold(
+        &mut self,
+        project: u32,
+        mut hold: ReopenedLandedHold,
+    ) -> Result<bool, ThreadError> {
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                if let Some(existing) = item
+                    .continuous_dispatch
+                    .reopened_landed_holds
+                    .get(&hold.issue.number)
+                    && existing.commit == hold.commit
+                    && same_issue(&existing.issue, &hold.issue)
+                {
+                    hold.detected_at_ms = existing.detected_at_ms;
+                    hold.reopened_by_import |= existing.reopened_by_import;
+                }
+                if item
+                    .continuous_dispatch
+                    .reopened_landed_holds
+                    .get(&hold.issue.number)
+                    == Some(&hold)
+                {
+                    return Ok((false, false));
+                }
+                item.continuous_dispatch
+                    .reopened_landed_holds
+                    .insert(hold.issue.number, hold);
+                Ok((true, true))
+            },
+        )
+    }
+
+    /// Removes a single reopened-already-landed hold (#615). Returns `true` when removed.
+    pub fn remove_reopened_landed_hold(
+        &mut self,
+        project: u32,
+        number: u32,
+    ) -> Result<bool, ThreadError> {
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                let removed = item
+                    .continuous_dispatch
+                    .reopened_landed_holds
+                    .remove(&number)
+                    .is_some();
+                Ok((removed, removed))
             },
         )
     }
@@ -1688,6 +1867,52 @@ mod tests {
             .continuous_dispatch;
         assert_eq!(dispatch.launch_failure_reports.len(), 2);
         assert!(dispatch.unstarted_failures.is_empty());
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#615): a reopened-already-landed hold (such as an import-reopened issue) must
+    // survive save/load across restarts and release only when a person reopens after the land.
+    #[test]
+    fn reopened_landed_hold_survives_save_and_load_and_releases_on_person_reopen()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, mut store) = legacy_store()?;
+        let issue = ThreadIssue::new("mESmaC/velocity".into(), 609);
+        let land_time =
+            crate::rosen_work::parse_timestamp_seconds("2026-11-22T10:00:00Z").ok_or("ts")?;
+        let hold = ReopenedLandedHold {
+            issue: issue.clone(),
+            commit: "9b7f817abcdef1234567890abcdef12345678901".into(),
+            landed_at: land_time,
+            land_summary: "Fix Move to Collapse (#609)".into(),
+            updated_at: "2026-11-22T09:00:00Z".into(),
+            reopened_by_import: true,
+            detected_at_ms: 1_700_000_000_000,
+        };
+        assert!(store.upsert_reopened_landed_hold(1, hold.clone())?);
+        assert!(!store.upsert_reopened_landed_hold(1, hold.clone())?);
+        drop(store);
+
+        let loaded = StateStore::load_or_default(&directory)?;
+        let project = loaded.project(1).ok_or("missing project")?;
+        let stale_version = crate::rosen_work::IssueVersion::updated_at("2026-11-22T09:00:00Z");
+        assert_eq!(
+            project.reopened_landed_hold(&issue, stale_version),
+            Some(&hold)
+        );
+        // A person reopening strictly after the landing commit releases the hold (#602).
+        let person_reopened = crate::rosen_work::IssueVersion {
+            updated_at: Some("2026-11-22T13:00:00Z"),
+            reopened_at: Some("2026-11-22T13:00:00Z"),
+            title: None,
+            body: None,
+        };
+        assert!(
+            project
+                .reopened_landed_hold(&issue, person_reopened)
+                .is_none()
+        );
+
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

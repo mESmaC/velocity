@@ -400,6 +400,10 @@ pub struct ProjectCollapseSettings {
     pub downstream_github: Option<String>,
     /// Status of post-switch one-way sync of newly opened GitHub issues into Collapse (#612).
     pub github_issue_sync: Option<GitHubIssueSyncView>,
+    /// Whether Collapse's GitHub issue import has already finished for this project (#615).
+    pub issue_import_finished: bool,
+    /// RFC 3339 timestamp of the completed GitHub issue import, when known (#615).
+    pub issue_import_finished_at: Option<String>,
 }
 
 /// Result of a Collapse settings action that lands a `rosen.toml` change (#576).
@@ -712,6 +716,14 @@ pub(crate) async fn read_project_collapse_settings(
     } else {
         saved_override.unwrap_or_else(|| state.relay_allow.clone())
     };
+    let issue_import_finished_at = github_issue_sync
+        .as_ref()
+        .and_then(|sync| sync.import_finished_at.clone())
+        .filter(|value| !value.trim().is_empty());
+    let issue_import_finished = issue_import_finished_at.is_some()
+        || collapse_repository.as_deref().is_some_and(|repo| {
+            crate::project_health::collapse_import_finished(application, project, repo)
+        });
     Ok(ProjectCollapseSettings {
         project_identifier: project,
         collapse_repository,
@@ -730,6 +742,8 @@ pub(crate) async fn read_project_collapse_settings(
         github_repository,
         downstream_github,
         github_issue_sync,
+        issue_import_finished,
+        issue_import_finished_at,
     })
 }
 

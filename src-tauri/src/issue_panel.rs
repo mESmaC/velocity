@@ -623,7 +623,7 @@ fn update_links(application: &AppHandle, force_publish: bool) -> Result<(), Stri
         let numbers: Vec<u32> = panel.rows.iter().map(|row| row.number).collect();
         (project_id, panel.repository.clone(), numbers)
     };
-    let links = {
+    let (links, reopened_holds) = {
         let store = application.state::<ManagedStateStore>();
         let store = lock(store.inner(), "persisted state")?;
         let Some(project) = store
@@ -632,9 +632,22 @@ fn update_links(application: &AppHandle, force_publish: bool) -> Result<(), Stri
         else {
             return Ok(());
         };
-        repository.as_deref().map(|repository| {
+        let links = repository.as_deref().map(|repository| {
             velocity_threads::dispatch::collect_issue_row_links(project, repository, &numbers)
-        })
+        });
+        let holds = repository
+            .as_deref()
+            .map(|repository| {
+                project
+                    .continuous_dispatch
+                    .reopened_landed_holds
+                    .iter()
+                    .filter(|(_, hold)| hold.issue.repository.eq_ignore_ascii_case(repository))
+                    .map(|(&number, hold)| (number, hold.clone()))
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        (links, holds)
     };
     let unblocks = match repository.as_deref() {
         Some(repository) => crate::continuous_dispatch::unblock_counts(application, repository)?,
@@ -652,6 +665,13 @@ fn update_links(application: &AppHandle, force_publish: bool) -> Result<(), Stri
         if let Some(mut links) = links {
             for link in &mut links {
                 if link.thread_identifier.is_none()
+                    && let Some(hold) = reopened_holds.get(&link.number)
+                {
+                    link.thread_label = Some(
+                        velocity_core::reopened_land::reopened_already_landed_reason(&hold.commit),
+                    );
+                    link.hold = Some(crate::continuous_dispatch::reopened_land::issue_hold(hold));
+                } else if link.thread_identifier.is_none()
                     && let Some(wait) = restart_waits.get(&link.number)
                 {
                     link.thread_label = Some(wait.label());

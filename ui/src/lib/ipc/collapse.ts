@@ -14,6 +14,7 @@ import {
   type MoveToCollapseResult_Serialize,
   type MoveToCollapseStepResult_Serialize,
   type ProjectCollapseSettings,
+  type ReimportCollapseIssuesRequest_Deserialize,
 } from '../bindings';
 export type {
   CollapseActionResult,
@@ -36,6 +37,7 @@ export type {
   MoveToCollapseStepStatus,
   ProjectCollapseSettings,
   PushTokenStatus,
+  ReimportCollapseIssuesRequest_Deserialize as ReimportCollapseIssuesRequest,
 } from '../bindings';
 
 // What Collapse last reported for the project's mirror: its last land and the
@@ -97,6 +99,10 @@ export const collapseCommands = {
     project: number,
   ): Promise<MoveToCollapseStepResult_Serialize> =>
     commands.importCollapseIssues(project),
+  reimportIssues: (
+    request: ReimportCollapseIssuesRequest_Deserialize,
+  ): Promise<MoveToCollapseStepResult_Serialize> =>
+    commands.reimportCollapseIssues(request),
   setGithubIssueSync: (
     project: number,
     enabled: boolean,

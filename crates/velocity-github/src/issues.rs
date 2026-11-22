@@ -17,7 +17,7 @@ use crate::{GitHubCommandError, GitHubIssue, IssueInventory};
 
 pub(crate) const ISSUE_FIELDS: &str = "id number title body url state author { login }
     createdAt updatedAt closedAt milestone { number } labels(first:100) { nodes { name } totalCount }
-    timelineItems(last:1,itemTypes:[REOPENED_EVENT]) { nodes { ... on ReopenedEvent { createdAt } } }";
+    timelineItems(last:1,itemTypes:[REOPENED_EVENT]) { nodes { ... on ReopenedEvent { createdAt actor { __typename login } } } }";
 pub(crate) const BLOCKER_FIELDS: &str = "number state repository { nameWithOwner }";
 /// How many commits of the default branch history are bundled with the open-issues query
 /// so integration status checks need no separate ref or commit-status polling (#556).
@@ -57,6 +57,28 @@ pub(crate) struct ReopenTimeline {
 struct ReopenNode {
     #[serde(default)]
     created_at: Option<String>,
+    #[serde(default)]
+    actor: Option<ReopenActor>,
+}
+
+#[derive(Deserialize)]
+struct ReopenActor {
+    #[serde(default, rename = "__typename")]
+    kind: Option<String>,
+    #[serde(default)]
+    login: Option<String>,
+}
+
+impl ReopenActor {
+    fn is_non_person(&self) -> bool {
+        self.kind
+            .as_deref()
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("Bot"))
+            || self
+                .login
+                .as_deref()
+                .is_some_and(|login| login.ends_with("[bot]"))
+    }
 }
 
 #[derive(Deserialize)]
@@ -591,14 +613,29 @@ impl IssueClient {
             .collect();
         node.issue.labels.sort();
         node.issue.scout = scout_attribution(&node.issue.body);
-        node.issue.reopened_at = node.timeline_items.and_then(|timeline| {
+        let latest_reopen = node.timeline_items.and_then(|timeline| {
             timeline
                 .nodes
                 .into_iter()
                 .flatten()
                 .rev()
-                .find_map(|event| event.created_at)
+                .find(|event| event.created_at.is_some())
         });
+        match latest_reopen {
+            Some(event) if event.actor.as_ref().is_some_and(ReopenActor::is_non_person) => {
+                node.issue.reopened_at = None;
+                node.issue.reopened_by_non_person = true;
+            }
+            Some(event) => {
+                node.issue.reopened_at = event.created_at;
+                node.issue.reopened_by_non_person = false;
+            }
+            None => {
+                node.issue.reopened_at = None;
+                node.issue.reopened_by_non_person = false;
+            }
+        }
+        node.issue.reopened_by_import = false;
         node.issue.host = IssueHost::GitHub;
         Ok(node.issue)
     }

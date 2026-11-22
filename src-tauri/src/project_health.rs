@@ -26,8 +26,9 @@ use velocity_core::project_health::{
     AIRC_ISSUE_FAILURE_TTL_SECONDS, DISPATCH_IDLE_LIMIT_SECONDS, HOST_SOURCE_CHANGED_KEY,
     HealthSeverity, HealthSignalKind, INTEGRATION_UNCOVERED_LANDS, INTEGRATION_UNCOVERED_SECONDS,
     MIRROR_BEHIND_LIMIT_SECONDS, POST_LAND_STALL_LIMIT_SECONDS, ProjectHealthItem,
-    ProjectHealthView, REVIEW_STUCK_LIMIT_SECONDS, airc_issue_tool_failure_item, format_duration,
-    format_stopped_check_detail, host_issue_problem_item, host_source_change_item, short_commit,
+    ProjectHealthView, REVIEW_STUCK_LIMIT_SECONDS, ReopenedLandedNotice,
+    airc_issue_tool_failure_item, format_duration, format_stopped_check_detail,
+    host_issue_problem_item, host_source_change_item, reopened_already_landed_item, short_commit,
 };
 use velocity_core::release::{
     ManifestLag, RefusedGateRecovery, is_beta_release_tag, plan_refused_gate_recovery,
@@ -220,6 +221,11 @@ pub fn get_project_health(application: AppHandle, project_identifier: u32) -> Pr
             upsert_item(&mut items, item);
         }
         for item in check_host_issue_problems(&project) {
+            if !items.iter().any(|existing| existing.key == item.key) {
+                upsert_item(&mut items, item);
+            }
+        }
+        for item in check_reopened_landed_holds(&project) {
             if !items.iter().any(|existing| existing.key == item.key) {
                 upsert_item(&mut items, item);
             }
@@ -553,6 +559,74 @@ fn check_host_issue_problems(project: &ProjectItem) -> Vec<ProjectHealthItem> {
         .filter(|problem| problem.host == active_host)
         .map(host_issue_problem_item)
         .collect()
+}
+
+/// Immediately synchronizes reopened-already-landed health rows for `project` (#615).
+pub(crate) fn sync_reopened_landed_holds(application: &AppHandle, project: u32) {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let next = persisted_project(application, project)
+        .map(|item| check_reopened_landed_holds(&item))
+        .unwrap_or_default();
+    let updated = {
+        let mut reg = registry(&managed);
+        let list = reg.views.entry(project).or_default();
+        let before = list.clone();
+        list.retain(|existing| existing.kind != HealthSignalKind::ReopenedAlreadyLanded);
+        for item in next {
+            upsert_item(list, item);
+        }
+        (*list != before).then(|| list.clone())
+    };
+    if let Some(items) = updated {
+        emit_view(application, project, items);
+    }
+}
+
+fn check_reopened_landed_holds(project: &ProjectItem) -> Vec<ProjectHealthItem> {
+    let active_host = project.effective_issue_host();
+    project
+        .continuous_dispatch
+        .reopened_landed_holds
+        .values()
+        .map(|hold| {
+            let url = match hold.issue.host.unwrap_or(active_host) {
+                IssueHost::Collapse => {
+                    velocity_core::collapse::issue_page(&hold.issue.repository, hold.issue.number)
+                }
+                IssueHost::GitHub => Some(format!(
+                    "https://github.com/{}/issues/{}",
+                    hold.issue.repository, hold.issue.number
+                )),
+            };
+            reopened_already_landed_item(ReopenedLandedNotice {
+                issue_number: hold.issue.number,
+                commit: &hold.commit,
+                land_summary: &hold.land_summary,
+                issue_title: hold.issue.title.as_deref(),
+                issue_url: url.as_deref(),
+                reopened_by_import: hold.reopened_by_import,
+                detected_at_ms: hold.detected_at_ms,
+            })
+        })
+        .collect()
+}
+
+/// Whether project health already observed a finished Collapse issue import for `collapse_repository` (#615).
+pub(crate) fn collapse_import_finished(
+    application: &AppHandle,
+    project: u32,
+    collapse_repository: &str,
+) -> bool {
+    with_tracker(application, project, |tracker| {
+        tracker.collapse_import.as_ref().is_some_and(|entry| {
+            entry.import_finished
+                && entry
+                    .collapse_repository
+                    .eq_ignore_ascii_case(collapse_repository)
+        })
+    })
 }
 
 fn persisted_project(application: &AppHandle, project_identifier: u32) -> Option<ProjectItem> {
@@ -1092,6 +1166,7 @@ async fn check_project(application: &AppHandle, app_data: &Path, project: &Proje
         items.push(item);
     }
     items.extend(check_host_issue_problems(project));
+    items.extend(check_reopened_landed_holds(project));
     if let Some(item) = check_mirror(application, project, &server, now, now_ms).await {
         items.push(item);
     }

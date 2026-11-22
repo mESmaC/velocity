@@ -254,6 +254,13 @@ pub fn issue_skip_reason_in_projects(
             ),
         });
     }
+    if let Some(hold) = project.reopened_landed_hold(&identity, version) {
+        return Some(SkippedIssue {
+            number: issue.number,
+            category: SkipCategory::Completed,
+            reason: velocity_core::reopened_land::reopened_already_landed_reason(&hold.commit),
+        });
+    }
     if project
         .landed_awaiting_integration_for_version(&identity, version)
         .is_some()
@@ -553,6 +560,7 @@ pub fn dispatchable_issue_in_projects(
         && !claimed.contains(&format!("issue:{}", issue.number))
         && issue_thread(project, &identity).is_none()
         && !project.rosen_issue_completed_for_version(&identity, version)
+        && project.reopened_landed_hold(&identity, version).is_none()
         // A landed issue waits for its integration build to close it (#504).
         && project
             .landed_awaiting_integration_for_version(&identity, version)
@@ -827,6 +835,8 @@ mod tests {
             updated_at: "2026-11-19T23:12:00Z".into(),
             closed_at: None,
             reopened_at: None,
+            reopened_by_import: false,
+            reopened_by_non_person: false,
             open_blocker_count: 0,
             open_blockers: Vec::new(),
             closed_blockers: Vec::new(),
@@ -1136,6 +1146,61 @@ mod tests {
         );
 
         std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#615): a reopened issue whose fix is already in land history must be held out of
+    // dispatch with "reopened, already landed in <commit>", while a genuine person reopen
+    // strictly after the land commit remains dispatchable (#602).
+    #[test]
+    fn reopened_already_landed_hold_blocks_dispatch_until_person_reopens_after_land()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = ProjectItem::new(1, "velocity".into(), "Z:/velocity".into());
+        project.version_control = VersionControl::Rosen;
+        project.spec_locked = true;
+        let land_time = velocity_store::rosen_work::parse_timestamp_seconds("2026-11-22T10:00:00Z")
+            .ok_or("timestamp")?;
+        project.continuous_dispatch.reopened_landed_holds.insert(
+            609,
+            velocity_store::continuous_dispatch::ReopenedLandedHold {
+                issue: ThreadIssue::new("mESmaC/velocity".into(), 609),
+                commit: "9b7f817abcdef1234567890abcdef12345678901".into(),
+                landed_at: land_time,
+                land_summary: "Fix issue (#609)".into(),
+                updated_at: "2026-11-22T09:00:00Z".into(),
+                reopened_by_import: true,
+                detected_at_ms: 1_700_000_000_000,
+            },
+        );
+        let claimed = HashSet::new();
+
+        let mut import_reopened = sample_issue(609);
+        import_reopened.updated_at = "2026-11-22T09:00:00Z".into();
+        import_reopened.reopened_by_import = true;
+        assert!(!dispatchable_issue(
+            &project,
+            "mESmaC/velocity",
+            &import_reopened,
+            &claimed
+        ));
+        let skipped = issue_skip_reason(&project, "mESmaC/velocity", &import_reopened, &claimed, 0)
+            .ok_or("expected reopened-landed issue to be skipped")?;
+        assert_eq!(skipped.category, SkipCategory::Completed);
+        assert_eq!(skipped.reason, "reopened, already landed in 9b7f817abcde");
+
+        // When a person genuinely reopens the regression after the landing commit, dispatch allows it.
+        let mut person_reopened = sample_issue(609);
+        person_reopened.updated_at = "2026-11-22T13:00:00Z".into();
+        person_reopened.reopened_at = Some("2026-11-22T13:00:00Z".into());
+        assert!(dispatchable_issue(
+            &project,
+            "mESmaC/velocity",
+            &person_reopened,
+            &claimed
+        ));
+        assert!(
+            issue_skip_reason(&project, "mESmaC/velocity", &person_reopened, &claimed, 0).is_none()
+        );
         Ok(())
     }
 }

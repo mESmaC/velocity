@@ -38,6 +38,7 @@ struct CollapseRepoCache {
     cursor_etag: Option<String>,
     open_issues: BTreeMap<u32, GitHubIssue>,
     reopened_at: BTreeMap<u32, String>,
+    reopened_by_import: HashSet<u32>,
     comments: HashMap<u32, CachedComments>,
     labels: Option<Vec<String>>,
     labels_etag: Option<String>,
@@ -132,8 +133,18 @@ impl CollapseIssueTransport {
             };
             let page_len = value.issues.len();
             for raw in value.issues {
-                let reopened = self.with_cache(|cache| cache.reopened_at.get(&raw.number).cloned());
-                issues.push(convert_issue(&self.repository, &raw, reopened));
+                let (reopened, reopened_by_import) = self.with_cache(|cache| {
+                    (
+                        cache.reopened_at.get(&raw.number).cloned(),
+                        cache.reopened_by_import.contains(&raw.number),
+                    )
+                });
+                issues.push(convert_issue(
+                    &self.repository,
+                    &raw,
+                    reopened,
+                    reopened_by_import,
+                ));
             }
             if page_len < MAX_LIST_LIMIT {
                 break;
@@ -790,7 +801,7 @@ impl CollapseIssueTransport {
             cursor = cursor.max(value.cursor);
             let page_len = value.issues.len();
             for raw in value.issues {
-                let converted = convert_issue(&self.repository, &raw, None);
+                let converted = convert_issue(&self.repository, &raw, None, false);
                 collected.insert(converted.number, converted);
             }
             if page_len < MAX_LIST_LIMIT {
@@ -866,39 +877,15 @@ impl CollapseIssueTransport {
     ) {
         let mut invalidated_discussions = Vec::new();
         self.with_cache(|cache| {
-            for change in &changes {
-                if change.kind == "issue.reopened"
-                    && let Some(number) = change.issue_number
-                    && !change.created_at.is_empty()
-                {
-                    cache.reopened_at.insert(number, change.created_at.clone());
-                }
-                if change.kind.starts_with("comment.")
-                    && let Some(number) = change.issue_number
-                {
-                    invalidated_discussions.push(number);
-                }
-            }
-            if !labels.is_empty() {
-                cache.labels = Some(labels.into_iter().map(|label| label.name).collect());
-                cache.labels_etag = None;
-            }
-            for raw in issues {
-                let reopened = cache.reopened_at.get(&raw.number).cloned();
-                let converted = convert_issue(&self.repository, &raw, reopened);
-                if converted.state == IssueState::Closed {
-                    cache.open_issues.remove(&converted.number);
-                } else {
-                    cache.open_issues.insert(converted.number, converted);
-                }
-            }
-            for comment in comments {
-                invalidated_discussions.push(comment.issue_number);
-                if let Some(entry) = cache.comments.get_mut(&comment.issue_number) {
-                    entry.etag = None;
-                    upsert_comment(&mut entry.items, comment);
-                }
-            }
+            apply_changes_to_cache(
+                cache,
+                &self.repository,
+                changes,
+                issues,
+                comments,
+                labels,
+                &mut invalidated_discussions,
+            );
         });
         for number in invalidated_discussions {
             issue_cache::invalidate_discussion(IssueHost::Collapse, &self.repository, number);
@@ -910,7 +897,8 @@ impl CollapseIssueTransport {
         let comments = raw.comments.clone();
         let converted = self.with_cache(|cache| {
             let reopened = cache.reopened_at.get(&number).cloned();
-            let converted = convert_issue(&self.repository, &raw, reopened);
+            let reopened_by_import = cache.reopened_by_import.contains(&number);
+            let converted = convert_issue(&self.repository, &raw, reopened, reopened_by_import);
             if cache.initialized {
                 if converted.state == IssueState::Closed {
                     cache.open_issues.remove(&number);
@@ -1032,7 +1020,7 @@ fn build_issue_detail(
             state: parse_state(&dep.state),
         })
         .collect();
-    let converted = convert_issue(repository, raw, None);
+    let converted = convert_issue(repository, raw, None, false);
     IssueDetail {
         repository: repository.to_owned(),
         number: converted.number,
@@ -1048,10 +1036,92 @@ fn build_issue_detail(
     }
 }
 
+fn apply_changes_to_cache(
+    cache: &mut CollapseRepoCache,
+    repository: &str,
+    changes: Vec<velocity_collapse::issues::IssueChange>,
+    issues: Vec<CollapseIssue>,
+    comments: Vec<CollapseComment>,
+    labels: Vec<velocity_collapse::issues::CollapseLabel>,
+    invalidated_discussions: &mut Vec<u32>,
+) {
+    let updated_by_number: HashMap<u32, &str> = issues
+        .iter()
+        .map(|raw| (raw.number, raw.updated_at.as_str()))
+        .collect();
+    for change in &changes {
+        if let Some(number) = change.issue_number {
+            match change.kind.as_str() {
+                "issue.reopened" if !change.created_at.is_empty() => {
+                    let issue_updated = updated_by_number.get(&number).copied().or_else(|| {
+                        cache
+                            .open_issues
+                            .get(&number)
+                            .map(|item| item.updated_at.as_str())
+                    });
+                    if issue_updated.is_some_and(|updated| {
+                        velocity_core::reopened_land::is_collapse_import_reopen(
+                            &change.created_at,
+                            updated,
+                        )
+                    }) {
+                        cache.reopened_at.remove(&number);
+                        cache.reopened_by_import.insert(number);
+                    } else {
+                        cache.reopened_by_import.remove(&number);
+                        cache.reopened_at.insert(number, change.created_at.clone());
+                    }
+                }
+                "issue.closed" => {
+                    cache.reopened_at.remove(&number);
+                    cache.reopened_by_import.remove(&number);
+                }
+                "issue.updated"
+                    if !change.created_at.is_empty()
+                        && updated_by_number.get(&number).is_some_and(|updated| {
+                            !velocity_core::reopened_land::is_collapse_import_reopen(
+                                &change.created_at,
+                                updated,
+                            )
+                        }) =>
+                {
+                    cache.reopened_by_import.remove(&number);
+                }
+                _ => {}
+            }
+            if change.kind.starts_with("comment.") {
+                invalidated_discussions.push(number);
+            }
+        }
+    }
+    if !labels.is_empty() {
+        cache.labels = Some(labels.into_iter().map(|label| label.name).collect());
+        cache.labels_etag = None;
+    }
+    for raw in issues {
+        let reopened = cache.reopened_at.get(&raw.number).cloned();
+        let reopened_by_import = cache.reopened_by_import.contains(&raw.number);
+        let converted = convert_issue(repository, &raw, reopened, reopened_by_import);
+        if converted.state == IssueState::Closed {
+            cache.open_issues.remove(&converted.number);
+        } else {
+            cache.open_issues.insert(converted.number, converted);
+        }
+    }
+    for comment in comments {
+        invalidated_discussions.push(comment.issue_number);
+        if let Some(entry) = cache.comments.get_mut(&comment.issue_number) {
+            entry.etag = None;
+            upsert_comment(&mut entry.items, comment);
+        }
+    }
+}
+
 fn convert_issue(
     repository: &str,
     raw: &CollapseIssue,
     reopened_at: Option<String>,
+    reopened_by_import: bool,
 ) -> GitHubIssue {
     let mut labels: Vec<String> = raw.labels.iter().map(|label| label.name.clone()).collect();
     labels.sort();
@@ -1083,6 +1153,8 @@ fn convert_issue(
         updated_at: raw.updated_at.clone(),
         closed_at: raw.closed_at.clone(),
         reopened_at,
+        reopened_by_import,
+        reopened_by_non_person: false,
         labels,
         scout: scout_attribution(&raw.body),
         milestone: None,
@@ -1176,4 +1248,79 @@ fn worker_sender() -> Option<&'static tokio::sync::mpsc::UnboundedSender<BoxedJo
             started.ok().map(|_| tx)
         })
         .as_ref()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use velocity_collapse::issues::{CollapseAuthor, IssueChange};
+
+    fn sample_raw(number: u32, state: &str, updated_at: &str) -> CollapseIssue {
+        CollapseIssue {
+            number,
+            title: format!("Issue #{number}"),
+            body: String::new(),
+            state: state.into(),
+            reason: String::new(),
+            author: CollapseAuthor::default(),
+            labels: Vec::new(),
+            blocked_by: Vec::new(),
+            blocks: Vec::new(),
+            comment_count: 0,
+            comments: Vec::new(),
+            created_at: "2026-11-22T08:00:00Z".into(),
+            updated_at: updated_at.into(),
+            closed_at: None,
+        }
+    }
+
+    #[test]
+    fn apply_changes_classifies_import_reopen_versus_person_reopen() {
+        let mut cache = CollapseRepoCache::default();
+        let mut invalidated = Vec::new();
+        // Import reopened #609 at 12:00 while overwriting updated_at to GitHub's 09:00.
+        let import_change = IssueChange {
+            cursor: 10,
+            kind: "issue.reopened".into(),
+            issue_number: Some(609),
+            comment_id: None,
+            label_name: String::new(),
+            created_at: "2026-11-22T12:00:00Z".into(),
+        };
+        // Person reopened #610 at 13:00, so updated_at and change.created_at match.
+        let person_change = IssueChange {
+            cursor: 11,
+            kind: "issue.reopened".into(),
+            issue_number: Some(610),
+            comment_id: None,
+            label_name: String::new(),
+            created_at: "2026-11-22T13:00:00Z".into(),
+        };
+        apply_changes_to_cache(
+            &mut cache,
+            "mESmaC/velocity",
+            vec![import_change, person_change],
+            vec![
+                sample_raw(609, "open", "2026-11-22T09:00:00Z"),
+                sample_raw(610, "open", "2026-11-22T13:00:00Z"),
+            ],
+            Vec::new(),
+            Vec::new(),
+            &mut invalidated,
+        );
+
+        let imported = cache.open_issues.get(&609);
+        assert!(imported.is_some());
+        if let Some(issue) = imported {
+            assert!(issue.reopened_by_import);
+            assert_eq!(issue.reopened_at, None);
+        }
+
+        let human = cache.open_issues.get(&610);
+        assert!(human.is_some());
+        if let Some(issue) = human {
+            assert!(!issue.reopened_by_import);
+            assert_eq!(issue.reopened_at.as_deref(), Some("2026-11-22T13:00:00Z"));
+        }
+    }
 }
