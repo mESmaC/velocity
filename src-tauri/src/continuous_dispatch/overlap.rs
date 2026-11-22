@@ -14,10 +14,12 @@ use velocity_store::{
     ProjectItem, ThreadItem, ThreadState, VersionControl, continuous_dispatch::IssueOverlap,
     issues::ThreadIssue, rosen_work::IssueVersion,
 };
-use velocity_threads::continuous_dispatch::actionable_in_projects;
+use velocity_threads::continuous_dispatch::{
+    TextBlockerContext, actionable_in_projects_with_blockers,
+};
 use velocity_threads::overlap_paths::{is_reference, widely_shared};
 
-use super::{Reader, dispatch_claims, unix_seconds};
+use super::{Reader, dispatch_claims, text_blockers, unix_seconds};
 use crate::{graph_access::issue_paths, state::ManagedStateStore, threads::lock};
 
 pub(super) fn refresh(
@@ -58,7 +60,9 @@ pub(super) fn refresh(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    OverlapContext::new(client, project, &projects, &data).recheck(
+    let blockers_context =
+        text_blockers::context_for_project(application, identifier, Some(&reader.backlog));
+    OverlapContext::new(client, project, &projects, &data, blockers_context).recheck(
         issues,
         working,
         &mut waits,
@@ -279,7 +283,8 @@ pub(super) fn land_evidence(
     issue: &GitHubIssue,
     (source, commit): (u32, &str),
 ) -> Result<LandEvidence, String> {
-    let mut context = OverlapContext::new(client, project, &[], data);
+    let mut context =
+        OverlapContext::new(client, project, &[], data, TextBlockerContext::default());
     let clear = context.clear_of_land(issue, source, commit)?.is_some();
     Ok(LandEvidence {
         files: context.land_files(commit)?,
@@ -292,6 +297,7 @@ struct OverlapContext<'a> {
     project: &'a ProjectItem,
     projects: &'a [ProjectItem],
     data: &'a Path,
+    blockers_context: TextBlockerContext,
     server: ProjectServer,
     /// The generated artifacts and registration lists in the project's `rosen.toml`.
     merged: MergedPaths,
@@ -308,6 +314,7 @@ impl<'a> OverlapContext<'a> {
         project: &'a ProjectItem,
         projects: &'a [ProjectItem],
         data: &'a Path,
+        blockers_context: TextBlockerContext,
     ) -> Self {
         let server = ProjectServer::new(data, project.id);
         Self {
@@ -315,6 +322,7 @@ impl<'a> OverlapContext<'a> {
             project,
             projects,
             data,
+            blockers_context,
             merged: merged_paths(&server, project),
             server,
             shared: BTreeSet::new(),
@@ -367,7 +375,13 @@ impl<'a> OverlapContext<'a> {
                 waits.remove(&number);
             } else if waits.contains_key(&number)
                 || (!blockers.is_empty()
-                    && actionable_in_projects(self.projects, self.project, repository, issue)
+                    && actionable_in_projects_with_blockers(
+                        self.projects,
+                        self.project,
+                        repository,
+                        issue,
+                        &self.blockers_context,
+                    )
                     && !released.contains_key(&number))
             {
                 holdable.push(issue);
@@ -376,7 +390,13 @@ impl<'a> OverlapContext<'a> {
             if worked
                 || waits.contains_key(&number)
                 || (!skipped
-                    && actionable_in_projects(self.projects, self.project, repository, issue))
+                    && actionable_in_projects_with_blockers(
+                        self.projects,
+                        self.project,
+                        repository,
+                        issue,
+                        &self.blockers_context,
+                    ))
             {
                 backlog.push(issue);
             }
@@ -577,8 +597,13 @@ impl<'a> OverlapContext<'a> {
             }
         }
         let number = issue.number;
-        let ready =
-            actionable_in_projects(self.projects, self.project, self.client.repository(), issue);
+        let ready = actionable_in_projects_with_blockers(
+            self.projects,
+            self.project,
+            self.client.repository(),
+            issue,
+            &self.blockers_context,
+        );
         if let Some(wait) = waits.get(&number) {
             // One hold per issue (#525): it lasts only while the same blocker's open
             // change still edits a file this issue names, and never moves to another.
@@ -642,11 +667,12 @@ impl<'a> OverlapContext<'a> {
             return Ok(LandCheck::Waiting);
         };
         let issue = self.client.get(number).map_err(|error| error.to_string())?;
-        if !actionable_in_projects(
+        if !actionable_in_projects_with_blockers(
             self.projects,
             self.project,
             self.client.repository(),
             &issue,
+            &self.blockers_context,
         ) {
             return Ok(LandCheck::Waiting);
         }

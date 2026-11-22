@@ -31,6 +31,9 @@ The tools refuse retired skip-only labels (`needs-owner`, `on-hold`, `needs-deci
 When a hold only waits on other issues, the refusal lists those issues and says to pass them as `blocked_by` instead.
 Dispatch starts a linked issue once its blockers close or Velocity records their land as covered by a green integration build, with no label change (#529).
 A blocker that has landed without a green integration build stays blocking until integration covers its commit.
+At dispatch, explicit text blocker lines (`Waits for`, `Blocked by` and `After`, followed by `#N` or `owner/name#N`, on a line of the issue body or an owner comment) are also treated as blockers and resolved across Velocity's registered projects regardless of each project's issue host (#623).
+When a text blocker lives on the same issue host as the waiting issue and that host supports dependency links, Velocity also links it natively so the issue page shows it (#623).
+Bare `#N` mentions without an explicit blocker phrase never block dispatch (#623).
 An empty dispatch turn on an issue with unsatisfied blockers posts its **Ended with no change** comment without the `no-change` label.
 Each issue read also converts any open issue whose body still carries a `Held for dependencies:` line that names issues.
 The conversion links those issues, removes `needs-owner` and rewrites the line to name the links, in that order, so a failure leaves the issue held and each note is converted once.

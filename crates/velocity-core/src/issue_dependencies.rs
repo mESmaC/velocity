@@ -436,8 +436,46 @@ const BLOCKER_REFERENCE_PHRASES: [&str; 15] = [
     HOLD_NOTE,
 ];
 
+/// Phrases that explicitly declare a dispatch blocker when immediately followed by `#N` or
+/// `owner/name#N` on a line of an issue body or owner comment (#623).
+const EXPLICIT_BLOCKER_PHRASES: [&str; 9] = [
+    "waits for",
+    "wait for",
+    "waiting for",
+    "waits on",
+    "waiting on",
+    "blocked by",
+    "blocked on",
+    "depends on",
+    "after",
+];
+
 /// Maximum span expanded for inclusive issue ranges like `#421–#424` or `#421-#424`.
 const MAX_ISSUE_RANGE_SPAN: u32 = 20;
+
+/// Extracts explicit dispatch blockers (`Waits for`, `Blocked by`, `After`, etc., immediately
+/// followed by `#N`, `owner/name#N`, or an issue URL, including lists and inclusive ranges)
+/// on lines of an issue body or owner comment, ignoring Markdown code spans, fenced code
+/// blocks, negated phrases, and bare `#N` mentions (#623).
+pub fn explicit_text_blockers(text: &str) -> Vec<IssueReference> {
+    let cleaned = strip_markdown_code(text);
+    let mut found = Vec::new();
+    for line in cleaned.lines() {
+        collect_explicit_blockers_in_line(line, &mut found);
+    }
+    found
+}
+
+/// Whether an issue comment body is an owner (human) comment rather than an automated
+/// Velocity status comment or an agent progress update (#623).
+pub fn is_owner_comment(body: &str) -> bool {
+    let trimmed = body.trim();
+    if trimmed.is_empty() || is_automated_velocity_comment(trimmed) {
+        return false;
+    }
+    !trimmed.starts_with("Ready to close · Velocity agent")
+        && !trimmed.starts_with("Velocity agent")
+}
 
 /// Extracts issues referenced as blockers in free text via `waits for #N`, `after #N`,
 /// `blocked by #N`, `depends on #N` (including lists and ranges such as `after #421–#424`),
@@ -926,6 +964,223 @@ fn collect_references_and_ranges(clause: &str, out: &mut Vec<IssueReference>) {
     }
 }
 
+fn collect_explicit_blockers_in_line(line: &str, out: &mut Vec<IssueReference>) {
+    let lowered = line.to_ascii_lowercase();
+    for phrase in EXPLICIT_BLOCKER_PHRASES {
+        let mut offset = 0;
+        while let Some(pos) = lowered[offset..].find(phrase) {
+            let start = offset + pos;
+            let end = start + phrase.len();
+            let left_ok = line[..start]
+                .chars()
+                .next_back()
+                .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_');
+            let right_ok = line[end..]
+                .chars()
+                .next()
+                .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_');
+            if left_ok && right_ok && !has_negation_before(&line[..start]) {
+                let rest = line[end..].trim_start_matches([' ', '\t', ':', '*', '_']);
+                collect_leading_blocker_list(rest, out);
+            }
+            offset = end;
+        }
+    }
+}
+
+fn has_negation_before(before: &str) -> bool {
+    const NEGATIONS: [&str; 9] = [
+        "no longer",
+        "not",
+        "isn't",
+        "isnt",
+        "doesn't",
+        "doesnt",
+        "don't",
+        "dont",
+        "never",
+    ];
+    let trimmed = before
+        .trim_end_matches(|ch: char| ch.is_whitespace() || matches!(ch, '*' | '_' | '(' | '['))
+        .to_ascii_lowercase();
+    NEGATIONS.iter().any(|word| {
+        trimmed.strip_suffix(word).is_some_and(|prefix| {
+            prefix
+                .chars()
+                .next_back()
+                .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_')
+        })
+    })
+}
+
+fn collect_leading_blocker_list(rest: &str, out: &mut Vec<IssueReference>) {
+    let mut cursor = rest;
+    while let Some((first, consumed)) = parse_leading_issue_reference(cursor) {
+        push_unique_reference(out, first.clone());
+        cursor = &cursor[consumed..];
+        if let Some((end_num, range_consumed)) = parse_leading_range_end(cursor, &first) {
+            let repo = first.repository.as_deref();
+            for number in (first.number() + 1)..=end_num {
+                if let Some(reference) = IssueReference::new(repo, number) {
+                    push_unique_reference(out, reference);
+                }
+            }
+            cursor = &cursor[range_consumed..];
+        }
+        let Some(separator_len) = consume_blocker_list_separator(cursor) else {
+            break;
+        };
+        cursor = &cursor[separator_len..];
+    }
+}
+
+fn push_unique_reference(out: &mut Vec<IssueReference>, reference: IssueReference) {
+    if !out
+        .iter()
+        .any(|existing| references_same_issue(existing, &reference))
+    {
+        out.push(reference);
+    }
+}
+
+fn parse_leading_issue_reference(text: &str) -> Option<(IssueReference, usize)> {
+    if text.starts_with('[')
+        && let Some((end, destination)) = parse_markdown_link(text, 0)
+        && let Some(reference) = parse_issue_url_exact(destination)
+    {
+        return Some((reference, end));
+    }
+    if text.starts_with("https://") || text.starts_with("http://") {
+        let end = scan_bare_url_end(text, 0);
+        return parse_issue_url_exact(&text[..end]).map(|reference| (reference, end));
+    }
+    let prefix_len = text
+        .bytes()
+        .take_while(|&byte| is_repository_character(byte as char))
+        .count();
+    if text.as_bytes().get(prefix_len) != Some(&b'#') {
+        return None;
+    }
+    let rest = &text[prefix_len + 1..];
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let ends_word = rest[digits..]
+        .chars()
+        .next()
+        .is_none_or(|next| !next.is_alphanumeric() && next != '_');
+    if digits == 0 || !ends_word {
+        return None;
+    }
+    let number = rest[..digits].parse::<u32>().ok()?;
+    let prefix = text[..prefix_len].trim_start_matches('/');
+    let prefix = prefix
+        .strip_prefix("github.com/")
+        .or_else(|| prefix.strip_prefix("collapse.sh/"))
+        .unwrap_or(prefix);
+    let reference = if prefix.is_empty() {
+        IssueReference::new(None, number)?
+    } else {
+        IssueReference::new(Some(prefix), number)?
+    };
+    Some((reference, prefix_len + 1 + digits))
+}
+
+fn parse_issue_url_exact(url: &str) -> Option<IssueReference> {
+    let path = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+        .or_else(|| url.strip_prefix("https://collapse.sh/"))
+        .or_else(|| url.strip_prefix("http://collapse.sh/"))?;
+    IssueReference::in_address(path)
+}
+
+fn parse_leading_range_end(text: &str, first: &IssueReference) -> Option<(u32, usize)> {
+    let ws1 = horizontal_whitespace_len(text);
+    let sep_slice = &text[ws1..];
+    let sep_len = if sep_slice.starts_with("–") {
+        "–".len()
+    } else if sep_slice.starts_with("—") {
+        "—".len()
+    } else if sep_slice.starts_with("..=") {
+        3
+    } else if sep_slice.starts_with("..") {
+        2
+    } else if sep_slice.starts_with('-') {
+        1
+    } else {
+        return None;
+    };
+    let after_sep = &sep_slice[sep_len..];
+    let ws2 = horizontal_whitespace_len(after_sep);
+    let target = &after_sep[ws2..];
+    let hash_len = usize::from(target.starts_with('#'));
+    let digits_slice = &target[hash_len..];
+    let digits = digits_slice.bytes().take_while(u8::is_ascii_digit).count();
+    let ends_word = digits_slice[digits..]
+        .chars()
+        .next()
+        .is_none_or(|next| !next.is_alphanumeric() && next != '_');
+    if digits == 0 || !ends_word {
+        return None;
+    }
+    let end_num = digits_slice[..digits].parse::<u32>().ok()?;
+    let start_num = first.number();
+    if end_num <= start_num || end_num - start_num > MAX_ISSUE_RANGE_SPAN {
+        return None;
+    }
+    Some((end_num, ws1 + sep_len + ws2 + hash_len + digits))
+}
+
+fn consume_blocker_list_separator(text: &str) -> Option<usize> {
+    let ws1 = horizontal_whitespace_len(text);
+    let rest = &text[ws1..];
+    if let Some(after_comma) = rest.strip_prefix(',') {
+        let ws2 = horizontal_whitespace_len(after_comma);
+        let after_ws2 = &after_comma[ws2..];
+        if let Some(conj_len) = leading_conjunction_len(after_ws2) {
+            let ws3 = horizontal_whitespace_len(&after_ws2[conj_len..]);
+            return Some(ws1 + 1 + ws2 + conj_len + ws3);
+        }
+        return Some(ws1 + 1 + ws2);
+    }
+    if let Some(first) = rest.bytes().next()
+        && matches!(first, b';' | b'&' | b'+')
+    {
+        let ws2 = horizontal_whitespace_len(&rest[1..]);
+        return Some(ws1 + 1 + ws2);
+    }
+    if ws1 > 0
+        && let Some(conj_len) = leading_conjunction_len(rest)
+    {
+        let ws2 = horizontal_whitespace_len(&rest[conj_len..]);
+        if ws2 > 0 {
+            return Some(ws1 + conj_len + ws2);
+        }
+    }
+    None
+}
+
+fn leading_conjunction_len(text: &str) -> Option<usize> {
+    if text.starts_with('&') {
+        return Some(1);
+    }
+    let prefix = text.get(..3)?;
+    if prefix.eq_ignore_ascii_case("and")
+        && text[3..]
+            .chars()
+            .next()
+            .is_some_and(|ch| ch == ' ' || ch == '\t')
+    {
+        return Some(3);
+    }
+    None
+}
+
+fn horizontal_whitespace_len(text: &str) -> usize {
+    text.bytes()
+        .take_while(|&byte| byte == b' ' || byte == b'\t')
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -947,6 +1202,70 @@ Unrelated mention of #999 in background prose.\n";
         assert!(refs.contains(&"#424".to_owned()));
         assert!(refs.contains(&"mESmaC/rosen#42".to_owned()));
         assert!(!refs.contains(&"#999".to_owned()));
+    }
+
+    #[test]
+    fn explicit_text_blockers_matches_explicit_forms_and_ignores_bare_mentions_and_prose() {
+        let body = "\
+Waits for mESmaC/velocity#619 and mESmaC/rosen#449.\n\
+Waits for #619.\n\
+Blocked by: mESmaC/velocity#620, #621\n\
+**Blocked by:** #622, and mESmaC/rosen#450\n\
+After #421–#423 and blocked by https://collapse.sh/mESmaC/velocity/issues/625.\n\
+After the refactor, #900 still failed.\n\
+See #901 and related to mESmaC/velocity#902.\n\
+Not blocked by #903 and no longer waits for #904.\n\
+Example in backticks: `Waits for mESmaC/velocity#905`.\n\
+```md\n\
+Waits for #906\n\
+```\n";
+        let refs: Vec<String> = explicit_text_blockers(body)
+            .into_iter()
+            .map(|r| r.to_string())
+            .collect();
+        for expected in [
+            "mESmaC/velocity#619",
+            "mESmaC/rosen#449",
+            "#619",
+            "mESmaC/velocity#620",
+            "#621",
+            "#622",
+            "mESmaC/rosen#450",
+            "#421",
+            "#422",
+            "#423",
+            "mESmaC/velocity#625",
+        ] {
+            assert!(
+                refs.contains(&expected.to_owned()),
+                "missing {expected} in {refs:?}"
+            );
+        }
+        for ignored in [
+            "#900",
+            "#901",
+            "mESmaC/velocity#902",
+            "#903",
+            "#904",
+            "mESmaC/velocity#905",
+            "#906",
+        ] {
+            assert!(
+                !refs.contains(&ignored.to_owned()),
+                "unexpected {ignored} in {refs:?}"
+            );
+        }
+
+        assert!(is_owner_comment("Waits for mESmaC/velocity#619."));
+        assert!(!is_owner_comment(
+            "Velocity agent `planner-1` · [Thread 5](velocity://thread/1/5)\n\nPlan: waits for #619."
+        ));
+        assert!(!is_owner_comment(
+            "Ready to close · Velocity agent `issue-623-1`\n\nAfter #619."
+        ));
+        assert!(!is_owner_comment(
+            "Velocity · Rosen change landed.\n\n<!-- velocity-rosen-issue:landed:abc -->"
+        ));
     }
 
     #[test]

@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{BTreeMap, HashSet};
 use velocity_core::collapse::{IssueHost, allowed_downstream_setup_page, issue_page};
-use velocity_core::issue_dependencies::{IssueReference, referenced_blockers_in_text};
+use velocity_core::issue_dependencies::{
+    IssueReference, explicit_text_blockers, is_owner_comment, referenced_blockers_in_text,
+};
 use velocity_core::issue_holds::{
     BLOCKED_UPSTREAM_LABEL, HOLD_LABEL, TRACKING_LABEL, has_label, is_person_hold_label,
     parse_checklist, parse_explicit_person_hold, parse_person_hold, parse_upstream_target,
@@ -254,6 +256,73 @@ pub fn issue_skip_reason(
     issue_skip_reason_in_projects(&[], project, repository, issue, claimed, now)
 }
 
+/// Cross-project open-issue snapshot and cached comments used to resolve explicit text
+/// blockers (`Waits for`, `Blocked by`, `After`) across same-host and cross-host projects (#623).
+#[derive(Clone, Debug, Default)]
+pub struct TextBlockerContext {
+    /// Known open issue numbers per lowercased `owner/name` repository.
+    /// Presence of a repository key means its open issues have been loaded; an issue number
+    /// absent from that set is closed. When non-empty, a registered project missing from this
+    /// map fails closed until its backlog is loaded.
+    pub open_issues_by_repo: BTreeMap<String, HashSet<u32>>,
+    /// Cached comment bodies per issue number in the current project's repository.
+    pub comments_by_issue: BTreeMap<u32, Vec<String>>,
+}
+
+impl TextBlockerContext {
+    /// Builds a context containing only `repository`'s current open issues.
+    pub fn for_backlog(repository: &str, issues: &[GitHubIssue]) -> Self {
+        let mut context = Self::default();
+        if !repository.is_empty() {
+            context.insert_open_issues(repository, issues);
+        }
+        context
+    }
+
+    pub fn insert_open_issues(&mut self, repository: &str, issues: &[GitHubIssue]) {
+        if repository.is_empty() {
+            return;
+        }
+        let open = issues
+            .iter()
+            .filter(|issue| issue.state == IssueState::Open)
+            .map(|issue| issue.number)
+            .collect();
+        self.open_issues_by_repo
+            .insert(repository.to_ascii_lowercase(), open);
+    }
+
+    pub fn insert_open_numbers(
+        &mut self,
+        repository: &str,
+        numbers: impl IntoIterator<Item = u32>,
+    ) {
+        if repository.is_empty() {
+            return;
+        }
+        self.open_issues_by_repo.insert(
+            repository.to_ascii_lowercase(),
+            numbers.into_iter().collect(),
+        );
+    }
+
+    pub fn insert_comments(&mut self, issue_number: u32, comments: Vec<String>) {
+        self.comments_by_issue.insert(issue_number, comments);
+    }
+
+    pub fn open_numbers_for(&self, repository: &str) -> Option<&HashSet<u32>> {
+        self.open_issues_by_repo
+            .get(&repository.to_ascii_lowercase())
+    }
+
+    pub fn comments_for(&self, issue_number: u32) -> &[String] {
+        self.comments_by_issue
+            .get(&issue_number)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+}
+
 /// Like [`issue_skip_reason`], also treating cross-project blockers whose Rosen land passed
 /// integration in another registered project as satisfied (#608).
 pub fn issue_skip_reason_in_projects(
@@ -263,6 +332,29 @@ pub fn issue_skip_reason_in_projects(
     issue: &GitHubIssue,
     claimed: &HashSet<String>,
     now: u64,
+) -> Option<SkippedIssue> {
+    issue_skip_reason_with_blockers(
+        projects,
+        project,
+        repository,
+        issue,
+        claimed,
+        now,
+        &TextBlockerContext::default(),
+    )
+}
+
+/// Like [`issue_skip_reason_in_projects`], also resolving explicit text blockers (`Waits for`,
+/// `Blocked by`, `After`) in the issue body and owner comments across all registered projects
+/// regardless of each project's issue host (#623).
+pub fn issue_skip_reason_with_blockers(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    claimed: &HashSet<String>,
+    now: u64,
+    context: &TextBlockerContext,
 ) -> Option<SkippedIssue> {
     if issue.state != IssueState::Open {
         return None;
@@ -320,7 +412,7 @@ pub fn issue_skip_reason_in_projects(
         });
     }
     let (named_blockers, unnamed_blockers) =
-        unsatisfied_blockers_in_projects(projects, project, repository, issue);
+        unsatisfied_blockers_with_context(projects, project, repository, issue, context);
     if unnamed_blockers > 0 || !named_blockers.is_empty() {
         let blockers = if named_blockers.is_empty() {
             format!("{unnamed_blockers} open blocker(s)")
@@ -690,6 +782,28 @@ pub fn open_referenced_blockers_for_issue(
     open_numbers: &HashSet<u32>,
     comments: &[String],
 ) -> Vec<String> {
+    open_referenced_blockers_for_issue_with_context(
+        projects,
+        project,
+        repository,
+        issue,
+        open_numbers,
+        comments,
+        &TextBlockerContext::default(),
+    )
+}
+
+/// Like [`open_referenced_blockers_for_issue`], also consulting cross-project open issues
+/// in `context` so cross-host blockers clear once closed on their own host (#623).
+pub fn open_referenced_blockers_for_issue_with_context(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    open_numbers: &HashSet<u32>,
+    comments: &[String],
+    context: &TextBlockerContext,
+) -> Vec<String> {
     let mut open = Vec::new();
     for reference in referenced_blockers_of_issue(repository, issue, comments) {
         let key = reference.relative_to(repository);
@@ -700,6 +814,7 @@ pub fn open_referenced_blockers_for_issue(
             issue,
             open_numbers,
             &reference,
+            context,
         ) && !open
             .iter()
             .any(|existing: &String| existing.eq_ignore_ascii_case(&key))
@@ -720,6 +835,31 @@ pub fn attempts_to_clear(
     comments_by_issue: &BTreeMap<u32, Vec<String>>,
     slots_idle_secs: Option<u64>,
     now: u64,
+) -> AttemptReconcile {
+    attempts_to_clear_with_context(
+        projects,
+        project,
+        repository,
+        issues,
+        comments_by_issue,
+        slots_idle_secs,
+        now,
+        &TextBlockerContext::default(),
+    )
+}
+
+/// Like [`attempts_to_clear`], also consulting `context` so cross-host blockers clear
+/// stored attempts once closed in their own project's backlog (#623).
+#[allow(clippy::too_many_arguments)]
+pub fn attempts_to_clear_with_context(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issues: &[GitHubIssue],
+    comments_by_issue: &BTreeMap<u32, Vec<String>>,
+    slots_idle_secs: Option<u64>,
+    now: u64,
+    context: &TextBlockerContext,
 ) -> AttemptReconcile {
     let mut plan = AttemptReconcile::default();
     let open_numbers: HashSet<u32> = issues
@@ -751,13 +891,14 @@ pub fn attempts_to_clear(
             .get(&issue.number)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let currently_open = open_referenced_blockers_for_issue(
+        let currently_open = open_referenced_blockers_for_issue_with_context(
             projects,
             project,
             repository,
             issue,
             &open_numbers,
             comments,
+            context,
         );
         if currently_open.is_empty()
             && let Some(closed) = closed_blockers_for_attempt(
@@ -768,6 +909,7 @@ pub fn attempts_to_clear(
                 attempt,
                 &open_numbers,
                 comments,
+                context,
             )
         {
             plan.clear
@@ -842,6 +984,7 @@ fn referenced_blockers_of_issue(
 
 /// Returns the formatted closed blockers once every blocker candidate recorded for `attempt`
 /// has closed or passed integration (#617, #618).
+#[allow(clippy::too_many_arguments)]
 fn closed_blockers_for_attempt(
     projects: &[ProjectItem],
     project: &ProjectItem,
@@ -850,6 +993,7 @@ fn closed_blockers_for_attempt(
     attempt: &velocity_store::continuous_dispatch::DispatchAttempt,
     open_numbers: &HashSet<u32>,
     comments: &[String],
+    context: &TextBlockerContext,
 ) -> Option<String> {
     if !attempt.open_referenced_blockers.is_empty() {
         let mut closed = Vec::new();
@@ -862,6 +1006,7 @@ fn closed_blockers_for_attempt(
                 issue,
                 open_numbers,
                 &reference,
+                context,
             ) {
                 return None;
             }
@@ -882,6 +1027,7 @@ fn closed_blockers_for_attempt(
                     issue,
                     open_numbers,
                     reference,
+                    context,
                 )
             })
         {
@@ -902,6 +1048,7 @@ fn blocker_closed_or_satisfied(
     issue: &GitHubIssue,
     open_numbers: &HashSet<u32>,
     reference: &IssueReference,
+    context: &TextBlockerContext,
 ) -> bool {
     let relative = reference.relative_to(repository);
     if issue
@@ -914,11 +1061,19 @@ fn blocker_closed_or_satisfied(
     if blocker_satisfied_in_projects(projects, project, repository, &relative) {
         return true;
     }
-    if reference
-        .repository_or(repository)
-        .eq_ignore_ascii_case(repository)
-    {
+    let target_repo = reference.repository_or(repository);
+    if target_repo.eq_ignore_ascii_case(repository) {
         return !open_numbers.contains(&reference.number());
+    }
+    if let Some((_, _, canonical_repo)) =
+        resolve_project_for_repository(projects, project, repository, target_repo)
+    {
+        let open_set = context
+            .open_numbers_for(&canonical_repo)
+            .or_else(|| context.open_numbers_for(target_repo));
+        if let Some(open_set) = open_set {
+            return !open_set.contains(&reference.number());
+        }
     }
     false
 }
@@ -967,26 +1122,275 @@ fn issue_has_landed_change(
         || project.reopened_landed_hold(identity, version).is_some()
 }
 
-/// Unsatisfied open blockers for `issue` in `project` (#529, #608).
-/// A blocker whose Rosen land Velocity has confirmed integration-green in `project` or any
-/// registered sibling project in `projects` is satisfied for dispatch even while the issue
-/// host still lists it open during the after-land review window.
-fn unsatisfied_blockers_in_projects<'a>(
+/// Unsatisfied open blockers for `issue` in `project` (#529, #608, #623), combining host
+/// dependency links (`open_blockers`) with explicit text blockers (`Waits for`, `Blocked by`,
+/// `After`) in `issue.body` and owner comments resolved across `projects` regardless of host.
+pub fn unsatisfied_blockers_with_context(
     projects: &[ProjectItem],
     project: &ProjectItem,
     repository: &str,
-    issue: &'a GitHubIssue,
-) -> (Vec<&'a str>, u32) {
+    issue: &GitHubIssue,
+    context: &TextBlockerContext,
+) -> (Vec<String>, u32) {
     let unnamed = issue
         .open_blocker_count
         .saturating_sub(u32::try_from(issue.open_blockers.len()).unwrap_or(u32::MAX));
-    let named = issue
+    let mut named: Vec<String> = issue
         .open_blockers
         .iter()
-        .map(String::as_str)
         .filter(|blocker| !blocker_satisfied_in_projects(projects, project, repository, blocker))
+        .cloned()
         .collect();
+    for blocker in
+        unsatisfied_text_blockers_with_context(projects, project, repository, issue, context)
+    {
+        if !named
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&blocker))
+        {
+            named.push(blocker);
+        }
+    }
     (named, unnamed)
+}
+
+/// Unsatisfied explicit text blockers (`Waits for`, `Blocked by`, `After` in `issue.body` or
+/// owner comments) not already satisfied or listed in `issue.open_blockers` / `closed_blockers` (#623).
+pub fn unsatisfied_text_blockers_with_context(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    context: &TextBlockerContext,
+) -> Vec<String> {
+    if context.open_issues_by_repo.is_empty() {
+        return Vec::new();
+    }
+    let comments = context.comments_for(issue.number);
+    let mut unsatisfied = Vec::new();
+    for reference in explicit_text_blockers_for_issue(repository, issue, comments) {
+        let relative = reference.relative_to(repository);
+        if issue_lists_blocker(issue, &relative) {
+            continue;
+        }
+        let target_repo = reference.repository_or(repository);
+        let Some((target_project, _, canonical_repo)) =
+            resolve_project_for_repository(projects, project, repository, target_repo)
+        else {
+            continue;
+        };
+        if text_blocker_satisfied_green(
+            projects,
+            project,
+            target_project,
+            repository,
+            target_repo,
+            &canonical_repo,
+            &reference,
+        ) {
+            continue;
+        }
+        let open_set = context
+            .open_numbers_for(&canonical_repo)
+            .or_else(|| context.open_numbers_for(target_repo));
+        let is_open_or_unloaded = open_set.is_none_or(|set| set.contains(&reference.number()));
+        if is_open_or_unloaded
+            && !unsatisfied
+                .iter()
+                .any(|existing: &String| existing.eq_ignore_ascii_case(&relative))
+        {
+            unsatisfied.push(relative);
+        }
+    }
+    unsatisfied
+}
+
+/// Explicit text blockers on `issue` (body or owner comments) that live on the same issue
+/// host as `project`, are currently confirmed open and unsatisfied, and are not already
+/// linked in `issue.open_blockers` or `issue.closed_blockers` (#623).
+pub fn same_host_text_blockers_to_link(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    context: &TextBlockerContext,
+) -> Vec<IssueReference> {
+    let subject_host = project.effective_issue_host();
+    let comments = context.comments_for(issue.number);
+    let mut to_link = Vec::new();
+    for reference in explicit_text_blockers_for_issue(repository, issue, comments) {
+        let relative = reference.relative_to(repository);
+        if issue_lists_blocker(issue, &relative) {
+            continue;
+        }
+        let target_repo = reference.repository_or(repository);
+        let Some((target_project, target_host, canonical_repo)) =
+            resolve_project_for_repository(projects, project, repository, target_repo)
+        else {
+            continue;
+        };
+        if target_host != subject_host {
+            continue;
+        }
+        if text_blocker_satisfied_green(
+            projects,
+            project,
+            target_project,
+            repository,
+            target_repo,
+            &canonical_repo,
+            &reference,
+        ) {
+            continue;
+        }
+        let confirmed_open = context
+            .open_numbers_for(&canonical_repo)
+            .or_else(|| context.open_numbers_for(target_repo))
+            .is_some_and(|set| set.contains(&reference.number()));
+        if !confirmed_open {
+            continue;
+        }
+        let canonical = if canonical_repo.eq_ignore_ascii_case(repository) {
+            IssueReference::new(None, reference.number())
+        } else {
+            IssueReference::new(Some(&canonical_repo), reference.number())
+        };
+        if let Some(canonical) = canonical
+            && !to_link.contains(&canonical)
+        {
+            to_link.push(canonical);
+        }
+    }
+    to_link
+}
+
+/// Project IDs of registered sibling projects referenced by explicit text blockers across
+/// `issues` (body or cached owner comments) (#623).
+pub fn referenced_blocker_project_ids(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issues: &[GitHubIssue],
+    comments_by_issue: &BTreeMap<u32, Vec<String>>,
+) -> Vec<u32> {
+    let mut ids = Vec::new();
+    for issue in issues {
+        let comments = comments_by_issue
+            .get(&issue.number)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        for reference in explicit_text_blockers_for_issue(repository, issue, comments) {
+            let target_repo = reference.repository_or(repository);
+            if let Some((target_project, _, _)) =
+                resolve_project_for_repository(projects, project, repository, target_repo)
+                && target_project.id != project.id
+                && !ids.contains(&target_project.id)
+            {
+                ids.push(target_project.id);
+            }
+        }
+    }
+    ids
+}
+
+fn explicit_text_blockers_for_issue(
+    repository: &str,
+    issue: &GitHubIssue,
+    comments: &[String],
+) -> Vec<IssueReference> {
+    let mut references = Vec::new();
+    let mut push_unique = |reference: IssueReference| {
+        if reference.is_issue(repository, repository, issue.number) {
+            return;
+        }
+        let repo = reference.repository_or(repository);
+        let duplicate = references.iter().any(|existing: &IssueReference| {
+            existing.number() == reference.number()
+                && existing
+                    .repository_or(repository)
+                    .eq_ignore_ascii_case(repo)
+        });
+        if !duplicate {
+            references.push(reference);
+        }
+    };
+    for reference in explicit_text_blockers(&issue.body) {
+        push_unique(reference);
+    }
+    for comment in comments {
+        if is_owner_comment(comment) {
+            for reference in explicit_text_blockers(comment) {
+                push_unique(reference);
+            }
+        }
+    }
+    references
+}
+
+fn issue_lists_blocker(issue: &GitHubIssue, relative: &str) -> bool {
+    issue
+        .open_blockers
+        .iter()
+        .chain(issue.closed_blockers.iter())
+        .any(|existing| existing.eq_ignore_ascii_case(relative))
+}
+
+fn resolve_project_for_repository<'a>(
+    projects: &'a [ProjectItem],
+    current: &'a ProjectItem,
+    current_repository: &str,
+    target_repository: &str,
+) -> Option<(&'a ProjectItem, IssueHost, String)> {
+    if target_repository.eq_ignore_ascii_case(current_repository) {
+        return Some((
+            current,
+            current.effective_issue_host(),
+            current_repository.to_owned(),
+        ));
+    }
+    let matched = projects
+        .iter()
+        .chain(std::iter::once(current))
+        .find(|item| project_matches_repository(item, target_repository))?;
+    let host = matched.effective_issue_host();
+    let canonical = matched
+        .issue_host_repository()
+        .map(|(_, repo)| repo)
+        .unwrap_or_else(|| target_repository.to_owned());
+    Some((matched, host, canonical))
+}
+
+fn project_matches_repository(item: &ProjectItem, repository: &str) -> bool {
+    item.collapse_repository
+        .as_deref()
+        .is_some_and(|configured| configured.eq_ignore_ascii_case(repository))
+        || item
+            .github_remote
+            .as_deref()
+            .is_some_and(|configured| configured.eq_ignore_ascii_case(repository))
+}
+
+fn text_blocker_satisfied_green(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    target_project: &ProjectItem,
+    repository: &str,
+    target_repo: &str,
+    canonical_repo: &str,
+    reference: &IssueReference,
+) -> bool {
+    let canonical_identity = ThreadIssue::new(canonical_repo.to_owned(), reference.number());
+    if target_project.rosen_issue_integration_green(&canonical_identity) {
+        return true;
+    }
+    if !canonical_repo.eq_ignore_ascii_case(target_repo) {
+        let raw_identity = ThreadIssue::new(target_repo.to_owned(), reference.number());
+        if target_project.rosen_issue_integration_green(&raw_identity) {
+            return true;
+        }
+    }
+    let relative = reference.relative_to(repository);
+    blocker_satisfied_in_projects(projects, project, repository, &relative)
 }
 
 fn blocker_satisfied_in_projects(
@@ -1024,7 +1428,26 @@ pub fn has_unsatisfied_blockers_in_projects(
     repository: &str,
     issue: &GitHubIssue,
 ) -> bool {
-    let (named, unnamed) = unsatisfied_blockers_in_projects(projects, project, repository, issue);
+    has_unsatisfied_blockers_with_context(
+        projects,
+        project,
+        repository,
+        issue,
+        &TextBlockerContext::default(),
+    )
+}
+
+/// Like [`has_unsatisfied_blockers_in_projects`], also resolving explicit text blockers in
+/// `issue.body` and cached owner comments against `context` (#623).
+pub fn has_unsatisfied_blockers_with_context(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    context: &TextBlockerContext,
+) -> bool {
+    let (named, unnamed) =
+        unsatisfied_blockers_with_context(projects, project, repository, issue, context);
     unnamed > 0 || !named.is_empty()
 }
 
@@ -1062,7 +1485,24 @@ pub fn actionable_in_projects(
     repository: &str,
     issue: &GitHubIssue,
 ) -> bool {
-    !has_unsatisfied_blockers_in_projects(projects, project, repository, issue)
+    actionable_in_projects_with_blockers(
+        projects,
+        project,
+        repository,
+        issue,
+        &TextBlockerContext::default(),
+    )
+}
+
+/// Like [`actionable_in_projects`], also resolving explicit text blockers via `context` (#623).
+pub fn actionable_in_projects_with_blockers(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    context: &TextBlockerContext,
+) -> bool {
+    !has_unsatisfied_blockers_with_context(projects, project, repository, issue, context)
         && actionable_without_blockers(issue)
 }
 
@@ -1085,9 +1525,28 @@ pub fn dispatchable_issue_in_projects(
     issue: &GitHubIssue,
     claimed: &HashSet<String>,
 ) -> bool {
+    dispatchable_issue_with_blockers(
+        projects,
+        project,
+        repository,
+        issue,
+        claimed,
+        &TextBlockerContext::default(),
+    )
+}
+
+/// Like [`dispatchable_issue_in_projects`], also checking explicit text blockers in `context` (#623).
+pub fn dispatchable_issue_with_blockers(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    claimed: &HashSet<String>,
+    context: &TextBlockerContext,
+) -> bool {
     let identity = ThreadIssue::new(repository.into(), issue.number);
     let version = IssueVersion::from_github(issue);
-    actionable_in_projects(projects, project, repository, issue)
+    actionable_in_projects_with_blockers(projects, project, repository, issue, context)
         && !claimed.contains(&format!("issue:{}", issue.number))
         && issue_thread(project, &identity).is_none()
         && !project.rosen_issue_completed_for_version(&identity, version)
@@ -1126,10 +1585,43 @@ pub fn ordered_issues_in_projects(
     claimed: &HashSet<String>,
     unblocks: &BTreeMap<u32, u32>,
 ) -> Vec<(GitHubIssue, u32)> {
+    let context = TextBlockerContext::for_backlog(repository, issues);
+    ordered_issues_with_blockers(
+        projects, project, repository, issues, claimed, unblocks, &context,
+    )
+}
+
+/// Like [`ordered_issues_in_projects`], also resolving explicit text blockers across
+/// `projects` using `context` (#623).
+pub fn ordered_issues_with_blockers(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issues: &[GitHubIssue],
+    claimed: &HashSet<String>,
+    unblocks: &BTreeMap<u32, u32>,
+    context: &TextBlockerContext,
+) -> Vec<(GitHubIssue, u32)> {
+    let mut owned_context = None;
+    let effective_context =
+        if !repository.is_empty() && context.open_numbers_for(repository).is_none() {
+            let mut cloned = context.clone();
+            cloned.insert_open_issues(repository, issues);
+            owned_context.insert(cloned)
+        } else {
+            context
+        };
     let mut ready: Vec<_> = issues
         .iter()
         .filter(|issue| {
-            dispatchable_issue_in_projects(projects, project, repository, issue, claimed)
+            dispatchable_issue_with_blockers(
+                projects,
+                project,
+                repository,
+                issue,
+                claimed,
+                effective_context,
+            )
         })
         .map(|issue| {
             let unblocked = unblocks.get(&issue.number).copied().unwrap_or(0);
@@ -1199,6 +1691,31 @@ pub fn ordered_work_in_projects(
     issues_known: bool,
     unblocks: &BTreeMap<u32, u32>,
 ) -> Vec<DispatchWork> {
+    let context = TextBlockerContext::for_backlog(repository, issues);
+    ordered_work_with_blockers(
+        projects,
+        project,
+        repository,
+        issues,
+        claimed,
+        issues_known,
+        unblocks,
+        &context,
+    )
+}
+
+/// Like [`ordered_work_in_projects`], also resolving explicit text blockers via `context` (#623).
+#[allow(clippy::too_many_arguments)]
+pub fn ordered_work_with_blockers(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issues: &[GitHubIssue],
+    claimed: &HashSet<String>,
+    issues_known: bool,
+    unblocks: &BTreeMap<u32, u32>,
+    context: &TextBlockerContext,
+) -> Vec<DispatchWork> {
     if !project.spec_locked || project.version_control != VersionControl::Rosen {
         return Vec::new();
     }
@@ -1212,9 +1729,11 @@ pub fn ordered_work_in_projects(
     let mut work: Vec<_> = user.into_iter().cloned().map(DispatchWork::Task).collect();
     if issues_known {
         work.extend(
-            ordered_issues_in_projects(projects, project, repository, issues, claimed, unblocks)
-                .into_iter()
-                .map(|(issue, unblocked)| DispatchWork::Issue(Box::new(issue), unblocked)),
+            ordered_issues_with_blockers(
+                projects, project, repository, issues, claimed, unblocks, context,
+            )
+            .into_iter()
+            .map(|(issue, unblocked)| DispatchWork::Issue(Box::new(issue), unblocked)),
         );
         work.extend(other.into_iter().cloned().map(DispatchWork::Task));
     }
@@ -2198,5 +2717,273 @@ Also mentions `#902` in code and mESmaC/rosen#903 in another repo.\n"
         let numbers: Vec<u32> = ordered.into_iter().map(|(issue, _)| issue.number).collect();
         // Self-improvement issues come first (ordered by unblocks, then age), then regular work.
         assert_eq!(numbers, vec![20, 19, 10]);
+    }
+
+    // Risk (#623): explicit text blockers (`Waits for`, `Blocked by`, `After` in issue bodies
+    // or owner comments) must block dispatch while open and unblock once closed, both on the
+    // same issue host (with native link candidates) and across GitHub <-> Collapse projects,
+    // while bare `#N` mentions and agent comments never block dispatch.
+    #[test]
+    fn explicit_text_blockers_hold_and_unblock_for_same_host_and_cross_host_projects()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut collapse_sh = ProjectItem::new(1, "collapse.sh".into(), "Z:/collapse".into());
+        collapse_sh.version_control = VersionControl::Rosen;
+        collapse_sh.spec_locked = true;
+        collapse_sh.github_remote = Some("mESmaC/collapse.sh".into());
+        collapse_sh.issue_host = Some(IssueHost::GitHub);
+
+        let mut velocity = ProjectItem::new(2, "velocity".into(), "Z:/velocity".into());
+        velocity.version_control = VersionControl::Rosen;
+        velocity.spec_locked = true;
+        velocity.github_remote = Some("mESmaC/velocity".into());
+        velocity.collapse_repository = Some("mESmaC/velocity".into());
+        velocity.issue_host = Some(IssueHost::Collapse);
+
+        let mut rosen = ProjectItem::new(3, "rosen".into(), "Z:/rosen".into());
+        rosen.version_control = VersionControl::Rosen;
+        rosen.spec_locked = true;
+        rosen.github_remote = Some("mESmaC/rosen".into());
+        rosen.collapse_repository = Some("mESmaC/rosen".into());
+        rosen.issue_host = Some(IssueHost::Collapse);
+
+        let projects = vec![collapse_sh.clone(), velocity.clone(), rosen.clone()];
+        let claimed = HashSet::new();
+
+        // --- Same-host (Collapse) case: velocity#621 waits for #619, plus owner comment ---
+        let mut velocity_621 = sample_issue(621);
+        velocity_621.host = IssueHost::Collapse;
+        velocity_621.body = "Waits for #619.\nSee #618 for context.".into();
+
+        let mut velocity_622 = sample_issue(622);
+        velocity_622.host = IssueHost::Collapse;
+        velocity_622.body = "Ordinary issue mentioning #619 and mESmaC/rosen#449.".into();
+
+        let mut same_host_ctx = TextBlockerContext::default();
+        same_host_ctx.insert_open_numbers("mESmaC/velocity", [618, 619, 620, 621, 622]);
+        same_host_ctx.insert_open_numbers("mESmaC/rosen", [449]);
+        same_host_ctx.insert_comments(
+            621,
+            vec![
+                "After #620 lands we can simplify this.".into(),
+                "Velocity agent `issue-621-1` · [Thread 1](velocity://thread/2/1)\n\nAfter #618 we saw nothing.".into(),
+            ],
+        );
+
+        // Bare `#619` and cross-repo mentions without an explicit phrase never block dispatch.
+        assert!(dispatchable_issue_with_blockers(
+            &projects,
+            &velocity,
+            "mESmaC/velocity",
+            &velocity_622,
+            &claimed,
+            &same_host_ctx,
+        ));
+        assert!(
+            same_host_text_blockers_to_link(
+                &projects,
+                &velocity,
+                "mESmaC/velocity",
+                &velocity_622,
+                &same_host_ctx,
+            )
+            .is_empty()
+        );
+
+        // velocity#621 is blocked by #619 (body) and #620 (owner comment), NOT #618 (agent comment / bare).
+        assert!(!dispatchable_issue_with_blockers(
+            &projects,
+            &velocity,
+            "mESmaC/velocity",
+            &velocity_621,
+            &claimed,
+            &same_host_ctx,
+        ));
+        let skipped_same = issue_skip_reason_with_blockers(
+            &projects,
+            &velocity,
+            "mESmaC/velocity",
+            &velocity_621,
+            &claimed,
+            0,
+            &same_host_ctx,
+        )
+        .ok_or("expected velocity#621 to be skipped")?;
+        assert_eq!(skipped_same.category, SkipCategory::Blocker);
+        assert_eq!(skipped_same.reason, "blocked by #619, #620");
+
+        let to_link: Vec<String> = same_host_text_blockers_to_link(
+            &projects,
+            &velocity,
+            "mESmaC/velocity",
+            &velocity_621,
+            &same_host_ctx,
+        )
+        .into_iter()
+        .map(|r| r.to_string())
+        .collect();
+        assert_eq!(to_link, vec!["#619", "#620"]);
+
+        // Cross-repo same-host (rosen on Collapse -> velocity on Collapse) is also linkable.
+        let mut rosen_450 = sample_issue(450);
+        rosen_450.host = IssueHost::Collapse;
+        rosen_450.body = "Blocked by mESmaC/velocity#619.".into();
+        let rosen_links: Vec<String> = same_host_text_blockers_to_link(
+            &projects,
+            &rosen,
+            "mESmaC/rosen",
+            &rosen_450,
+            &same_host_ctx,
+        )
+        .into_iter()
+        .map(|r| r.to_string())
+        .collect();
+        assert_eq!(rosen_links, vec!["mESmaC/velocity#619"]);
+
+        // Once #619 and #620 close on Collapse, velocity#621 dispatches.
+        same_host_ctx.insert_open_numbers("mESmaC/velocity", [618, 621, 622]);
+        assert!(dispatchable_issue_with_blockers(
+            &projects,
+            &velocity,
+            "mESmaC/velocity",
+            &velocity_621,
+            &claimed,
+            &same_host_ctx,
+        ));
+
+        // --- Cross-host case: collapse.sh#225 (GitHub) waits for velocity#619 & rosen#449 (Collapse) ---
+        let mut collapse_225 = sample_issue(225);
+        collapse_225.host = IssueHost::GitHub;
+        collapse_225.body =
+            "Waits for mESmaC/velocity#619 and mESmaC/rosen#449.\n\nDetails.".into();
+
+        // Referenced sibling project IDs include both velocity and rosen.
+        assert_eq!(
+            referenced_blocker_project_ids(
+                &projects,
+                &collapse_sh,
+                "mESmaC/collapse.sh",
+                std::slice::from_ref(&collapse_225),
+                &BTreeMap::new(),
+            ),
+            vec![2, 3]
+        );
+
+        // Before sibling backlogs load, dispatch fails closed instead of starting prematurely.
+        let mut cross_host_ctx = TextBlockerContext::default();
+        cross_host_ctx.insert_open_numbers("mESmaC/collapse.sh", [225]);
+        assert!(!dispatchable_issue_with_blockers(
+            &projects,
+            &collapse_sh,
+            "mESmaC/collapse.sh",
+            &collapse_225,
+            &claimed,
+            &cross_host_ctx,
+        ));
+
+        // With both Collapse sibling issues open, collapse.sh#225 is blocked and NOT auto-linked on GitHub.
+        cross_host_ctx.insert_open_numbers("mESmaC/velocity", [619]);
+        cross_host_ctx.insert_open_numbers("mESmaC/rosen", [449]);
+        assert!(!dispatchable_issue_with_blockers(
+            &projects,
+            &collapse_sh,
+            "mESmaC/collapse.sh",
+            &collapse_225,
+            &claimed,
+            &cross_host_ctx,
+        ));
+        let skipped_cross = issue_skip_reason_with_blockers(
+            &projects,
+            &collapse_sh,
+            "mESmaC/collapse.sh",
+            &collapse_225,
+            &claimed,
+            0,
+            &cross_host_ctx,
+        )
+        .ok_or("expected collapse.sh#225 to be skipped")?;
+        assert_eq!(skipped_cross.category, SkipCategory::Blocker);
+        assert_eq!(
+            skipped_cross.reason,
+            "blocked by mESmaC/velocity#619, mESmaC/rosen#449"
+        );
+        assert!(
+            same_host_text_blockers_to_link(
+                &projects,
+                &collapse_sh,
+                "mESmaC/collapse.sh",
+                &collapse_225,
+                &cross_host_ctx,
+            )
+            .is_empty()
+        );
+
+        // Closing only velocity#619 keeps collapse.sh#225 waiting on rosen#449.
+        cross_host_ctx.insert_open_numbers("mESmaC/velocity", []);
+        assert!(!dispatchable_issue_with_blockers(
+            &projects,
+            &collapse_sh,
+            "mESmaC/collapse.sh",
+            &collapse_225,
+            &claimed,
+            &cross_host_ctx,
+        ));
+
+        // Once rosen#449 also closes, collapse.sh#225 becomes dispatchable.
+        cross_host_ctx.insert_open_numbers("mESmaC/rosen", []);
+        assert!(dispatchable_issue_with_blockers(
+            &projects,
+            &collapse_sh,
+            "mESmaC/collapse.sh",
+            &collapse_225,
+            &claimed,
+            &cross_host_ctx,
+        ));
+        assert!(
+            issue_skip_reason_with_blockers(
+                &projects,
+                &collapse_sh,
+                "mESmaC/collapse.sh",
+                &collapse_225,
+                &claimed,
+                0,
+                &cross_host_ctx,
+            )
+            .is_none()
+        );
+
+        // Prior attempt on collapse.sh#225 also clears once cross-host blockers close.
+        let mut attempted_collapse = collapse_sh.clone();
+        attempted_collapse.continuous_dispatch.attempts.push(
+            velocity_store::continuous_dispatch::DispatchAttempt {
+                repository: "mESmaC/collapse.sh".into(),
+                number: 225,
+                updated_at: collapse_225.updated_at.clone(),
+                attempted_at: Some(1_000),
+                open_referenced_blockers: vec![
+                    "mESmaC/velocity#619".into(),
+                    "mESmaC/rosen#449".into(),
+                ],
+                thread_id: None,
+                last_result: None,
+            },
+        );
+        let reconcile = attempts_to_clear_with_context(
+            &projects,
+            &attempted_collapse,
+            "mESmaC/collapse.sh",
+            &[collapse_225],
+            &BTreeMap::new(),
+            None,
+            1_200,
+            &cross_host_ctx,
+        );
+        assert_eq!(
+            reconcile.clear,
+            vec![(
+                225,
+                AttemptClearReason::BlockerClosed("mESmaC/velocity#619, mESmaC/rosen#449".into())
+            )]
+        );
+        Ok(())
     }
 }

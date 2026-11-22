@@ -19,14 +19,31 @@ pub struct DependencyGraph {
 impl DependencyGraph {
     /// Replaces what `source` last read with `repository`'s current open issues.
     pub fn replace_source(&mut self, source: u32, repository: &str, issues: &[GitHubIssue]) {
+        self.replace_source_with_blockers(source, repository, issues, &BTreeMap::new());
+    }
+
+    /// Replaces what `source` last read with `repository`'s current open issues plus any
+    /// additional open blockers (such as explicit text blockers from body or owner comments, #623).
+    pub fn replace_source_with_blockers(
+        &mut self,
+        source: u32,
+        repository: &str,
+        issues: &[GitHubIssue],
+        extra_open_blockers: &BTreeMap<u32, Vec<String>>,
+    ) {
         let repository = repository.to_lowercase();
         let edges = issues
             .iter()
             .flat_map(|issue| {
                 let dependent = (repository.clone(), issue.number);
+                let extra = extra_open_blockers
+                    .get(&issue.number)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
                 issue
                     .open_blockers
                     .iter()
+                    .chain(extra.iter())
                     .filter_map(|blocker| blocker_key(&repository, blocker))
                     .map(move |blocker| (blocker, dependent.clone()))
             })

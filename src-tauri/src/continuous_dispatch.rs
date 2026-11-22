@@ -5,6 +5,7 @@ pub(crate) mod overlap;
 mod parked;
 pub(crate) mod reopened_land;
 pub(crate) mod restart_wait;
+mod text_blockers;
 
 use crate::state::ManagedStateStore;
 use crate::threads::{ManagedThreads, lock, report};
@@ -25,18 +26,21 @@ use velocity_store::continuous_dispatch::{
 use velocity_store::issues::ThreadIssue;
 use velocity_store::{ProjectItem, TaskAttribution, VersionControl};
 use velocity_threads::continuous_dispatch::{
-    AttemptClearReason, DispatchView, DispatchWork, SkippedIssue, attempts_to_clear,
-    blocked_dispatch_issue, dispatchable_issue_in_projects, dispatchable_task, integration_notice,
-    issue_number_from_piece, issue_skip_reason_in_projects, open_referenced_blockers_for_issue,
-    ordered_work_in_projects, plan_task, stale_claim_reason, stalled_landed_issues,
-    uncovered_base_notice,
+    AttemptClearReason, DispatchView, DispatchWork, SkippedIssue, TextBlockerContext,
+    attempts_to_clear_with_context, blocked_dispatch_issue, dispatchable_issue_with_blockers,
+    dispatchable_task, has_unsatisfied_blockers_with_context, integration_notice,
+    issue_number_from_piece, issue_skip_reason_with_blockers,
+    open_referenced_blockers_for_issue_with_context, ordered_work_with_blockers, plan_task,
+    stale_claim_reason, stalled_landed_issues, uncovered_base_notice,
 };
 
 #[derive(Clone, Default)]
 struct Backlog {
     repository: String,
     issues: Vec<GitHubIssue>,
+    comments: BTreeMap<u32, Vec<String>>,
     error: Option<String>,
+    refreshed_at: Option<Instant>,
 }
 
 type Backlogs = Mutex<BTreeMap<u32, Backlog>>;
@@ -121,6 +125,7 @@ fn view(application: &AppHandle, identifier: u32) -> Result<DispatchView, String
         .as_ref()
         .is_some_and(|backlog| backlog.error.is_none());
     let backlog = backlog.unwrap_or_default();
+    let blocker_context = text_blockers::context_for_project(application, identifier, None);
     let mut claimed = claimed_pieces(application, identifier)?;
     let unblocks = unblock_counts(application, &backlog.repository)?;
     let store = lock(
@@ -131,7 +136,7 @@ fn view(application: &AppHandle, identifier: u32) -> Result<DispatchView, String
     include_overlap_waits(project, &backlog.repository, &mut claimed);
     include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
     restart_wait::include_restart_waits(application, identifier, &mut claimed);
-    let work = ordered_work_in_projects(
+    let work = ordered_work_with_blockers(
         &store.state().projects,
         project,
         &backlog.repository,
@@ -139,6 +144,7 @@ fn view(application: &AppHandle, identifier: u32) -> Result<DispatchView, String
         &claimed,
         issues_known,
         &unblocks,
+        &blocker_context,
     );
     let mut view = DispatchView::new(project, &work, backlog.error);
     let stalled = stalled_landed_issues(
@@ -212,6 +218,7 @@ pub(crate) fn integration_idle(application: &AppHandle, identifier: u32) -> Resu
     let Some(backlog) = known else {
         return Ok(false);
     };
+    let blocker_context = text_blockers::context_for_project(application, identifier, None);
     let mut claimed = claimed_pieces(application, identifier)?;
     let store = lock(
         application.state::<ManagedStateStore>().inner(),
@@ -223,7 +230,7 @@ pub(crate) fn integration_idle(application: &AppHandle, identifier: u32) -> Resu
     include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
     restart_wait::include_restart_waits(application, identifier, &mut claimed);
     Ok(busy_count(project) == 0
-        && ordered_work_in_projects(
+        && ordered_work_with_blockers(
             &store.state().projects,
             project,
             &backlog.repository,
@@ -232,6 +239,7 @@ pub(crate) fn integration_idle(application: &AppHandle, identifier: u32) -> Resu
             true,
             // Only emptiness matters here, not the order.
             &BTreeMap::new(),
+            &blocker_context,
         )
         .is_empty())
 }
@@ -286,6 +294,7 @@ pub(crate) fn health_snapshot(
         })
         .collect();
     let unblocks = unblock_counts(application, &backlog.repository).unwrap_or_default();
+    let blocker_context = text_blockers::context_for_project(application, identifier, None);
     let store = lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
@@ -302,13 +311,14 @@ pub(crate) fn health_snapshot(
             let reason = if let Some(wait) = restart_waits.get(&issue.number) {
                 Some(wait.skipped())
             } else {
-                issue_skip_reason_in_projects(
+                issue_skip_reason_with_blockers(
                     &store.state().projects,
                     project,
                     &backlog.repository,
                     issue,
                     &claimed,
                     now,
+                    &blocker_context,
                 )
             };
             if let Some(skip) = reason {
@@ -325,7 +335,7 @@ pub(crate) fn health_snapshot(
     include_launch_holds(project, &backlog.repository, &mut claimed);
     include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
     restart_wait::include_restart_waits(application, identifier, &mut claimed);
-    let ready_count = ordered_work_in_projects(
+    let ready_count = ordered_work_with_blockers(
         &store.state().projects,
         project,
         &backlog.repository,
@@ -333,6 +343,7 @@ pub(crate) fn health_snapshot(
         &claimed,
         issues_known,
         &unblocks,
+        &blocker_context,
     )
     .len();
     Some(DispatchHealthSnapshot {
@@ -420,6 +431,7 @@ struct Reader {
     backlog: Backlog,
     parked: parked::Parked,
     holds: holds::Holds,
+    text_blockers: text_blockers::TextBlockers,
 }
 
 fn monitor(application: AppHandle) {
@@ -503,9 +515,11 @@ fn read_other_dependencies(
     // A project that cannot be read now keeps its last dependencies until the next attempt.
     let reader = reader(&project, readers);
     if let Ok(backlog) = read_issues(reader) {
-        record_dependencies(application, project.id, &backlog)?;
+        record_dependencies(application, project.id, &backlog, &BTreeMap::new())?;
         convert_dependency_holds(reader, &backlog);
         reader.backlog = backlog;
+        lock(application.state::<Backlogs>().inner(), "dispatch backlog")?
+            .insert(project.id, reader.backlog.clone());
         holds::refresh(reader);
     }
     Ok(())
@@ -555,12 +569,18 @@ fn record_dependencies(
     application: &AppHandle,
     project: u32,
     backlog: &Backlog,
+    extra_open_blockers: &BTreeMap<u32, Vec<String>>,
 ) -> Result<(), String> {
     lock(
         application.state::<Dependencies>().inner(),
         "issue dependencies",
     )?
-    .replace_source(project, &backlog.repository, &backlog.issues);
+    .replace_source_with_blockers(
+        project,
+        &backlog.repository,
+        &backlog.issues,
+        extra_open_blockers,
+    );
     Ok(())
 }
 
@@ -613,6 +633,7 @@ fn pass(
         start_ready(application, project.id, None)?;
     }
     refresh_backlog(application, project.id, reader)?;
+    text_blockers::refresh(application, project, reader)?;
     holds::refresh(reader);
     reopened_land::refresh(application, project, &reader.backlog);
     reconcile_attempts(application, project.id, reader)?;
@@ -660,7 +681,9 @@ fn reconcile_attempts(
         return Ok(());
     }
     let comments_by_issue = load_attempt_comments(reader, &attempted_numbers);
-    let plan = attempts_to_clear(
+    let blocker_context =
+        text_blockers::context_for_project(application, identifier, Some(&reader.backlog));
+    let plan = attempts_to_clear_with_context(
         &all_projects,
         &project,
         &repository,
@@ -668,6 +691,7 @@ fn reconcile_attempts(
         &comments_by_issue,
         slots_idle_secs,
         now,
+        &blocker_context,
     );
     if plan.clear.is_empty() && plan.add_open_blockers.is_empty() {
         return Ok(());
@@ -802,27 +826,6 @@ fn record_cleared_attempts(project_name: &str, cleared: &[(u32, AttemptClearReas
     }
 }
 
-fn comments_for_issue_start(reader: &mut Reader, issue: &GitHubIssue) -> Vec<String> {
-    if let Some(cached) = reader
-        .attempt_comments
-        .get(&issue.number)
-        .filter(|(updated_at, _)| updated_at == &issue.updated_at)
-        .map(|(_, bodies)| bodies.clone())
-    {
-        return cached;
-    }
-    let Some(client) = reader.client.as_ref() else {
-        return Vec::new();
-    };
-    let Ok(bodies) = client.read_comment_bodies(issue.number) else {
-        return Vec::new();
-    };
-    reader
-        .attempt_comments
-        .insert(issue.number, (issue.updated_at.clone(), bodies.clone()));
-    bodies
-}
-
 fn load_attempt_comments(
     reader: &mut Reader,
     attempted_numbers: &HashSet<u32>,
@@ -864,6 +867,11 @@ fn start_ready(
     }
     let defaults = Backlog::default();
     let backlog = reader.as_ref().map_or(&defaults, |reader| &reader.backlog);
+    let blocker_context = text_blockers::context_for_project(
+        application,
+        identifier,
+        reader.as_deref().map(|r| &r.backlog),
+    );
     let mut claimed = claimed_pieces(application, identifier)?;
     let unblocks = unblock_counts(application, &backlog.repository)?;
     let work = {
@@ -876,7 +884,7 @@ fn start_ready(
         include_launch_holds(project, &backlog.repository, &mut claimed);
         include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
         restart_wait::include_restart_waits(application, identifier, &mut claimed);
-        ordered_work_in_projects(
+        ordered_work_with_blockers(
             &store.state().projects,
             project,
             &backlog.repository,
@@ -884,6 +892,7 @@ fn start_ready(
             &claimed,
             reader.is_some() && backlog.error.is_none(),
             &unblocks,
+            &blocker_context,
         )
     };
     for item in work {
@@ -972,7 +981,16 @@ fn try_start_issue(
         .filter(|issue| issue.state == IssueState::Open)
         .map(|issue| issue.number)
         .collect();
-    let comments = comments_for_issue_start(reader, &fresh);
+    let comments =
+        text_blockers::load_issue_comments(reader, &fresh).map_err(|error| error.to_string())?;
+    let current_project = lock(state.inner(), "persisted state")?
+        .project(identifier)
+        .cloned();
+    if let Some(project) = current_project {
+        text_blockers::refresh_for_issue(application, &project, reader, &fresh, &comments)?;
+    }
+    let blocker_context =
+        text_blockers::context_for_project(application, identifier, Some(&reader.backlog));
     start_issue(
         application,
         identifier,
@@ -980,6 +998,7 @@ fn try_start_issue(
         &fresh,
         &open_numbers,
         &comments,
+        &blocker_context,
     )?;
     overlap::refresh(application, identifier, reader)
 }
@@ -1316,11 +1335,12 @@ fn refresh_backlog(
         // Failed reads also back off: an unavailable API must not be hammered every tick.
         reader.refreshed = Some(Instant::now());
         match read_issues(reader) {
-            Ok(backlog) => {
+            Ok(mut backlog) => {
                 convert_dependency_holds(reader, &backlog);
+                backlog.comments = std::mem::take(&mut reader.backlog.comments);
                 reader.backlog = backlog;
                 // A failed read keeps the last dependencies, so the order holds through it.
-                record_dependencies(application, project, &reader.backlog)?;
+                record_dependencies(application, project, &reader.backlog, &BTreeMap::new())?;
                 prune_landed_holds(application, project, &reader.backlog)?;
             }
             Err(error) => {
@@ -1381,6 +1401,7 @@ fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> 
         backlog: Backlog::default(),
         parked: parked::Parked::new(),
         holds: holds::Holds::new(),
+        text_blockers: text_blockers::TextBlockers::new(),
     };
     let reader = readers.entry(project.id).or_insert_with(setup);
     if reader.directory != project.repository_path || reader.host != host || reader.remote != remote
@@ -1418,7 +1439,9 @@ fn read_issues(reader: &mut Reader) -> Result<Backlog, velocity_github::GitHubCo
     Ok(Backlog {
         repository: client.repository().into(),
         issues: client.open_issues()?,
+        comments: BTreeMap::new(),
         error: None,
+        refreshed_at: Some(Instant::now()),
     })
 }
 
@@ -1440,6 +1463,7 @@ fn start_issue(
     issue: &GitHubIssue,
     open_numbers: &HashSet<u32>,
     cached_comments: &[String],
+    blocker_context: &TextBlockerContext,
 ) -> Result<(), String> {
     if velocity_rosen::memory::is_low() {
         return Ok(());
@@ -1454,12 +1478,13 @@ fn start_issue(
         if !project_has_capacity(project) || has_user_task(project, &claimed) {
             return Ok(());
         }
-        if !dispatchable_issue_in_projects(
+        if !dispatchable_issue_with_blockers(
             &store.state().projects,
             project,
             repository,
             issue,
             &claimed,
+            blocker_context,
         ) || restart_wait::is_waiting(application, identifier, issue.number)
         {
             return Ok(());
@@ -1482,13 +1507,14 @@ fn start_issue(
         {
             return Ok(());
         }
-        let open_referenced_blockers = open_referenced_blockers_for_issue(
+        let open_referenced_blockers = open_referenced_blockers_for_issue_with_context(
             &store.state().projects,
             project,
             repository,
             issue,
             open_numbers,
             cached_comments,
+            blocker_context,
         );
         let rosen_project =
             (project.version_control == VersionControl::Rosen).then(|| project.clone());
@@ -1764,6 +1790,8 @@ fn report_no_change_issues(
         )
         .map(|store| store.state().projects.clone())
         .unwrap_or_default();
+        let blocker_context =
+            text_blockers::context_for_project(application, project.id, Some(&reader.backlog));
         let result = IssueClient::for_host(
             Path::new(&reader.directory),
             reader.host,
@@ -1776,11 +1804,12 @@ fn report_no_change_issues(
                 &byline,
                 &pending.reason,
                 |issue| {
-                    velocity_threads::continuous_dispatch::has_unsatisfied_blockers_in_projects(
+                    has_unsatisfied_blockers_with_context(
                         &all_projects,
                         project,
                         &pending.issue.repository,
                         issue,
+                        &blocker_context,
                     ) || restart_wait::is_waiting(application, project.id, issue.number)
                 },
             )
