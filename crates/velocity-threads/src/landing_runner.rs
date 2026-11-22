@@ -213,16 +213,23 @@ impl RosenLanding {
     ) {
         let id = project.project.id;
         host.catch_up_before_land(id).await;
-        match velocity_rosen::preflight::verify_for_land(server, change).await {
-            Ok(velocity_rosen::preflight::LandPreflightGate::Passed)
-            | Ok(velocity_rosen::preflight::LandPreflightGate::Closed) => {}
-            Ok(velocity_rosen::preflight::LandPreflightGate::Refused {
-                reason,
-                instructions,
-            }) => {
-                return self.send_refusal(host, project, thread, change, (reason, instructions));
+        let preflight_refusal =
+            match velocity_rosen::preflight::verify_for_land(server, change).await {
+                Ok(velocity_rosen::preflight::LandPreflightGate::Passed)
+                | Ok(velocity_rosen::preflight::LandPreflightGate::Closed) => None,
+                Ok(velocity_rosen::preflight::LandPreflightGate::Refused {
+                    reason,
+                    instructions,
+                }) => Some((reason, instructions)),
+                Err(_) => return,
+            };
+        if velocity_core::landing::pre_land_check_plan(preflight_refusal.is_none(), false, false)
+            == velocity_core::landing::PreLandCheckPlan::RefusePreflight
+        {
+            if let Some(refusal) = preflight_refusal {
+                return self.send_refusal(host, project, thread, change, refusal);
             }
-            Err(_) => return,
+            return;
         }
         let gate_started = Instant::now();
         match self

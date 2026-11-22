@@ -1,21 +1,69 @@
-//! Pure F6 decisions. I/O supplies overlap evidence and exact checked commit identities.
+//! Pure F6/F7 landing and rebase decisions. Native I/O supplies overlap evidence,
+//! preflight attestations, bindings status and Rosen's post-land policy.
+
+/// Pre-land check plan for a named Rosen change (SPEC.md F6/F7, #503, #560).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CheckScope {
-    None,
-    BuildAndLint,
-    Full,
+pub enum PreLandCheckPlan {
+    /// Snapshot lacks a passing preflight; refuse before staging any merge check.
+    RefusePreflight,
+    /// Preflight passed; stage the merge and run `export-bindings --check` before landing.
+    RunBindingsCheck,
+    /// Preflight passed and bindings are either untouched or already verified; land now.
+    LandNow,
 }
 
-/// A moved base always requires at least a rebuild; a moved author head needs full checks.
-pub fn check_scope(same_head: bool, same_base: bool, overlap: bool) -> CheckScope {
-    if !same_head {
-        CheckScope::Full
-    } else if same_base {
-        CheckScope::None
-    } else if overlap {
-        CheckScope::Full
+impl PreLandCheckPlan {
+    /// Staged pre-land merge check passes Velocity runs for this decision (0 or 1).
+    pub const fn staged_passes(self) -> u32 {
+        match self {
+            Self::RunBindingsCheck => 1,
+            Self::RefusePreflight | Self::LandNow => 0,
+        }
+    }
+}
+
+/// Decides what pre-land check work Velocity performs before asking Rosen to land
+/// a named change (SPEC.md F6/F7, #503, #560).
+pub fn pre_land_check_plan(
+    preflight_current: bool,
+    touches_bindings: bool,
+    bindings_verified: bool,
+) -> PreLandCheckPlan {
+    if !preflight_current {
+        PreLandCheckPlan::RefusePreflight
+    } else if touches_bindings && !bindings_verified {
+        PreLandCheckPlan::RunBindingsCheck
     } else {
-        CheckScope::BuildAndLint
+        PreLandCheckPlan::LandNow
+    }
+}
+
+/// Post-land verification pass plan for a landed Rosen commit (SPEC.md F7, #567).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PostLandCheckPlan {
+    /// Whether the dedicated build worker runs a separate `CheckKind::Build` pass.
+    pub separate_build_pass: bool,
+    /// Whether the integration/test pass prepends `pre_land` build/lint commands.
+    pub prepend_pre_land_to_test: bool,
+}
+
+impl PostLandCheckPlan {
+    /// Total post-land verification passes executed for the batch (1 or 2).
+    pub const fn passes(self) -> u32 {
+        1 + self.separate_build_pass as u32
+    }
+}
+
+/// Decides how Velocity schedules Rosen's post-land build and test verification passes
+/// for a landed commit (SPEC.md F7, #567).
+pub fn post_land_check_plan(
+    after_land: bool,
+    build_prefix_required: bool,
+    has_full_suite: bool,
+) -> PostLandCheckPlan {
+    PostLandCheckPlan {
+        separate_build_pass: !after_land && build_prefix_required,
+        prepend_pre_land_to_test: after_land && !has_full_suite,
     }
 }
 
@@ -44,25 +92,68 @@ pub fn needs_rebase(claimed: bool, edited_overlap: bool, contested: bool) -> boo
 
 #[cfg(test)]
 mod tests {
-    // Omitting a rebase or checking an old base can lose another agent's changes.
+    use super::{PostLandCheckPlan, PreLandCheckPlan};
+
+    fn parse_pre_land_action(label: &str) -> Result<PreLandCheckPlan, String> {
+        match label {
+            "refuse_preflight" => Ok(PreLandCheckPlan::RefusePreflight),
+            "check_bindings" => Ok(PreLandCheckPlan::RunBindingsCheck),
+            "land" => Ok(PreLandCheckPlan::LandNow),
+            other => Err(format!("unknown pre_land action: {other}")),
+        }
+    }
+
+    // Risk (#629): omitting a rebase or skipping a required Rosen pre-land/post-land check
+    // risks landing stale snapshots, stale bindings, or unverified commits.
     #[test]
     fn lean_landing_fixtures() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut rebase_rows, mut pre_land_rows, mut post_land_rows) = (0usize, 0usize, 0usize);
         for line in include_str!("../../../proofs/fixtures/targeted-rebase.tsv").lines() {
             let fields: Vec<_> = line.split('\t').collect();
-            let first = fields[0].parse()?;
-            let second = fields[1].parse()?;
-            let third = fields[2].parse()?;
-            assert_eq!(
-                super::needs_rebase(first, second, third),
-                fields[3].parse::<bool>()?
-            );
-            let scope = match super::check_scope(first, second, third) {
-                super::CheckScope::None => 0,
-                super::CheckScope::BuildAndLint => 1,
-                super::CheckScope::Full => 2,
-            };
-            assert_eq!(scope, fields[4].parse::<u32>()?);
+            match fields.first().copied() {
+                Some("rebase") => {
+                    rebase_rows += 1;
+                    assert_eq!(
+                        super::needs_rebase(
+                            fields[1].parse()?,
+                            fields[2].parse()?,
+                            fields[3].parse()?,
+                        ),
+                        fields[4].parse::<bool>()?,
+                    );
+                }
+                Some("pre_land") => {
+                    pre_land_rows += 1;
+                    let plan = super::pre_land_check_plan(
+                        fields[1].parse()?,
+                        fields[2].parse()?,
+                        fields[3].parse()?,
+                    );
+                    assert_eq!(plan, parse_pre_land_action(fields[4])?);
+                    assert_eq!(plan.staged_passes(), fields[5].parse::<u32>()?);
+                }
+                Some("post_land") => {
+                    post_land_rows += 1;
+                    let plan = super::post_land_check_plan(
+                        fields[1].parse()?,
+                        fields[2].parse()?,
+                        fields[3].parse()?,
+                    );
+                    assert_eq!(
+                        plan,
+                        PostLandCheckPlan {
+                            separate_build_pass: fields[4].parse()?,
+                            prepend_pre_land_to_test: fields[5].parse()?,
+                        },
+                    );
+                    assert_eq!(plan.passes(), fields[6].parse::<u32>()?);
+                }
+                other => {
+                    return Err(format!("unexpected targeted-rebase fixture row: {other:?}").into());
+                }
+            }
         }
+        assert_eq!((rebase_rows, pre_land_rows, post_land_rows), (8, 8, 8));
         Ok(())
     }
 }

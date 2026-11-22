@@ -112,9 +112,11 @@ pub async fn next_build_batch(server: &ProjectServer) -> Result<Option<Batch>, R
         }
         Err(error) => return Err(error.into()),
     };
-    Ok(batch(&client, work)
-        .await?
-        .filter(|batch| !batch.after_land && (merge || batch.priority == CheckPriority::Landing)))
+    Ok(batch(&client, work).await?.filter(|batch| {
+        let build_prefix_required = merge || batch.priority == CheckPriority::Landing;
+        velocity_core::landing::post_land_check_plan(batch.after_land, build_prefix_required, false)
+            .separate_build_pass
+    }))
 }
 
 /// The current base's landing policy, never a checkout's possibly stale configuration.
@@ -368,9 +370,11 @@ async fn batch(client: &Client, work: PostLandWork) -> Result<Option<Batch>, Ros
     let mut merge_build = None;
     if after_land && job.kind == CheckKind::Test {
         let (pre_land_commands, build_job) = resolve_pre_land_job(job.commit, &policy.config);
-        if !commands
+        let has_full_suite = commands
             .iter()
-            .any(|command| command == integration::FULL_SUITE)
+            .any(|command| command == integration::FULL_SUITE);
+        if velocity_core::landing::post_land_check_plan(after_land, false, has_full_suite)
+            .prepend_pre_land_to_test
         {
             commands.splice(..0, pre_land_commands);
         }
@@ -673,10 +677,11 @@ pub async fn orphaned_batch(
     let policy = client.project_config(Some(tip.0)).await?;
     let after_land = policy.config.review == ReviewMode::AfterLand;
     let mut commands = policy.config.checks.post_land.commands.clone();
-    if after_land
-        && !commands
-            .iter()
-            .any(|command| command == integration::FULL_SUITE)
+    let has_full_suite = commands
+        .iter()
+        .any(|command| command == integration::FULL_SUITE);
+    if velocity_core::landing::post_land_check_plan(after_land, false, has_full_suite)
+        .prepend_pre_land_to_test
     {
         commands.splice(..0, policy.config.checks.pre_land.commands.iter().cloned());
     }

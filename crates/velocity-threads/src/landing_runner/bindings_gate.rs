@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use velocity_core::duty::DutyEventKind;
+use velocity_core::landing::{PreLandCheckPlan, pre_land_check_plan};
 use velocity_core::rosen_checker::{
     BINDINGS_EXPORTER, bindings_unchecked_line, changes_bindings, checking_bindings_line,
 };
@@ -47,14 +48,24 @@ impl RosenLanding {
     ) -> Gate {
         let key = (project.project.id, thread.id);
         let generation = thread.rosen_progress_generation;
-        if let Some(gate) = self.checked_gate(key, generation) {
-            return gate;
-        }
-        match touches_bindings(server, thread, change).await {
-            Ok(true) => {}
-            Ok(false) => return Gate::Clear,
-            // The land needs the same server, so the next pass asks again.
-            Err(_) => return Gate::Waiting,
+        let bindings_verified = match self.checked_gate(key, generation) {
+            Some(Gate::Clear) => true,
+            Some(gate) => return gate,
+            None => false,
+        };
+        let touches = if bindings_verified {
+            false
+        } else {
+            match touches_bindings(server, thread, change).await {
+                Ok(touches) => touches,
+                // The land needs the same server, so the next pass asks again.
+                Err(_) => return Gate::Waiting,
+            }
+        };
+        match pre_land_check_plan(true, touches, bindings_verified) {
+            PreLandCheckPlan::LandNow => return Gate::Clear,
+            PreLandCheckPlan::RefusePreflight => return Gate::Waiting,
+            PreLandCheckPlan::RunBindingsCheck => {}
         }
         let Ok(root) = Location::new(&project.project, &project.worktrees).project_root() else {
             return Gate::Clear;

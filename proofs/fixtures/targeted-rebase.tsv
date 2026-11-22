@@ -1,8 +1,24 @@
-false	false	false	false	2
-false	false	true	false	2
-false	true	false	false	2
-false	true	true	true	2
-true	false	false	false	1
-true	false	true	true	2
-true	true	false	false	0
-true	true	true	true	0
+rebase	false	false	false	false
+rebase	false	false	true	false
+rebase	false	true	false	false
+rebase	false	true	true	true
+rebase	true	false	false	false
+rebase	true	false	true	true
+rebase	true	true	false	false
+rebase	true	true	true	true
+pre_land	false	false	false	refuse_preflight	0
+pre_land	false	false	true	refuse_preflight	0
+pre_land	false	true	false	refuse_preflight	0
+pre_land	false	true	true	refuse_preflight	0
+pre_land	true	false	false	land	0
+pre_land	true	false	true	land	0
+pre_land	true	true	false	check_bindings	1
+pre_land	true	true	true	land	0
+post_land	false	false	false	false	false	1
+post_land	false	false	true	false	false	1
+post_land	false	true	false	true	false	2
+post_land	false	true	true	true	false	2
+post_land	true	false	false	false	true	1
+post_land	true	false	true	false	false	1
+post_land	true	true	false	false	true	1
+post_land	true	true	true	false	false	1
