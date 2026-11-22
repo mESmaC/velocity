@@ -27,7 +27,7 @@ use velocity_core::project_health::{
     HealthSeverity, HealthSignalKind, INTEGRATION_UNCOVERED_LANDS, INTEGRATION_UNCOVERED_SECONDS,
     MIRROR_BEHIND_LIMIT_SECONDS, POST_LAND_STALL_LIMIT_SECONDS, ProjectHealthItem,
     ProjectHealthView, REVIEW_STUCK_LIMIT_SECONDS, airc_issue_tool_failure_item, format_duration,
-    format_stopped_check_detail, host_source_change_item, short_commit,
+    format_stopped_check_detail, host_issue_problem_item, host_source_change_item, short_commit,
 };
 use velocity_core::release::{
     ManifestLag, RefusedGateRecovery, is_beta_release_tag, plan_refused_gate_recovery,
@@ -219,11 +219,154 @@ pub fn get_project_health(application: AppHandle, project_identifier: u32) -> Pr
         {
             upsert_item(&mut items, item);
         }
+        for item in check_host_issue_problems(&project) {
+            if !items.iter().any(|existing| existing.key == item.key) {
+                upsert_item(&mut items, item);
+            }
+        }
     }
     ProjectHealthView {
         project_identifier,
         items,
     }
+}
+
+/// `copy_github_issue_to_collapse` (§3.1): re-runs Collapse's idempotent GitHub issue
+/// import to bring a missing GitHub issue onto Collapse with its original number, then
+/// immediately retries pending land comments, closes or reverts for that issue (#614).
+#[tauri::command]
+#[specta::specta]
+pub async fn copy_github_issue_to_collapse(
+    application: AppHandle,
+    project_identifier: u32,
+    issue_number: u32,
+) -> Result<ProjectHealthView, String> {
+    let subject = crate::collapse_mirror::mirror_subject(&application, project_identifier)?;
+    let collapse_repository = subject
+        .repository
+        .clone()
+        .ok_or("This project does not mirror to Collapse")?;
+    let (owner, name) = collapse_repository
+        .split_once('/')
+        .ok_or("Invalid Collapse repository name")?;
+    let github_repository = crate::collapse_issue_sync::resolve_sync_github_repository(
+        &application,
+        project_identifier,
+        &subject.repository_path,
+        &collapse_repository,
+    )
+    .await?
+    .ok_or("No GitHub repository is configured for this project")?;
+    let token = tauri::async_runtime::spawn_blocking(velocity_collapse::resolve_issues_token)
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?
+        .ok_or("Save a Collapse personal access token with the 'issues' scope in Collapse settings first")?;
+    let status = velocity_collapse::import_github_issues_and_wait(
+        &token,
+        owner,
+        name,
+        &github_repository,
+        None,
+    )
+    .await
+    .map_err(|failure| failure.message)?;
+    verify_copied_collapse_issue(&subject.repository_path, &collapse_repository, issue_number)
+        .await?;
+    finish_copied_github_issue(
+        &application,
+        project_identifier,
+        &subject.name,
+        &collapse_repository,
+        &github_repository,
+        issue_number,
+        &status,
+    )
+    .await?;
+    Ok(get_project_health(application, project_identifier))
+}
+
+async fn finish_copied_github_issue(
+    application: &AppHandle,
+    project_identifier: u32,
+    project_name: &str,
+    collapse_repository: &str,
+    github_repository: &str,
+    issue_number: u32,
+    status: &velocity_collapse::GitHubIssueImportStatus,
+) -> Result<(), String> {
+    velocity_github::IssueClient::invalidate_open_issues_for(
+        IssueHost::Collapse,
+        collapse_repository,
+    );
+    mark_collapse_issues_imported(application, project_identifier, collapse_repository);
+    let high_water = status
+        .result
+        .as_ref()
+        .filter(|result| result.next_number > 1)
+        .and_then(|result| u32::try_from(result.next_number.saturating_sub(1)).ok());
+    let _ = crate::collapse_issue_sync::enable_post_switch_sync(
+        application,
+        project_identifier,
+        github_repository,
+        high_water,
+        status.finished_without_error_at(),
+        true,
+    )
+    .await;
+    crate::state::try_with_store(application, move |store| {
+        store
+            .clear_host_issue_problem(project_identifier, issue_number)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .await?;
+    sync_host_issue_problems(application, project_identifier);
+    crate::rosen_events::run_follow_ups(application, project_identifier).await;
+    sync_host_issue_problems(application, project_identifier);
+    let message = format!(
+        "{project_name}: copied #{issue_number} from GitHub to Collapse and retried pending updates"
+    );
+    crate::diagnostics::record(SOURCE, &message);
+    let _ = crate::collapse_mirror::toast(application, message);
+    Ok(())
+}
+
+async fn verify_copied_collapse_issue(
+    repository_path: &Path,
+    collapse_repository: &str,
+    issue_number: u32,
+) -> Result<(), String> {
+    let dir = repository_path.to_path_buf();
+    let repo = collapse_repository.to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        let client = IssueClient::for_collapse(&dir, &repo).map_err(|error| error.to_string())?;
+        client.get(issue_number).map(|_| ()).map_err(|error| {
+            format!("Issue #{issue_number} is still missing on Collapse after import: {error}")
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// `dismiss_host_issue_problem` (§3.1): clears a missing or mismatched host-issue health
+/// alert and drops stuck pending updates for that issue number (#614).
+#[tauri::command]
+#[specta::specta]
+pub async fn dismiss_host_issue_problem(
+    application: AppHandle,
+    project_identifier: u32,
+    issue_number: u32,
+) -> Result<ProjectHealthView, String> {
+    crate::state::try_with_store(&application, move |store| {
+        store
+            .dismiss_host_issue_problem(project_identifier, issue_number)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .await?;
+    sync_host_issue_problems(&application, project_identifier);
+    Ok(get_project_health(application, project_identifier))
 }
 
 /// `resolve_project_host_change` (§3.1): switches a project back to its previous issue host
@@ -291,6 +434,16 @@ async fn finish_resolved_host_change(
                         IssueHost::Collapse,
                         repo,
                     );
+                    if let Some(item) = persisted_project(application, project) {
+                        let _ = crate::collapse_issue_sync::enable_sync_from_import_status(
+                            application,
+                            project,
+                            Path::new(&item.repository_path),
+                            repo,
+                            true,
+                        )
+                        .await;
+                    }
                 }
                 recheck_collapse_import_soon(application, project);
             }
@@ -300,6 +453,7 @@ async fn finish_resolved_host_change(
         }
     }
     sync_host_source_change(application, project);
+    sync_host_issue_problems(application, project);
     crate::base_ci::wake(application);
     let host_label = match outcome.effective_issue_host {
         IssueHost::Collapse => "Collapse",
@@ -361,6 +515,44 @@ fn check_host_source_change(project: &ProjectItem) -> Option<ProjectHealthItem> 
         project.collapse_repository.is_some(),
         project.github_remote.is_some(),
     )
+}
+
+/// Immediately synchronizes missing/mismatched host-issue health rows for `project` (#614).
+pub(crate) fn sync_host_issue_problems(application: &AppHandle, project: u32) {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let next = persisted_project(application, project)
+        .map(|item| check_host_issue_problems(&item))
+        .unwrap_or_default();
+    let updated = {
+        let mut reg = registry(&managed);
+        let list = reg.views.entry(project).or_default();
+        let before = list.clone();
+        list.retain(|existing| {
+            !matches!(
+                existing.kind,
+                HealthSignalKind::HostIssueMissing | HealthSignalKind::HostIssueMismatch
+            )
+        });
+        for item in next {
+            upsert_item(list, item);
+        }
+        (*list != before).then(|| list.clone())
+    };
+    if let Some(items) = updated {
+        emit_view(application, project, items);
+    }
+}
+
+fn check_host_issue_problems(project: &ProjectItem) -> Vec<ProjectHealthItem> {
+    let active_host = project.effective_issue_host();
+    project
+        .host_issue_problems
+        .values()
+        .filter(|problem| problem.host == active_host)
+        .map(host_issue_problem_item)
+        .collect()
 }
 
 fn persisted_project(application: &AppHandle, project_identifier: u32) -> Option<ProjectItem> {
@@ -899,6 +1091,7 @@ async fn check_project(application: &AppHandle, app_data: &Path, project: &Proje
     if let Some(item) = check_host_source_change(project) {
         items.push(item);
     }
+    items.extend(check_host_issue_problems(project));
     if let Some(item) = check_mirror(application, project, &server, now, now_ms).await {
         items.push(item);
     }

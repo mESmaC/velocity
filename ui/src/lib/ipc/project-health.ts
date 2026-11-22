@@ -8,6 +8,7 @@ import {
 export type {
   HealthSeverity,
   HealthSignalKind,
+  HostIssueAction,
   HostSwitchBack,
   ProjectHealthChanged,
   ProjectHealthItem,
@@ -18,6 +19,8 @@ export type {
 export const projectHealthCommands = {
   get: commands.getProjectHealth,
   resolveHostChange: commands.resolveProjectHostChange,
+  copyGithubIssueToCollapse: commands.copyGithubIssueToCollapse,
+  dismissHostIssueProblem: commands.dismissHostIssueProblem,
 };
 
 export const onProjectHealth = (

@@ -11,6 +11,7 @@ mod command;
 mod commit_cache;
 mod dependency_graph;
 mod gh_command;
+pub mod github_issue_sync;
 pub mod graph_indexer_pin;
 mod http_transport;
 mod issue_cache;
@@ -62,7 +63,8 @@ pub use repository_list::{GitHubRepository, checkout_repository, list_your_repos
 pub use request_counter::{RequestTotal, request_totals};
 pub use rosen_issue::{
     ExternalIssueState, IntegrationCoverage, ParkedOutcome, ParkedReview,
-    REMOTE_PROGRESS_WINDOW_SECONDS, RosenIssueEffect, overlap_clear_evidence,
+    REMOTE_PROGRESS_WINDOW_SECONDS, RosenIssueEffect, RosenIssueFollowOutcome,
+    overlap_clear_evidence,
 };
 pub use scout_evidence::Reproduction;
 pub use scout_issues::{ScoutFinding, ScoutIssueError, ScoutIssueOutcome};

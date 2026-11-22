@@ -311,13 +311,14 @@ impl ProjectItem {
             issue,
             crate::rosen_work::IssueVersion {
                 updated_at,
-                reopened_at: None,
+                ..crate::rosen_work::IssueVersion::default()
             },
         )
     }
 
     /// Version-aware form of [`Self::landed_awaiting_integration`] that releases an earlier
-    /// land when a GitHub reopen event is newer than the work item's land timestamp (#602).
+    /// land when a GitHub reopen event is newer than the work item's land timestamp (#602)
+    /// or when a colliding host issue has a different title and GitHub source (#614).
     pub fn landed_awaiting_integration_for_version(
         &self,
         issue: &ThreadIssue,
@@ -326,7 +327,13 @@ impl ProjectItem {
         let key = velocity_core::work_pool::WorkKey::issue(&issue.repository, issue.number);
         if let Some(item) = self.rosen_work_item(&key) {
             return (item.status == velocity_core::work_pool::WorkStatus::Landed
-                && !crate::rosen_work::item_superseded_by_issue(item, version))
+                && !crate::rosen_work::item_superseded_by_issue(item, version)
+                && crate::rosen_work::host_issue_matches_work_title(
+                    Some(&item.title),
+                    &issue.repository,
+                    issue.number,
+                    version,
+                ))
             .then(|| LandedWait {
                 commit: item.landed_commit.clone(),
                 since: item
@@ -336,13 +343,19 @@ impl ProjectItem {
             });
         }
         if version.reopened_at.is_some() {
-            return self.matching_landed_hold(issue, version.updated_at);
+            return self.matching_landed_hold(issue, version);
         }
         let merged = self.threads.iter().find_map(|thread| {
             let assigned = thread.issue.as_ref()?;
             (thread.state == ThreadState::Merged
                 && assigned.number == issue.number
-                && assigned.repository.eq_ignore_ascii_case(&issue.repository))
+                && assigned.repository.eq_ignore_ascii_case(&issue.repository)
+                && crate::rosen_work::host_issue_matches_work_title(
+                    assigned.title.as_deref().or(Some(thread.title.as_str())),
+                    &issue.repository,
+                    issue.number,
+                    version,
+                ))
             .then(|| thread.rosen_issue.landed_commit())
             .flatten()
         });
@@ -353,9 +366,16 @@ impl ProjectItem {
             });
         }
         let retained = self.retained_rosen_issues.values().find_map(|retained| {
-            (same_issue(&retained.issue, issue) && !retained.progress.is_integration_green())
-                .then(|| retained.progress.landed_commit())
-                .flatten()
+            (same_issue(&retained.issue, issue)
+                && !retained.progress.is_integration_green()
+                && crate::rosen_work::host_issue_matches_work_title(
+                    retained.issue.title.as_deref(),
+                    &issue.repository,
+                    issue.number,
+                    version,
+                ))
+            .then(|| retained.progress.landed_commit())
+            .flatten()
         });
         if let Some(commit) = retained {
             return Some(LandedWait {
@@ -363,13 +383,13 @@ impl ProjectItem {
                 since: None,
             });
         }
-        self.matching_landed_hold(issue, version.updated_at)
+        self.matching_landed_hold(issue, version)
     }
 
     fn matching_landed_hold(
         &self,
         issue: &ThreadIssue,
-        updated_at: Option<&str>,
+        version: crate::rosen_work::IssueVersion<'_>,
     ) -> Option<LandedWait> {
         self.continuous_dispatch
             .landed_holds
@@ -378,7 +398,15 @@ impl ProjectItem {
                 hold.issue
                     .repository
                     .eq_ignore_ascii_case(&issue.repository)
-                    && updated_at.is_none_or(|updated_at| hold.updated_at == updated_at)
+                    && version
+                        .updated_at
+                        .is_none_or(|updated_at| hold.updated_at == updated_at)
+                    && crate::rosen_work::host_issue_matches_work_title(
+                        hold.issue.title.as_deref(),
+                        &issue.repository,
+                        issue.number,
+                        version,
+                    )
             })
             .map(|hold| LandedWait {
                 commit: Some(hold.commit.clone()),
@@ -836,6 +864,8 @@ impl StateStore {
         let version = crate::rosen_work::IssueVersion {
             updated_at: Some(updated_at.as_str()),
             reopened_at,
+            title: issue.title.as_deref(),
+            body: None,
         };
         let identifier = crate::threads::insert_thread_for_version(
             &mut next,

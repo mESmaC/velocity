@@ -56,6 +56,20 @@ pub enum RosenIssueEffect<'a> {
     Reverted { reason: &'a str },
 }
 
+/// Outcome of applying a saved Rosen event effect to an issue on the configured host (#614).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RosenIssueFollowOutcome {
+    /// Comment and/or state change succeeded (or was already recorded).
+    Applied,
+    /// Mirror has not yet caught up to the landed commit; retry later.
+    WaitingForMirror,
+    /// The host issue at this number does not match the landed change's title or GitHub source.
+    Mismatch {
+        host_title: String,
+        host_url: String,
+    },
+}
+
 /// How an issue parked under `no-change` leaves review (#506, #526).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParkedOutcome {
@@ -495,6 +509,31 @@ impl IssueClient {
         sequence: u64,
         effect: RosenIssueEffect<'_>,
     ) -> Result<bool, GitHubCommandError> {
+        Ok(matches!(
+            self.follow_rosen_issue_checked(
+                repository,
+                number,
+                commit,
+                sequence,
+                effect,
+                velocity_core::collapse::ExpectedIssueIdentity::default(),
+            )?,
+            RosenIssueFollowOutcome::Applied
+        ))
+    }
+
+    /// Applies one saved Rosen event effect after verifying the host issue's title or
+    /// GitHub source matches `expected` (#614). Returns `Mismatch` instead of commenting or
+    /// closing when a number collision points to a different issue.
+    pub fn follow_rosen_issue_checked(
+        &self,
+        repository: &str,
+        number: u32,
+        commit: &str,
+        sequence: u64,
+        effect: RosenIssueEffect<'_>,
+        expected: velocity_core::collapse::ExpectedIssueIdentity<'_>,
+    ) -> Result<RosenIssueFollowOutcome, GitHubCommandError> {
         if !self.repository().eq_ignore_ascii_case(repository) {
             return Err(GitHubCommandError::Invalid(
                 "The thread's issue repository differs from the project's mirror".into(),
@@ -508,15 +547,35 @@ impl IssueClient {
             RosenIssueEffect::Reverted { .. } => Some(IssueState::Open),
         };
         if state == Some(IssueState::Closed) && !self.rosen_commit_mirrored(commit)? {
-            return Ok(false);
+            return Ok(RosenIssueFollowOutcome::WaitingForMirror);
         }
         let (kind, message) = rosen_issue_effect_message(commit, effect);
         // Deduplicate across machines by `(kind, commit)`, keeping the machine-local
         // Rosen sequence in its own diagnostic comment above the marker (#550).
         let body = format!("{message}\n\n<!-- velocity-rosen-sequence:{sequence} -->");
         let marker = format!("<!-- velocity-rosen-issue:{kind}:{commit} -->");
-        self.sync_rosen_issue(number, &marker, &body, state)?;
-        Ok(true)
+        let landed_marker = format!("<!-- velocity-rosen-issue:landed:{commit} -->");
+        let issue = self.read_issue(number)?;
+        let comments = self.issue_comment_bodies(number)?;
+        let already_linked = comments.iter().any(|existing| {
+            comment_matches_marker(existing, &marker)
+                || comment_matches_marker(existing, &landed_marker)
+        });
+        if !already_linked
+            && expected.has_expected_title()
+            && !velocity_core::collapse::host_issue_matches_expected(
+                &expected,
+                &issue.title,
+                &issue.body,
+            )
+        {
+            return Ok(RosenIssueFollowOutcome::Mismatch {
+                host_title: issue.title,
+                host_url: issue.url,
+            });
+        }
+        self.sync_loaded_rosen_issue(&issue, &comments, &marker, &body, state)?;
+        Ok(RosenIssueFollowOutcome::Applied)
     }
 
     /// Publishes a pass on the exact mirrored base tested by Velocity.
@@ -789,7 +848,19 @@ impl IssueClient {
     ) -> Result<(), GitHubCommandError> {
         let issue = self.read_issue(number)?;
         let comments = self.issue_comment_bodies(number)?;
-        if already_closed_for_commit(&issue, state, marker, &comments) {
+        self.sync_loaded_rosen_issue(&issue, &comments, marker, body, state)
+    }
+
+    fn sync_loaded_rosen_issue(
+        &self,
+        issue: &GitHubIssue,
+        comments: &[String],
+        marker: &str,
+        body: &str,
+        state: Option<IssueState>,
+    ) -> Result<(), GitHubCommandError> {
+        let number = issue.number;
+        if already_closed_for_commit(issue, state, marker, comments) {
             return Ok(());
         }
         if !comments

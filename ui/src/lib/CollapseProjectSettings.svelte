@@ -959,11 +959,12 @@
           {#if issueSync}
             <span class="hint">
               {#if issueSync.enabled}
-                Watching {issueSync.github_repository} above #{issueSync.high_water_number}
-                · {issueSync.synced_count} synced{#if issueSync.expires_at_ms}
-                  · ends {new Date(
-                    Number(issueSync.expires_at_ms),
-                  ).toLocaleDateString()}{/if}{#if issueSync.last_synced_at_ms}
+                Watching {issueSync.github_repository}{#if issueSync.import_finished_at}
+                  since {new Date(
+                    issueSync.import_finished_at,
+                  ).toLocaleString()}{:else}
+                  above #{issueSync.high_water_number}{/if}
+                · {issueSync.synced_count} synced{#if issueSync.last_synced_at_ms}
                   · last checked {formatTimestamp(
                     issueSync.last_synced_at_ms,
                   )}{/if}
@@ -980,8 +981,8 @@
             {/if}
           {:else}
             <span class="hint">
-              Mirrors issues opened on GitHub by habit or older agents into
-              Collapse for 14 days after cut-over, or until turned off.
+              Mirrors every GitHub issue opened or changed since Collapse's
+              import finished until turned off.
             </span>
           {/if}
         {/if}

@@ -27,6 +27,23 @@ pub enum GitHubCommandError {
 }
 
 impl GitHubCommandError {
+    /// Whether this failure means the requested issue or resource does not exist (`404`) (#614).
+    pub fn is_not_found(&self) -> bool {
+        match self {
+            Self::Command {
+                code: Some(404), ..
+            } => true,
+            Self::Command { message, .. } => {
+                let lower = message.to_ascii_lowercase();
+                lower.contains("http 404")
+                    || lower.contains("not found")
+                    || lower.contains("could not resolve to an issue with the number")
+            }
+            Self::Missing(path) => path == "/data/repository/issue",
+            _ => false,
+        }
+    }
+
     /// Whether this failure came from Velocity's local environment or `gh` invocation
     /// rather than GitHub's API, network reachability, or caller input validation (#581).
     pub fn is_local_tool_failure(&self) -> bool {

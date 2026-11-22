@@ -5,8 +5,12 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Manager};
+use velocity_core::collapse::{ExpectedIssueIdentity, github_repository_from_remote};
+use velocity_core::project_health::{HostIssueProblem, HostIssueProblemKind};
 use velocity_core::work_pool::WorkKey;
-use velocity_github::{IssueClient, IssueHost, IssueState, RosenIssueEffect};
+use velocity_github::{
+    IssueClient, IssueHost, IssueState, RosenIssueEffect, RosenIssueFollowOutcome,
+};
 use velocity_rosen::{
     IssueEvent,
     review_swarm::{self, IssueCloser, IssueReviews},
@@ -155,21 +159,69 @@ async fn follow_thread(
         } else {
             None
         };
-        let (directory, host, change, work) = (
+        let (directory, host, change, work, expected_title, github_repo, synced_numbers) = (
             thread.directory.clone(),
             thread.host,
             thread.change.clone(),
             action.clone(),
+            thread.expected_title.clone(),
+            thread.github_repository.clone(),
+            thread.synced_numbers.clone(),
         );
-        let done = tauri::async_runtime::spawn_blocking(move || {
-            synchronize(directory, host, &change, work, closer)
+        let outcome = tauri::async_runtime::spawn_blocking(move || {
+            synchronize(
+                directory,
+                host,
+                &change,
+                work,
+                closer,
+                expected_title.as_deref(),
+                github_repo.as_deref(),
+                &synced_numbers,
+            )
         })
         .await
-        .map_err(|error| error.to_string())??;
-        if !done {
-            break;
+        .map_err(|error| error.to_string())?;
+        match outcome {
+            Ok(SyncOutcome::Done) => finish(application, project, &thread.change, action)?,
+            Ok(SyncOutcome::Waiting) => break,
+            Ok(SyncOutcome::Mismatch {
+                issue,
+                host_title,
+                host_url,
+            }) => {
+                record_mismatch_issue_once(
+                    application,
+                    project,
+                    host,
+                    &issue.repository,
+                    issue.number,
+                    thread.expected_title.clone().or(issue.title.clone()),
+                    thread
+                        .github_repository
+                        .as_deref()
+                        .map(|repo| format!("{repo}#{}", issue.number)),
+                    host_title,
+                    host_url,
+                )
+                .await;
+                break;
+            }
+            Err(SyncError::NotFound { issue, detail }) => {
+                record_missing_issue_once(
+                    application,
+                    project,
+                    &thread.directory,
+                    host,
+                    &issue.repository,
+                    issue.number,
+                    detail,
+                )
+                .await;
+                break;
+            }
+            Err(SyncError::Other(error)) => return Err(error),
         }
-        finish(application, project, &thread.change, action)?;
     }
     Ok(())
 }
@@ -272,6 +324,83 @@ struct Pending {
     change: String,
     watcher_due: bool,
     actions: Vec<IssueAction>,
+    expected_title: Option<String>,
+    github_repository: Option<String>,
+    synced_numbers: BTreeMap<u32, u32>,
+}
+
+enum SyncOutcome {
+    Done,
+    Waiting,
+    Mismatch {
+        issue: ThreadIssue,
+        host_title: String,
+        host_url: String,
+    },
+}
+
+enum SyncError {
+    NotFound { issue: ThreadIssue, detail: String },
+    Other(String),
+}
+
+fn project_github_repository(project: &velocity_store::ProjectItem) -> Option<String> {
+    project
+        .github_issue_sync
+        .as_ref()
+        .map(|sync| sync.github_repository.trim().to_owned())
+        .filter(|repo| !repo.is_empty())
+        .or_else(|| {
+            project.github_remote.as_deref().map(|saved| {
+                github_repository_from_remote(saved).unwrap_or_else(|| saved.to_owned())
+            })
+        })
+        .or_else(|| {
+            project
+                .collapse_mirror_health
+                .as_ref()
+                .and_then(|health| health.downstream_github.clone())
+        })
+}
+
+fn work_item_title(
+    project: &velocity_store::ProjectItem,
+    change: &str,
+    issue: Option<&ThreadIssue>,
+) -> Option<String> {
+    if let Some(title) = issue.and_then(|item| item.title.as_deref())
+        && !title.trim().is_empty()
+    {
+        return Some(title.to_owned());
+    }
+    project
+        .rosen_work_items
+        .iter()
+        .rev()
+        .find(|work| {
+            work.change.as_deref() == Some(change)
+                || issue
+                    .is_some_and(|item| work.key == WorkKey::issue(&item.repository, item.number))
+        })
+        .map(|work| work.title.clone())
+        .filter(|title| !title.trim().is_empty())
+}
+
+fn active_pending_actions(
+    project: &velocity_store::ProjectItem,
+    host: IssueHost,
+    actions: &[IssueAction],
+) -> Vec<IssueAction> {
+    actions
+        .iter()
+        .filter(|action| {
+            action
+                .issue
+                .as_ref()
+                .is_none_or(|issue| !project.has_host_issue_problem(host, issue.number))
+        })
+        .cloned()
+        .collect()
 }
 
 fn pending(application: &AppHandle, project: u32) -> Result<Vec<Pending>, String> {
@@ -284,6 +413,12 @@ fn pending(application: &AppHandle, project: u32) -> Result<Vec<Pending>, String
     };
     let directory = PathBuf::from(&project.repository_path);
     let host = project.effective_issue_host();
+    let github_repository = project_github_repository(project);
+    let synced_numbers = project
+        .github_issue_sync
+        .as_ref()
+        .map(|sync| sync.synced_numbers.clone())
+        .unwrap_or_default();
     let mut live_changes = HashSet::new();
     let mut items: Vec<Pending> = project
         .threads
@@ -292,12 +427,21 @@ fn pending(application: &AppHandle, project: u32) -> Result<Vec<Pending>, String
         .filter_map(|thread| {
             let change = thread.rosen_change.clone()?;
             live_changes.insert(change.clone());
+            let actions = active_pending_actions(project, host, &thread.rosen_issue.pending);
+            if actions.is_empty() {
+                return None;
+            }
+            let expected_title = work_item_title(project, &change, thread.issue.as_ref())
+                .or_else(|| (!thread.title.trim().is_empty()).then(|| thread.title.clone()));
             Some(Pending {
                 directory: directory.clone(),
                 host,
                 change,
                 watcher_due: thread.rosen_issue.watcher_due(),
-                actions: thread.rosen_issue.pending.clone(),
+                actions,
+                expected_title,
+                github_repository: github_repository.clone(),
+                synced_numbers: synced_numbers.clone(),
             })
         })
         .collect();
@@ -305,45 +449,247 @@ fn pending(application: &AppHandle, project: u32) -> Result<Vec<Pending>, String
         if live_changes.contains(change) || retained.progress.pending.is_empty() {
             continue;
         }
+        let actions = active_pending_actions(project, host, &retained.progress.pending);
+        if actions.is_empty() {
+            continue;
+        }
         items.push(Pending {
             directory: directory.clone(),
             host,
             change: change.clone(),
             watcher_due: retained.progress.watcher_due(),
-            actions: retained.progress.pending.clone(),
+            actions,
+            expected_title: work_item_title(project, change, Some(&retained.issue)),
+            github_repository: github_repository.clone(),
+            synced_numbers: synced_numbers.clone(),
         });
     }
     Ok(items)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn synchronize(
     directory: PathBuf,
     host: IssueHost,
     change: &str,
     action: IssueAction,
     closer: Option<IssueCloser>,
-) -> Result<bool, String> {
-    let Some(issue) = &action.issue else {
-        return Ok(true);
+    expected_title: Option<&str>,
+    github_repository: Option<&str>,
+    synced_numbers: &BTreeMap<u32, u32>,
+) -> Result<SyncOutcome, SyncError> {
+    let Some(issue) = action.issue else {
+        return Ok(SyncOutcome::Done);
     };
     let effect = match (action.revert.as_deref(), closer.as_ref()) {
         (Some(reason), _) => RosenIssueEffect::Reverted { reason },
         (_, Some(IssueCloser::Reviewer(by))) => RosenIssueEffect::Reviewed { by },
         (_, Some(IssueCloser::Watcher)) => RosenIssueEffect::Watcher,
         _ if action.land_comment => RosenIssueEffect::Landed { change },
-        _ => return Ok(false),
+        _ => return Ok(SyncOutcome::Waiting),
     };
     let client = IssueClient::for_host(&directory, host, &issue.repository)
-        .map_err(|error| error.to_string())?;
-    client
-        .follow_rosen_issue(
-            &issue.repository,
-            issue.number,
-            &action.commit,
-            action.sequence,
-            effect,
-        )
-        .map_err(|error| error.to_string())
+        .map_err(|error| SyncError::Other(error.to_string()))?;
+    let target_number = if host == IssueHost::Collapse {
+        synced_numbers
+            .get(&issue.number)
+            .copied()
+            .unwrap_or(issue.number)
+    } else {
+        issue.number
+    };
+    let expected = ExpectedIssueIdentity {
+        title: issue.title.as_deref().or(expected_title),
+        github_repository: github_repository.or(Some(&issue.repository)),
+        github_number: Some(issue.number),
+    };
+    match client.follow_rosen_issue_checked(
+        &issue.repository,
+        target_number,
+        &action.commit,
+        action.sequence,
+        effect,
+        expected,
+    ) {
+        Ok(RosenIssueFollowOutcome::Applied) => Ok(SyncOutcome::Done),
+        Ok(RosenIssueFollowOutcome::WaitingForMirror) => Ok(SyncOutcome::Waiting),
+        Ok(RosenIssueFollowOutcome::Mismatch {
+            host_title,
+            host_url,
+        }) => Ok(SyncOutcome::Mismatch {
+            issue,
+            host_title,
+            host_url,
+        }),
+        Err(error) if error.is_not_found() => Err(SyncError::NotFound {
+            issue,
+            detail: error.to_string(),
+        }),
+        Err(error) => Err(SyncError::Other(error.to_string())),
+    }
+}
+
+/// Records a permanent HTTP 404 missing-issue alert once for `(project, host, number)`,
+/// checking whether a GitHub copy exists so Project Health can offer **Copy from GitHub** (#614).
+pub(crate) async fn record_missing_issue_once(
+    application: &AppHandle,
+    project: u32,
+    directory: &Path,
+    host: IssueHost,
+    repository: &str,
+    number: u32,
+    detail: String,
+) {
+    let already_recorded = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )
+    .ok()
+    .and_then(|store| {
+        store
+            .project(project)
+            .map(|item| item.has_host_issue_problem(host, number))
+    })
+    .unwrap_or(false);
+    if already_recorded {
+        return;
+    }
+    let (project_name, github_repository, github_exists, github_title) =
+        probe_github_copy_for_missing(application, project, directory, host, repository, number)
+            .await;
+    let problem = HostIssueProblem {
+        number,
+        host,
+        repository: repository.to_owned(),
+        kind: HostIssueProblemKind::Missing {
+            github_repository,
+            github_exists,
+            github_title,
+        },
+        detail: detail.clone(),
+        detected_at_ms: unix_millis(),
+    };
+    let recorded = crate::state::try_with_store(application, move |store| {
+        store
+            .record_host_issue_problem(project, problem)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .unwrap_or(false);
+    if recorded {
+        let host_label = match host {
+            IssueHost::Collapse => "Collapse",
+            IssueHost::GitHub => "GitHub",
+        };
+        crate::diagnostics::record(
+            "project health",
+            &format!("{project_name}: #{number} is not on {host_label} ({detail})"),
+        );
+        crate::project_health::sync_host_issue_problems(application, project);
+    }
+}
+
+async fn probe_github_copy_for_missing(
+    application: &AppHandle,
+    project: u32,
+    directory: &Path,
+    host: IssueHost,
+    repository: &str,
+    number: u32,
+) -> (String, Option<String>, bool, Option<String>) {
+    let project_name = crate::state::with_store(application, move |store| {
+        store
+            .project(project)
+            .map(|item| item.name.clone())
+            .unwrap_or_else(|| format!("Project {project}"))
+    })
+    .await
+    .unwrap_or_else(|_| format!("Project {project}"));
+    if host != IssueHost::Collapse {
+        return (project_name, None, false, None);
+    }
+    let github_repo = crate::collapse_issue_sync::resolve_sync_github_repository(
+        application,
+        project,
+        directory,
+        repository,
+    )
+    .await
+    .ok()
+    .flatten();
+    let Some(repo) = github_repo.clone() else {
+        return (project_name, None, false, None);
+    };
+    let dir = directory.to_path_buf();
+    let lookup_repo = repo.clone();
+    let github_issue = tauri::async_runtime::spawn_blocking(move || {
+        IssueClient::for_repository(&dir, &lookup_repo)
+            .and_then(|client| client.get(number))
+            .ok()
+    })
+    .await
+    .ok()
+    .flatten();
+    match github_issue {
+        Some(issue) => (project_name, Some(repo), true, Some(issue.title)),
+        None => (project_name, Some(repo), false, None),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_mismatch_issue_once(
+    application: &AppHandle,
+    project: u32,
+    host: IssueHost,
+    repository: &str,
+    number: u32,
+    expected_title: Option<String>,
+    expected_source: Option<String>,
+    host_title: String,
+    host_url: String,
+) {
+    let project_name = crate::state::with_store(application, move |store| {
+        store
+            .project(project)
+            .map(|item| item.name.clone())
+            .unwrap_or_else(|| format!("Project {project}"))
+    })
+    .await
+    .unwrap_or_else(|_| format!("Project {project}"));
+    let problem = HostIssueProblem {
+        number,
+        host,
+        repository: repository.to_owned(),
+        kind: HostIssueProblemKind::Mismatch {
+            expected_title: expected_title.clone(),
+            expected_source,
+            host_title: host_title.clone(),
+            host_url,
+        },
+        detail: String::new(),
+        detected_at_ms: unix_millis(),
+    };
+    let recorded = crate::state::try_with_store(application, move |store| {
+        store
+            .record_host_issue_problem(project, problem)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .unwrap_or(false);
+    if recorded {
+        let host_label = match host {
+            IssueHost::Collapse => "Collapse",
+            IssueHost::GitHub => "GitHub",
+        };
+        let expected = expected_title.as_deref().unwrap_or("unknown");
+        crate::diagnostics::record(
+            "project health",
+            &format!(
+                "{project_name}: #{number} on {host_label} does not match landed change (expected \"{expected}\", found \"{host_title}\"); skipped commenting and closing"
+            ),
+        );
+        crate::project_health::sync_host_issue_problems(application, project);
+    }
 }
 
 fn finish(
@@ -629,23 +975,40 @@ fn confirm_orphaned_handoff_remote(
 /// Closes orphaned lands from other machines once a green integration build (here or on
 /// the issue host) covers the commit and the 30-minute review window has elapsed (#519, #589).
 async fn follow_orphaned_holds(application: &AppHandle, project: u32, covered: &[String]) {
-    let (directory, host, holds) = match lock(
+    let (directory, host, github_repo, holds) = match lock(
         application.state::<ManagedStateStore>().inner(),
         "persisted state",
     ) {
         Ok(store) => match store.project(project) {
-            Some(item) => (
-                PathBuf::from(&item.repository_path),
-                item.effective_issue_host(),
-                item.orphaned_landed_holds(),
-            ),
+            Some(item) => {
+                let host = item.effective_issue_host();
+                let holds = item
+                    .orphaned_landed_holds()
+                    .into_iter()
+                    .filter(|hold| !item.has_host_issue_problem(host, hold.issue.number))
+                    .collect::<Vec<_>>();
+                (
+                    PathBuf::from(&item.repository_path),
+                    host,
+                    project_github_repository(item),
+                    holds,
+                )
+            }
             None => return,
         },
         Err(error) => return report::<()>(Err(error)),
     };
     for mut hold in holds {
-        if let Err(error) =
-            follow_orphaned_hold(application, project, &directory, host, &mut hold, covered).await
+        if let Err(error) = follow_orphaned_hold(
+            application,
+            project,
+            &directory,
+            host,
+            github_repo.as_deref(),
+            &mut hold,
+            covered,
+        )
+        .await
         {
             report::<()>(Err(error));
         }
@@ -657,6 +1020,7 @@ async fn follow_orphaned_hold(
     project: u32,
     directory: &Path,
     host: IssueHost,
+    github_repo: Option<&str>,
     hold: &mut LandedHold,
     covered: &[String],
 ) -> Result<(), String> {
@@ -690,21 +1054,60 @@ async fn follow_orphaned_hold(
     if !hold.watcher_due(now) {
         return Ok(());
     }
-    let (dir, snapshot) = (directory.to_path_buf(), hold.clone());
-    let done =
-        tauri::async_runtime::spawn_blocking(move || close_orphaned_hold(&dir, host, &snapshot))
-            .await
-            .map_err(|error| error.to_string())??;
-    if done {
-        lock(
-            application.state::<ManagedStateStore>().inner(),
-            "persisted state",
-        )?
-        .remove_landed_hold(project, hold.issue.number)
-        .map_err(|error| error.to_string())?;
-        if let Ok(mut checks) = ORPHANED_STATUS_CHECKS.lock() {
-            checks.remove(&(project, hold.issue.number));
+    let (dir, snapshot, github_owned) = (
+        directory.to_path_buf(),
+        hold.clone(),
+        github_repo.map(str::to_owned),
+    );
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        close_orphaned_hold(&dir, host, github_owned.as_deref(), &snapshot)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    match outcome {
+        Ok(SyncOutcome::Done) => {
+            lock(
+                application.state::<ManagedStateStore>().inner(),
+                "persisted state",
+            )?
+            .remove_landed_hold(project, hold.issue.number)
+            .map_err(|error| error.to_string())?;
+            if let Ok(mut checks) = ORPHANED_STATUS_CHECKS.lock() {
+                checks.remove(&(project, hold.issue.number));
+            }
         }
+        Ok(SyncOutcome::Waiting) => {}
+        Ok(SyncOutcome::Mismatch {
+            issue,
+            host_title,
+            host_url,
+        }) => {
+            record_mismatch_issue_once(
+                application,
+                project,
+                host,
+                &issue.repository,
+                issue.number,
+                issue.title.clone(),
+                github_repo.map(|repo| format!("{repo}#{}", issue.number)),
+                host_title,
+                host_url,
+            )
+            .await;
+        }
+        Err(SyncError::NotFound { issue, detail }) => {
+            record_missing_issue_once(
+                application,
+                project,
+                directory,
+                host,
+                &issue.repository,
+                issue.number,
+                detail,
+            )
+            .await;
+        }
+        Err(SyncError::Other(error)) => return Err(error),
     }
     Ok(())
 }
@@ -743,31 +1146,68 @@ fn status_check_due(project: u32, number: u32) -> bool {
 fn close_orphaned_hold(
     directory: &Path,
     host: IssueHost,
+    github_repo: Option<&str>,
     hold: &LandedHold,
-) -> Result<bool, String> {
+) -> Result<SyncOutcome, SyncError> {
     let client = IssueClient::for_host(directory, host, &hold.issue.repository)
-        .map_err(|error| error.to_string())?;
-    let issue = client
-        .get(hold.issue.number)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| SyncError::Other(error.to_string()))?;
+    let issue = client.get(hold.issue.number).map_err(|error| {
+        if error.is_not_found() {
+            SyncError::NotFound {
+                issue: hold.issue.clone(),
+                detail: error.to_string(),
+            }
+        } else {
+            SyncError::Other(error.to_string())
+        }
+    })?;
     if issue.state != IssueState::Open {
-        return Ok(true);
+        return Ok(SyncOutcome::Done);
     }
     let current = client
         .landed_awaiting_integration(hold.issue.number)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            if error.is_not_found() {
+                SyncError::NotFound {
+                    issue: hold.issue.clone(),
+                    detail: error.to_string(),
+                }
+            } else {
+                SyncError::Other(error.to_string())
+            }
+        })?;
     if current.as_deref() != Some(hold.commit.as_str()) {
-        return Ok(true);
+        return Ok(SyncOutcome::Done);
     }
-    client
-        .follow_rosen_issue(
-            &hold.issue.repository,
-            hold.issue.number,
-            &hold.commit,
-            0,
-            RosenIssueEffect::Watcher,
-        )
-        .map_err(|error| error.to_string())
+    let expected = ExpectedIssueIdentity {
+        title: hold.issue.title.as_deref(),
+        github_repository: github_repo.or(Some(&hold.issue.repository)),
+        github_number: Some(hold.issue.number),
+    };
+    match client.follow_rosen_issue_checked(
+        &hold.issue.repository,
+        hold.issue.number,
+        &hold.commit,
+        0,
+        RosenIssueEffect::Watcher,
+        expected,
+    ) {
+        Ok(RosenIssueFollowOutcome::Applied) => Ok(SyncOutcome::Done),
+        Ok(RosenIssueFollowOutcome::WaitingForMirror) => Ok(SyncOutcome::Waiting),
+        Ok(RosenIssueFollowOutcome::Mismatch {
+            host_title,
+            host_url,
+        }) => Ok(SyncOutcome::Mismatch {
+            issue: hold.issue.clone(),
+            host_title,
+            host_url,
+        }),
+        Err(error) if error.is_not_found() => Err(SyncError::NotFound {
+            issue: hold.issue.clone(),
+            detail: error.to_string(),
+        }),
+        Err(error) => Err(SyncError::Other(error.to_string())),
+    }
 }
 
 fn unix_seconds() -> u64 {
@@ -775,4 +1215,12 @@ fn unix_seconds() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn unix_millis() -> u64 {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    u64::try_from(millis).unwrap_or(u64::MAX)
 }

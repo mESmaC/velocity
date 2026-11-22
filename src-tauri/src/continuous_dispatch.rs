@@ -702,7 +702,8 @@ fn hold_external_issue(
         .as_ref()
         .ok_or("The dispatch issue source was removed")?;
     let now = unix_seconds();
-    let identity = ThreadIssue::new(client.repository().into(), issue.number);
+    let identity = ThreadIssue::new(client.repository().into(), issue.number)
+        .with_identity(issue.title.clone(), issue.host);
     match client
         .external_issue_state(issue.number, now)
         .map_err(|error| error.to_string())?
@@ -763,7 +764,8 @@ fn handle_external_land(
     landed_at: Option<u64>,
 ) -> Result<bool, String> {
     let now = unix_seconds();
-    let identity = ThreadIssue::new(client.repository().into(), issue.number);
+    let identity = ThreadIssue::new(client.repository().into(), issue.number)
+        .with_identity(issue.title.clone(), issue.host);
     if commit_in_mirror_or_local(application, identifier, client, &commit)? {
         lock(
             application.state::<ManagedStateStore>().inner(),
@@ -925,6 +927,9 @@ fn report_launch_failures(
     reader: &mut Reader,
 ) -> Result<(), String> {
     for (&thread, pending) in &project.continuous_dispatch.launch_failure_reports {
+        if project.has_host_issue_problem(reader.host, pending.issue.number) {
+            continue;
+        }
         if reader
             .report_retry
             .get(&thread)
@@ -949,6 +954,19 @@ fn report_launch_failures(
             )
         });
         if let Err(error) = result {
+            if error.is_not_found() {
+                tauri::async_runtime::block_on(crate::rosen_issue::record_missing_issue_once(
+                    application,
+                    project.id,
+                    Path::new(&reader.directory),
+                    reader.host,
+                    &pending.issue.repository,
+                    pending.issue.number,
+                    error.to_string(),
+                ));
+                reader.report_retry.remove(&thread);
+                continue;
+            }
             reader.report_retry.insert(thread, Instant::now());
             report::<()>(Err(format!(
                 "Could not report the failed start on {}#{}: {error}",
@@ -1400,6 +1418,9 @@ fn report_no_change_issues(
     reader: &mut Reader,
 ) -> Result<(), String> {
     for (&thread, pending) in &project.continuous_dispatch.no_change_reports {
+        if project.has_host_issue_problem(reader.host, pending.issue.number) {
+            continue;
+        }
         if reader
             .report_retry
             .get(&thread)
@@ -1440,6 +1461,19 @@ fn report_no_change_issues(
             )
         });
         if let Err(error) = result {
+            if error.is_not_found() {
+                tauri::async_runtime::block_on(crate::rosen_issue::record_missing_issue_once(
+                    application,
+                    project.id,
+                    Path::new(&reader.directory),
+                    reader.host,
+                    &pending.issue.repository,
+                    pending.issue.number,
+                    error.to_string(),
+                ));
+                reader.report_retry.remove(&thread);
+                continue;
+            }
             reader.report_retry.insert(thread, Instant::now());
             report::<()>(Err(format!(
                 "Could not report no change on {}#{}: {error}",

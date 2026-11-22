@@ -436,6 +436,41 @@ impl IssueClient {
         })
     }
 
+    /// Reads GitHub issues (open and closed, excluding PRs) opened or changed at or after
+    /// `since` (RFC 3339), ordered oldest update first (#614). Falls back to open issues when
+    /// `since` is absent or empty.
+    pub fn issues_updated_since(
+        &self,
+        since: Option<&str>,
+    ) -> Result<Vec<GitHubIssue>, GitHubCommandError> {
+        let Some(since) = since.map(str::trim).filter(|value| !value.is_empty()) else {
+            return self.open_issues();
+        };
+        if let IssueBackend::Collapse(collapse) = &self.backend {
+            return collapse.open_issues();
+        }
+        let transport = self.github_transport()?;
+        let query = format!(
+            "query($owner:String!,$name:String!,$since:DateTime!,$cursor:String) {{
+              repository(owner:$owner,name:$name) {{
+                issues(first:100,after:$cursor,states:[OPEN,CLOSED],filterBy:{{since:$since}},orderBy:{{field:UPDATED_AT,direction:ASC}}) {{
+                  nodes {{ {ISSUE_FIELDS} {} }}
+                  pageInfo {{ hasNextPage endCursor }}
+                }}
+              }}
+            }}",
+            dependency_fields(),
+        );
+        let mut variables = transport.variables(0);
+        variables["since"] = json!(since);
+        let issues: Vec<IssueWithDependencies> =
+            transport.connection(&query, variables, "/data/repository/issues")?;
+        issues
+            .into_iter()
+            .map(|issue| self.decode_issue_with_dependencies(issue))
+            .collect()
+    }
+
     /// Total number of open and closed issues (excluding PRs) in this GitHub repository (#612).
     pub fn total_issue_count(&self) -> Result<u32, GitHubCommandError> {
         let transport = self.github_transport()?;

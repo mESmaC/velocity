@@ -1,28 +1,21 @@
-//! Post-switch one-way sync of GitHub issues opened on the old host into Collapse (#612).
+//! Post-import one-way sync of GitHub issues into Collapse (#612, #614).
 //!
-//! After Move to Collapse switches a project's issue host to Collapse, issues opened on
-//! GitHub by habit or by older agents still need to reach dispatch for a transition window
-//! (default 14 days) or until the owner turns the sync off in Collapse settings.
-//!
-//! Unlike Collapse's full GitHub import (which overwrites existing Collapse issue state),
-//! this sync only mirrors newly opened GitHub issues above the cut-over high-water mark
-//! and deduplicates with both persisted issue mappings and a hidden body marker so active
-//! Collapse issues are never clobbered or duplicated.
+//! Covers every GitHub issue opened or changed since Collapse's import `finished_at`
+//! (not merely since the host switch) until the owner turns the sync off in Collapse
+//! settings. Uses Collapse's lossless repository import when Collapse's issue cursor has
+//! not advanced past the last import so GitHub issues keep their exact numbers and
+//! Collapse's `next_number` advances past them; otherwise mirrors new and changed issues
+//! through the Collapse issue API without clobbering Collapse edits.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Manager};
 use tokio::sync::Notify;
-use velocity_collapse::issues::{CollapseIssueApi, Conditional, CreateIssueRequest};
-use velocity_core::collapse::{
-    GITHUB_ISSUE_SYNC_DEFAULT_WINDOW_SECS, GitHubIssueSync, IssueHost,
-    format_synced_github_issue_body, github_repository_from_remote, github_sync_expired,
-    github_sync_marker, should_sync_github_issue,
-};
-use velocity_github::{GitHubIssue, IssueClient};
+use velocity_core::collapse::{GitHubIssueSync, IssueHost, github_repository_from_remote};
+use velocity_github::github_issue_sync::sync_github_issues_async;
 
 use crate::collapse_mirror::{
     ProjectCollapseSettings, mirror_subject, read_project_collapse_settings, toast,
@@ -78,22 +71,26 @@ pub(crate) fn wake(application: &AppHandle) {
     }
 }
 
-/// Enables (or updates) post-switch one-way GitHub issue sync after Move to Collapse or
-/// Import now finishes (#612). Preserves already-synced issue mappings and refreshes the
-/// default 14-day window when enabling.
+/// Enables (or updates) one-way GitHub issue sync after Move to Collapse, Import now, or
+/// switching a project's issue host to Collapse (#612, #614). Sync stays on until the
+/// owner turns it off and covers issues opened or changed since `import_finished_at`.
 pub(crate) async fn enable_post_switch_sync(
     application: &AppHandle,
     project: u32,
     github_repository: &str,
     high_water_number: Option<u32>,
+    import_finished_at: Option<&str>,
     respect_explicit_disable: bool,
 ) -> Result<(), String> {
     let trimmed = github_repository.trim();
     if trimmed.is_empty() {
         return Ok(());
     }
-    let now_secs = unix_seconds();
     let github_owned = trimmed.to_owned();
+    let finished_owned = import_finished_at
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
     let changed = crate::state::try_with_store(application, move |store| {
         let Some(item) = store.project(project) else {
             return Ok(false);
@@ -109,14 +106,19 @@ pub(crate) async fn enable_post_switch_sync(
         let mut next = item.github_issue_sync.clone().unwrap_or_default();
         if !next.github_repository.eq_ignore_ascii_case(&github_owned) {
             next.synced_numbers.clear();
+            next.synced_updated_at.clear();
             next.high_water_number = 0;
+            next.import_finished_at = None;
         }
         next.github_repository = github_owned;
         if let Some(high_water) = high_water_number {
             next.high_water_number = next.high_water_number.max(high_water);
         }
+        if let Some(finished_at) = finished_owned {
+            next.import_finished_at = Some(finished_at);
+        }
         next.enabled = true;
-        next.expires_at_secs = Some(now_secs.saturating_add(GITHUB_ISSUE_SYNC_DEFAULT_WINDOW_SECS));
+        next.expires_at_secs = None;
         next.last_error = None;
         store
             .save_github_issue_sync(project, Some(next))
@@ -129,8 +131,35 @@ pub(crate) async fn enable_post_switch_sync(
     Ok(())
 }
 
-/// `set_github_issue_sync` (§3.1): turns the post-switch one-way GitHub-to-Collapse issue
-/// sync on or off for a Collapse-hosted project (#612).
+/// Seeds and enables one-way GitHub issue sync from Collapse's recorded import status
+/// when a project's issue host switches to Collapse (#614).
+pub(crate) async fn enable_sync_from_import_status(
+    application: &AppHandle,
+    project: u32,
+    repository_path: &Path,
+    collapse_repository: &str,
+    respect_explicit_disable: bool,
+) -> Result<(), String> {
+    let Some(github_repository) =
+        resolve_sync_github_repository(application, project, repository_path, collapse_repository)
+            .await?
+    else {
+        return Ok(());
+    };
+    let (import_finished_at, high_water) = seed_from_import(collapse_repository).await;
+    enable_post_switch_sync(
+        application,
+        project,
+        &github_repository,
+        high_water,
+        import_finished_at.as_deref(),
+        respect_explicit_disable,
+    )
+    .await
+}
+
+/// `set_github_issue_sync` (§3.1): turns the one-way GitHub-to-Collapse issue sync on or
+/// off for a Collapse-hosted project (#612, #614).
 #[tauri::command]
 #[specta::specta]
 pub async fn set_github_issue_sync(
@@ -159,17 +188,13 @@ pub async fn set_github_issue_sync(
     )
     .await?
     .ok_or("No GitHub repository found for this project; set one in Move to Collapse first")?;
-    let high_water = seed_high_water(
-        &subject.repository_path,
-        &collapse_repository,
-        &github_repository,
-    )
-    .await;
+    let (import_finished_at, high_water) = seed_from_import(&collapse_repository).await;
     enable_post_switch_sync(
         &application,
         project_identifier,
         &github_repository,
         high_water,
+        import_finished_at.as_deref(),
         false,
     )
     .await?;
@@ -183,8 +208,8 @@ pub async fn set_github_issue_sync(
     read_project_collapse_settings(&application, project_identifier).await
 }
 
-/// `sync_github_issues_now` (§3.1): runs one immediate pass of the post-switch one-way
-/// GitHub-to-Collapse issue sync for `project_identifier` (#612).
+/// `sync_github_issues_now` (§3.1): runs one immediate pass of the one-way
+/// GitHub-to-Collapse issue sync for `project_identifier` (#612, #614).
 #[tauri::command]
 #[specta::specta]
 pub async fn sync_github_issues_now(
@@ -196,11 +221,11 @@ pub async fn sync_github_issues_now(
         .ok_or("Enable one-way GitHub issue sync on a Collapse-hosted project first")?;
     let synced = sync_one_project(&application, candidate).await?;
     let message = if synced == 0 {
-        "GitHub issue sync is up to date (no new GitHub issues).".to_owned()
+        "GitHub issue sync is up to date (no new or changed GitHub issues).".to_owned()
     } else if synced == 1 {
-        "Synced 1 new GitHub issue to Collapse.".to_owned()
+        "Synced 1 GitHub issue to Collapse.".to_owned()
     } else {
-        format!("Synced {synced} new GitHub issues to Collapse.")
+        format!("Synced {synced} GitHub issues to Collapse.")
     };
     let _ = toast(&application, message);
     read_project_collapse_settings(&application, project_identifier).await
@@ -215,6 +240,7 @@ async fn disable_sync(application: &AppHandle, project: u32) -> Result<(), Strin
             return Ok(());
         };
         sync.enabled = false;
+        sync.expires_at_secs = None;
         sync.last_error = None;
         store
             .save_github_issue_sync(project, Some(sync))
@@ -332,224 +358,41 @@ async fn run_project_sync(
     candidate: &mut SyncCandidate,
 ) -> Result<usize, String> {
     let now_ms = unix_millis();
-    let now_secs = now_ms / 1000;
-    if github_sync_expired(&candidate.sync, now_secs) {
-        candidate.sync.enabled = false;
-        candidate.sync.last_error = None;
-        save_sync_state(application, candidate.project, candidate.sync.clone()).await?;
-        crate::diagnostics::record(
-            SOURCE,
-            &format!(
-                "{}: one-way GitHub issue sync window expired and turned off",
-                candidate.name
-            ),
-        );
-        return Ok(0);
-    }
+    candidate.sync.expires_at_secs = None;
     let Some(write_token) =
         tauri::async_runtime::spawn_blocking(velocity_collapse::load_issues_token)
             .await
             .map_err(|error| error.to_string())?
             .map_err(|error| error.to_string())?
     else {
-        let message = "Save a Collapse PAT with issues scope to sync new GitHub issues.".to_owned();
+        let message = "Save a Collapse PAT with issues scope to sync GitHub issues.".to_owned();
         record_sync_error(application, candidate, message.clone()).await;
         return Err(message);
     };
-    let Some((owner, name)) = candidate.collapse_repository.split_once('/') else {
-        return Ok(0);
-    };
-    let (owner, name) = (owner.to_owned(), name.to_owned());
-    let github_issues = read_github_open_issues(
+    let outcome = match sync_github_issues_async(
         &candidate.repository_path,
-        &candidate.sync.github_repository,
+        &candidate.collapse_repository,
+        &write_token,
+        &mut candidate.sync,
     )
-    .await;
-    let github_issues = match github_issues {
-        Ok(issues) => issues,
+    .await
+    {
+        Ok(outcome) => outcome,
         Err(error) => {
             record_sync_error(application, candidate, error.clone()).await;
             return Err(format!("{}: {error}", candidate.name));
         }
     };
-    let mut pending: Vec<GitHubIssue> = github_issues
-        .into_iter()
-        .filter(|issue| should_sync_github_issue(&candidate.sync, issue.number, now_secs))
-        .collect();
-    pending.sort_by_key(|issue| issue.number);
-    let created = if pending.is_empty() {
-        0
-    } else {
-        match mirror_pending_issues(candidate, &write_token, &owner, &name, &pending).await {
-            Ok(count) => count,
-            Err(error) => {
-                record_sync_error(application, candidate, error.clone()).await;
-                return Err(format!("{}: {error}", candidate.name));
-            }
-        }
-    };
+    for note in &outcome.notes {
+        crate::diagnostics::record(SOURCE, &format!("{}: {note}", candidate.name));
+    }
     candidate.sync.last_synced_at_ms = Some(now_ms);
     candidate.sync.last_error = None;
     save_sync_state(application, candidate.project, candidate.sync.clone()).await?;
-    if created > 0 {
-        IssueClient::invalidate_open_issues_for(
-            IssueHost::Collapse,
-            &candidate.collapse_repository,
-        );
-    }
-    Ok(created)
+    Ok(outcome.total_synced())
 }
 
-async fn mirror_pending_issues(
-    candidate: &mut SyncCandidate,
-    write_token: &str,
-    owner: &str,
-    name: &str,
-    pending: &[GitHubIssue],
-) -> Result<usize, String> {
-    let existing_collapse =
-        read_collapse_open_issues(&candidate.repository_path, &candidate.collapse_repository)
-            .await
-            .unwrap_or_default();
-    let api = CollapseIssueApi::new().map_err(|error| error.to_string())?;
-    let available_labels = fetch_collapse_labels(&api, write_token, owner, name).await;
-    let mut created_count = 0_usize;
-    for issue in pending {
-        let marker = github_sync_marker(&candidate.sync.github_repository, issue.number);
-        if let Some(existing) = existing_collapse
-            .iter()
-            .find(|row| row.body.contains(&marker))
-        {
-            candidate
-                .sync
-                .synced_numbers
-                .insert(issue.number, existing.number);
-            candidate.sync.high_water_number = candidate.sync.high_water_number.max(issue.number);
-            continue;
-        }
-        let body = format_synced_github_issue_body(
-            &issue.body,
-            &candidate.sync.github_repository,
-            issue.number,
-        );
-        let labels = match_existing_labels(&issue.labels, &available_labels);
-        let blocked_by = map_blockers(
-            &issue.open_blockers,
-            &candidate.sync.synced_numbers,
-            candidate.sync.high_water_number,
-        );
-        let created = api
-            .create_issue(
-                write_token,
-                owner,
-                name,
-                &CreateIssueRequest {
-                    title: &issue.title,
-                    body: &body,
-                    labels,
-                    blocked_by,
-                },
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        candidate
-            .sync
-            .synced_numbers
-            .insert(issue.number, created.number);
-        candidate.sync.high_water_number = candidate.sync.high_water_number.max(issue.number);
-        created_count += 1;
-        crate::diagnostics::record(
-            SOURCE,
-            &format!(
-                "{}: synced GitHub {}#{} -> Collapse {}#{}",
-                candidate.name,
-                candidate.sync.github_repository,
-                issue.number,
-                candidate.collapse_repository,
-                created.number
-            ),
-        );
-    }
-    Ok(created_count)
-}
-
-async fn fetch_collapse_labels(
-    api: &CollapseIssueApi,
-    token: &str,
-    owner: &str,
-    name: &str,
-) -> Vec<String> {
-    match api.list_labels(Some(token), owner, name, None).await {
-        Ok(Conditional::Modified { value, .. }) => {
-            value.labels.into_iter().map(|label| label.name).collect()
-        }
-        _ => Vec::new(),
-    }
-}
-
-fn match_existing_labels(requested: &[String], available: &[String]) -> Vec<String> {
-    requested
-        .iter()
-        .filter_map(|label| {
-            available
-                .iter()
-                .find(|existing| existing.eq_ignore_ascii_case(label))
-                .cloned()
-        })
-        .collect()
-}
-
-fn map_blockers(
-    open_blockers: &[String],
-    synced_numbers: &BTreeMap<u32, u32>,
-    high_water_number: u32,
-) -> Vec<String> {
-    let mut mapped = Vec::new();
-    for blocker in open_blockers {
-        if let Some(raw_number) = blocker.strip_prefix('#')
-            && let Ok(number) = raw_number.parse::<u32>()
-        {
-            if let Some(&collapse_number) = synced_numbers.get(&number) {
-                mapped.push(format!("#{collapse_number}"));
-            } else if number <= high_water_number {
-                mapped.push(format!("#{number}"));
-            }
-        }
-    }
-    mapped
-}
-
-async fn read_github_open_issues(
-    repository_path: &Path,
-    github_repository: &str,
-) -> Result<Vec<GitHubIssue>, String> {
-    let directory = repository_path.to_path_buf();
-    let repo = github_repository.to_owned();
-    tauri::async_runtime::spawn_blocking(move || {
-        let client =
-            IssueClient::for_repository(&directory, &repo).map_err(|error| error.to_string())?;
-        client.open_issues().map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| error.to_string())?
-}
-
-async fn read_collapse_open_issues(
-    repository_path: &Path,
-    collapse_repository: &str,
-) -> Result<Vec<GitHubIssue>, String> {
-    let directory = repository_path.to_path_buf();
-    let repo = collapse_repository.to_owned();
-    tauri::async_runtime::spawn_blocking(move || {
-        let client =
-            IssueClient::for_collapse(&directory, &repo).map_err(|error| error.to_string())?;
-        client.open_issues().map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| error.to_string())?
-}
-
-async fn resolve_sync_github_repository(
+pub(crate) async fn resolve_sync_github_repository(
     application: &AppHandle,
     project: u32,
     repository_path: &Path,
@@ -600,24 +443,24 @@ async fn resolve_sync_github_repository(
     .map_err(|error| error.to_string())
 }
 
-async fn seed_high_water(
-    repository_path: &Path,
-    collapse_repository: &str,
-    github_repository: &str,
-) -> Option<u32> {
-    if let Some((owner, name)) = collapse_repository.split_once('/')
-        && let Ok(Ok(Some(token))) =
-            tauri::async_runtime::spawn_blocking(velocity_collapse::resolve_issues_token).await
-        && let Ok(status) = velocity_collapse::get_issue_import_status(&token, owner, name).await
-        && let Some(result) = status.result
-        && result.next_number > 1
-    {
-        return u32::try_from(result.next_number.saturating_sub(1)).ok();
-    }
-    read_github_open_issues(repository_path, github_repository)
-        .await
-        .ok()
-        .map(|issues| issues.iter().map(|issue| issue.number).max().unwrap_or(0))
+async fn seed_from_import(collapse_repository: &str) -> (Option<String>, Option<u32>) {
+    let Some((owner, name)) = collapse_repository.split_once('/') else {
+        return (None, None);
+    };
+    let Ok(Ok(Some(token))) =
+        tauri::async_runtime::spawn_blocking(velocity_collapse::resolve_issues_token).await
+    else {
+        return (None, None);
+    };
+    let Ok(status) = velocity_collapse::get_issue_import_status(&token, owner, name).await else {
+        return (None, None);
+    };
+    let finished_at = status.finished_without_error_at().map(str::to_owned);
+    let high_water = status
+        .result
+        .filter(|result| result.next_number > 1)
+        .and_then(|result| u32::try_from(result.next_number.saturating_sub(1)).ok());
+    (finished_at, high_water)
 }
 
 async fn record_sync_error(
@@ -641,10 +484,6 @@ async fn save_sync_state(
         Ok(())
     })
     .await
-}
-
-fn unix_seconds() -> u64 {
-    unix_millis() / 1000
 }
 
 fn unix_millis() -> u64 {

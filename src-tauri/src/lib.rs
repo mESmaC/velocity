@@ -131,6 +131,8 @@ fn bindings() -> Builder<tauri::Wry> {
         diagnostics::log_window_error,
         performance::get_performance_diagnostics,
         process_memory::get_process_memory,
+        project_health::copy_github_issue_to_collapse,
+        project_health::dismiss_host_issue_problem,
         project_health::get_project_health,
         project_health::resolve_project_host_change,
         state::get_settings,

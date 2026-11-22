@@ -481,6 +481,112 @@ impl StateStore {
             })?
             .unwrap_or(false))
     }
+
+    /// Records a permanent host-issue failure (404 missing or number-collision mismatch)
+    /// once per `(host, number, kind)` so timer retries stop immediately and project health
+    /// surfaces one entry (#614). Returns `true` when newly recorded or meaningfully updated.
+    pub fn record_host_issue_problem(
+        &mut self,
+        project: u32,
+        problem: velocity_core::project_health::HostIssueProblem,
+    ) -> Result<bool, StoreError> {
+        Ok(self
+            .edit_project_in_place(project, |item| {
+                let unchanged =
+                    item.host_issue_problems
+                        .get(&problem.number)
+                        .is_some_and(|existing| {
+                            existing.host == problem.host
+                                && existing
+                                    .repository
+                                    .eq_ignore_ascii_case(&problem.repository)
+                                && existing.kind == problem.kind
+                        });
+                if unchanged {
+                    return (false, false);
+                }
+                item.host_issue_problems.insert(problem.number, problem);
+                (true, true)
+            })?
+            .unwrap_or(false))
+    }
+
+    /// Clears a recorded host-issue failure without discarding pending issue actions (used
+    /// right after Copy from GitHub succeeds so pending comments/closes can retry) (#614).
+    pub fn clear_host_issue_problem(
+        &mut self,
+        project: u32,
+        number: u32,
+    ) -> Result<bool, StoreError> {
+        Ok(self
+            .edit_project_in_place(project, |item| {
+                let removed = item.host_issue_problems.remove(&number).is_some();
+                (removed, removed)
+            })?
+            .unwrap_or(false))
+    }
+
+    /// Dismisses a missing or mismatched host-issue alert and drops any stuck pending
+    /// actions or reports for `number` so the next timer pass does not re-trigger it (#614).
+    pub fn dismiss_host_issue_problem(
+        &mut self,
+        project: u32,
+        number: u32,
+    ) -> Result<bool, StoreError> {
+        Ok(self
+            .edit_project_in_place(project, |item| {
+                let mut changed = item.host_issue_problems.remove(&number).is_some();
+                for thread in &mut item.threads {
+                    let before = thread.rosen_issue.pending.len();
+                    thread.rosen_issue.pending.retain(|action| {
+                        action
+                            .issue
+                            .as_ref()
+                            .is_none_or(|issue| issue.number != number)
+                    });
+                    changed |= thread.rosen_issue.pending.len() != before;
+                }
+                let retained_before = item.retained_rosen_issues.len();
+                item.retained_rosen_issues.retain(|_, retained| {
+                    if retained.issue.number != number {
+                        return true;
+                    }
+                    retained.progress.pending.clear();
+                    !retained.is_done()
+                });
+                changed |= item.retained_rosen_issues.len() != retained_before;
+                changed |= item
+                    .continuous_dispatch
+                    .landed_holds
+                    .remove(&number)
+                    .is_some();
+                let nc_before = item.continuous_dispatch.no_change_reports.len();
+                item.continuous_dispatch
+                    .no_change_reports
+                    .retain(|_, report| report.issue.number != number);
+                changed |= item.continuous_dispatch.no_change_reports.len() != nc_before;
+                let lf_before = item.continuous_dispatch.launch_failure_reports.len();
+                item.continuous_dispatch
+                    .launch_failure_reports
+                    .retain(|_, report| report.issue.number != number);
+                changed |= item.continuous_dispatch.launch_failure_reports.len() != lf_before;
+                (changed, changed)
+            })?
+            .unwrap_or(false))
+    }
+}
+
+impl crate::ProjectItem {
+    /// Whether `number` already has a permanent missing/mismatch record on `host` (#614).
+    pub fn has_host_issue_problem(
+        &self,
+        host: velocity_core::collapse::IssueHost,
+        number: u32,
+    ) -> bool {
+        self.host_issue_problems
+            .get(&number)
+            .is_some_and(|problem| problem.host == host)
+    }
 }
 
 #[cfg(test)]
@@ -696,6 +802,64 @@ mod tests {
         assert!(adopted.progress.watcher_due());
         assert_eq!(adopted.progress.pending.len(), 1);
         assert!(adopted.progress.pending[0].is_close());
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#614): missing (404) and mismatched host-issue alerts must survive save and
+    // load so a restart never resumes a 30-second 404 retry loop or drops the health row.
+    #[test]
+    fn host_issue_problems_survive_save_load_and_dismiss() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use velocity_core::collapse::IssueHost;
+        use velocity_core::project_health::{HostIssueProblem, HostIssueProblemKind};
+
+        let directory = std::env::temp_dir().join(format!(
+            "velocity-614-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        let mut store = seed(&directory)?;
+        let commit = "a".repeat(40);
+        record(&mut store, 1, Landed(&commit))?;
+        let problem = HostIssueProblem {
+            number: 386,
+            host: IssueHost::Collapse,
+            repository: "example/smoke".into(),
+            kind: HostIssueProblemKind::Missing {
+                github_repository: Some("example/smoke".into()),
+                github_exists: true,
+                github_title: Some("Original GitHub issue".into()),
+            },
+            detail: "HTTP 404: not found".into(),
+            detected_at_ms: 1_700_000_000_000,
+        };
+        assert!(store.record_host_issue_problem(1, problem.clone())?);
+        assert!(!store.record_host_issue_problem(1, problem.clone())?);
+
+        let mut loaded = StateStore::load_or_default(&directory)?;
+        assert!(
+            loaded
+                .project(1)
+                .is_some_and(|p| p.has_host_issue_problem(IssueHost::Collapse, 386))
+        );
+        assert!(
+            !loaded
+                .project(1)
+                .is_some_and(|p| p.has_host_issue_problem(IssueHost::GitHub, 386))
+        );
+        assert_eq!(
+            loaded
+                .project(1)
+                .and_then(|p| p.host_issue_problems.get(&386)),
+            Some(&problem)
+        );
+        assert!(loaded.dismiss_host_issue_problem(1, 386)?);
+        let after = StateStore::load_or_default(&directory)?;
+        assert!(after.project(1).is_some_and(
+            |p| p.host_issue_problems.is_empty() && p.threads[0].rosen_issue.pending.is_empty()
+        ));
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

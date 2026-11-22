@@ -46,6 +46,9 @@
   let importIssuesUrlLabel = $state<string | null>(null);
   let resolvingHostChange = $state(false);
   let hostChangeError = $state('');
+  let copyingIssueNumber = $state<number | null>(null);
+  let dismissingIssueNumber = $state<number | null>(null);
+  let hostIssueError = $state<Record<number, string>>({});
   // What each signal said when last shown. The timestamp is left out, so a check
   // that re-confirms the same signal doesn't pop it out again.
   let seen = new Map<string, string>();
@@ -60,7 +63,7 @@
   );
 
   const fingerprint = (item: ProjectHealthItem) =>
-    `${item.severity}|${item.signal}|${item.action}|${item.action_url ?? ''}|${item.host_switch_back?.button_label ?? ''}|${item.host_switch_back?.can_switch_back ?? ''}`;
+    `${item.severity}|${item.signal}|${item.action}|${item.action_url ?? ''}|${item.host_switch_back?.button_label ?? ''}|${item.host_switch_back?.can_switch_back ?? ''}|${item.host_issue_action?.issue_number ?? ''}|${item.host_issue_action?.can_copy_from_github ?? ''}`;
 
   function safeExternalUrl(url: string | null | undefined): string | null {
     if (!url) return null;
@@ -196,6 +199,62 @@
     }
   }
 
+  async function copyMissingIssueFromGithub(issueNumber: number) {
+    const id = currentProject;
+    if (id === null || copyingIssueNumber !== null) return;
+    copyingIssueNumber = issueNumber;
+    const nextErrors = { ...hostIssueError };
+    delete nextErrors[issueNumber];
+    hostIssueError = nextErrors;
+    try {
+      const view = await projectHealthCommands.copyGithubIssueToCollapse(
+        id,
+        issueNumber,
+      );
+      if (id === currentProject && view.project_identifier === id) {
+        receive(view.items, false);
+      }
+    } catch (reason) {
+      if (id === currentProject) {
+        hostIssueError = {
+          ...hostIssueError,
+          [issueNumber]:
+            reason instanceof Error ? reason.message : String(reason),
+        };
+      }
+    } finally {
+      if (id === currentProject) copyingIssueNumber = null;
+    }
+  }
+
+  async function dismissHostIssue(issueNumber: number) {
+    const id = currentProject;
+    if (id === null || dismissingIssueNumber !== null) return;
+    dismissingIssueNumber = issueNumber;
+    const nextErrors = { ...hostIssueError };
+    delete nextErrors[issueNumber];
+    hostIssueError = nextErrors;
+    try {
+      const view = await projectHealthCommands.dismissHostIssueProblem(
+        id,
+        issueNumber,
+      );
+      if (id === currentProject && view.project_identifier === id) {
+        receive(view.items, false);
+      }
+    } catch (reason) {
+      if (id === currentProject) {
+        hostIssueError = {
+          ...hostIssueError,
+          [issueNumber]:
+            reason instanceof Error ? reason.message : String(reason),
+        };
+      }
+    } finally {
+      if (id === currentProject) dismissingIssueNumber = null;
+    }
+  }
+
   $effect(() => {
     const id = currentProject;
     items = [];
@@ -206,6 +265,9 @@
     importIssuesUrlLabel = null;
     resolvingHostChange = false;
     hostChangeError = '';
+    copyingIssueNumber = null;
+    dismissingIssueNumber = null;
+    hostIssueError = {};
     clearPopouts();
     publishHeaderWarnings([]);
     if (id === null) return;
@@ -301,6 +363,41 @@
       </div>
       {#if !popout && hostChangeError}
         <div class="health-detail" role="alert">{hostChangeError}</div>
+      {/if}
+    {/if}
+    {#if (item.kind === 'HostIssueMissing' || item.kind === 'HostIssueMismatch') && item.host_issue_action && currentProject !== null}
+      {@const issueAction = item.host_issue_action}
+      <div class="health-actions">
+        {#if issueAction.can_copy_from_github}
+          <button
+            class="mini health-open"
+            type="button"
+            disabled={copyingIssueNumber === issueAction.issue_number ||
+              dismissingIssueNumber === issueAction.issue_number}
+            onclick={() =>
+              void copyMissingIssueFromGithub(issueAction.issue_number)}
+            >{copyingIssueNumber === issueAction.issue_number
+              ? 'Copying…'
+              : 'Copy from GitHub'}</button
+          >
+        {/if}
+        {#if issueAction.can_dismiss}
+          <button
+            class="mini health-open"
+            type="button"
+            disabled={copyingIssueNumber === issueAction.issue_number ||
+              dismissingIssueNumber === issueAction.issue_number}
+            onclick={() => void dismissHostIssue(issueAction.issue_number)}
+            >{dismissingIssueNumber === issueAction.issue_number
+              ? 'Dismissing…'
+              : 'Dismiss'}</button
+          >
+        {/if}
+      </div>
+      {#if !popout && hostIssueError[issueAction.issue_number]}
+        <div class="health-detail" role="alert">
+          {hostIssueError[issueAction.issue_number]}
+        </div>
       {/if}
     {/if}
     {#if item.kind === 'CollapseIssuesNotImported' && currentProject !== null}

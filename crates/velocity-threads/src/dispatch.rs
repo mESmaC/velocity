@@ -138,6 +138,8 @@ impl IssueDispatchPlan {
         let version = velocity_store::rosen_work::IssueVersion {
             updated_at: Some(self.updated_at.as_str()),
             reopened_at: self.reopened_at.as_deref(),
+            title: self.issue.title.as_deref(),
+            body: None,
         };
         Ok(store.add_issue_thread_for_version(
             self.launch.project,
@@ -191,7 +193,8 @@ pub fn plan_project_issue_dispatch(
             issue.number
         )));
     }
-    let assignment = ThreadIssue::new(repository.into(), issue.number);
+    let assignment = ThreadIssue::new(repository.into(), issue.number)
+        .with_identity(issue.title.clone(), issue.host);
     if let Some(thread) = issue_thread(project, &assignment) {
         return Err(ThreadError::IssueAssigned {
             number: issue.number,

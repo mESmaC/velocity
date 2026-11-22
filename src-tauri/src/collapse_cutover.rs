@@ -208,7 +208,7 @@ pub async fn import_collapse_issues(
     {
         github_repository = resolve_github_from_collapse(&credentials, owner, name).await;
     }
-    let (step, high_water) = run_import_issues(
+    let (step, high_water, import_finished_at) = run_import_issues(
         &subject.repository_path,
         owner,
         name,
@@ -232,6 +232,7 @@ pub async fn import_collapse_issues(
                 project_identifier,
                 github,
                 high_water,
+                import_finished_at.as_deref(),
                 true,
             )
             .await;
@@ -331,7 +332,7 @@ async fn run_cutover_steps(
     dashboard: &[RepositoryActivity],
 ) -> Result<(Vec<MoveToCollapseStepResult>, Option<CollapseCheckSummary>), String> {
     let mut steps = Vec::with_capacity(5);
-    let (import_step, high_water) = run_import_issues(
+    let (import_step, high_water, import_finished_at) = run_import_issues(
         &subject.repository_path,
         &provisioned.owner,
         &provisioned.name,
@@ -396,6 +397,7 @@ async fn run_cutover_steps(
                 provisioned,
                 github_repository,
                 high_water,
+                import_finished_at.as_deref(),
             )
             .await?,
         );
@@ -574,7 +576,7 @@ async fn run_import_issues(
     name: &str,
     github_repository: Option<&str>,
     github_import_token: Option<&str>,
-) -> (MoveToCollapseStepResult, Option<u32>) {
+) -> (MoveToCollapseStepResult, Option<u32>, Option<String>) {
     let title = "Import GitHub issues".to_owned();
     let Some(github) = github_repository else {
         return (
@@ -583,6 +585,7 @@ async fn run_import_issues(
                 &title,
                 "No GitHub repository configured for issue import. Enter the GitHub repository (owner/repo) above and re-run Move to Collapse.",
             ),
+            None,
             None,
         );
     };
@@ -593,7 +596,7 @@ async fn run_import_issues(
         .flatten();
     let Some(token) = token else {
         if verify_github_repository_has_no_issues(repository_path, github).await {
-            return (empty_github_passed_step(title, github), Some(0));
+            return (empty_github_passed_step(title, github), Some(0), None);
         }
         return (
             failed_step(
@@ -604,6 +607,7 @@ async fn run_import_issues(
                 None,
                 None,
             ),
+            None,
             None,
         );
     };
@@ -617,6 +621,7 @@ async fn run_import_issues(
     .await
     {
         Ok(status) if status.has_finished() => {
+            let finished_at = status.finished_without_error_at().map(str::to_owned);
             let high_water = status.result.as_ref().map(|counts| {
                 u32::try_from(counts.next_number.saturating_sub(1)).unwrap_or(u32::MAX)
             });
@@ -632,11 +637,12 @@ async fn run_import_issues(
                     action_label: None,
                 },
                 high_water,
+                finished_at,
             )
         }
         Ok(_) => {
             if verify_github_repository_has_no_issues(repository_path, github).await {
-                return (empty_github_passed_step(title, github), Some(0));
+                return (empty_github_passed_step(title, github), Some(0), None);
             }
             (
                 failed_step(
@@ -648,11 +654,12 @@ async fn run_import_issues(
                     None,
                 ),
                 None,
+                None,
             )
         }
         Err(failure) => {
             if verify_github_repository_has_no_issues(repository_path, github).await {
-                return (empty_github_passed_step(title, github), Some(0));
+                return (empty_github_passed_step(title, github), Some(0), None);
             }
             let detail = if failure.needs_issues_token {
                 Some("Issue import requires a Collapse personal access token with the 'issues' scope. Save one in Collapse settings below and re-run Move to Collapse.".into())
@@ -674,6 +681,7 @@ async fn run_import_issues(
                     failure.action_url,
                     action_label,
                 ),
+                None,
                 None,
             )
         }
@@ -960,6 +968,7 @@ async fn step_set_issues_and_ci(
     provisioned: &ProvisionedMirror,
     github_repository: Option<&str>,
     high_water_number: Option<u32>,
+    import_finished_at: Option<&str>,
 ) -> Result<MoveToCollapseStepResult, String> {
     let repo = provisioned.repository();
     let refresh = crate::state::try_with_store(application, move |store| {
@@ -980,12 +989,14 @@ async fn step_set_issues_and_ci(
     velocity_github::IssueClient::invalidate_open_issues_for(IssueHost::Collapse, &repo);
     crate::project_health::mark_collapse_issues_imported(application, project, &repo);
     crate::project_health::sync_host_source_change(application, project);
+    crate::project_health::sync_host_issue_problems(application, project);
     if let Some(github) = github_repository {
         let _ = crate::collapse_issue_sync::enable_post_switch_sync(
             application,
             project,
             github,
             high_water_number,
+            import_finished_at,
             false,
         )
         .await;
@@ -999,9 +1010,9 @@ async fn step_set_issues_and_ci(
             .flatten()
             .is_some();
     let detail = if has_issues_token {
-        Some("Dispatch, AIRC issue tools, base CI repairs, release gate and pin tracking now run against Collapse and Rosen. New GitHub issues sync one-way into Collapse for 14 days (toggleable in Collapse settings).".into())
+        Some("Dispatch, AIRC issue tools, base CI repairs, release gate and pin tracking now run against Collapse and Rosen. GitHub issues opened or changed since the import sync one-way into Collapse until turned off in Collapse settings.".into())
     } else {
-        Some("Issues and CI switched to Collapse and Rosen. Save a Collapse PAT with 'issues' scope in Collapse settings below to allow commenting, closing and syncing new GitHub issues.".into())
+        Some("Issues and CI switched to Collapse and Rosen. Save a Collapse PAT with 'issues' scope in Collapse settings below to allow commenting, closing and syncing GitHub issues.".into())
     };
     Ok(MoveToCollapseStepResult {
         step: MoveToCollapseStepId::SetIssuesAndCi,

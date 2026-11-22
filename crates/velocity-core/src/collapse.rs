@@ -354,23 +354,33 @@ pub const COLLAPSE_ISSUES_NOT_IMPORTED_SIGNAL: &str =
 /// Collapse after switching a project's issue host to Collapse (#612).
 pub const GITHUB_ISSUE_SYNC_DEFAULT_WINDOW_SECS: u64 = 14 * 24 * 60 * 60;
 
-/// Persisted one-way sync state for mirroring GitHub issues opened after switching a
-/// project's issue host to Collapse (#612).
+/// Persisted one-way sync state for mirroring GitHub issues opened or changed since
+/// Collapse's import finished until the owner turns the sync off (#612, #614).
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GitHubIssueSync {
-    /// Whether Velocity periodically mirrors newly opened GitHub issues to Collapse.
+    /// Whether Velocity periodically mirrors GitHub issues opened or changed since the
+    /// import into Collapse.
     #[serde(default)]
     pub enabled: bool,
-    /// GitHub `owner/repository` watched for newly opened issues.
+    /// GitHub `owner/repository` watched for opened or changed issues.
     #[serde(default)]
     pub github_repository: String,
     /// Highest GitHub issue number covered by the initial import or already mirrored.
     #[serde(default)]
     pub high_water_number: u32,
-    /// Maps mirrored GitHub issue numbers to their created Collapse issue numbers.
+    /// RFC 3339 `finished_at` timestamp of Collapse's last completed GitHub import (#614).
+    /// Sync covers every GitHub issue opened or changed since this timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_finished_at: Option<String>,
+    /// Maps mirrored GitHub issue numbers to their Collapse issue numbers.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub synced_numbers: std::collections::BTreeMap<u32, u32>,
-    /// Optional Unix seconds when this transitional sync automatically turns off.
+    /// Maps GitHub issue numbers to the last GitHub `updated_at` timestamp already applied
+    /// to Collapse, so unchanged issues are not re-patched on every poll (#614).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub synced_updated_at: std::collections::BTreeMap<u32, String>,
+    /// Legacy expiry field from #612; retained for deserialization only (#614 keeps sync on
+    /// until the owner turns it off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_secs: Option<u64>,
     /// Unix milliseconds of the last successful poll, when any.
@@ -381,15 +391,18 @@ pub struct GitHubIssueSync {
     pub last_error: Option<String>,
 }
 
-/// Serializable status of post-switch one-way GitHub issue sync for Collapse settings (#612).
+/// Serializable status of post-switch one-way GitHub issue sync for Collapse settings (#612, #614).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 pub struct GitHubIssueSyncView {
     pub enabled: bool,
     pub github_repository: String,
     pub high_water_number: u32,
+    /// RFC 3339 timestamp of the import cutoff (`finished_at`) when known (#614).
+    #[serde(default)]
+    pub import_finished_at: Option<String>,
     pub synced_count: u32,
-    /// Decimal Unix milliseconds when transitional sync expires, if a window is set.
+    /// Legacy expiry field, always `None` once #614 keeps sync on until turned off.
     #[serde(default)]
     pub expires_at_ms: Option<String>,
     /// Decimal Unix milliseconds when the last sync pass completed, if any.
@@ -405,10 +418,9 @@ impl GitHubIssueSync {
             enabled: self.enabled,
             github_repository: self.github_repository.clone(),
             high_water_number: self.high_water_number,
+            import_finished_at: self.import_finished_at.clone(),
             synced_count: u32::try_from(self.synced_numbers.len()).unwrap_or(u32::MAX),
-            expires_at_ms: self
-                .expires_at_secs
-                .map(|secs| secs.saturating_mul(1000).to_string()),
+            expires_at_ms: None,
             last_synced_at_ms: self.last_synced_at_ms.map(|ms| ms.to_string()),
             last_error: self.last_error.clone(),
         }
@@ -471,21 +483,244 @@ pub fn format_synced_github_issue_body(
     }
 }
 
-/// Whether a project's transitional GitHub-to-Collapse issue sync window has expired (#612).
-pub fn github_sync_expired(sync: &GitHubIssueSync, now_secs: u64) -> bool {
-    sync.enabled
-        && sync
-            .expires_at_secs
-            .is_some_and(|expires_at| now_secs >= expires_at)
+/// Whether a project's GitHub-to-Collapse issue sync has expired. Sync stays on until
+/// the owner turns it off (#614).
+pub fn github_sync_expired(_sync: &GitHubIssueSync, _now_secs: u64) -> bool {
+    false
 }
 
-/// Whether GitHub issue `#number` should be mirrored one-way into Collapse (#612).
-pub fn should_sync_github_issue(sync: &GitHubIssueSync, number: u32, now_secs: u64) -> bool {
+/// Whether GitHub issue `#number` should be mirrored one-way into Collapse based on its
+/// number alone (#612, #614).
+pub fn should_sync_github_issue(sync: &GitHubIssueSync, number: u32, _now_secs: u64) -> bool {
     sync.enabled
         && !sync.github_repository.trim().is_empty()
-        && !github_sync_expired(sync, now_secs)
         && number > sync.high_water_number
         && !sync.synced_numbers.contains_key(&number)
+}
+
+/// Whether GitHub issue `#number` (opened at `created_at`, updated at `updated_at`) should
+/// be synced into Collapse: covers every GitHub issue opened or changed since Collapse's
+/// import `finished_at` (as well as any issue above `high_water_number`), skipping exact
+/// `updated_at` versions already applied (#614).
+pub fn should_sync_github_issue_change(
+    sync: &GitHubIssueSync,
+    number: u32,
+    created_at: &str,
+    updated_at: &str,
+) -> bool {
+    if !sync.enabled || sync.github_repository.trim().is_empty() {
+        return false;
+    }
+    let updated_trimmed = updated_at.trim();
+    if !updated_trimmed.is_empty()
+        && sync
+            .synced_updated_at
+            .get(&number)
+            .is_some_and(|seen| seen == updated_trimmed)
+    {
+        return false;
+    }
+    if number > sync.high_water_number && !sync.synced_numbers.contains_key(&number) {
+        return true;
+    }
+    let Some(since) = sync
+        .import_finished_at
+        .as_deref()
+        .and_then(parse_rfc3339_seconds)
+    else {
+        return number > sync.high_water_number;
+    };
+    let created_since = parse_rfc3339_seconds(created_at).is_some_and(|ts| ts >= since);
+    let updated_since = parse_rfc3339_seconds(updated_at).is_some_and(|ts| ts >= since);
+    created_since || updated_since
+}
+
+/// Parses an RFC 3339 timestamp or decimal Unix-seconds string into UTC Unix seconds (#614).
+pub fn parse_rfc3339_seconds(value: &str) -> Option<u64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.bytes().all(|byte| byte.is_ascii_digit()) {
+        return trimmed.parse::<u64>().ok();
+    }
+    let (date, time_and_zone) = trimmed.split_once(['T', 't'])?;
+    let mut date_parts = date.split('-').map(|part| part.parse::<i64>().ok());
+    let (year, month, day) = (
+        date_parts.next()??,
+        date_parts.next()??,
+        date_parts.next()??,
+    );
+    if date_parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let (time_part, offset_seconds) = split_rfc3339_offset(time_and_zone)?;
+    let clock = time_part.split('.').next()?;
+    let mut clock_parts = clock.split(':').map(|part| part.parse::<i64>().ok());
+    let (hour, minute, second) = (
+        clock_parts.next()??,
+        clock_parts.next()??,
+        clock_parts.next()??,
+    );
+    if clock_parts.next().is_some()
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=60).contains(&second)
+    {
+        return None;
+    }
+    let adjusted_year = if month <= 2 { year - 1 } else { year };
+    let shifted_month = if month > 2 { month - 3 } else { month + 9 };
+    let year_of_era = adjusted_year.rem_euclid(400);
+    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = adjusted_year.div_euclid(400) * 146_097 + day_of_era - 719_468;
+    let utc_seconds = days * 86_400 + hour * 3_600 + minute * 60 + second - offset_seconds;
+    u64::try_from(utc_seconds).ok()
+}
+
+fn split_rfc3339_offset(time_and_zone: &str) -> Option<(&str, i64)> {
+    if let Some(clock) = time_and_zone
+        .strip_suffix('Z')
+        .or_else(|| time_and_zone.strip_suffix('z'))
+    {
+        return Some((clock, 0));
+    }
+    let sign_index = time_and_zone.rfind(['+', '-'])?;
+    let (clock, zone) = time_and_zone.split_at(sign_index);
+    let sign = if zone.starts_with('+') { 1 } else { -1 };
+    let (hours, minutes) = zone[1..].split_once(':')?;
+    let hours = hours.parse::<i64>().ok()?;
+    let minutes = minutes.parse::<i64>().ok()?;
+    if !(0..=23).contains(&hours) || !(0..=59).contains(&minutes) {
+        return None;
+    }
+    Some((clock, sign * (hours * 3_600 + minutes * 60)))
+}
+
+/// Expected identity of a landed change's issue, verified before commenting, closing, or
+/// treating a host issue as already completed (#614).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExpectedIssueIdentity<'a> {
+    pub title: Option<&'a str>,
+    pub github_repository: Option<&'a str>,
+    pub github_number: Option<u32>,
+}
+
+impl ExpectedIssueIdentity<'_> {
+    pub fn has_expected_title(&self) -> bool {
+        self.title.is_some_and(|title| !title.trim().is_empty())
+    }
+}
+
+/// Whether a host issue (`host_title`, `host_body`) matches `expected` (#614).
+///
+/// Accepts the issue when its body links or carries the Velocity sync marker for the
+/// expected GitHub source, or when its title matches (exact normalized, truncated prefix,
+/// or high token overlap). Legacy records with no expected title match by default.
+pub fn host_issue_matches_expected(
+    expected: &ExpectedIssueIdentity<'_>,
+    host_title: &str,
+    host_body: &str,
+) -> bool {
+    if let (Some(repo), Some(number)) = (
+        expected
+            .github_repository
+            .map(str::trim)
+            .filter(|repo| !repo.is_empty()),
+        expected.github_number.filter(|&number| number > 0),
+    ) && body_references_github_issue(host_body, repo, number)
+    {
+        return true;
+    }
+    let Some(expected_title) = expected
+        .title
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+    else {
+        return true;
+    };
+    titles_match_issue(expected_title, host_title)
+}
+
+/// Whether `body` carries the Velocity sync marker or GitHub issue URL for `repo#number` (#614).
+pub fn body_references_github_issue(body: &str, repo: &str, number: u32) -> bool {
+    let lower_body = body.to_ascii_lowercase();
+    let lower_repo = repo.trim().to_ascii_lowercase();
+    let marker = format!("<!-- velocity-github-sync: {lower_repo}#{number} -->");
+    if lower_body.contains(&marker) {
+        return true;
+    }
+    let needle = format!("https://github.com/{lower_repo}/issues/{number}");
+    let mut start = 0;
+    while let Some(offset) = lower_body[start..].find(&needle) {
+        let end = start + offset + needle.len();
+        let next_is_digit = lower_body
+            .as_bytes()
+            .get(end)
+            .is_some_and(u8::is_ascii_digit);
+        if !next_is_digit {
+            return true;
+        }
+        start = end;
+    }
+    false
+}
+
+fn titles_match_issue(expected: &str, actual: &str) -> bool {
+    let left = normalize_issue_title(expected);
+    let right = normalize_issue_title(actual);
+    if left.is_empty() || right.is_empty() {
+        return true;
+    }
+    if left == right {
+        return true;
+    }
+    if is_truncated_prefix(expected, &left, &right) || is_truncated_prefix(actual, &right, &left) {
+        return true;
+    }
+    let left_words = title_words(&left);
+    let right_words = title_words(&right);
+    if left_words.len() < 3 || right_words.len() < 3 {
+        return false;
+    }
+    let shared = left_words
+        .iter()
+        .filter(|word| right_words.contains(*word))
+        .count();
+    let union = left_words.len() + right_words.len() - shared;
+    union > 0 && shared.saturating_mul(2) >= union
+}
+
+fn is_truncated_prefix(raw: &str, normalized: &str, other: &str) -> bool {
+    let trimmed = raw.trim_end();
+    (trimmed.ends_with('…') || trimmed.ends_with("..."))
+        && normalized.len() >= 12
+        && other.starts_with(normalized)
+}
+
+fn normalize_issue_title(title: &str) -> String {
+    let mut out = String::with_capacity(title.len());
+    let mut previous_space = true;
+    for ch in title.chars() {
+        if ch.is_alphanumeric() {
+            for lower in ch.to_lowercase() {
+                out.push(lower);
+            }
+            previous_space = false;
+        } else if !previous_space {
+            out.push(' ');
+            previous_space = true;
+        }
+    }
+    out.trim_end().to_owned()
+}
+
+fn title_words(normalized: &str) -> std::collections::BTreeSet<&str> {
+    normalized
+        .split_whitespace()
+        .filter(|word| word.len() >= 2)
+        .collect()
 }
 
 /// Formats the title bar and project health warning for a missing or failing GitHub downstream
@@ -1005,18 +1240,81 @@ mod tests {
             enabled: true,
             github_repository: "mESmaC/velocity".into(),
             high_water_number: 612,
+            import_finished_at: Some("2026-11-22T01:00:00Z".into()),
             expires_at_secs: Some(1_000),
             ..GitHubIssueSync::default()
         };
         assert!(!should_sync_github_issue(&sync, 612, 500));
         assert!(should_sync_github_issue(&sync, 613, 500));
-        assert!(!should_sync_github_issue(&sync, 613, 1_000));
-        assert!(github_sync_expired(&sync, 1_000));
+        // Sync stays active until the owner turns it off (#614).
+        assert!(should_sync_github_issue(&sync, 613, 1_000));
+        assert!(!github_sync_expired(&sync, 1_000));
         sync.synced_numbers.insert(613, 614);
         assert!(!should_sync_github_issue(&sync, 613, 500));
+
+        // Issues opened or updated on GitHub after import_finished_at are covered (#614).
+        assert!(super::should_sync_github_issue_change(
+            &sync,
+            613,
+            "2026-11-22T01:05:00Z",
+            "2026-11-22T01:05:00Z",
+        ));
+        assert!(super::should_sync_github_issue_change(
+            &sync,
+            600,
+            "2026-11-20T00:00:00Z",
+            "2026-11-22T01:10:00Z",
+        ));
+        assert!(!super::should_sync_github_issue_change(
+            &sync,
+            600,
+            "2026-11-20T00:00:00Z",
+            "2026-11-21T23:59:59Z",
+        ));
+        sync.synced_updated_at
+            .insert(613, "2026-11-22T01:05:00Z".into());
+        assert!(!super::should_sync_github_issue_change(
+            &sync,
+            613,
+            "2026-11-22T01:05:00Z",
+            "2026-11-22T01:05:00Z",
+        ));
 
         let body = format_synced_github_issue_body("Bug details", "mESmaC/velocity", 613);
         assert!(body.contains("https://github.com/mESmaC/velocity/issues/613"));
         assert!(body.contains(&github_sync_marker("mESmaC/velocity", 613)));
+    }
+
+    #[test]
+    fn host_issue_identity_check_catches_number_collisions_and_accepts_matches() {
+        use super::{
+            ExpectedIssueIdentity, format_synced_github_issue_body, host_issue_matches_expected,
+        };
+
+        let expected = ExpectedIssueIdentity {
+            title: Some(
+                "#612 put already-moved projects back on GitHub issues and GitHub CI after restart; keep them on Collapse when their import finished",
+            ),
+            github_repository: Some("mESmaC/velocity"),
+            github_number: Some(613),
+        };
+        assert!(host_issue_matches_expected(
+            &expected,
+            "#612 put already-moved projects back on GitHub issues and GitHub CI after restart; keep them on Collapse when their import finished",
+            "Imported body"
+        ));
+        // Colliding Collapse issue with a different title and no GitHub #613 source must mismatch.
+        assert!(!host_issue_matches_expected(
+            &expected,
+            "Velocity retries a missing Collapse issue every 30 s forever, and GitHub and Collapse issue numbers collide after an import",
+            "Filed on Collapse; mentions https://github.com/mESmaC/velocity/issues/6130"
+        ));
+        // Synced issue carrying the GitHub source marker matches even after a title edit.
+        let synced_body = format_synced_github_issue_body("Details", "mESmaC/velocity", 613);
+        assert!(host_issue_matches_expected(
+            &expected,
+            "Edited title on Collapse",
+            &synced_body
+        ));
     }
 }

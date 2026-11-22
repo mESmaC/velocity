@@ -514,6 +514,16 @@ pub async fn set_project_issue_host(
     match host {
         IssueHost::Collapse => {
             crate::project_health::recheck_collapse_import_soon(&application, project_identifier);
+            if let Some(repo) = subject.repository.as_deref() {
+                let _ = crate::collapse_issue_sync::enable_sync_from_import_status(
+                    &application,
+                    project_identifier,
+                    &subject.repository_path,
+                    repo,
+                    true,
+                )
+                .await;
+            }
         }
         IssueHost::GitHub => {
             crate::project_health::clear_collapse_issues_not_imported(
@@ -523,6 +533,7 @@ pub async fn set_project_issue_host(
         }
     }
     crate::project_health::sync_host_source_change(&application, project_identifier);
+    crate::project_health::sync_host_issue_problems(&application, project_identifier);
     crate::base_ci::wake(&application);
     read_project_collapse_settings(&application, project_identifier).await
 }
@@ -1384,7 +1395,31 @@ async fn backfill_one_project(
         project,
         &candidate.collapse_repository,
     );
+    let github_repo = [
+        status.github_repository.as_str(),
+        status.suggested_github_repository.as_str(),
+    ]
+    .into_iter()
+    .map(str::trim)
+    .find(|value| !value.is_empty());
+    if let Some(github_repo) = github_repo {
+        let high_water = status
+            .result
+            .as_ref()
+            .filter(|result| result.next_number > 1)
+            .and_then(|result| u32::try_from(result.next_number.saturating_sub(1)).ok());
+        let _ = crate::collapse_issue_sync::enable_post_switch_sync(
+            application,
+            project,
+            github_repo,
+            high_water,
+            Some(&finished_at),
+            true,
+        )
+        .await;
+    }
     crate::project_health::sync_host_source_change(application, project);
+    crate::project_health::sync_host_issue_problems(application, project);
     crate::base_ci::wake(application);
 }
 

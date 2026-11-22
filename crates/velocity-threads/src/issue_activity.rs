@@ -369,6 +369,7 @@ fn create_issue(
         );
     }
     let byline = issue_byline(project.id, thread, Some(create.nick));
+    sync_github_before_collapse_create(project, client);
     let draft = AgentIssueDraft {
         title: create.title,
         body: create.body,
@@ -383,6 +384,26 @@ fn create_issue(
         })
         .map_err(IssueActivityFailure::from_github)?;
     Ok(format_create_outcome(outcome))
+}
+
+/// Before creating a new Collapse issue while one-way GitHub issue sync is on, sync any
+/// GitHub issues opened since Collapse's import first so GitHub numbers are allocated on
+/// Collapse ahead of the new Collapse issue (#614).
+fn sync_github_before_collapse_create(project: &ProjectItem, client: &IssueClient) {
+    if client.host() != IssueHost::Collapse {
+        return;
+    }
+    let Some(mut sync) = project.github_issue_sync.clone() else {
+        return;
+    };
+    if !sync.enabled || sync.github_repository.trim().is_empty() {
+        return;
+    }
+    let _ = velocity_github::github_issue_sync::sync_github_issues_blocking(
+        Path::new(&project.repository_path),
+        client.repository(),
+        &mut sync,
+    );
 }
 
 fn resolve_create_target(
@@ -438,6 +459,7 @@ fn create_sibling_issue(
         &sibling_repo.full_name(),
     )
     .map_err(IssueActivityFailure::from_github)?;
+    sync_github_before_collapse_create(sibling_project, &sibling_client);
     let draft = AgentIssueDraft {
         title: create.title,
         body: create.body,

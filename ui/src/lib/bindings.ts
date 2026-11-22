@@ -67,13 +67,13 @@ export const commands = {
 	 */
 	moveToCollapse: (request: MoveToCollapseRequest_Deserialize) => __TAURI_INVOKE<MoveToCollapseResult_Serialize>("move_to_collapse", { request }),
 	/**
-	 *  `set_github_issue_sync` (§3.1): turns the post-switch one-way GitHub-to-Collapse issue
-	 *  sync on or off for a Collapse-hosted project (#612).
+	 *  `set_github_issue_sync` (§3.1): turns the one-way GitHub-to-Collapse issue sync on or
+	 *  off for a Collapse-hosted project (#612, #614).
 	 */
 	setGithubIssueSync: (projectIdentifier: number, enabled: boolean) => __TAURI_INVOKE<ProjectCollapseSettings_Serialize>("set_github_issue_sync", { projectIdentifier, enabled }),
 	/**
-	 *  `sync_github_issues_now` (§3.1): runs one immediate pass of the post-switch one-way
-	 *  GitHub-to-Collapse issue sync for `project_identifier` (#612).
+	 *  `sync_github_issues_now` (§3.1): runs one immediate pass of the one-way
+	 *  GitHub-to-Collapse issue sync for `project_identifier` (#612, #614).
 	 */
 	syncGithubIssuesNow: (projectIdentifier: number) => __TAURI_INVOKE<ProjectCollapseSettings_Serialize>("sync_github_issues_now", { projectIdentifier }),
 	/**
@@ -151,6 +151,17 @@ export const commands = {
 	 */
 	getPerformanceDiagnostics: () => __TAURI_INVOKE<PerformanceDiagnostics>("get_performance_diagnostics"),
 	getProcessMemory: () => __TAURI_INVOKE<ProcessMemory[]>("get_process_memory"),
+	/**
+	 *  `copy_github_issue_to_collapse` (§3.1): re-runs Collapse's idempotent GitHub issue
+	 *  import to bring a missing GitHub issue onto Collapse with its original number, then
+	 *  immediately retries pending land comments, closes or reverts for that issue (#614).
+	 */
+	copyGithubIssueToCollapse: (projectIdentifier: number, issueNumber: number) => __TAURI_INVOKE<ProjectHealthView_Serialize>("copy_github_issue_to_collapse", { projectIdentifier, issueNumber }),
+	/**
+	 *  `dismiss_host_issue_problem` (§3.1): clears a missing or mismatched host-issue health
+	 *  alert and drops stuck pending updates for that issue number (#614).
+	 */
+	dismissHostIssueProblem: (projectIdentifier: number, issueNumber: number) => __TAURI_INVOKE<ProjectHealthView_Serialize>("dismiss_host_issue_problem", { projectIdentifier, issueNumber }),
 	/**  `get_project_health` (§3.1): returns the active health signals for one project (#509). */
 	getProjectHealth: (projectIdentifier: number) => __TAURI_INVOKE<ProjectHealthView_Serialize>("get_project_health", { projectIdentifier }),
 	/**
@@ -1922,29 +1933,33 @@ export type GhRateRow = {
 	breaching: boolean,
 };
 
-/**  Serializable status of post-switch one-way GitHub issue sync for Collapse settings (#612). */
+/**  Serializable status of post-switch one-way GitHub issue sync for Collapse settings (#612, #614). */
 export type GitHubIssueSyncView = GitHubIssueSyncView_Serialize | GitHubIssueSyncView_Deserialize;
 
-/**  Serializable status of post-switch one-way GitHub issue sync for Collapse settings (#612). */
+/**  Serializable status of post-switch one-way GitHub issue sync for Collapse settings (#612, #614). */
 export type GitHubIssueSyncView_Deserialize = {
 	enabled: boolean,
 	github_repository: string,
 	high_water_number: number,
+	/**  RFC 3339 timestamp of the import cutoff (`finished_at`) when known (#614). */
+	import_finished_at?: string | null,
 	synced_count: number,
-	/**  Decimal Unix milliseconds when transitional sync expires, if a window is set. */
+	/**  Legacy expiry field, always `None` once #614 keeps sync on until turned off. */
 	expires_at_ms?: string | null,
 	/**  Decimal Unix milliseconds when the last sync pass completed, if any. */
 	last_synced_at_ms?: string | null,
 	last_error?: string | null,
 };
 
-/**  Serializable status of post-switch one-way GitHub issue sync for Collapse settings (#612). */
+/**  Serializable status of post-switch one-way GitHub issue sync for Collapse settings (#612, #614). */
 export type GitHubIssueSyncView_Serialize = {
 	enabled: boolean,
 	github_repository: string,
 	high_water_number: number,
+	/**  RFC 3339 timestamp of the import cutoff (`finished_at`) when known (#614). */
+	import_finished_at: string | null,
 	synced_count: number,
-	/**  Decimal Unix milliseconds when transitional sync expires, if a window is set. */
+	/**  Legacy expiry field, always `None` once #614 keeps sync on until turned off. */
 	expires_at_ms: string | null,
 	/**  Decimal Unix milliseconds when the last sync pass completed, if any. */
 	last_synced_at_ms: string | null,
@@ -2420,12 +2435,19 @@ export type GraphStatus_Serialize = {
 
 export type HealthSeverity = "Info" | "Warning" | "Error";
 
-export type HealthSignalKind = "MirrorBehind" | "CollapseProactiveAuth" | "CollapseForwarding" | "CollapseIssuesNotImported" | "HostSourceChanged" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "PostLandStalled" | "UpdaterManifestBehind" | "ReleaseGateRefused" | "AircIssueToolFailed" | "Deploy" | "LocalBuildRestartFailed";
+export type HealthSignalKind = "MirrorBehind" | "CollapseProactiveAuth" | "CollapseForwarding" | "CollapseIssuesNotImported" | "HostSourceChanged" | "HostIssueMissing" | "HostIssueMismatch" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "PostLandStalled" | "UpdaterManifestBehind" | "ReleaseGateRefused" | "AircIssueToolFailed" | "Deploy" | "LocalBuildRestartFailed";
 
 /**  A model you hid from the pickers by clicking its chip (F15 Models). */
 export type HiddenModel = {
 	provider: ProviderKind,
 	model: string,
+};
+
+/**  Optional remediation metadata for `HostIssueMissing` and `HostIssueMismatch` signals (#614). */
+export type HostIssueAction = {
+	issue_number: number,
+	can_copy_from_github: boolean,
+	can_dismiss: boolean,
 };
 
 /**  One-click revert metadata for an unexpected issue host or CI source change (#613). */
@@ -4365,6 +4387,8 @@ export type ProjectHealthItem_Deserialize = {
 	action_label?: string | null,
 	/**  Optional one-click revert metadata for `HostSourceChanged` signals (#613). */
 	host_switch_back?: HostSwitchBack | null,
+	/**  Optional Copy from GitHub / Dismiss metadata for missing or mismatched host issues (#614). */
+	host_issue_action?: HostIssueAction | null,
 	/**  Decimal Unix milliseconds when Velocity last acted or updated this signal. */
 	acted_at_ms: string,
 };
@@ -4389,6 +4413,8 @@ export type ProjectHealthItem_Serialize = {
 	action_label?: string,
 	/**  Optional one-click revert metadata for `HostSourceChanged` signals (#613). */
 	host_switch_back?: HostSwitchBack,
+	/**  Optional Copy from GitHub / Dismiss metadata for missing or mismatched host issues (#614). */
+	host_issue_action?: HostIssueAction,
 	/**  Decimal Unix milliseconds when Velocity last acted or updated this signal. */
 	acted_at_ms: string,
 };
@@ -6546,11 +6572,19 @@ export type ThreadIssue = ThreadIssue_Serialize | ThreadIssue_Deserialize;
 export type ThreadIssue_Deserialize = {
 	repository?: string,
 	number?: number,
+	/**  Issue title when assigned, used to detect number collisions after a host switch (#614). */
+	title?: string | null,
+	/**  Issue host where this issue originated (`github` or `collapse`), when known (#614). */
+	host?: IssueHost | null,
 };
 
 export type ThreadIssue_Serialize = {
 	repository: string,
 	number: number,
+	/**  Issue title when assigned, used to detect number collisions after a host switch (#614). */
+	title?: string,
+	/**  Issue host where this issue originated (`github` or `collapse`), when known (#614). */
+	host?: IssueHost,
 };
 
 export type ThreadItem = ThreadItem_Serialize | ThreadItem_Deserialize;

@@ -16,12 +16,14 @@ pub struct WorkEvidence<'a> {
     pub revert_reason: Option<&'a str>,
 }
 
-/// Open-issue timestamps used to check whether a completed Rosen work item still covers
-/// the current GitHub version of an issue (#602).
+/// Open-issue timestamps and optional title/body used to check whether a completed Rosen
+/// work item still covers the current host issue (#602, #614).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IssueVersion<'a> {
     pub updated_at: Option<&'a str>,
     pub reopened_at: Option<&'a str>,
+    pub title: Option<&'a str>,
+    pub body: Option<&'a str>,
 }
 
 impl<'a> IssueVersion<'a> {
@@ -29,6 +31,8 @@ impl<'a> IssueVersion<'a> {
         Self {
             updated_at: Some(issue.updated_at.as_str()),
             reopened_at: issue.reopened_at.as_deref(),
+            title: Some(issue.title.as_str()),
+            body: Some(issue.body.as_str()),
         }
     }
 
@@ -36,8 +40,34 @@ impl<'a> IssueVersion<'a> {
         Self {
             updated_at: Some(updated_at),
             reopened_at: None,
+            title: None,
+            body: None,
         }
     }
+}
+
+/// Checks whether a host issue described by `version` matches a landed work item's expected
+/// title or GitHub source (#614). Returns `true` when `version` carries no title/body or
+/// when the title or GitHub source matches.
+pub(crate) fn host_issue_matches_work_title(
+    expected_title: Option<&str>,
+    repository: &str,
+    number: u32,
+    version: IssueVersion<'_>,
+) -> bool {
+    let Some(host_title) = version.title else {
+        return true;
+    };
+    let expected = velocity_core::collapse::ExpectedIssueIdentity {
+        title: expected_title,
+        github_repository: Some(repository),
+        github_number: Some(number),
+    };
+    velocity_core::collapse::host_issue_matches_expected(
+        &expected,
+        host_title,
+        version.body.unwrap_or_default(),
+    )
 }
 
 /// Parses either a decimal Unix-seconds string or an RFC3339 timestamp into UTC Unix seconds.
@@ -156,9 +186,10 @@ impl ProjectItem {
         self.rosen_issue_completed_for_version(issue, IssueVersion::default())
     }
 
-    /// Whether `issue` is covered by a completed Rosen work item at `version` (#602).
+    /// Whether `issue` is covered by a completed Rosen work item at `version` (#602, #614).
     /// Returns `false` when an open issue's `updated_at` or reopen event is later than the
-    /// work item's completion timestamp.
+    /// work item's completion timestamp, or when a number-colliding host issue has a
+    /// different title and GitHub source.
     pub fn rosen_issue_completed_for_version(
         &self,
         issue: &ThreadIssue,
@@ -166,22 +197,39 @@ impl ProjectItem {
     ) -> bool {
         let key = WorkKey::issue(&issue.repository, issue.number);
         if let Some(item) = self.rosen_work_item(&key) {
-            return item.status.completed() && !item_superseded_by_issue(item, version);
+            return item.status.completed()
+                && !item_superseded_by_issue(item, version)
+                && host_issue_matches_work_title(
+                    Some(&item.title),
+                    &issue.repository,
+                    issue.number,
+                    version,
+                );
         }
         if version.reopened_at.is_some() {
             return false;
         }
-        self.completed_goal_issues
-            .iter()
-            .any(|completed| same_issue(completed, issue))
-            || self.threads.iter().any(|thread| {
-                thread.rosen_change.is_some()
-                    && thread.state == ThreadState::Merged
-                    && thread
-                        .issue
-                        .as_ref()
-                        .is_some_and(|assigned| same_issue(assigned, issue))
-            })
+        self.completed_goal_issues.iter().any(|completed| {
+            same_issue(completed, issue)
+                && host_issue_matches_work_title(
+                    completed.title.as_deref(),
+                    &issue.repository,
+                    issue.number,
+                    version,
+                )
+        }) || self.threads.iter().any(|thread| {
+            thread.rosen_change.is_some()
+                && thread.state == ThreadState::Merged
+                && thread.issue.as_ref().is_some_and(|assigned| {
+                    same_issue(assigned, issue)
+                        && host_issue_matches_work_title(
+                            assigned.title.as_deref().or(Some(thread.title.as_str())),
+                            &issue.repository,
+                            issue.number,
+                            version,
+                        )
+                })
+        })
     }
 
     /// Whether `issue` has a landed Rosen change covered by a green integration build (#529).
@@ -804,8 +852,18 @@ mod tests {
         let reopened_event = IssueVersion {
             updated_at: Some("2026-11-21T10:00:00Z"),
             reopened_at: Some("2026-11-21T10:00:00Z"),
+            ..IssueVersion::default()
+        };
+        let colliding_issue = IssueVersion {
+            updated_at: Some("2026-11-18T11:30:00Z"),
+            reopened_at: None,
+            title: Some("Unrelated Collapse report that collided on the same number"),
+            body: Some("Filed natively on Collapse"),
         };
         assert!(loaded.state.projects[0].rosen_issue_completed_for_version(&issue, same_version));
+        assert!(
+            !loaded.state.projects[0].rosen_issue_completed_for_version(&issue, colliding_issue)
+        );
         assert!(
             !loaded.state.projects[0].rosen_issue_completed_for_version(&issue, reopened_updated)
         );

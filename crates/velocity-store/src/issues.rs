@@ -11,11 +11,35 @@ pub struct ThreadIssue {
     pub repository: String,
     #[serde(default)]
     pub number: u32,
+    /// Issue title when assigned, used to detect number collisions after a host switch (#614).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Issue host where this issue originated (`github` or `collapse`), when known (#614).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<velocity_core::collapse::IssueHost>,
 }
 
 impl ThreadIssue {
     pub fn new(repository: String, number: u32) -> Self {
-        Self { repository, number }
+        Self {
+            repository,
+            number,
+            title: None,
+            host: None,
+        }
+    }
+
+    /// Attaches the issue's title and originating host so post-land comments, closes and
+    /// dispatch skip checks can verify identity across host switches (#614).
+    pub fn with_identity(
+        mut self,
+        title: impl Into<String>,
+        host: velocity_core::collapse::IssueHost,
+    ) -> Self {
+        let title = title.into();
+        self.title = (!title.trim().is_empty()).then_some(title);
+        self.host = Some(host);
+        self
     }
 }
 

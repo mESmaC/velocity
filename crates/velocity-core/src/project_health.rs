@@ -51,6 +51,8 @@ pub enum HealthSignalKind {
     CollapseForwarding,
     CollapseIssuesNotImported,
     HostSourceChanged,
+    HostIssueMissing,
+    HostIssueMismatch,
     IntegrationUncovered,
     BaseRed,
     LandedIssuesWaiting,
@@ -303,6 +305,189 @@ fn ci_short_label(source: BaseCiSource) -> &'static str {
     }
 }
 
+/// Stable project-health key for a missing or mismatched host issue (#614).
+pub fn host_issue_problem_key(number: u32) -> String {
+    format!("host-issue:{number}")
+}
+
+/// Optional remediation metadata for `HostIssueMissing` and `HostIssueMismatch` signals (#614).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct HostIssueAction {
+    pub issue_number: u32,
+    pub can_copy_from_github: bool,
+    pub can_dismiss: bool,
+}
+
+/// Why Velocity stopped updating or matching a host issue (#614).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HostIssueProblemKind {
+    /// The issue returned HTTP 404 on the configured issue host; stop timer retries.
+    Missing {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        github_repository: Option<String>,
+        #[serde(default)]
+        github_exists: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        github_title: Option<String>,
+    },
+    /// The host issue at this number does not match the landed change's title or GitHub source.
+    Mismatch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_source: Option<String>,
+        #[serde(default)]
+        host_title: String,
+        #[serde(default)]
+        host_url: String,
+    },
+}
+
+/// Persisted per-issue permanent host failure (404 missing or number-collision mismatch) (#614).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostIssueProblem {
+    pub number: u32,
+    pub host: IssueHost,
+    #[serde(default)]
+    pub repository: String,
+    pub kind: HostIssueProblemKind,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default)]
+    pub detected_at_ms: u64,
+}
+
+/// Formats a missing or mismatched host issue as a project health row (#614).
+pub fn host_issue_problem_item(problem: &HostIssueProblem) -> ProjectHealthItem {
+    match &problem.kind {
+        HostIssueProblemKind::Missing {
+            github_repository,
+            github_exists,
+            github_title,
+        } => missing_host_issue_item(
+            problem,
+            github_repository.as_deref(),
+            *github_exists,
+            github_title.as_deref(),
+        ),
+        HostIssueProblemKind::Mismatch {
+            expected_title,
+            expected_source,
+            host_title,
+            host_url,
+        } => mismatched_host_issue_item(
+            problem,
+            expected_title.as_deref(),
+            expected_source.as_deref(),
+            host_title,
+            host_url,
+        ),
+    }
+}
+
+fn missing_host_issue_item(
+    problem: &HostIssueProblem,
+    github_repository: Option<&str>,
+    github_exists: bool,
+    github_title: Option<&str>,
+) -> ProjectHealthItem {
+    let host_label = issue_host_label(problem.host);
+    let can_copy = problem.host == IssueHost::Collapse && github_exists;
+    let signal = format!("#{} is not on {host_label}", problem.number);
+    let action = if can_copy {
+        "Exists on GitHub; click Copy from GitHub to import it and retry pending updates".to_owned()
+    } else {
+        format!(
+            "Stopped retrying; #{} was not found on {host_label}",
+            problem.number
+        )
+    };
+    let mut detail_parts = Vec::new();
+    if let Some(repo) = github_repository
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        && github_exists
+    {
+        detail_parts.push(format!("GitHub: {repo}#{}", problem.number));
+    }
+    if let Some(title) = github_title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        detail_parts.push(title.to_owned());
+    }
+    if detail_parts.is_empty() && !problem.detail.trim().is_empty() {
+        detail_parts.push(problem.detail.trim().to_owned());
+    }
+    ProjectHealthItem::new(
+        host_issue_problem_key(problem.number),
+        HealthSignalKind::HostIssueMissing,
+        HealthSeverity::Warning,
+        signal,
+        action,
+        problem.detected_at_ms,
+    )
+    .with_detail((!detail_parts.is_empty()).then(|| detail_parts.join(" · ")))
+    .with_host_issue_action(Some(HostIssueAction {
+        issue_number: problem.number,
+        can_copy_from_github: can_copy,
+        can_dismiss: true,
+    }))
+}
+
+fn mismatched_host_issue_item(
+    problem: &HostIssueProblem,
+    expected_title: Option<&str>,
+    expected_source: Option<&str>,
+    host_title: &str,
+    host_url: &str,
+) -> ProjectHealthItem {
+    let host_label = issue_host_label(problem.host);
+    let signal = format!(
+        "#{} on {host_label} does not match the landed change",
+        problem.number
+    );
+    let mut detail_parts = Vec::new();
+    if let Some(expected) = expected_title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        detail_parts.push(format!("Landed: {expected}"));
+    }
+    if let Some(source) = expected_source
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        detail_parts.push(format!("Source: {source}"));
+    }
+    if !host_title.trim().is_empty() {
+        detail_parts.push(format!("{host_label}: {}", host_title.trim()));
+    }
+    let mut item = ProjectHealthItem::new(
+        host_issue_problem_key(problem.number),
+        HealthSignalKind::HostIssueMismatch,
+        HealthSeverity::Error,
+        signal,
+        "Skipped commenting and closing to avoid updating a different issue",
+        problem.detected_at_ms,
+    )
+    .with_detail((!detail_parts.is_empty()).then(|| detail_parts.join(" · ")))
+    .with_host_issue_action(Some(HostIssueAction {
+        issue_number: problem.number,
+        can_copy_from_github: false,
+        can_dismiss: true,
+    }));
+    if host_url.starts_with("https://") {
+        item = item.with_action_link(
+            Some(host_url.to_owned()),
+            format!("Open #{}", problem.number),
+        );
+    }
+    item
+}
+
 /// One active health signal on a project, with the automatic action taken and when (#509).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
@@ -330,6 +515,9 @@ pub struct ProjectHealthItem {
     /// Optional one-click revert metadata for `HostSourceChanged` signals (#613).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_switch_back: Option<HostSwitchBack>,
+    /// Optional Copy from GitHub / Dismiss metadata for missing or mismatched host issues (#614).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_issue_action: Option<HostIssueAction>,
     /// Decimal Unix milliseconds when Velocity last acted or updated this signal.
     pub acted_at_ms: String,
 }
@@ -354,6 +542,7 @@ impl ProjectHealthItem {
             action_url: None,
             action_label: None,
             host_switch_back: None,
+            host_issue_action: None,
             acted_at_ms: acted_at_ms.to_string(),
         }
     }
@@ -376,6 +565,11 @@ impl ProjectHealthItem {
 
     pub fn with_host_switch_back(mut self, switch_back: Option<HostSwitchBack>) -> Self {
         self.host_switch_back = switch_back;
+        self
+    }
+
+    pub fn with_host_issue_action(mut self, action: Option<HostIssueAction>) -> Self {
+        self.host_issue_action = action;
         self
     }
 }

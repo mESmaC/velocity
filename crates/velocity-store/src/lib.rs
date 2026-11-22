@@ -1417,6 +1417,11 @@ pub struct ProjectItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(skip)]
     pub github_issue_sync: Option<velocity_core::collapse::GitHubIssueSync>,
+    /// Per-issue permanent host failures (404 missing or number-collision mismatch) that
+    /// stop timer retries and surface once in project health until resolved (#614).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[specta(skip)]
+    pub host_issue_problems: BTreeMap<u32, velocity_core::project_health::HostIssueProblem>,
     /// The base and mirror branch diverged at the last catch-up from the mirror; cleared
     /// when a catch-up or adoption succeeds (#501).
     #[serde(default)]
@@ -1501,6 +1506,7 @@ impl ProjectItem {
             acknowledged_base_ci_source: None,
             host_source_change: None,
             github_issue_sync: None,
+            host_issue_problems: BTreeMap::new(),
             rosen_mirror_divergence: None,
             retried_release_runs: Vec::new(),
         }
