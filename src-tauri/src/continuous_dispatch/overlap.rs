@@ -1,6 +1,6 @@
 //! Keep an issue out of continuous dispatch while another issue's open Rosen change edits
 //! files it names. An issue is held this way once: when the hold ends it is dispatched.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -23,21 +23,124 @@ use super::{Reader, dispatch_claims, text_blockers, unix_seconds};
 use crate::{
     graph_access::{issue_files, issue_paths},
     state::ManagedStateStore,
-    threads::lock,
+    threads::{lock, report},
 };
+
+/// How long a failed per-issue overlap host request waits before retrying independently (#651).
+const ISSUE_ERROR_RETRY: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Debug)]
+struct FailedLookup {
+    updated_at: String,
+    failed_at: Instant,
+}
+
+/// Per-project in-memory retry state for overlap checks so a host failure on one issue
+/// never stalls unrelated continuous dispatch candidates (#651).
+#[derive(Default)]
+pub(super) struct Overlap {
+    /// Issues whose overlap-history lookup failed while overlapping an active blocker.
+    /// Held out of dispatch until retry succeeds or the overlap ends.
+    review_lookup_retry: BTreeMap<u32, FailedLookup>,
+    /// Already-waiting issues whose review-history or landed-blocker check failed.
+    wait_retry: BTreeMap<u32, Instant>,
+    /// Already-waiting issues whose overlap review publication failed.
+    publish_retry: BTreeMap<u32, Instant>,
+}
+
+impl Overlap {
+    pub(super) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.review_lookup_retry.clear();
+        self.wait_retry.clear();
+        self.publish_retry.clear();
+    }
+
+    pub(super) fn include_deferred(&self, claimed: &mut HashSet<String>) {
+        claimed.extend(
+            self.review_lookup_retry
+                .keys()
+                .map(|number| format!("issue:{number}")),
+        );
+    }
+
+    pub(super) fn is_deferred(&self, number: u32) -> bool {
+        self.review_lookup_retry.contains_key(&number)
+    }
+
+    fn lookup_retry_active_at(&self, number: u32, updated_at: &str, now: Instant) -> bool {
+        self.review_lookup_retry.get(&number).is_some_and(|failed| {
+            failed.updated_at == updated_at
+                && now.saturating_duration_since(failed.failed_at) < ISSUE_ERROR_RETRY
+        })
+    }
+
+    fn record_lookup_failure_at(&mut self, number: u32, updated_at: String, now: Instant) {
+        self.review_lookup_retry.insert(
+            number,
+            FailedLookup {
+                updated_at,
+                failed_at: now,
+            },
+        );
+    }
+
+    fn clear_lookup_failure(&mut self, number: u32) {
+        self.review_lookup_retry.remove(&number);
+    }
+
+    fn retain_review_lookups(&mut self, deferred: &BTreeSet<u32>) {
+        self.review_lookup_retry
+            .retain(|number, _| deferred.contains(number));
+    }
+
+    fn wait_retry_active_at(&self, number: u32, now: Instant) -> bool {
+        self.wait_retry
+            .get(&number)
+            .is_some_and(|&failed_at| now.saturating_duration_since(failed_at) < ISSUE_ERROR_RETRY)
+    }
+
+    fn record_wait_failure_at(&mut self, number: u32, now: Instant) {
+        self.wait_retry.insert(number, now);
+    }
+
+    fn clear_wait_failure(&mut self, number: u32) {
+        self.wait_retry.remove(&number);
+    }
+
+    fn publish_retry_active_at(&self, number: u32, now: Instant) -> bool {
+        self.publish_retry
+            .get(&number)
+            .is_some_and(|&failed_at| now.saturating_duration_since(failed_at) < ISSUE_ERROR_RETRY)
+    }
+
+    fn record_publish_failure_at(&mut self, number: u32, now: Instant) {
+        self.publish_retry.insert(number, now);
+    }
+
+    fn clear_publish_failure(&mut self, number: u32) {
+        self.publish_retry.remove(&number);
+    }
+
+    fn retain_waits(&mut self, waits: &BTreeMap<u32, IssueOverlap>) {
+        self.wait_retry
+            .retain(|number, _| waits.contains_key(number));
+        self.publish_retry
+            .retain(|number, _| waits.contains_key(number));
+    }
+}
 
 pub(super) fn refresh(
     application: &AppHandle,
     identifier: u32,
     reader: &mut Reader,
 ) -> Result<(), String> {
-    let Some(client) = reader
-        .client
-        .as_ref()
-        .filter(|_| reader.backlog.error.is_none())
-    else {
+    if reader.client.is_none() || reader.backlog.error.is_some() {
         return Ok(());
-    };
+    }
     let state = application.state::<ManagedStateStore>();
     let projects = lock(state.inner(), "persisted state")?
         .state()
@@ -50,14 +153,18 @@ pub(super) fn refresh(
     let mut waits = project.continuous_dispatch.issue_overlaps.clone();
     let mut released = project.continuous_dispatch.overlap_released.clone();
     if project.continuous_dispatch.slots == 0 && waits.is_empty() {
+        reader.overlap.clear();
         return Ok(());
     }
     let claims = dispatch_claims(application, identifier)?;
-    let repository = client.repository();
-    let issues = &reader.backlog.issues;
+    let Some(client) = reader.client.as_ref() else {
+        return Ok(());
+    };
+    let repository = client.repository().to_owned();
     let now = unix_seconds();
-    let working = active_issues(project, repository, issues, &claims, now);
+    let working = active_issues(project, &repository, &reader.backlog.issues, &claims, now);
     if working.is_empty() && waits.is_empty() {
+        reader.overlap.clear();
         return Ok(());
     }
     let data = application
@@ -66,8 +173,16 @@ pub(super) fn refresh(
         .map_err(|error| error.to_string())?;
     let blockers_context =
         text_blockers::context_for_project(application, identifier, Some(&reader.backlog));
-    OverlapContext::new(client, project, &projects, &data, blockers_context).recheck(
-        issues,
+    OverlapContext::new(
+        client,
+        project,
+        &projects,
+        &data,
+        blockers_context,
+        &mut reader.overlap,
+    )
+    .recheck(
+        &reader.backlog.issues,
         working,
         &mut waits,
         &mut released,
@@ -76,7 +191,13 @@ pub(super) fn refresh(
     lock(state.inner(), "persisted state")?
         .save_issue_overlaps(identifier, waits.clone(), released.clone())
         .map_err(|error| error.to_string())?;
-    let reviewed = publish_reviews(application, identifier, client, &mut waits)?;
+    let reviewed = publish_reviews(
+        application,
+        identifier,
+        client,
+        &mut waits,
+        &mut reader.overlap,
+    )?;
     if !reviewed.is_empty() {
         reader.refreshed = None;
         reader
@@ -87,7 +208,7 @@ pub(super) fn refresh(
         released.extend(
             reviewed
                 .iter()
-                .map(|&number| (number, ThreadIssue::new(repository.into(), number))),
+                .map(|&number| (number, ThreadIssue::new(repository.clone(), number))),
         );
         lock(state.inner(), "persisted state")?
             .save_issue_overlaps(identifier, waits, released)
@@ -300,8 +421,15 @@ pub(super) fn land_evidence(
     issue: &GitHubIssue,
     (source, commit): (u32, &str),
 ) -> Result<LandEvidence, String> {
-    let mut context =
-        OverlapContext::new(client, project, &[], data, TextBlockerContext::default());
+    let mut overlap = Overlap::new();
+    let mut context = OverlapContext::new(
+        client,
+        project,
+        &[],
+        data,
+        TextBlockerContext::default(),
+        &mut overlap,
+    );
     let clear = context.clear_of_land(issue, source, commit)?.is_some();
     Ok(LandEvidence {
         files: context.land_files(commit)?,
@@ -315,6 +443,9 @@ struct OverlapContext<'a> {
     projects: &'a [ProjectItem],
     data: &'a Path,
     blockers_context: TextBlockerContext,
+    overlap: &'a mut Overlap,
+    /// Candidates deferred during this pass because their overlap-history lookup failed (#651).
+    deferred: BTreeSet<u32>,
     server: ProjectServer,
     /// The generated artifacts and registration lists in the project's `rosen.toml`.
     merged: MergedPaths,
@@ -332,6 +463,7 @@ impl<'a> OverlapContext<'a> {
         projects: &'a [ProjectItem],
         data: &'a Path,
         blockers_context: TextBlockerContext,
+        overlap: &'a mut Overlap,
     ) -> Self {
         let server = ProjectServer::new(data, project.id);
         Self {
@@ -340,6 +472,8 @@ impl<'a> OverlapContext<'a> {
             projects,
             data,
             blockers_context,
+            overlap,
+            deferred: BTreeSet::new(),
             merged: merged_paths(&server, project),
             server,
             shared: BTreeSet::new(),
@@ -421,8 +555,10 @@ impl<'a> OverlapContext<'a> {
         let mut named = self.named_paths(&backlog, &blockers);
         for issue in holdable {
             let paths = named.remove(&issue.number).unwrap_or_default();
-            self.update(issue, paths, &blockers, waits, released)?;
+            self.update(issue, paths, &blockers, waits, released);
         }
+        self.overlap.retain_review_lookups(&self.deferred);
+        self.overlap.retain_waits(waits);
         self.prune_review_checked(waits);
         Ok(())
     }
@@ -617,17 +753,10 @@ impl<'a> OverlapContext<'a> {
         blockers: &BTreeMap<u32, Blocker>,
         waits: &mut BTreeMap<u32, IssueOverlap>,
         released: &mut BTreeMap<u32, ThreadIssue>,
-    ) -> Result<(), String> {
+    ) {
         let number = issue.number;
-        // Reconcile restored waits against GitHub's durable review record before
-        // retaining them, checking a blocker land, or publishing another review (#650).
-        if release_returned_wait(number, waits, released, || {
-            self.overlap_review_returned(issue)
-        })? {
-            return Ok(());
-        }
-        if self.check_landed_wait(number, waits)? {
-            return Ok(());
+        if self.reconcile_wait(issue, waits, released) {
+            return;
         }
         let ready = actionable_in_projects_with_blockers(
             self.projects,
@@ -651,15 +780,65 @@ impl<'a> OverlapContext<'a> {
             } else if let Some(wait) = waits.get_mut(&number) {
                 wait.paths = shared;
             }
-            return Ok(());
+            return;
         }
         if ready && !released.contains_key(&number) {
-            self.hold(number, &paths, blockers, waits, released)?;
-            if waits.contains_key(&number) {
-                self.record_review_checked(issue);
+            self.hold(issue, &paths, blockers, waits, released);
+        }
+    }
+
+    /// Reconciles an existing wait before updating its live overlap paths. Returns `true`
+    /// when `update` should stop for this issue: the wait was released, a review is pending,
+    /// or a per-issue host error kept the wait for an independent retry (#650, #651).
+    fn reconcile_wait(
+        &mut self,
+        issue: &GitHubIssue,
+        waits: &mut BTreeMap<u32, IssueOverlap>,
+        released: &mut BTreeMap<u32, ThreadIssue>,
+    ) -> bool {
+        let number = issue.number;
+        if !waits.contains_key(&number) {
+            return false;
+        }
+        let now = Instant::now();
+        if self.overlap.wait_retry_active_at(number, now) {
+            return true;
+        }
+        let client = self.client;
+        let project = self.project.id;
+        // Reconcile restored waits against GitHub's durable review record before
+        // retaining them, checking a blocker land, or publishing another review (#650).
+        match release_returned_wait(number, waits, released, || {
+            overlap_review_returned_for(client, project, issue)
+        }) {
+            Ok(true) => {
+                self.overlap.clear_wait_failure(number);
+                return true;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                self.overlap.record_wait_failure_at(number, now);
+                report::<()>(Err(format!(
+                    "Could not check overlap review history for {}#{number}: {error}",
+                    client.repository()
+                )));
+                return true;
             }
         }
-        Ok(())
+        match self.check_landed_wait(number, waits) {
+            Ok(pending_review) => {
+                self.overlap.clear_wait_failure(number);
+                pending_review
+            }
+            Err(error) => {
+                self.overlap.record_wait_failure_at(number, now);
+                report::<()>(Err(format!(
+                    "Could not check overlapping land for {}#{number}: {error}",
+                    client.repository()
+                )));
+                true
+            }
+        }
     }
 
     /// Checks whether an existing wait's blocker has landed. Returns `true` while a
@@ -692,79 +871,51 @@ impl<'a> OverlapContext<'a> {
         }
     }
 
-    /// Whether `issue`'s comments show a prior overlap review that returned it to
-    /// dispatch (#525, #650). Negative results are cached per `(repository, updated_at)`
-    /// so active waits do not re-fetch comments on every dispatch pass.
-    fn overlap_review_returned(&self, issue: &GitHubIssue) -> Result<bool, String> {
-        let repository = self.client.repository();
-        if review_checked_hit(
-            &REVIEW_CHECKED,
-            self.project.id,
-            issue.number,
-            repository,
-            &issue.updated_at,
-        ) {
-            return Ok(false);
-        }
-        if self
-            .client
-            .overlap_review_returned(issue.number)
-            .map_err(|error| error.to_string())?
-        {
-            clear_review_checked(&REVIEW_CHECKED, self.project.id, issue.number);
-            return Ok(true);
-        }
-        self.record_review_checked(issue);
-        Ok(false)
-    }
-
-    fn record_review_checked(&self, issue: &GitHubIssue) {
-        record_review_checked_in(
-            &REVIEW_CHECKED,
-            self.project.id,
-            issue.number,
-            self.client.repository(),
-            &issue.updated_at,
-        );
-    }
-
     fn prune_review_checked(&self, waits: &BTreeMap<u32, IssueOverlap>) {
         prune_review_checked_in(&REVIEW_CHECKED, self.project.id, waits);
     }
 
-    /// Holds `number` behind the first working issue whose open change has edited a file
-    /// the issue names. Without such a file the issue stays free for dispatch.
+    /// Holds `issue` behind the first working issue whose open change has edited a file
+    /// the issue names. Without such a file the issue stays free for dispatch. A failed
+    /// overlap-history lookup is isolated to `issue` and retried independently (#651).
     fn hold(
-        &self,
-        number: u32,
+        &mut self,
+        issue: &GitHubIssue,
         paths: &BTreeSet<String>,
         blockers: &BTreeMap<u32, Blocker>,
         waits: &mut BTreeMap<u32, IssueOverlap>,
         released: &mut BTreeMap<u32, ThreadIssue>,
-    ) -> Result<(), String> {
-        let overlap = blockers
-            .iter()
-            .map(|(&blocker, peer)| (blocker, peer.thread, shared_files(paths, peer)))
-            .find(|(_, _, shared)| !shared.is_empty());
-        let Some((blocker, thread, shared)) = overlap else {
-            return Ok(());
-        };
-        let identity = ThreadIssue::new(self.client.repository().into(), number);
-        // GitHub's record outlives local state: an issue a review already returned from
-        // an overlapping land is dispatched, not held again.
-        if self
-            .client
-            .overlap_review_returned(number)
-            .map_err(|error| error.to_string())?
-        {
-            released.insert(number, identity);
-            return Ok(());
-        }
-        waits.insert(
-            number,
-            IssueOverlap::new(identity, blocker, Some(thread), shared),
+    ) {
+        let number = issue.number;
+        let client = self.client;
+        let project = self.project.id;
+        let repository = client.repository().to_owned();
+        let outcome = resolve_overlap_hold(
+            OverlapHoldTarget {
+                repository: &repository,
+                number,
+                updated_at: &issue.updated_at,
+                paths,
+                now: Instant::now(),
+            },
+            blockers,
+            self.overlap,
+            waits,
+            released,
+            || overlap_review_returned_for(client, project, issue),
         );
-        Ok(())
+        match outcome {
+            HoldOutcome::Deferred(Some(error)) => {
+                self.deferred.insert(number);
+                report::<()>(Err(format!(
+                    "Could not check overlap review history for {repository}#{number}: {error}"
+                )));
+            }
+            HoldOutcome::Deferred(None) => {
+                self.deferred.insert(number);
+            }
+            HoldOutcome::Clear | HoldOutcome::Held | HoldOutcome::Released => {}
+        }
     }
 
     fn overlapping_land(&mut self, wait: &IssueOverlap, number: u32) -> Result<LandCheck, String> {
@@ -842,6 +993,108 @@ fn end_hold(
 ) {
     if let Some(wait) = waits.remove(&number) {
         released.insert(number, wait.issue);
+    }
+}
+
+/// Whether `issue`'s comments show a prior overlap review that returned it to
+/// dispatch (#525, #650). Negative results are cached per `(repository, updated_at)`
+/// so active waits do not re-fetch comments on every dispatch pass.
+fn overlap_review_returned_for(
+    client: &IssueClient,
+    project: u32,
+    issue: &GitHubIssue,
+) -> Result<bool, String> {
+    let repository = client.repository();
+    if review_checked_hit(
+        &REVIEW_CHECKED,
+        project,
+        issue.number,
+        repository,
+        &issue.updated_at,
+    ) {
+        return Ok(false);
+    }
+    if client
+        .overlap_review_returned(issue.number)
+        .map_err(|error| error.to_string())?
+    {
+        clear_review_checked(&REVIEW_CHECKED, project, issue.number);
+        return Ok(true);
+    }
+    record_review_checked_in(
+        &REVIEW_CHECKED,
+        project,
+        issue.number,
+        repository,
+        &issue.updated_at,
+    );
+    Ok(false)
+}
+
+struct OverlapHoldTarget<'a> {
+    repository: &'a str,
+    number: u32,
+    updated_at: &'a str,
+    paths: &'a BTreeSet<String>,
+    now: Instant,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum HoldOutcome {
+    Clear,
+    Held,
+    Released,
+    Deferred(Option<String>),
+}
+
+/// Evaluates whether `target` should be held behind an active blocker, released because a
+/// prior overlap review already returned it, or deferred independently after a failed
+/// overlap-history lookup (#525, #651).
+fn resolve_overlap_hold(
+    target: OverlapHoldTarget<'_>,
+    blockers: &BTreeMap<u32, Blocker>,
+    overlap_state: &mut Overlap,
+    waits: &mut BTreeMap<u32, IssueOverlap>,
+    released: &mut BTreeMap<u32, ThreadIssue>,
+    returned_review: impl FnOnce() -> Result<bool, String>,
+) -> HoldOutcome {
+    let overlap = blockers
+        .iter()
+        .map(|(&blocker, peer)| (blocker, peer.thread, shared_files(target.paths, peer)))
+        .find(|(_, _, shared)| !shared.is_empty());
+    let Some((blocker, thread, shared)) = overlap else {
+        overlap_state.clear_lookup_failure(target.number);
+        return HoldOutcome::Clear;
+    };
+    if overlap_state.lookup_retry_active_at(target.number, target.updated_at, target.now) {
+        return HoldOutcome::Deferred(None);
+    }
+    let identity = ThreadIssue::new(target.repository.into(), target.number);
+    // GitHub's record outlives local state: an issue a review already returned from
+    // an overlapping land is dispatched, not held again (#525). Isolate lookup errors
+    // to this issue so unrelated ready candidates still dispatch (#651).
+    match returned_review() {
+        Ok(true) => {
+            overlap_state.clear_lookup_failure(target.number);
+            released.insert(target.number, identity);
+            HoldOutcome::Released
+        }
+        Ok(false) => {
+            overlap_state.clear_lookup_failure(target.number);
+            waits.insert(
+                target.number,
+                IssueOverlap::new(identity, blocker, Some(thread), shared),
+            );
+            HoldOutcome::Held
+        }
+        Err(error) => {
+            overlap_state.record_lookup_failure_at(
+                target.number,
+                target.updated_at.to_owned(),
+                target.now,
+            );
+            HoldOutcome::Deferred(Some(error))
+        }
     }
 }
 
@@ -1023,12 +1276,17 @@ fn publish_reviews(
     identifier: u32,
     client: &IssueClient,
     waits: &mut BTreeMap<u32, IssueOverlap>,
+    overlap: &mut Overlap,
 ) -> Result<Vec<u32>, String> {
     let mut completed = Vec::new();
+    let now = Instant::now();
     for wait in waits.values() {
         let Some(commit) = wait.review_commit.as_deref() else {
             continue;
         };
+        if overlap.publish_retry_active_at(wait.issue.number, now) {
+            continue;
+        }
         let still_landed = lock(
             application.state::<ManagedStateStore>().inner(),
             "persisted state",
@@ -1036,27 +1294,46 @@ fn publish_reviews(
         .project(identifier)
         .and_then(|project| blocker_landed_commit(project, wait))
             == Some(commit);
-        if still_landed
-            && client
-                .get(wait.issue.number)
-                .map_err(|error| error.to_string())?
-                .state
-                == IssueState::Open
-            && !client
-                .overlap_review_returned(wait.issue.number)
-                .map_err(|error| error.to_string())?
-        {
-            client
-                .post_overlap_review(wait.issue.number, wait.blocker, commit)
-                .map_err(|error| error.to_string())?;
+        if still_landed && let Err(error) = publish_one_review(client, wait, commit) {
+            overlap.record_publish_failure_at(wait.issue.number, now);
+            report::<()>(Err(format!(
+                "Could not publish overlap review for {}#{}: {error}",
+                client.repository(),
+                wait.issue.number
+            )));
+            continue;
         }
+        overlap.clear_publish_failure(wait.issue.number);
         completed.push(wait.issue.number);
     }
     for number in &completed {
         waits.remove(number);
     }
+    overlap.retain_waits(waits);
     // The parked issue gets its bounded review once the label shows in the backlog (#506).
     Ok(completed)
+}
+
+fn publish_one_review(
+    client: &IssueClient,
+    wait: &IssueOverlap,
+    commit: &str,
+) -> Result<(), String> {
+    let open = client
+        .get(wait.issue.number)
+        .map_err(|error| error.to_string())?
+        .state
+        == IssueState::Open;
+    if open
+        && !client
+            .overlap_review_returned(wait.issue.number)
+            .map_err(|error| error.to_string())?
+    {
+        client
+            .post_overlap_review(wait.issue.number, wait.blocker, commit)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1165,5 +1442,186 @@ mod tests {
             "owner/repo",
             "2026-01-01T00:00:00Z"
         ));
+    }
+
+    // Risk (#651): a comment-history read failure for one overlapping candidate (#126) must
+    // isolate only that candidate with independent backoff and retry so unrelated ready
+    // candidates (#133) remain free for dispatch.
+    #[test]
+    fn failed_overlap_lookup_isolates_candidate_and_retries_independently() {
+        let blockers = BTreeMap::from([(
+            100,
+            Blocker {
+                thread: 1,
+                edited: BTreeSet::from(["src/shared.rs".to_owned()]),
+            },
+        )]);
+        let shared = BTreeSet::from(["src/shared.rs".to_owned()]);
+        let unrelated = BTreeSet::from(["src/other.rs".to_owned()]);
+        let mut overlap = Overlap::new();
+        let mut waits = BTreeMap::new();
+        let mut released = BTreeMap::new();
+        let start = Instant::now();
+
+        let first = resolve_overlap_hold(
+            OverlapHoldTarget {
+                repository: "owner/repo",
+                number: 126,
+                updated_at: "2026-11-22T00:00:00Z",
+                paths: &shared,
+                now: start,
+            },
+            &blockers,
+            &mut overlap,
+            &mut waits,
+            &mut released,
+            || Err("HTTP 500".into()),
+        );
+        assert_eq!(first, HoldOutcome::Deferred(Some("HTTP 500".into())));
+        assert!(overlap.is_deferred(126));
+        assert!(!waits.contains_key(&126));
+        assert!(!released.contains_key(&126));
+
+        let other = resolve_overlap_hold(
+            OverlapHoldTarget {
+                repository: "owner/repo",
+                number: 133,
+                updated_at: "2026-11-22T00:00:00Z",
+                paths: &unrelated,
+                now: start,
+            },
+            &blockers,
+            &mut overlap,
+            &mut waits,
+            &mut released,
+            || panic!("non-overlapping candidate should not fetch comments"),
+        );
+        assert_eq!(other, HoldOutcome::Clear);
+        let mut claimed = HashSet::new();
+        overlap.include_deferred(&mut claimed);
+        assert!(claimed.contains("issue:126"));
+        assert!(!claimed.contains("issue:133"));
+
+        // Within the retry window at the same `updated_at`, #126 stays isolated without re-querying.
+        let backed_off = resolve_overlap_hold(
+            OverlapHoldTarget {
+                repository: "owner/repo",
+                number: 126,
+                updated_at: "2026-11-22T00:00:00Z",
+                paths: &shared,
+                now: start + Duration::from_secs(30),
+            },
+            &blockers,
+            &mut overlap,
+            &mut waits,
+            &mut released,
+            || panic!("lookup should stay in retry backoff"),
+        );
+        assert_eq!(backed_off, HoldOutcome::Deferred(None));
+
+        // After the retry interval, #126 retries independently and records the result.
+        let retried = resolve_overlap_hold(
+            OverlapHoldTarget {
+                repository: "owner/repo",
+                number: 126,
+                updated_at: "2026-11-22T00:00:00Z",
+                paths: &shared,
+                now: start + ISSUE_ERROR_RETRY,
+            },
+            &blockers,
+            &mut overlap,
+            &mut waits,
+            &mut released,
+            || Ok(true),
+        );
+        assert_eq!(retried, HoldOutcome::Released);
+        assert!(!overlap.is_deferred(126));
+        assert!(released.contains_key(&126));
+    }
+
+    // Risk (#651): a deferred candidate clears immediately when its blocker no longer
+    // overlaps or when a new issue version retries and confirms a hold.
+    #[test]
+    fn deferred_overlap_lookup_clears_on_update_or_ended_overlap() {
+        let blockers = BTreeMap::from([(
+            100,
+            Blocker {
+                thread: 1,
+                edited: BTreeSet::from(["src/shared.rs".to_owned()]),
+            },
+        )]);
+        let shared = BTreeSet::from(["src/shared.rs".to_owned()]);
+        let mut overlap = Overlap::new();
+        let mut waits = BTreeMap::new();
+        let mut released = BTreeMap::new();
+        let start = Instant::now();
+
+        resolve_overlap_hold(
+            OverlapHoldTarget {
+                repository: "owner/repo",
+                number: 126,
+                updated_at: "2026-11-22T00:00:00Z",
+                paths: &shared,
+                now: start,
+            },
+            &blockers,
+            &mut overlap,
+            &mut waits,
+            &mut released,
+            || Err("timeout".into()),
+        );
+        assert!(overlap.is_deferred(126));
+
+        // A newer `updated_at` retries immediately rather than waiting out the backoff.
+        let held = resolve_overlap_hold(
+            OverlapHoldTarget {
+                repository: "owner/repo",
+                number: 126,
+                updated_at: "2026-11-22T00:00:10Z",
+                paths: &shared,
+                now: start + Duration::from_secs(5),
+            },
+            &blockers,
+            &mut overlap,
+            &mut waits,
+            &mut released,
+            || Ok(false),
+        );
+        assert_eq!(held, HoldOutcome::Held);
+        assert!(!overlap.is_deferred(126));
+        assert!(waits.contains_key(&126));
+
+        // Another candidate whose overlap disappears clears its deferral immediately.
+        resolve_overlap_hold(
+            OverlapHoldTarget {
+                repository: "owner/repo",
+                number: 127,
+                updated_at: "2026-11-22T00:00:00Z",
+                paths: &shared,
+                now: start,
+            },
+            &blockers,
+            &mut overlap,
+            &mut waits,
+            &mut released,
+            || Err("timeout".into()),
+        );
+        assert!(overlap.is_deferred(127));
+        let cleared = resolve_overlap_hold(
+            OverlapHoldTarget {
+                repository: "owner/repo",
+                number: 127,
+                updated_at: "2026-11-22T00:00:00Z",
+                paths: &shared,
+                now: start + Duration::from_secs(5),
+            },
+            &BTreeMap::new(),
+            &mut overlap,
+            &mut waits,
+            &mut released,
+            || panic!("cleared overlap should not fetch comments"),
+        );
+        assert_eq!(cleared, HoldOutcome::Clear);
+        assert!(!overlap.is_deferred(127));
     }
 }

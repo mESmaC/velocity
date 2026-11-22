@@ -71,6 +71,7 @@ Issues skipped because they already landed or are in progress on another machine
 An open issue is held on overlap once (#525).
 When its hold ends, through a review, a land without evidence or a blocker whose change no longer edits its files, dispatch starts the issue and never holds it on overlap again.
 An issue whose GitHub record shows an overlap review that returned it to dispatch is never held.
+A failed overlap-history lookup is isolated to that issue and retried independently without stalling dispatch for other candidates (#651).
 A held issue's Work card shows the hold, its reason and the blocker's overlapping files.
 
 **Task brief at dispatch and fix-forward handoffs (#539).** Velocity prepares a structured task brief ahead of the first prompt whenever it dispatches an issue, task or goal-swarm item.

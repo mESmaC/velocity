@@ -429,6 +429,7 @@ struct Reader {
     /// Cached comment bodies per attempted issue `(updated_at, comments)` for blocker-close retry (#617).
     attempt_comments: BTreeMap<u32, (String, Vec<String>)>,
     backlog: Backlog,
+    overlap: overlap::Overlap,
     parked: parked::Parked,
     holds: holds::Holds,
     text_blockers: text_blockers::TextBlockers,
@@ -881,6 +882,9 @@ fn start_ready(
         )?;
         let project = store.project(identifier).ok_or("The project was removed")?;
         include_overlap_waits(project, &backlog.repository, &mut claimed);
+        if let Some(reader) = reader.as_deref() {
+            reader.overlap.include_deferred(&mut claimed);
+        }
         include_launch_holds(project, &backlog.repository, &mut claimed);
         include_remote_work_holds(project, &backlog.repository, &backlog.issues, &mut claimed);
         restart_wait::include_restart_waits(application, identifier, &mut claimed);
@@ -924,14 +928,15 @@ fn try_start_issue(
         .ok_or("The dispatch issue source was removed")?;
     let repository = client.repository().to_owned();
     let state = application.state::<ManagedStateStore>();
-    if lock(state.inner(), "persisted state")?
-        .project(identifier)
-        .is_some_and(|project| {
-            project
-                .continuous_dispatch
-                .issue_overlaps
-                .contains_key(&number)
-        })
+    if reader.overlap.is_deferred(number)
+        || lock(state.inner(), "persisted state")?
+            .project(identifier)
+            .is_some_and(|project| {
+                project
+                    .continuous_dispatch
+                    .issue_overlaps
+                    .contains_key(&number)
+            })
     {
         return Ok(());
     }
@@ -966,6 +971,9 @@ fn try_start_issue(
         return Ok(());
     }
     overlap::refresh(application, identifier, reader)?;
+    if reader.overlap.is_deferred(number) {
+        return Ok(());
+    }
     if !reader
         .backlog
         .issues
@@ -1399,6 +1407,7 @@ fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> 
         hold_retry: BTreeMap::new(),
         attempt_comments: BTreeMap::new(),
         backlog: Backlog::default(),
+        overlap: overlap::Overlap::new(),
         parked: parked::Parked::new(),
         holds: holds::Holds::new(),
         text_blockers: text_blockers::TextBlockers::new(),
