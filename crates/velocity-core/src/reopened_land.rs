@@ -16,7 +16,7 @@ use crate::project_health::short_commit;
 /// whereas GitHub imports preserve GitHub's older `updated_at`.
 pub const COLLAPSE_IMPORT_REOPEN_SKEW_SECS: u64 = 5;
 
-/// One base commit from Rosen's land history (#615).
+/// One base commit from Rosen's land history (#615, #617).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LandHistoryEntry {
     pub commit: String,
@@ -24,6 +24,8 @@ pub struct LandHistoryEntry {
     pub landed_at: u64,
     /// First line of the commit message.
     pub summary: String,
+    /// Owner of the Rosen change that landed this commit (e.g. `issue-417-363`), when known (#617).
+    pub change_owner: Option<String>,
 }
 
 /// Open-issue timestamps and reopen provenance evaluated against land history (#615).
@@ -53,38 +55,108 @@ pub fn is_revert_summary(summary: &str) -> bool {
     summary.trim_start().starts_with("Revert ")
 }
 
-/// Extracts issue numbers from parenthesized `(#N)` or `(#N, #M)` tokens in `summary`.
-pub fn issue_numbers_in_parentheses(summary: &str) -> Vec<u32> {
+/// Extracts issue numbers from a trailing parenthesized group (`(#N)` or `(#N, #M)`) at the
+/// end of `summary` (#617). Every comma/whitespace-separated token inside that final group must
+/// be `#<digits>`, so mid-subject references to other repositories' issues (such as pin-bump
+/// summaries) or prose notes in parentheses are ignored.
+pub fn trailing_issue_numbers(summary: &str) -> Vec<u32> {
+    let trimmed = summary.trim_end();
+    let Some(without_close) = trimmed.strip_suffix(')') else {
+        return Vec::new();
+    };
+    let Some(open) = without_close.rfind('(') else {
+        return Vec::new();
+    };
+    let inside = without_close[open + 1..].trim();
+    if inside.is_empty() {
+        return Vec::new();
+    }
     let mut numbers = Vec::new();
-    let mut rest = summary;
-    while let Some(open) = rest.find('(') {
-        let after = &rest[open + 1..];
-        let Some(close) = after.find(')') else {
-            break;
+    for token in inside
+        .split(|ch: char| ch.is_whitespace() || ch == ',')
+        .filter(|token| !token.is_empty())
+    {
+        let Some(digits) = token.strip_prefix('#') else {
+            return Vec::new();
         };
-        let inside = &after[..close];
-        for token in inside.split(|ch: char| ch.is_whitespace() || ch == ',') {
-            if let Some(digits) = token.strip_prefix('#')
-                && !digits.is_empty()
-                && digits.bytes().all(|byte| byte.is_ascii_digit())
-                && let Ok(number) = digits.parse::<u32>()
-                && number > 0
-                && !numbers.contains(&number)
-            {
-                numbers.push(number);
-            }
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Vec::new();
         }
-        rest = &after[close + 1..];
+        let Ok(number) = digits.parse::<u32>() else {
+            return Vec::new();
+        };
+        if number == 0 {
+            return Vec::new();
+        }
+        if !numbers.contains(&number) {
+            numbers.push(number);
+        }
     }
     numbers
 }
 
-/// Extracts issue numbers named by a landed change summary (`(#N)`), ignoring reverts (#615).
+/// Extracts issue numbers from a manual `Revert "..."` subject by unwrapping the reverted
+/// subject and reading its trailing `(#N)` group (#617).
+pub fn revert_issue_numbers(summary: &str) -> Vec<u32> {
+    let Some(rest) = summary.trim().strip_prefix("Revert ") else {
+        return Vec::new();
+    };
+    let unwrapped = rest
+        .trim()
+        .strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .unwrap_or(rest.trim());
+    trailing_issue_numbers(unwrapped)
+}
+
+/// Extracts the issue number when Rosen's change owner names an issue change such as
+/// `issue-417`, `issue-417-363`, or `machine/issue-417-363` (#617).
+pub fn issue_number_from_change_owner(owner: &str) -> Option<u32> {
+    let local = owner
+        .trim()
+        .rsplit_once('/')
+        .map_or(owner.trim(), |(_, rest)| rest);
+    let prefix = local.get(..6)?;
+    if !prefix.eq_ignore_ascii_case("issue-") {
+        return None;
+    }
+    let rest = &local[6..];
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return None;
+    }
+    let tail = &rest[digits..];
+    if !tail.is_empty() && !tail.starts_with('-') {
+        return None;
+    }
+    let number = rest[..digits].parse::<u32>().ok()?;
+    (number > 0).then_some(number)
+}
+
+/// Extracts issue numbers named by a landed commit's trailing `(#N)` group, ignoring reverts (#615, #617).
 pub fn issue_numbers_in_land_summary(summary: &str) -> Vec<u32> {
     if is_revert_summary(summary) {
         return Vec::new();
     }
-    issue_numbers_in_parentheses(summary)
+    trailing_issue_numbers(summary)
+}
+
+/// Extracts all issue numbers landed by `entry`: trailing `(#N)` in its subject plus any
+/// issue named by Rosen's landed change owner record (#617).
+pub fn landed_issue_numbers(entry: &LandHistoryEntry) -> Vec<u32> {
+    if is_revert_summary(&entry.summary) {
+        return Vec::new();
+    }
+    let mut numbers = trailing_issue_numbers(&entry.summary);
+    if let Some(number) = entry
+        .change_owner
+        .as_deref()
+        .and_then(issue_number_from_change_owner)
+        && !numbers.contains(&number)
+    {
+        numbers.push(number);
+    }
+    numbers
 }
 
 /// Index of the newest non-reverted landed commit per issue number (#615).
@@ -108,7 +180,7 @@ impl LandHistoryIndex {
                 continue;
             }
             if is_revert_summary(&entry.summary) {
-                for number in issue_numbers_in_parentheses(&entry.summary) {
+                for number in revert_issue_numbers(&entry.summary) {
                     manual_revert_at
                         .entry(number)
                         .and_modify(|ts| *ts = (*ts).max(entry.landed_at))
@@ -116,7 +188,7 @@ impl LandHistoryIndex {
                 }
                 continue;
             }
-            for number in issue_numbers_in_parentheses(&entry.summary) {
+            for number in landed_issue_numbers(entry) {
                 if manual_revert_at
                     .get(&number)
                     .is_some_and(|&reverted_at| entry.landed_at <= reverted_at)
@@ -196,6 +268,21 @@ mod tests {
             commit: commit.into(),
             landed_at,
             summary: summary.into(),
+            change_owner: None,
+        }
+    }
+
+    fn entry_with_owner(
+        commit: &str,
+        landed_at: u64,
+        summary: &str,
+        owner: &str,
+    ) -> LandHistoryEntry {
+        LandHistoryEntry {
+            commit: commit.into(),
+            landed_at,
+            summary: summary.into(),
+            change_owner: Some(owner.into()),
         }
     }
 
@@ -349,5 +436,66 @@ mod tests {
                 .map(|land| land.commit.as_str()),
             Some("eeeeeee333333333333333333333333333333333")
         );
+    }
+
+    // Risk (#617): a pin-bump commit naming another repository's `(#N)` in the middle of its
+    // subject (such as Rosen's `#417` in commit `3916aaf`) must never hold Velocity's `#417`.
+    #[test]
+    fn ignores_mid_subject_issue_numbers_and_matches_trailing_or_rosen_change_owner() {
+        let t1 = 1_700_000_100;
+        let t2 = 1_700_000_200;
+        let pin_bump = entry_with_owner(
+            "3916aafb8a641111111111111111111111111111",
+            t1,
+            "Bump the Rosen pin for caller-set run budgets (#417) and receipts (#502)",
+            "issue-502-88",
+        );
+        let mid_only = entry(
+            "4444444444444444444444444444444444444444",
+            t1,
+            "Bump Rosen pin (#417) without trailing issue tag",
+        );
+        let owner_named = entry_with_owner(
+            "5555555555555555555555555555555555555555",
+            t2,
+            "Rename git vocabulary to Rosen terms",
+            "issue-420-99",
+        );
+
+        let index =
+            LandHistoryIndex::from_entries(&[owner_named, mid_only, pin_bump], &HashSet::new());
+
+        assert!(index.latest_land(417).is_none());
+        assert_eq!(
+            index.latest_land(502).map(|land| land.commit.as_str()),
+            Some("3916aafb8a641111111111111111111111111111")
+        );
+        assert_eq!(
+            index.latest_land(420).map(|land| land.commit.as_str()),
+            Some("5555555555555555555555555555555555555555")
+        );
+
+        // #417 must not be held by `3916aaf`.
+        assert!(
+            match_reopened_already_landed(
+                OpenIssueReopenCheck {
+                    number: 417,
+                    updated_at: "2023-11-14T22:10:00Z",
+                    person_reopened_at: None,
+                    reopened_by_import: false,
+                    reopened_by_non_person: false,
+                },
+                &index,
+            )
+            .is_none()
+        );
+
+        // Machine-qualified owner still maps to its issue number.
+        assert_eq!(
+            issue_number_from_change_owner("laptop/issue-617-363"),
+            Some(617)
+        );
+        assert_eq!(issue_number_from_change_owner("issue-417"), Some(417));
+        assert_eq!(issue_number_from_change_owner("duty-scout-1"), None);
     }
 }

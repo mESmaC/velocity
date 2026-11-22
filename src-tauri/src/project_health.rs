@@ -40,7 +40,7 @@ use velocity_rosen::{ProjectServer, integration, post_land};
 use velocity_store::continuous_dispatch::busy_count;
 use velocity_store::{ProjectItem, ReviewStage, ThreadState};
 use velocity_threads::continuous_dispatch::{
-    issue_number_from_piece, stale_claim_reason, summarize_skipped_issues,
+    issue_number_from_piece, partition_skipped_issues, stale_claim_reason, summarize_skipped_issues,
 };
 use velocity_threads::landing_runner::refusal_instructions;
 
@@ -2809,7 +2809,8 @@ fn record_recent_review_action(
     );
 }
 
-/// Signal 7: Slots free and ready/open issues, but nothing dispatched for 10 min (#509).
+/// Signal 7: Slots free and ready/open issues, but nothing dispatched for 10 min (#509, #617).
+/// `tracking` issues alone are never dispatched and not shown as blocked.
 fn check_dispatch_idle(
     application: &AppHandle,
     project: &ProjectItem,
@@ -2820,9 +2821,12 @@ fn check_dispatch_idle(
     let slots = project.continuous_dispatch.slots;
     let busy = busy_count(project);
     let has_free_slot = slots > 0 && !project.continuous_dispatch.paused && busy < slots;
-    let has_candidates = dispatch.ready_count > 0
-        || !dispatch.skipped.is_empty()
-        || dispatch.backlog_error.is_some();
+    let groups = partition_skipped_issues(&dispatch.skipped);
+    let has_non_tracking = !groups.other.is_empty()
+        || !groups.needs_owner.is_empty()
+        || !groups.blocked_upstream.is_empty();
+    let has_candidates =
+        dispatch.ready_count > 0 || has_non_tracking || dispatch.backlog_error.is_some();
     if !has_free_slot || !has_candidates {
         with_tracker(application, project.id, |tracker| {
             tracker.free_slot_since = None;
@@ -2861,19 +2865,22 @@ fn check_dispatch_idle(
             ),
         );
     }
-    let action = if !dispatch.skipped.is_empty() {
-        format!(
-            "Logged why {} open issue(s) were skipped",
-            dispatch.skipped.len()
-        )
+    let upstream_only = dispatch.ready_count == 0
+        && dispatch.backlog_error.is_none()
+        && groups.other.is_empty()
+        && groups.needs_owner.is_empty()
+        && !groups.blocked_upstream.is_empty();
+    let severity = if upstream_only {
+        HealthSeverity::Info
     } else {
-        "Logged why continuous dispatch is idle".into()
+        HealthSeverity::Warning
     };
+    let action = dispatch_idle_action(&groups);
     Some(
         ProjectHealthItem::new(
             "dispatch-idle",
             HealthSignalKind::DispatchIdle,
-            HealthSeverity::Warning,
+            severity,
             format!(
                 "Slots free ({busy}/{slots}) for {} with nothing dispatched",
                 format_duration(waited)
@@ -2883,6 +2890,32 @@ fn check_dispatch_idle(
         )
         .with_detail(Some(detail)),
     )
+}
+
+fn dispatch_idle_action(
+    groups: &velocity_threads::continuous_dispatch::SkippedIssueGroups<'_>,
+) -> String {
+    let mut parts = Vec::new();
+    if !groups.other.is_empty() {
+        parts.push(format!("{} skipped", groups.other.len()));
+    }
+    if !groups.needs_owner.is_empty() {
+        parts.push(format!("{} needs owner", groups.needs_owner.len()));
+    }
+    if !groups.blocked_upstream.is_empty() {
+        parts.push(format!(
+            "{} blocked upstream (checked daily)",
+            groups.blocked_upstream.len()
+        ));
+    }
+    if !groups.tracking.is_empty() {
+        parts.push(format!("{} tracking", groups.tracking.len()));
+    }
+    if parts.is_empty() {
+        "Logged why continuous dispatch is idle".into()
+    } else {
+        parts.join(" · ")
+    }
 }
 
 fn dispatch_idle_detail(project: &ProjectItem, dispatch: &DispatchHealthSnapshot) -> String {

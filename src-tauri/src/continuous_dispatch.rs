@@ -24,10 +24,10 @@ use velocity_store::continuous_dispatch::{
 use velocity_store::issues::ThreadIssue;
 use velocity_store::{ProjectItem, TaskAttribution, VersionControl};
 use velocity_threads::continuous_dispatch::{
-    DispatchView, DispatchWork, SkippedIssue, dispatchable_issue_in_projects, dispatchable_task,
-    integration_notice, issue_number_from_piece, issue_skip_reason_in_projects,
-    ordered_work_in_projects, plan_task, stale_claim_reason, stalled_landed_issues,
-    uncovered_base_notice,
+    AttemptClearReason, DispatchView, DispatchWork, SkippedIssue, attempts_to_clear,
+    dispatchable_issue_in_projects, dispatchable_task, integration_notice, issue_number_from_piece,
+    issue_skip_reason_in_projects, open_referenced_blockers_for_issue, ordered_work_in_projects,
+    plan_task, stale_claim_reason, stalled_landed_issues, uncovered_base_notice,
 };
 
 #[derive(Clone, Default)]
@@ -375,6 +375,10 @@ struct Reader {
     report_retry: BTreeMap<u32, Instant>,
     /// Issues whose retired dependency hold could not be converted, and when that failed.
     hold_retry: BTreeMap<u32, Instant>,
+    /// Cached comment bodies per attempted issue `(updated_at, comments)` for blocker-close retry (#617).
+    attempt_comments: BTreeMap<u32, (String, Vec<String>)>,
+    /// When dispatch slots became idle (`slots > 0 && !paused && busy == 0`) (#617).
+    slots_idle_since: Option<Instant>,
     backlog: Backlog,
     parked: parked::Parked,
     holds: holds::Holds,
@@ -573,11 +577,137 @@ fn pass(
     refresh_backlog(application, project.id, reader)?;
     holds::refresh(reader);
     reopened_land::refresh(application, project, &reader.backlog);
+    reconcile_attempts(application, project.id, reader)?;
     let claimed = claimed_pieces(application, project.id).unwrap_or_default();
     restart_wait::refresh(application, project, &reader.backlog, &claimed);
     overlap::refresh(application, project.id, reader)?;
     parked::refresh(application, project, reader)?;
     start_ready(application, project.id, Some(reader))
+}
+
+/// Clears "already attempted at this version" records when a referenced blocker closes
+/// or after dispatch slots have been idle for 30 minutes without a landed change (#617).
+fn reconcile_attempts(
+    application: &AppHandle,
+    identifier: u32,
+    reader: &mut Reader,
+) -> Result<(), String> {
+    if reader.backlog.error.is_some() || reader.backlog.repository.is_empty() {
+        return Ok(());
+    }
+    let (all_projects, project) = {
+        let store = lock(
+            application.state::<ManagedStateStore>().inner(),
+            "persisted state",
+        )?;
+        let Some(project) = store.project(identifier).cloned() else {
+            return Ok(());
+        };
+        (store.state().projects.clone(), project)
+    };
+    let idle_now = project.continuous_dispatch.slots > 0
+        && !project.continuous_dispatch.paused
+        && busy_count(&project) == 0;
+    if idle_now {
+        reader.slots_idle_since.get_or_insert_with(Instant::now);
+    } else {
+        reader.slots_idle_since = None;
+    }
+    let slots_idle_secs = reader
+        .slots_idle_since
+        .map(|since| since.elapsed().as_secs());
+    let repository = reader.backlog.repository.clone();
+    let attempted_numbers: HashSet<u32> = project
+        .continuous_dispatch
+        .attempts
+        .iter()
+        .filter(|attempt| attempt.repository.eq_ignore_ascii_case(&repository))
+        .map(|attempt| attempt.number)
+        .collect();
+    reader
+        .attempt_comments
+        .retain(|number, _| attempted_numbers.contains(number));
+    if attempted_numbers.is_empty() {
+        return Ok(());
+    }
+    let comments_by_issue = load_attempt_comments(reader, &attempted_numbers);
+    let plan = attempts_to_clear(
+        &all_projects,
+        &project,
+        &repository,
+        &reader.backlog.issues,
+        &comments_by_issue,
+        slots_idle_secs,
+        unix_seconds(),
+    );
+    if plan.clear.is_empty() && plan.add_open_blockers.is_empty() {
+        return Ok(());
+    }
+    let clear_numbers: Vec<u32> = plan.clear.iter().map(|(number, _)| *number).collect();
+    let changed = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .reconcile_dispatch_attempts(
+        identifier,
+        &repository,
+        &clear_numbers,
+        &plan.add_open_blockers,
+    )
+    .map_err(|error| error.to_string())?;
+    if changed {
+        for (number, reason) in &plan.clear {
+            match reason {
+                AttemptClearReason::BlockerClosed(blocker) => crate::diagnostics::record(
+                    "continuous dispatch",
+                    &format!(
+                        "{}: cleared attempt for #{number} (blocker {blocker} closed)",
+                        project.name
+                    ),
+                ),
+                AttemptClearReason::IdleWithoutLand => crate::diagnostics::record(
+                    "continuous dispatch",
+                    &format!(
+                        "{}: cleared attempt for #{number} (slots idle 30 min without landed change)",
+                        project.name
+                    ),
+                ),
+                AttemptClearReason::ClosedOrVersionChanged => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn load_attempt_comments(
+    reader: &mut Reader,
+    attempted_numbers: &HashSet<u32>,
+) -> BTreeMap<u32, Vec<String>> {
+    let mut map = BTreeMap::new();
+    let Some(client) = reader.client.as_ref() else {
+        return map;
+    };
+    for issue in &reader.backlog.issues {
+        if !attempted_numbers.contains(&issue.number) {
+            continue;
+        }
+        let cached = reader
+            .attempt_comments
+            .get(&issue.number)
+            .filter(|(updated_at, _)| updated_at == &issue.updated_at)
+            .map(|(_, bodies)| bodies.clone());
+        if let Some(bodies) = cached {
+            map.insert(issue.number, bodies);
+            continue;
+        }
+        if let Ok(bodies) = client.read_comment_bodies(issue.number) {
+            reader
+                .attempt_comments
+                .insert(issue.number, (issue.updated_at.clone(), bodies.clone()));
+            map.insert(issue.number, bodies);
+        }
+    }
+    map
 }
 
 fn start_ready(
@@ -691,7 +821,28 @@ fn try_start_issue(
     {
         return Ok(());
     }
-    start_issue(application, identifier, &repository, &fresh)?;
+    let open_numbers: HashSet<u32> = reader
+        .backlog
+        .issues
+        .iter()
+        .filter(|issue| issue.state == IssueState::Open)
+        .map(|issue| issue.number)
+        .collect();
+    let cached_comments = reader
+        .attempt_comments
+        .get(&number)
+        .filter(|(updated_at, _)| updated_at == &fresh.updated_at)
+        .map(|(_, bodies)| bodies.as_slice())
+        .unwrap_or(&[]);
+    start_issue(
+        application,
+        identifier,
+        &repository,
+        &fresh,
+        &open_numbers,
+        cached_comments,
+    )?;
+    reader.slots_idle_since = None;
     overlap::refresh(application, identifier, reader)
 }
 
@@ -1083,6 +1234,8 @@ fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> 
         refreshed: None,
         report_retry: BTreeMap::new(),
         hold_retry: BTreeMap::new(),
+        attempt_comments: BTreeMap::new(),
+        slots_idle_since: None,
         backlog: Backlog::default(),
         parked: parked::Parked::new(),
         holds: holds::Holds::new(),
@@ -1143,6 +1296,8 @@ fn start_issue(
     identifier: u32,
     repository: &str,
     issue: &GitHubIssue,
+    open_numbers: &HashSet<u32>,
+    cached_comments: &[String],
 ) -> Result<(), String> {
     if velocity_rosen::memory::is_low() {
         return Ok(());
@@ -1185,6 +1340,14 @@ fn start_issue(
         {
             return Ok(());
         }
+        let open_referenced_blockers = open_referenced_blockers_for_issue(
+            &store.state().projects,
+            project,
+            repository,
+            issue,
+            open_numbers,
+            cached_comments,
+        );
         let rosen_project =
             (project.version_control == VersionControl::Rosen).then(|| project.clone());
         let plan = velocity_threads::dispatch::plan_project_issue_dispatch(
@@ -1192,12 +1355,14 @@ fn start_issue(
         )
         .map_err(|error| error.to_string())?;
         let thread = store
-            .record_continuous_dispatch_for_version(
+            .record_continuous_dispatch_with_blockers(
                 identifier,
                 plan.launch.thread.clone(),
                 plan.issue,
                 issue.updated_at.clone(),
                 issue.reopened_at.as_deref(),
+                open_referenced_blockers,
+                unix_seconds(),
             )
             .map_err(|error| error.to_string())?;
         (plan.launch, thread, rosen_project)

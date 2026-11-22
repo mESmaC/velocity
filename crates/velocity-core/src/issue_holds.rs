@@ -237,6 +237,19 @@ impl UpstreamTarget {
             self.canonical()
         )
     }
+
+    /// Direct GitHub URL for the upstream PR, issue, or release (#617).
+    pub fn url(&self) -> String {
+        match self {
+            Self::PullRequest { repository, number }
+            | Self::PullRequestRelease {
+                repository, number, ..
+            } => format!("https://github.com/{repository}/issues/{number}"),
+            Self::Release { repository, tag } => {
+                format!("https://github.com/{repository}/releases/tag/{tag}")
+            }
+        }
+    }
 }
 
 fn parse_pr_release(left: &str, right: &str) -> Option<UpstreamTarget> {
@@ -648,6 +661,49 @@ pub fn strip_person_hold_block(body: &str) -> String {
     lines.join("\n").trim_end().to_owned()
 }
 
+/// Whether a legacy retired-hold issue (such as `needs-owner`) is actually a `tracking`
+/// checklist issue that should be migrated to `tracking` (#617).
+pub fn is_legacy_tracking_issue(title: &str, body: &str, labels: &[String]) -> bool {
+    if has_label(labels, TRACKING_LABEL)
+        || has_label(labels, BLOCKED_UPSTREAM_LABEL)
+        || has_label(labels, HOLD_LABEL)
+        || !labels.iter().any(|label| is_retired_hold_label(label))
+    {
+        return false;
+    }
+    let starts_tracking = title
+        .trim_start()
+        .get(..9)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("tracking:"));
+    starts_tracking && parse_checklist(body).total() > 0
+}
+
+/// Detects an upstream PR/release wait on a legacy retired-hold issue (such as `needs-owner`)
+/// from its body or comments when the text explicitly names an upstream wait (#617).
+pub fn legacy_upstream_target(
+    body: &str,
+    comments: &[String],
+    labels: &[String],
+    home_repository: Option<&str>,
+) -> Option<UpstreamTarget> {
+    if has_label(labels, TRACKING_LABEL)
+        || has_label(labels, BLOCKED_UPSTREAM_LABEL)
+        || has_label(labels, HOLD_LABEL)
+        || !labels.iter().any(|label| is_retired_hold_label(label))
+    {
+        return None;
+    }
+    for text in comments.iter().rev().map(String::as_str).chain([body]) {
+        if !text.to_ascii_lowercase().contains("upstream") {
+            continue;
+        }
+        if let Some(target) = parse_upstream_target(text, home_repository) {
+            return Some(target);
+        }
+    }
+    None
+}
+
 /// Validates the commit SHA cited when closing an orphaned spec issue as not planned (#526).
 pub fn validate_commit_ref(commit: &str) -> Result<String, String> {
     let trimmed = commit.trim();
@@ -801,5 +857,34 @@ Tracking issue:\n\
         let body = upsert_person_hold_block("Original description.", &hold);
         assert_eq!(parse_person_hold(&body, &["hold".into()]), Some(hold));
         assert_eq!(strip_person_hold_block(&body), "Original description.");
+    }
+
+    #[test]
+    fn legacy_hold_migration_detects_tracking_and_blocked_upstream_issues() {
+        let needs_owner = vec!["needs-owner".to_owned()];
+        assert!(is_legacy_tracking_issue(
+            "Tracking: Rosen-first overhaul",
+            "## Issues\n- [ ] #414 Reference UI\n- [x] #419 Migration\n",
+            &needs_owner,
+        ));
+        assert!(!is_legacy_tracking_issue(
+            "Regular issue needing owner",
+            "- [ ] Task 1\n",
+            &needs_owner,
+        ));
+
+        let comments = vec![
+            "Held for an upstream change: Wry's callback is still an open PR (tauri-apps/wry#1862). Remove the label when a Tauri release ships.".to_owned(),
+        ];
+        let upstream = legacy_upstream_target(
+            "Expose CoreWebView2 ProcessFailed through safe Tauri bindings.",
+            &comments,
+            &needs_owner,
+            Some("mESmaC/velocity"),
+        );
+        assert_eq!(
+            upstream.as_ref().map(UpstreamTarget::url).as_deref(),
+            Some("https://github.com/tauri-apps/wry/issues/1862")
+        );
     }
 }

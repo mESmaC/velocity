@@ -325,3 +325,144 @@ pub fn declared_blockers(text: &str) -> Vec<IssueReference> {
     }
     blockers
 }
+
+/// Phrases introducing issues that another issue waits on (`waits for #N`, `after #N`,
+/// `blocked by #N`, etc.) used to clear stale dispatch attempts when a blocker closes (#617).
+const BLOCKER_REFERENCE_PHRASES: [&str; 15] = [
+    "waits for",
+    "wait for",
+    "waiting for",
+    "waits on",
+    "wait on",
+    "waiting on",
+    "blocked by",
+    "blocked on",
+    "depends on",
+    "depend on",
+    "dependent on",
+    "held until",
+    "hold until",
+    "after",
+    HOLD_NOTE,
+];
+
+/// Maximum span expanded for inclusive issue ranges like `#421–#424` or `#421-#424`.
+const MAX_ISSUE_RANGE_SPAN: u32 = 20;
+
+/// Extracts issues referenced as blockers in free text via `waits for #N`, `after #N`,
+/// `blocked by #N`, `depends on #N` (including lists and ranges such as `after #421–#424`) (#617).
+pub fn referenced_blockers_in_text(text: &str) -> Vec<IssueReference> {
+    let mut found = Vec::new();
+    for line in text.lines() {
+        let lowered = line.to_ascii_lowercase();
+        for phrase in BLOCKER_REFERENCE_PHRASES {
+            let mut offset = 0;
+            while let Some(pos) = lowered[offset..].find(phrase) {
+                let start = offset + pos;
+                let end = start + phrase.len();
+                let left_ok = line[..start]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_');
+                let right_ok = line[end..]
+                    .chars()
+                    .next()
+                    .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_');
+                if left_ok && right_ok {
+                    let clause = clause_tail(&line[end..]);
+                    collect_references_and_ranges(clause, &mut found);
+                }
+                offset = end;
+            }
+        }
+    }
+    found
+}
+
+fn clause_tail(rest: &str) -> &str {
+    for (index, ch) in rest.char_indices() {
+        if matches!(ch, ';' | '\n' | '\r') {
+            return &rest[..index];
+        }
+        if ch == '.' {
+            let next = rest[index + 1..].chars().next();
+            if next.is_none_or(|c| c.is_whitespace()) {
+                return &rest[..index];
+            }
+        }
+    }
+    rest
+}
+
+fn collect_references_and_ranges(clause: &str, out: &mut Vec<IssueReference>) {
+    for reference in IssueReference::in_text(clause) {
+        if !out.contains(&reference) {
+            out.push(reference);
+        }
+    }
+    // Expand inclusive ranges like `#421–#424`, `#421-#424`, or `#421..#424`.
+    for (hash_pos, _) in clause.match_indices('#') {
+        let Some(first) = IssueReference::at_hash(clause, hash_pos) else {
+            continue;
+        };
+        let after_hash = &clause[hash_pos + 1..];
+        let digits = after_hash.bytes().take_while(u8::is_ascii_digit).count();
+        let tail = after_hash[digits..].trim_start();
+        let Some(after_sep) = tail
+            .strip_prefix("–")
+            .or_else(|| tail.strip_prefix("—"))
+            .or_else(|| tail.strip_prefix("..="))
+            .or_else(|| tail.strip_prefix(".."))
+            .or_else(|| tail.strip_prefix('-'))
+        else {
+            continue;
+        };
+        let after_sep = after_sep.trim_start();
+        let second_digits_str = after_sep.strip_prefix('#').unwrap_or(after_sep);
+        let second_len = second_digits_str
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .count();
+        if second_len == 0 {
+            continue;
+        }
+        let Ok(end_num) = second_digits_str[..second_len].parse::<u32>() else {
+            continue;
+        };
+        let start_num = first.number();
+        if end_num > start_num && end_num - start_num <= MAX_ISSUE_RANGE_SPAN {
+            let repo = first.repository.as_deref();
+            for number in start_num..=end_num {
+                if let Some(reference) = IssueReference::new(repo, number)
+                    && !out.contains(&reference)
+                {
+                    out.push(reference);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn referenced_blockers_extracts_waits_after_blocked_by_and_ranges() {
+        let body = "\
+This issue waits for #419 before starting.\n\
+Phased after #421–#424 and blocked by mESmaC/rosen#42.\n\
+Unrelated mention of #999 in background prose.\n";
+        let refs: Vec<String> = referenced_blockers_in_text(body)
+            .into_iter()
+            .map(|r| r.to_string())
+            .collect();
+        assert!(refs.contains(&"#419".to_owned()));
+        assert!(refs.contains(&"#421".to_owned()));
+        assert!(refs.contains(&"#422".to_owned()));
+        assert!(refs.contains(&"#423".to_owned()));
+        assert!(refs.contains(&"#424".to_owned()));
+        assert!(refs.contains(&"mESmaC/rosen#42".to_owned()));
+        assert!(!refs.contains(&"#999".to_owned()));
+    }
+}

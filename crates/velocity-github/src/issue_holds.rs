@@ -55,6 +55,12 @@ struct RestRelease {
 }
 
 impl IssueClient {
+    /// Reads all comment bodies for `number` so dispatch can check referenced blockers
+    /// and migrate legacy upstream holds (#617).
+    pub fn read_comment_bodies(&self, number: u32) -> Result<Vec<String>, GitHubCommandError> {
+        self.issue_comment_bodies(number)
+    }
+
     /// Finds the upstream PR or release target recorded in an issue's body or comments.
     pub fn find_upstream_target(
         &self,
@@ -342,6 +348,54 @@ impl IssueClient {
         crate::issue_cache::invalidate(self.host(), self.repository());
         crate::issue_cache::invalidate_discussion(self.host(), self.repository(), number);
         Ok(())
+    }
+
+    /// Migrates a legacy retired-hold issue (e.g. `needs-owner`) that is a `Tracking:`
+    /// checklist issue to the `tracking` label (#617).
+    pub fn migrate_tracking_hold(&self, number: u32) -> Result<bool, GitHubCommandError> {
+        let issue = self.read_issue(number)?;
+        if issue.state != IssueState::Open
+            || !velocity_core::issue_holds::is_legacy_tracking_issue(
+                &issue.title,
+                &issue.body,
+                &issue.labels,
+            )
+        {
+            return Ok(false);
+        }
+        self.label_issue(number, TRACKING_LABEL)?;
+        self.remove_retired_hold_labels(&issue)?;
+        crate::issue_cache::invalidate(self.host(), self.repository());
+        Ok(true)
+    }
+
+    /// Migrates a legacy retired-hold issue (e.g. `needs-owner`) that waits on an upstream
+    /// PR or release to `blocked-upstream` with its machine-checkable upstream block (#617).
+    pub fn migrate_upstream_hold(
+        &self,
+        number: u32,
+        target: &UpstreamTarget,
+    ) -> Result<bool, GitHubCommandError> {
+        let issue = self.read_issue(number)?;
+        if issue.state != IssueState::Open
+            || has_label(&issue.labels, BLOCKED_UPSTREAM_LABEL)
+            || has_label(&issue.labels, TRACKING_LABEL)
+            || has_label(&issue.labels, HOLD_LABEL)
+            || !issue
+                .labels
+                .iter()
+                .any(|label| is_retired_hold_label(label))
+        {
+            return Ok(false);
+        }
+        let updated_body = upsert_upstream_block(&issue.body, target);
+        if updated_body != issue.body {
+            self.update_issue_body(number, &issue.id, &updated_body)?;
+        }
+        self.label_issue(number, BLOCKED_UPSTREAM_LABEL)?;
+        self.remove_retired_hold_labels(&issue)?;
+        crate::issue_cache::invalidate(self.host(), self.repository());
+        Ok(true)
     }
 
     /// Closes an issue as `not_planned` when its referenced spec section was removed (#526).

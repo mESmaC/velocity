@@ -268,6 +268,29 @@ pub struct DispatchAttempt {
     pub number: u32,
     #[serde(default)]
     pub updated_at: String,
+    /// Unix seconds when this attempt was recorded (#617). `None` for legacy attempts saved
+    /// before #617.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    pub attempted_at: Option<u64>,
+    /// Referenced blockers (`open_blockers` and `waits for #N` / `after #N` / `blocked by #N`)
+    /// that were still open when this attempt was recorded (#617). When any of them closes,
+    /// the attempt clears so dispatch retries the issue.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[specta(skip)]
+    pub open_referenced_blockers: Vec<String>,
+}
+
+impl DispatchAttempt {
+    pub fn new(repository: String, number: u32, updated_at: String) -> Self {
+        Self {
+            repository,
+            number,
+            updated_at,
+            attempted_at: None,
+            open_referenced_blockers: Vec::new(),
+        }
+    }
 }
 
 impl ContinuousDispatch {
@@ -622,6 +645,13 @@ pub fn idle_nudge_exhausted(thread: &crate::ThreadItem) -> bool {
 
 fn same_issue(left: &ThreadIssue, right: &ThreadIssue) -> bool {
     left.number == right.number && left.repository.eq_ignore_ascii_case(&right.repository)
+}
+
+fn current_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// A dispatch thread whose launch failed before its agent's session began: it did no
@@ -1012,6 +1042,31 @@ impl StateStore {
         updated_at: String,
         reopened_at: Option<&str>,
     ) -> Result<u32, ThreadError> {
+        self.record_continuous_dispatch_with_blockers(
+            project,
+            thread,
+            issue,
+            updated_at,
+            reopened_at,
+            Vec::new(),
+            current_unix_seconds(),
+        )
+    }
+
+    /// Like [`Self::record_continuous_dispatch_for_version`], also recording the timestamp and
+    /// currently open referenced blockers so dispatch clears the attempt when a blocker closes
+    /// or after the idle retry interval (#617).
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_continuous_dispatch_with_blockers(
+        &mut self,
+        project: u32,
+        thread: crate::threads::NewThread,
+        issue: crate::issues::ThreadIssue,
+        updated_at: String,
+        reopened_at: Option<&str>,
+        open_referenced_blockers: Vec<String>,
+        attempted_at: u64,
+    ) -> Result<u32, ThreadError> {
         let mut next = self.state.clone();
         let item = next
             .projects
@@ -1057,6 +1112,8 @@ impl StateStore {
             repository: issue.repository,
             number: issue.number,
             updated_at,
+            attempted_at: Some(attempted_at),
+            open_referenced_blockers,
         };
         if let Some(item) = next.projects.iter_mut().find(|item| item.id == project) {
             mark_dispatch(item, selected, identifier);
@@ -1068,6 +1125,49 @@ impl StateStore {
         }
         self.commit(next)?;
         Ok(identifier)
+    }
+
+    /// Removes stored dispatch attempts for `numbers` in `repository`, plus records any newly
+    /// observed open referenced blockers on remaining attempts (#617).
+    pub fn reconcile_dispatch_attempts(
+        &mut self,
+        project: u32,
+        repository: &str,
+        clear_numbers: &[u32],
+        add_open_blockers: &BTreeMap<u32, Vec<String>>,
+    ) -> Result<bool, ThreadError> {
+        self.try_edit_project(
+            project,
+            || ThreadError::UnknownProject(project),
+            |item| {
+                let mut changed = false;
+                if !clear_numbers.is_empty() {
+                    let before = item.continuous_dispatch.attempts.len();
+                    item.continuous_dispatch.attempts.retain(|attempt| {
+                        !(attempt.repository.eq_ignore_ascii_case(repository)
+                            && clear_numbers.contains(&attempt.number))
+                    });
+                    changed |= item.continuous_dispatch.attempts.len() != before;
+                }
+                for (number, blockers) in add_open_blockers {
+                    if let Some(attempt) = item.continuous_dispatch.attempts.iter_mut().find(|a| {
+                        a.number == *number && a.repository.eq_ignore_ascii_case(repository)
+                    }) {
+                        for blocker in blockers {
+                            if !attempt
+                                .open_referenced_blockers
+                                .iter()
+                                .any(|existing| existing.eq_ignore_ascii_case(blocker))
+                            {
+                                attempt.open_referenced_blockers.push(blocker.clone());
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+                Ok((changed, changed))
+            },
+        )
     }
 
     /// Save the thread and its task ownership together before starting an ACP session.
@@ -1913,6 +2013,70 @@ mod tests {
                 .is_none()
         );
 
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#617): DispatchAttempt blocker tracking and timestamps must survive save/load
+    // (including legacy attempts without those fields) and clear via reconcile_dispatch_attempts.
+    #[test]
+    fn dispatch_attempt_blockers_and_reconcile_survive_save_and_load()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, mut store) = legacy_store()?;
+        store.set_continuous_dispatch(1, 2, false)?;
+        let thread = NewThread::new(
+            "Issue #418".into(),
+            "vel/issue-418".into(),
+            directory.join("agent-418").display().to_string(),
+            &store.settings(),
+        );
+        let issue = ThreadIssue::new("mESmaC/velocity".into(), 418);
+        store.record_continuous_dispatch_with_blockers(
+            1,
+            thread,
+            issue,
+            "2026-11-22T00:00:00Z".into(),
+            None,
+            vec!["#419".into()],
+            1_700_000_000,
+        )?;
+        assert!(store.reconcile_dispatch_attempts(
+            1,
+            "mESmaC/velocity",
+            &[],
+            &BTreeMap::from([(418, vec!["#419".into(), "#420".into()])]),
+        )?);
+        drop(store);
+
+        let mut loaded = StateStore::load_or_default(&directory)?;
+        let attempt = &loaded
+            .project(1)
+            .ok_or("missing project")?
+            .continuous_dispatch
+            .attempts[0];
+        assert_eq!(attempt.attempted_at, Some(1_700_000_000));
+        assert_eq!(
+            attempt.open_referenced_blockers,
+            vec!["#419".to_owned(), "#420".to_owned()]
+        );
+
+        assert!(loaded.reconcile_dispatch_attempts(
+            1,
+            "mESmaC/velocity",
+            &[418],
+            &BTreeMap::new(),
+        )?);
+        drop(loaded);
+
+        let reloaded = StateStore::load_or_default(&directory)?;
+        assert!(
+            reloaded
+                .project(1)
+                .ok_or("missing project")?
+                .continuous_dispatch
+                .attempts
+                .is_empty()
+        );
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

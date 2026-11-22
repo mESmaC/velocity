@@ -934,14 +934,13 @@ mod tests {
         let mut project = ProjectItem::new(1, "Project".into(), r"C:\project".into());
         project.version_control = VersionControl::Rosen;
         project.spec_locked = true;
-        project
-            .continuous_dispatch
-            .attempts
-            .push(crate::continuous_dispatch::DispatchAttempt {
-                repository: "Owner/Repo".into(),
-                number: 7,
-                updated_at: "unchanged".into(),
-            });
+        project.continuous_dispatch.attempts.push(
+            crate::continuous_dispatch::DispatchAttempt::new(
+                "Owner/Repo".into(),
+                7,
+                "unchanged".into(),
+            ),
+        );
         let mut thread = ThreadItem::new(4, "Fix issue".into());
         thread.state = ThreadState::Working;
         thread.issue = Some(ThreadIssue::new("Owner/Repo".into(), 7));

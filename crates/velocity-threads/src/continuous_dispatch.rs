@@ -2,9 +2,10 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{BTreeMap, HashSet};
+use velocity_core::issue_dependencies::{IssueReference, referenced_blockers_in_text};
 use velocity_core::issue_holds::{
-    BLOCKED_UPSTREAM_LABEL, TRACKING_LABEL, has_label, is_person_hold_label, parse_person_hold,
-    parse_upstream_target,
+    BLOCKED_UPSTREAM_LABEL, TRACKING_LABEL, has_label, is_person_hold_label, parse_checklist,
+    parse_person_hold, parse_upstream_target,
 };
 use velocity_github::{GitHubIssue, IssueClient, IssueState};
 use velocity_store::continuous_dispatch::{available_task, busy_count};
@@ -182,13 +183,15 @@ fn stalled_notice(stalled: &[u32]) -> Option<String> {
     ))
 }
 
-/// Why an open issue was not dispatched when a slot was free (#509).
+/// Why an open issue was not dispatched when a slot was free (#509, #617).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkipCategory {
     Overlap,
     Label,
     Blocker,
-    Decision,
+    NeedsOwner,
+    BlockedUpstream,
+    Tracking,
     Claimed,
     LaunchHold,
     Attempted,
@@ -200,6 +203,30 @@ pub struct SkippedIssue {
     pub number: u32,
     pub category: SkipCategory,
     pub reason: String,
+}
+
+/// Partitioned view of skipped issues for project health so `needs-owner`, `blocked-upstream`,
+/// and `tracking` issues are listed separately from one another and from regular blockers (#617).
+#[derive(Clone, Debug, Default)]
+pub struct SkippedIssueGroups<'a> {
+    pub other: Vec<&'a SkippedIssue>,
+    pub needs_owner: Vec<&'a SkippedIssue>,
+    pub blocked_upstream: Vec<&'a SkippedIssue>,
+    pub tracking: Vec<&'a SkippedIssue>,
+}
+
+/// Splits skipped issues into `other`, `needs_owner`, `blocked_upstream`, and `tracking` (#617).
+pub fn partition_skipped_issues(skipped: &[SkippedIssue]) -> SkippedIssueGroups<'_> {
+    let mut groups = SkippedIssueGroups::default();
+    for item in skipped {
+        match item.category {
+            SkipCategory::NeedsOwner => groups.needs_owner.push(item),
+            SkipCategory::BlockedUpstream => groups.blocked_upstream.push(item),
+            SkipCategory::Tracking => groups.tracking.push(item),
+            _ => groups.other.push(item),
+        }
+    }
+    groups
 }
 
 /// Non-hold labels that keep an issue out of automatic dispatch because another dedicated
@@ -305,28 +332,34 @@ pub fn issue_skip_reason_in_projects(
         });
     }
     if has_label(&issue.labels, TRACKING_LABEL) {
+        let progress = parse_checklist(&issue.body);
+        let reason = if progress.total() > 0 {
+            format!("tracking {}/{}", progress.checked, progress.total())
+        } else {
+            "tracking".into()
+        };
         return Some(SkippedIssue {
             number: issue.number,
-            category: SkipCategory::Label,
-            reason: "tracking issue (closes when checklist completes)".into(),
+            category: SkipCategory::Tracking,
+            reason,
         });
     }
     if has_label(&issue.labels, BLOCKED_UPSTREAM_LABEL) {
         let detail = parse_upstream_target(&issue.body, Some(repository)).map_or_else(
-            || "blocked upstream (missing target)".into(),
-            |target| format!("blocked upstream: {}", target.display_summary()),
+            || "missing upstream target".into(),
+            |target| format!("{} · {}", target.display_summary(), target.url()),
         );
         return Some(SkippedIssue {
             number: issue.number,
-            category: SkipCategory::Blocker,
+            category: SkipCategory::BlockedUpstream,
             reason: detail,
         });
     }
     if let Some(hold) = parse_person_hold(&issue.body, &issue.labels) {
         return Some(SkippedIssue {
             number: issue.number,
-            category: SkipCategory::Label,
-            reason: format!("hold: {} · {}", hold.reason, hold.release_action),
+            category: SkipCategory::NeedsOwner,
+            reason: format!("{} · {}", hold.reason, hold.release_action),
         });
     }
     if let Some(label) = issue.labels.iter().find(|label| {
@@ -338,13 +371,6 @@ pub fn issue_skip_reason_in_projects(
             number: issue.number,
             category: SkipCategory::Label,
             reason: format!("label: {label}"),
-        });
-    }
-    if needs_owner_decision(&format!("{}\n{}", issue.title, issue.body)) {
-        return Some(SkippedIssue {
-            number: issue.number,
-            category: SkipCategory::Decision,
-            reason: "awaits owner decision".into(),
         });
     }
     if project
@@ -398,19 +424,330 @@ pub fn issue_skip_reason_in_projects(
     None
 }
 
-/// Formats skipped issues for the project health strip and `velocity.log` (#509).
+/// Formats skipped issues for the project health strip and `velocity.log` (#509, #617),
+/// separating `Needs owner`, `Blocked upstream`, and `Tracking` from regular skipped issues.
 pub fn summarize_skipped_issues(skipped: &[SkippedIssue], limit: usize) -> String {
-    let shown: Vec<String> = skipped
+    let groups = partition_skipped_issues(skipped);
+    let mut sections = Vec::new();
+    if !groups.other.is_empty() {
+        sections.push(format_skipped_group("Skipped", &groups.other, limit));
+    }
+    if !groups.needs_owner.is_empty() {
+        sections.push(format_skipped_group(
+            "Needs owner",
+            &groups.needs_owner,
+            limit,
+        ));
+    }
+    if !groups.blocked_upstream.is_empty() {
+        sections.push(format_skipped_group(
+            "Blocked upstream",
+            &groups.blocked_upstream,
+            limit,
+        ));
+    }
+    if !groups.tracking.is_empty() {
+        sections.push(format_skipped_group("Tracking", &groups.tracking, limit));
+    }
+    sections.join(" · ")
+}
+
+fn format_skipped_group(label: &str, items: &[&SkippedIssue], limit: usize) -> String {
+    let shown: Vec<String> = items
         .iter()
         .take(limit)
-        .map(|item| format!("#{} ({})", item.number, item.reason))
+        .map(|item| {
+            if item.category == SkipCategory::Tracking && item.reason == "tracking" {
+                format!("#{}", item.number)
+            } else {
+                format!("#{} ({})", item.number, item.reason)
+            }
+        })
         .collect();
-    let remaining = skipped.len().saturating_sub(limit);
+    let remaining = items.len().saturating_sub(limit);
     if remaining > 0 {
-        format!("{} · +{remaining} more", shown.join(", "))
+        format!("{label}: {} (+{remaining} more)", shown.join(", "))
     } else {
-        shown.join(", ")
+        format!("{label}: {}", shown.join(", "))
     }
+}
+
+/// How long dispatch slots must be idle before retrying an attempted issue whose last
+/// attempt ended without a landed change (#617).
+pub const ATTEMPT_IDLE_RETRY_SECONDS: u64 = 30 * 60;
+
+/// Why a stored "already attempted at this version" record should be cleared (#617).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AttemptClearReason {
+    ClosedOrVersionChanged,
+    BlockerClosed(String),
+    IdleWithoutLand,
+}
+
+/// Planned reconciliation for a project's `continuous_dispatch.attempts` (#617).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AttemptReconcile {
+    pub clear: Vec<(u32, AttemptClearReason)>,
+    pub add_open_blockers: BTreeMap<u32, Vec<String>>,
+}
+
+/// Collects currently open blockers referenced by `issue` (`open_blockers` plus text
+/// references `waits for #N`, `after #N`, `blocked by #N` in `body` and `comments`) (#617).
+pub fn open_referenced_blockers_for_issue(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    open_numbers: &HashSet<u32>,
+    comments: &[String],
+) -> Vec<String> {
+    let mut open = Vec::new();
+    for reference in referenced_blockers_of_issue(repository, issue, comments) {
+        let key = reference.relative_to(repository);
+        if !blocker_closed_or_satisfied(
+            projects,
+            project,
+            repository,
+            issue,
+            open_numbers,
+            &reference,
+        ) && !open
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(&key))
+        {
+            open.push(key);
+        }
+    }
+    open
+}
+
+/// Evaluates stored `DispatchAttempt` records against the open backlog, closing blockers,
+/// and slot idle time (#617).
+pub fn attempts_to_clear(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issues: &[GitHubIssue],
+    comments_by_issue: &BTreeMap<u32, Vec<String>>,
+    slots_idle_secs: Option<u64>,
+    now: u64,
+) -> AttemptReconcile {
+    let mut plan = AttemptReconcile::default();
+    let open_numbers: HashSet<u32> = issues
+        .iter()
+        .filter(|issue| issue.state == IssueState::Open)
+        .map(|issue| issue.number)
+        .collect();
+    let by_number: BTreeMap<u32, &GitHubIssue> = issues
+        .iter()
+        .filter(|issue| issue.state == IssueState::Open)
+        .map(|issue| (issue.number, issue))
+        .collect();
+
+    for attempt in &project.continuous_dispatch.attempts {
+        if !attempt.repository.eq_ignore_ascii_case(repository) {
+            continue;
+        }
+        let Some(issue) = by_number.get(&attempt.number).copied() else {
+            plan.clear
+                .push((attempt.number, AttemptClearReason::ClosedOrVersionChanged));
+            continue;
+        };
+        if attempt.updated_at != issue.updated_at {
+            plan.clear
+                .push((attempt.number, AttemptClearReason::ClosedOrVersionChanged));
+            continue;
+        }
+        let comments = comments_by_issue
+            .get(&issue.number)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        if let Some(closed) = closed_blocker_for_attempt(
+            projects,
+            project,
+            repository,
+            issue,
+            attempt,
+            &open_numbers,
+            comments,
+        ) {
+            plan.clear
+                .push((attempt.number, AttemptClearReason::BlockerClosed(closed)));
+            continue;
+        }
+        let currently_open = open_referenced_blockers_for_issue(
+            projects,
+            project,
+            repository,
+            issue,
+            &open_numbers,
+            comments,
+        );
+        let missing_open: Vec<String> = currently_open
+            .into_iter()
+            .filter(|blocker| {
+                !attempt
+                    .open_referenced_blockers
+                    .iter()
+                    .any(|saved| saved.eq_ignore_ascii_case(blocker))
+            })
+            .collect();
+        if !missing_open.is_empty() {
+            plan.add_open_blockers.insert(issue.number, missing_open);
+        }
+        if should_clear_attempt_on_idle(project, repository, issue, attempt, slots_idle_secs, now) {
+            plan.clear
+                .push((attempt.number, AttemptClearReason::IdleWithoutLand));
+        }
+    }
+    plan
+}
+
+fn referenced_blockers_of_issue(
+    repository: &str,
+    issue: &GitHubIssue,
+    comments: &[String],
+) -> Vec<IssueReference> {
+    let mut references = Vec::new();
+    let mut push_unique = |reference: IssueReference| {
+        if !reference.is_issue(repository, repository, issue.number)
+            && !references.contains(&reference)
+        {
+            references.push(reference);
+        }
+    };
+    for raw in issue
+        .open_blockers
+        .iter()
+        .chain(issue.closed_blockers.iter())
+    {
+        if let Some(reference) = IssueReference::parse(raw) {
+            push_unique(reference);
+        }
+    }
+    for reference in referenced_blockers_in_text(&issue.body) {
+        push_unique(reference);
+    }
+    for comment in comments {
+        for reference in referenced_blockers_in_text(comment) {
+            push_unique(reference);
+        }
+    }
+    references
+}
+
+fn closed_blocker_for_attempt(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    attempt: &velocity_store::continuous_dispatch::DispatchAttempt,
+    open_numbers: &HashSet<u32>,
+    comments: &[String],
+) -> Option<String> {
+    for saved in &attempt.open_referenced_blockers {
+        if let Some(reference) = IssueReference::parse(saved)
+            && blocker_closed_or_satisfied(
+                projects,
+                project,
+                repository,
+                issue,
+                open_numbers,
+                &reference,
+            )
+        {
+            return Some(reference.relative_to(repository));
+        }
+    }
+    // Legacy attempts saved before #617 had no `attempted_at` or open-blocker snapshot:
+    // if any referenced or linked blocker is already closed, clear so dispatch retries.
+    if attempt.attempted_at.is_none() {
+        for reference in referenced_blockers_of_issue(repository, issue, comments) {
+            if blocker_closed_or_satisfied(
+                projects,
+                project,
+                repository,
+                issue,
+                open_numbers,
+                &reference,
+            ) {
+                return Some(reference.relative_to(repository));
+            }
+        }
+    }
+    None
+}
+
+fn blocker_closed_or_satisfied(
+    projects: &[ProjectItem],
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    open_numbers: &HashSet<u32>,
+    reference: &IssueReference,
+) -> bool {
+    let relative = reference.relative_to(repository);
+    if issue
+        .closed_blockers
+        .iter()
+        .any(|closed| closed.eq_ignore_ascii_case(&relative))
+    {
+        return true;
+    }
+    if blocker_satisfied_in_projects(projects, project, repository, &relative) {
+        return true;
+    }
+    if reference
+        .repository_or(repository)
+        .eq_ignore_ascii_case(repository)
+    {
+        return !open_numbers.contains(&reference.number());
+    }
+    false
+}
+
+fn should_clear_attempt_on_idle(
+    project: &ProjectItem,
+    repository: &str,
+    issue: &GitHubIssue,
+    attempt: &velocity_store::continuous_dispatch::DispatchAttempt,
+    slots_idle_secs: Option<u64>,
+    now: u64,
+) -> bool {
+    let Some(idle) = slots_idle_secs else {
+        return false;
+    };
+    if idle < ATTEMPT_IDLE_RETRY_SECONDS {
+        return false;
+    }
+    if attempt
+        .attempted_at
+        .is_some_and(|at| now.saturating_sub(at) < ATTEMPT_IDLE_RETRY_SECONDS)
+    {
+        return false;
+    }
+    let identity = ThreadIssue::new(repository.into(), issue.number);
+    let version = IssueVersion::from_github(issue);
+    if issue_thread(project, &identity).is_some()
+        || project
+            .continuous_dispatch
+            .reporting_no_change(repository, issue.number)
+    {
+        return false;
+    }
+    !issue_has_landed_change(project, &identity, version)
+}
+
+fn issue_has_landed_change(
+    project: &ProjectItem,
+    identity: &ThreadIssue,
+    version: IssueVersion<'_>,
+) -> bool {
+    project.rosen_issue_completed_for_version(identity, version)
+        || project
+            .landed_awaiting_integration_for_version(identity, version)
+            .is_some()
+        || project.reopened_landed_hold(identity, version).is_some()
 }
 
 /// Unsatisfied open blockers for `issue` in `project` (#529, #608).
@@ -475,7 +812,7 @@ pub fn has_unsatisfied_blockers_in_projects(
 }
 
 fn actionable_without_blockers(issue: &GitHubIssue) -> bool {
-    if issue.state != IssueState::Open
+    !(issue.state != IssueState::Open
         || issue.is_spec_question()
         || has_label(&issue.labels, TRACKING_LABEL)
         || has_label(&issue.labels, BLOCKED_UPSTREAM_LABEL)
@@ -484,15 +821,12 @@ fn actionable_without_blockers(issue: &GitHubIssue) -> bool {
             SKIP_LABELS
                 .iter()
                 .any(|skip| label.eq_ignore_ascii_case(skip))
-        })
-    {
-        return false;
-    }
-    !needs_owner_decision(&format!("{}\n{}", issue.title, issue.body))
+        }))
 }
 
 /// Shared automatic-work eligibility for continuous dispatch and the F16 work pool.
-/// Owner questions wait for an answer even before somebody labels them (#356, #389).
+/// Only explicit labels (`needs-owner`, `hold`, `tracking`, `blocked-upstream`, etc.)
+/// park an issue; prose discussing decisions never skips dispatch (#617).
 pub fn actionable(issue: &GitHubIssue) -> bool {
     !issue.has_open_blockers() && actionable_without_blockers(issue)
 }
@@ -513,26 +847,6 @@ pub fn actionable_in_projects(
 ) -> bool {
     !has_unsatisfied_blockers_in_projects(projects, project, repository, issue)
         && actionable_without_blockers(issue)
-}
-
-fn needs_owner_decision(text: &str) -> bool {
-    let text = text.to_lowercase();
-    [
-        "awaiting an owner decision",
-        "awaits an owner decision",
-        "awaits owner decision",
-        "waiting for an owner decision",
-        "waiting on an owner decision",
-        "needs an owner decision",
-        "awaiting owner decision",
-        "waiting for the owner to decide",
-        "only asks for an owner decision",
-        "decision needed",
-        "question for the spec owner",
-        "suggested: decide whether",
-    ]
-    .iter()
-    .any(|phrase| text.contains(phrase))
 }
 
 /// Whether continuous dispatch may start an agent on this issue now.
@@ -628,7 +942,6 @@ pub fn dispatchable_task(
 ) -> bool {
     available_task(project, task)
         && !claimed.contains(&format!("task:{}", task.id))
-        && !needs_owner_decision(&task.text)
         && !task.text.to_lowercase().contains("release-blocker")
 }
 
@@ -1201,6 +1514,185 @@ mod tests {
         assert!(
             issue_skip_reason(&project, "mESmaC/velocity", &person_reopened, &claimed, 0).is_none()
         );
+        Ok(())
+    }
+
+    // Risk (#617): prose discussing owner decisions must dispatch normally, while explicit
+    // hold labels (`needs-owner`, `blocked-upstream`, `tracking`) are separated in health.
+    #[test]
+    fn decision_prose_dispatches_and_health_separates_hold_kinds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = ProjectItem::new(1, "velocity".into(), "Z:/velocity".into());
+        project.version_control = VersionControl::Rosen;
+        project.spec_locked = true;
+        let claimed = HashSet::new();
+
+        let mut prose = sample_issue(616);
+        prose.title = "Tell the owner when dispatch is idle".into();
+        prose.body = "Document what the owner gets told. No decision needed yet; suggested: decide whether to log or show in health. Previously awaiting an owner decision was matched by text.".into();
+        assert!(actionable(&prose));
+        assert!(dispatchable_issue(
+            &project,
+            "mESmaC/velocity",
+            &prose,
+            &claimed
+        ));
+        assert!(issue_skip_reason(&project, "mESmaC/velocity", &prose, &claimed, 0).is_none());
+
+        let mut needs_owner = sample_issue(555);
+        needs_owner.labels = vec!["needs-owner".into()];
+        needs_owner.body = "Needs physical hardware setup.".into();
+        let mut upstream = sample_issue(478);
+        upstream.labels = vec!["blocked-upstream".into()];
+        upstream.body = "Blocked upstream: `tauri-apps/wry#1862`".into();
+        let mut tracking = sample_issue(438);
+        tracking.labels = vec!["tracking".into()];
+        tracking.body = "- [x] #419\n- [ ] #418\n".into();
+        let mut blocked = sample_issue(418);
+        blocked.open_blocker_count = 1;
+        blocked.open_blockers = vec!["#419".into()];
+
+        let skipped: Vec<SkippedIssue> = [&needs_owner, &upstream, &tracking, &blocked]
+            .into_iter()
+            .filter_map(|issue| issue_skip_reason(&project, "mESmaC/velocity", issue, &claimed, 0))
+            .collect();
+        let groups = partition_skipped_issues(&skipped);
+        assert_eq!(groups.needs_owner.len(), 1);
+        assert_eq!(groups.needs_owner[0].number, 555);
+        assert_eq!(groups.blocked_upstream.len(), 1);
+        assert_eq!(groups.blocked_upstream[0].number, 478);
+        assert!(
+            groups.blocked_upstream[0]
+                .reason
+                .contains("tauri-apps/wry#1862")
+        );
+        assert!(
+            groups.blocked_upstream[0]
+                .reason
+                .contains("https://github.com/tauri-apps/wry/issues/1862")
+        );
+        assert_eq!(groups.tracking.len(), 1);
+        assert_eq!(groups.tracking[0].number, 438);
+        assert_eq!(groups.other.len(), 1);
+        assert_eq!(groups.other[0].number, 418);
+
+        let summary = summarize_skipped_issues(&skipped, 6);
+        assert!(summary.contains("Skipped: #418"));
+        assert!(summary.contains("Needs owner: #555"));
+        assert!(summary.contains("Blocked upstream: #478"));
+        assert!(summary.contains("Tracking: #438"));
+        Ok(())
+    }
+
+    // Risk (#617): an attempted issue whose blocker closes must clear automatically and
+    // dispatch again without looping, and idle slots after 30 min clear unlanded attempts.
+    #[test]
+    fn attempted_issue_clears_when_blocker_closes_or_after_idle_without_land()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = ProjectItem::new(1, "velocity".into(), "Z:/velocity".into());
+        project.version_control = VersionControl::Rosen;
+        project.spec_locked = true;
+        let repo = "mESmaC/velocity";
+        let mut issue_418 = sample_issue(418);
+        issue_418.body = "Remove git project mode. Waits for #419.".into();
+        let issue_419 = sample_issue(419);
+
+        // Attempt recorded while #419 was open.
+        project.continuous_dispatch.attempts.push(
+            velocity_store::continuous_dispatch::DispatchAttempt {
+                repository: repo.into(),
+                number: 418,
+                updated_at: issue_418.updated_at.clone(),
+                attempted_at: Some(1_000),
+                open_referenced_blockers: vec!["#419".into()],
+            },
+        );
+        // While #419 is still open, attempt stays.
+        let while_open = attempts_to_clear(
+            &[],
+            &project,
+            repo,
+            &[issue_418.clone(), issue_419],
+            &BTreeMap::new(),
+            None,
+            1_100,
+        );
+        assert!(while_open.clear.is_empty());
+
+        // Once #419 closes (absent from open backlog), attempt clears so #418 dispatches again.
+        let after_close = attempts_to_clear(
+            &[],
+            &project,
+            repo,
+            &[issue_418.clone()],
+            &BTreeMap::new(),
+            None,
+            1_200,
+        );
+        assert_eq!(
+            after_close.clear,
+            vec![(418, AttemptClearReason::BlockerClosed("#419".into()))]
+        );
+
+        // If #418 is re-attempted AFTER #419 is already closed, open_referenced_blockers is empty
+        // so it must NOT immediately clear again in a loop.
+        project.continuous_dispatch.attempts[0]
+            .open_referenced_blockers
+            .clear();
+        project.continuous_dispatch.attempts[0].attempted_at = Some(1_300);
+        let after_retry = attempts_to_clear(
+            &[],
+            &project,
+            repo,
+            &[issue_418.clone()],
+            &BTreeMap::new(),
+            Some(60),
+            1_400,
+        );
+        assert!(after_retry.clear.is_empty());
+
+        // After 30 min of idle slots with no landed change, the attempt clears for retry.
+        let after_idle = attempts_to_clear(
+            &[],
+            &project,
+            repo,
+            &[issue_418.clone()],
+            &BTreeMap::new(),
+            Some(ATTEMPT_IDLE_RETRY_SECONDS),
+            1_300 + ATTEMPT_IDLE_RETRY_SECONDS,
+        );
+        assert_eq!(
+            after_idle.clear,
+            vec![(418, AttemptClearReason::IdleWithoutLand)]
+        );
+
+        // If #418 HAS landed, idle timeout must NOT clear its attempt.
+        project
+            .rosen_work_items
+            .push(velocity_core::work_pool::WorkItem {
+                key: velocity_core::work_pool::WorkKey::issue(repo, 418),
+                title: issue_418.title.clone(),
+                thread_identifier: None,
+                change: Some("chg-418".into()),
+                status: velocity_core::work_pool::WorkStatus::Landed,
+                claimed_at: None,
+                updated_at: None,
+                landed_at: None,
+                green_at: None,
+                reverted_at: None,
+                landed_commit: Some("abc1234".into()),
+                revert_reason: None,
+            });
+        let landed_idle = attempts_to_clear(
+            &[],
+            &project,
+            repo,
+            &[issue_418],
+            &BTreeMap::new(),
+            Some(ATTEMPT_IDLE_RETRY_SECONDS),
+            1_300 + ATTEMPT_IDLE_RETRY_SECONDS,
+        );
+        assert!(landed_idle.clear.is_empty());
         Ok(())
     }
 }

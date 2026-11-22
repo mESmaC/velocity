@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use velocity_core::issue_holds::{
-    BLOCKED_UPSTREAM_LABEL, TRACKING_LABEL, has_label, parse_checklist,
+    BLOCKED_UPSTREAM_LABEL, HOLD_LABEL, TRACKING_LABEL, has_label, is_legacy_tracking_issue,
+    is_retired_hold_label, legacy_upstream_target, parse_checklist,
 };
 use velocity_github::{GitHubIssue, IssueClient, IssueState, UpstreamStatus};
 
@@ -30,6 +31,8 @@ struct UpstreamCheck {
 pub(super) struct Holds {
     upstream: BTreeMap<u32, UpstreamCheck>,
     tracking_retry: BTreeMap<u32, Instant>,
+    /// Legacy retired-hold issues already checked at `updated_at` for `tracking` / `blocked-upstream` (#617).
+    legacy_checked: BTreeMap<u32, (String, Option<Instant>)>,
 }
 
 impl Holds {
@@ -51,6 +54,15 @@ impl Holds {
         };
         previous.checked_at.elapsed() >= interval
     }
+
+    fn legacy_migration_due(&self, issue: &GitHubIssue) -> bool {
+        match self.legacy_checked.get(&issue.number) {
+            None => true,
+            Some((updated_at, _)) if updated_at != &issue.updated_at => true,
+            Some((_, Some(failed_at))) => failed_at.elapsed() >= ERROR_RETRY_INTERVAL,
+            Some((_, None)) => false,
+        }
+    }
 }
 
 pub(super) fn refresh(reader: &mut Reader) {
@@ -61,11 +73,81 @@ pub(super) fn refresh(reader: &mut Reader) {
         return;
     };
     let issues = reader.backlog.issues.clone();
+    let changed_legacy = migrate_legacy_holds(client, &mut reader.holds, &issues);
     let changed_tracking = check_tracking(client, &mut reader.holds, &issues);
     let changed_upstream = check_upstream(client, &mut reader.holds, &issues);
-    if changed_tracking || changed_upstream {
+    if changed_legacy || changed_tracking || changed_upstream {
         reader.refreshed = None;
     }
+}
+
+/// Automatically relabels legacy `needs-owner` issues that are clearly `tracking` checklist
+/// issues or `blocked-upstream` issues so project health classifies them accurately (#617).
+fn migrate_legacy_holds(client: &IssueClient, holds: &mut Holds, issues: &[GitHubIssue]) -> bool {
+    let candidates: Vec<&GitHubIssue> = issues
+        .iter()
+        .filter(|issue| {
+            issue.state == IssueState::Open
+                && !has_label(&issue.labels, TRACKING_LABEL)
+                && !has_label(&issue.labels, BLOCKED_UPSTREAM_LABEL)
+                && !has_label(&issue.labels, HOLD_LABEL)
+                && issue
+                    .labels
+                    .iter()
+                    .any(|label| is_retired_hold_label(label))
+        })
+        .collect();
+    holds
+        .legacy_checked
+        .retain(|number, _| candidates.iter().any(|issue| issue.number == *number));
+    let mut changed = false;
+    for issue in candidates {
+        if !holds.legacy_migration_due(issue) {
+            continue;
+        }
+        match migrate_one_legacy_hold(client, issue) {
+            Ok(true) => {
+                holds.legacy_checked.remove(&issue.number);
+                changed = true;
+            }
+            Ok(false) => {
+                holds
+                    .legacy_checked
+                    .insert(issue.number, (issue.updated_at.clone(), None));
+            }
+            Err(error) => {
+                holds.legacy_checked.insert(
+                    issue.number,
+                    (issue.updated_at.clone(), Some(Instant::now())),
+                );
+                report::<()>(Err(format!(
+                    "Could not migrate legacy hold on {}#{}: {error}",
+                    client.repository(),
+                    issue.number
+                )));
+            }
+        }
+    }
+    changed
+}
+
+fn migrate_one_legacy_hold(
+    client: &IssueClient,
+    issue: &GitHubIssue,
+) -> Result<bool, velocity_github::GitHubCommandError> {
+    if is_legacy_tracking_issue(&issue.title, &issue.body, &issue.labels) {
+        return client.migrate_tracking_hold(issue.number);
+    }
+    let comments = client.read_comment_bodies(issue.number)?;
+    if let Some(target) = legacy_upstream_target(
+        &issue.body,
+        &comments,
+        &issue.labels,
+        Some(client.repository()),
+    ) {
+        return client.migrate_upstream_hold(issue.number, &target);
+    }
+    Ok(false)
 }
 
 fn check_tracking(client: &IssueClient, holds: &mut Holds, issues: &[GitHubIssue]) -> bool {

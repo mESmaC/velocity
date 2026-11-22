@@ -937,7 +937,8 @@ pub async fn current_base_tip(server: &ProjectServer) -> Result<Option<String>, 
 }
 
 /// Reads recent base commits from Rosen's land history together with server-recorded
-/// reverted commits from `metadata.sqlite` so dispatch can guard reopened issues (#615).
+/// reverted commits and change owners from `metadata.sqlite` so dispatch can guard reopened
+/// issues (#615, #617).
 pub async fn recent_land_history(
     server: &ProjectServer,
     limit: u32,
@@ -958,48 +959,91 @@ pub async fn recent_land_history(
         })
         .await?;
     let tip = log.entries.first().map(|entry| entry.commit.to_string());
+    let metadata = server.data_dir().join("metadata.sqlite");
+    let (reverted, owners_by_commit, owners_by_change) =
+        tokio::task::spawn_blocking(move || read_land_history_metadata(&metadata))
+            .await
+            .map_err(|error| RosenError::StatusData(error.to_string()))??;
     let entries: Vec<velocity_core::reopened_land::LandHistoryEntry> = log
         .entries
         .into_iter()
-        .map(|entry| velocity_core::reopened_land::LandHistoryEntry {
-            commit: entry.commit.to_string(),
-            landed_at: u64::try_from(entry.time).unwrap_or(0),
-            summary: entry.summary,
+        .map(|entry| {
+            let commit = entry.commit.to_string();
+            let change_owner = entry
+                .change
+                .as_ref()
+                .and_then(|change| owners_by_change.get(&change.to_string()).cloned())
+                .or_else(|| owners_by_commit.get(&commit.to_ascii_lowercase()).cloned());
+            velocity_core::reopened_land::LandHistoryEntry {
+                commit,
+                landed_at: u64::try_from(entry.time).unwrap_or(0),
+                summary: entry.summary,
+                change_owner,
+            }
         })
         .collect();
-    let metadata = server.data_dir().join("metadata.sqlite");
-    let reverted = tokio::task::spawn_blocking(move || read_auto_reverted_commits(&metadata))
-        .await
-        .map_err(|error| RosenError::StatusData(error.to_string()))??;
     Ok((tip, entries, reverted))
 }
 
-fn read_auto_reverted_commits(
-    metadata: &Path,
-) -> Result<std::collections::HashSet<String>, RosenError> {
+type LandHistoryMetadata = (
+    std::collections::HashSet<String>,
+    std::collections::HashMap<String, String>,
+    std::collections::HashMap<String, String>,
+);
+
+fn read_land_history_metadata(metadata: &Path) -> Result<LandHistoryMetadata, RosenError> {
     use rusqlite::{Connection, OpenFlags};
     let mut commits = std::collections::HashSet::new();
+    let mut owners_by_commit = std::collections::HashMap::new();
+    let mut owners_by_change = std::collections::HashMap::new();
     if !metadata.is_file() {
-        return Ok(commits);
+        return Ok((commits, owners_by_commit, owners_by_change));
     }
     let connection = Connection::open_with_flags(metadata, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     connection.busy_timeout(std::time::Duration::from_secs(2))?;
-    let has_table: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auto_reverts')",
-        [],
+    if sqlite_table_exists(&connection, "auto_reverts")? {
+        let mut statement = connection.prepare("SELECT culprit, commit_id FROM auto_reverts")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (culprit, commit_id) = row?;
+            commits.insert(culprit.trim().to_ascii_lowercase());
+            commits.insert(commit_id.trim().to_ascii_lowercase());
+        }
+    }
+    if sqlite_table_exists(&connection, "changes")? {
+        let mut statement = connection.prepare("SELECT id, owner FROM changes")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, owner) = row?;
+            owners_by_change.insert(id, owner);
+        }
+        if sqlite_table_exists(&connection, "base_history")? {
+            let mut statement = connection.prepare(
+                "SELECT h.commit_id, c.owner \
+                 FROM base_history h \
+                 JOIN changes c ON c.id = h.change_id \
+                 WHERE h.change_id IS NOT NULL",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (commit_id, owner) = row?;
+                owners_by_commit.insert(commit_id.trim().to_ascii_lowercase(), owner);
+            }
+        }
+    }
+    Ok((commits, owners_by_commit, owners_by_change))
+}
+
+fn sqlite_table_exists(connection: &rusqlite::Connection, table: &str) -> rusqlite::Result<bool> {
+    connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
         |row| row.get(0),
-    )?;
-    if !has_table {
-        return Ok(commits);
-    }
-    let mut statement = connection.prepare("SELECT culprit, commit_id FROM auto_reverts")?;
-    let rows = statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    for row in rows {
-        let (culprit, commit_id) = row?;
-        commits.insert(culprit.trim().to_ascii_lowercase());
-        commits.insert(commit_id.trim().to_ascii_lowercase());
-    }
-    Ok(commits)
+    )
 }
