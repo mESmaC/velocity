@@ -1,7 +1,7 @@
 //! Launching an agent: one process per thread, in that thread's worktree (§3.2).
 
 use std::collections::BTreeSet;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 
@@ -129,12 +129,13 @@ impl AgentLaunch {
     }
 
     pub(super) fn apply_environment(&self, command: &mut Command) -> Vec<String> {
+        let explicit_names: Vec<&str> = self.env.iter().map(|(name, _)| name.as_str()).collect();
         let withheld = filter_inherited_environment(
             command,
             &self.env_passthrough,
             self.own_config,
             self.account,
-            &self.env,
+            &explicit_names,
         );
         command.envs(self.env.iter().map(|(name, value)| (name, value)));
         withheld
@@ -143,17 +144,37 @@ impl AgentLaunch {
 
 /// Strips credential variables and inherited `VELOCITY_*` settings from `command` before
 /// spawning an agent, terminal, queued run or probe (#530). Returns the sorted names (never
-/// values) of withheld variables that are not replaced by `explicit`.
+/// values) of withheld variables that are not replaced by `explicit_names`.
 pub(super) fn filter_inherited_environment(
     command: &mut Command,
     passthrough: &[String],
     own_config: Option<Provider>,
     account: u32,
-    explicit: &[(String, String)],
+    explicit_names: &[&str],
+) -> Vec<String> {
+    filter_environment_entries(
+        command,
+        std::env::vars_os().map(|(name, _)| name),
+        passthrough,
+        own_config,
+        account,
+        explicit_names,
+    )
+}
+
+/// Applies the credential filter over `inherited_names` without mutating process-global
+/// environment state. Variable values are never read or returned.
+pub(super) fn filter_environment_entries(
+    command: &mut Command,
+    inherited_names: impl IntoIterator<Item = OsString>,
+    passthrough: &[String],
+    own_config: Option<Provider>,
+    account: u32,
+    explicit_names: &[&str],
 ) -> Vec<String> {
     let mut withheld = BTreeSet::new();
     let provider_overrides = provider_auth_overrides(own_config);
-    for (os_name, _) in std::env::vars_os() {
+    for os_name in inherited_names {
         let name = os_name.to_string_lossy();
         let forced_override = provider_overrides
             .iter()
@@ -168,9 +189,9 @@ pub(super) fn filter_inherited_environment(
         };
         if strip {
             command.env_remove(&os_name);
-            if !explicit
+            if !explicit_names
                 .iter()
-                .any(|(explicit_name, _)| explicit_name.eq_ignore_ascii_case(&name))
+                .any(|explicit_name| explicit_name.eq_ignore_ascii_case(&name))
             {
                 withheld.insert(name.into_owned());
             }

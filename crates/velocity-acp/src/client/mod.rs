@@ -232,7 +232,7 @@ impl Shared {
     /// Handler state for a session rooted at `worktree`, reporting to `events`.
     fn new(worktree: PathBuf, events: UnboundedSender<AgentEvent>) -> Self {
         Shared {
-            terminals: Terminals::new(worktree.clone()),
+            terminals: Terminals::new(worktree.clone(), events.clone()),
             worktree,
             transcript: Mutex::new(Transcript::new()),
             subagents: Mutex::default(),
@@ -579,7 +579,7 @@ async fn run_admitted_session(
     let run_registry = results.registry();
     let shared = Arc::new(Shared {
         worktree: setup.worktree.clone(),
-        terminals: Terminals::with_launch(setup.worktree.clone(), &launch),
+        terminals: Terminals::with_launch(setup.worktree.clone(), &launch, events.clone()),
         transcript: Mutex::new(Transcript::new()),
         subagents: Mutex::default(),
         events,

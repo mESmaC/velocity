@@ -12,10 +12,10 @@ use agent_client_protocol::v1::schema::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 
-use super::ClientError;
 use super::files::resolve_in_worktree;
 use super::process::{
     AgentLaunch, AgentProcess, filter_inherited_environment, hidden_command, spawn_owned_command,
@@ -23,6 +23,7 @@ use super::process::{
 };
 #[cfg(windows)]
 use super::program_path::find_program;
+use super::{AgentEvent, ClientError};
 use crate::{Provider, retained_output_start};
 
 /// Output kept so far, truncated from the front at a character boundary
@@ -62,6 +63,7 @@ pub struct Terminals {
     env_passthrough: Vec<String>,
     own_config: Option<Provider>,
     account: u32,
+    events: UnboundedSender<AgentEvent>,
     next_id: AtomicU64,
     terminals: Mutex<HashMap<String, Arc<Terminal>>>,
     completions: Mutex<Vec<TerminalExit>>,
@@ -74,12 +76,13 @@ fn lock<Value>(mutex: &Mutex<Value>) -> MutexGuard<'_, Value> {
 }
 
 impl Terminals {
-    pub fn new(worktree: PathBuf) -> Self {
+    pub fn new(worktree: PathBuf, events: UnboundedSender<AgentEvent>) -> Self {
         Terminals {
             worktree,
             env_passthrough: Vec::new(),
             own_config: None,
             account: 0,
+            events,
             next_id: AtomicU64::new(1),
             terminals: Mutex::new(HashMap::new()),
             completions: Mutex::new(Vec::new()),
@@ -87,12 +90,17 @@ impl Terminals {
         }
     }
 
-    pub fn with_launch(worktree: PathBuf, launch: &AgentLaunch) -> Self {
+    pub fn with_launch(
+        worktree: PathBuf,
+        launch: &AgentLaunch,
+        events: UnboundedSender<AgentEvent>,
+    ) -> Self {
         Terminals {
             worktree,
             env_passthrough: launch.env_passthrough.clone(),
             own_config: launch.own_config,
             account: launch.account,
+            events,
             next_id: AtomicU64::new(1),
             terminals: Mutex::new(HashMap::new()),
             completions: Mutex::new(Vec::new()),
@@ -113,13 +121,19 @@ impl Terminals {
             None => self.worktree.clone(),
         };
         let mut command = shell_command(&request.command, &request.args);
-        let _ = filter_inherited_environment(
+        let explicit_names: Vec<&str> = request
+            .env
+            .iter()
+            .map(|variable| variable.name.as_str())
+            .collect();
+        let withheld = filter_inherited_environment(
             &mut command,
             &self.env_passthrough,
             self.own_config,
             self.account,
-            &[],
+            &explicit_names,
         );
+        self.log_withheld(&withheld);
         command
             .current_dir(&folder)
             .envs(
@@ -146,6 +160,13 @@ impl Terminals {
         completions.push(terminal.exit.clone());
         terminals.insert(id.clone(), Arc::new(terminal));
         Ok(CreateTerminalResponse::new(id))
+    }
+
+    fn log_withheld(&self, withheld: &[String]) {
+        if let Some(line) = velocity_core::agent_env::format_withheld_log(withheld) {
+            // The thread stopped listening: the session is ending, nothing to report to.
+            let _ = self.events.send(AgentEvent::Log(line));
+        }
     }
 
     fn find(&self, id: &str) -> Result<Arc<Terminal>, ClientError> {
@@ -352,4 +373,54 @@ fn signal_name(status: &ExitStatus) -> Option<String> {
 #[cfg(not(unix))]
 fn signal_name(_status: &ExitStatus) -> Option<String> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    use super::super::process::filter_environment_entries;
+    use super::*;
+
+    // Risk (#672): ACP terminal creation must route withheld inherited variable names (never
+    // values) through the owning thread's `AgentEvent::Log` diagnostic channel so F15 Agent
+    // environment records terminal-specific filtering decisions in the thread debug log.
+    #[test]
+    fn terminal_withheld_diagnostics_emit_names_only_to_thread_log() {
+        let mut launch = AgentLaunch::new(PathBuf::from("claude-agent-acp"));
+        launch.env_passthrough = vec!["ALLOWED_TOKEN".into(), "ANTHROPIC_API_KEY".into()];
+        launch.own_config = Some(Provider::Anthropic);
+        launch.account = 1;
+
+        let (sender, mut receiver) = unbounded_channel();
+        let terminals = Terminals::with_launch(PathBuf::from("."), &launch, sender);
+        let mut command = hidden_command("echo");
+        let inherited = [
+            OsString::from("GH_TOKEN"),
+            OsString::from("ALLOWED_TOKEN"),
+            OsString::from("ANTHROPIC_API_KEY"),
+            OsString::from("REQUEST_SECRET"),
+            OsString::from("PATH"),
+        ];
+        let withheld = filter_environment_entries(
+            &mut command,
+            inherited,
+            &terminals.env_passthrough,
+            terminals.own_config,
+            terminals.account,
+            &["REQUEST_SECRET"],
+        );
+        terminals.log_withheld(&withheld);
+
+        let expected = format!(
+            "{}ANTHROPIC_API_KEY, GH_TOKEN",
+            velocity_core::agent_env::WITHHELD_LOG_PREFIX
+        );
+        assert_eq!(receiver.try_recv().ok(), Some(AgentEvent::Log(expected)));
+        assert!(receiver.try_recv().is_err());
+
+        terminals.log_withheld(&[]);
+        assert!(receiver.try_recv().is_err());
+    }
 }
