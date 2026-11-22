@@ -13,6 +13,7 @@ pub mod base_ci;
 pub mod board;
 pub mod build_gate;
 pub mod collapse;
+pub mod collapse_issue_refs;
 pub mod deploy;
 pub mod duty;
 pub mod fleet_ledger;

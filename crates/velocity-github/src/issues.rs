@@ -41,6 +41,17 @@ pub struct SiblingIssueHost {
     pub host: IssueHost,
 }
 
+/// One GitHub issue comment read for one-way GitHub -> Collapse issue sync (#628).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SyncedGitHubComment {
+    pub id: String,
+    pub author: Option<String>,
+    pub body: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub url: String,
+}
+
 /// Reads and writes one repository's issues through its configured issue host (GitHub or
 /// Collapse C14), with long-path repository discovery on GitHub checkouts.
 pub struct IssueClient {
@@ -546,6 +557,51 @@ impl IssueClient {
             .into_iter()
             .map(|issue| self.decode_issue_with_dependencies(issue))
             .collect()
+    }
+
+    /// Reads all GitHub comments on `number` (oldest first) with stable IDs and timestamps
+    /// for one-way GitHub -> Collapse issue sync (#628).
+    pub(crate) fn read_github_comments_for_sync(
+        &self,
+        number: u32,
+    ) -> Result<Vec<SyncedGitHubComment>, GitHubCommandError> {
+        let transport = self.github_transport()?;
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RawSyncComment {
+            id: String,
+            #[serde(default)]
+            author: Option<crate::GitHubActor>,
+            body: String,
+            #[serde(default)]
+            created_at: String,
+            #[serde(default)]
+            updated_at: String,
+            #[serde(default)]
+            url: String,
+        }
+        let comments: Vec<RawSyncComment> = transport.connection(
+            "query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
+              repository(owner:$owner,name:$name) { issue(number:$number) {
+                comments(first:100,after:$cursor) {
+                  nodes { id author { login } body createdAt updatedAt url }
+                  pageInfo { hasNextPage endCursor }
+                }
+              } } }",
+            transport.variables(number),
+            "/data/repository/issue/comments",
+        )?;
+        Ok(comments
+            .into_iter()
+            .map(|comment| SyncedGitHubComment {
+                id: comment.id,
+                author: comment.author.map(|actor| actor.login),
+                body: comment.body,
+                created_at: comment.created_at,
+                updated_at: comment.updated_at,
+                url: comment.url,
+            })
+            .collect())
     }
 
     /// Total number of open and closed issues (excluding PRs) in this GitHub repository (#612).

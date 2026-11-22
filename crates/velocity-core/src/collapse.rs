@@ -350,6 +350,12 @@ pub const COLLAPSE_FORWARDING_SIGNAL: &str = "GitHub copy is not being updated";
 pub const COLLAPSE_ISSUES_NOT_IMPORTED_SIGNAL: &str =
     "Issues on Collapse were never imported from GitHub";
 
+pub use crate::collapse_issue_refs::{
+    RewriteOutcome, SyncReferenceDirection, invert_synced_numbers,
+    rewrite_collapse_references_for_github, rewrite_github_references_for_collapse,
+    rewrite_synced_issue_references,
+};
+
 /// Default duration (14 days) that Velocity keeps mirroring newly opened GitHub issues into
 /// Collapse after switching a project's issue host to Collapse (#612).
 pub const GITHUB_ISSUE_SYNC_DEFAULT_WINDOW_SECS: u64 = 14 * 24 * 60 * 60;
@@ -379,6 +385,11 @@ pub struct GitHubIssueSync {
     /// to Collapse, so unchanged issues are not re-patched on every poll (#614).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub synced_updated_at: std::collections::BTreeMap<u32, String>,
+    /// Maps a synced GitHub issue number to same-repository GitHub issue numbers that were
+    /// not mapped yet when its Collapse body or comments were written, so Velocity rewrites
+    /// them once those issues sync on a later pass (#628).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub pending_reference_rewrites: std::collections::BTreeMap<u32, Vec<u32>>,
     /// Legacy expiry field from #612; retained for deserialization only (#614 keeps sync on
     /// until the owner turns it off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -533,6 +544,17 @@ pub fn github_sync_marker(github_repository: &str, number: u32) -> String {
     format!("<!-- velocity-github-sync: {github_repository}#{number} -->")
 }
 
+/// Hidden idempotency marker appended to GitHub issue comments mirrored into Collapse (#628).
+pub fn github_comment_sync_marker(
+    github_repository: &str,
+    issue_number: u32,
+    comment_id: &str,
+) -> String {
+    format!(
+        "<!-- velocity-github-comment-sync: {github_repository}#{issue_number}:{comment_id} -->"
+    )
+}
+
 /// Formats the body of a newly opened GitHub issue mirrored one-way into Collapse (#612).
 pub fn format_synced_github_issue_body(
     original_body: &str,
@@ -549,6 +571,49 @@ pub fn format_synced_github_issue_body(
     } else {
         format!("{trimmed}\n\n{footer}")
     }
+}
+
+/// Formats a GitHub issue comment mirrored into Collapse, keeping the comment body first so
+/// owner-comment blocker detection stays intact (#628).
+pub fn format_synced_github_comment_body(
+    original_body: &str,
+    author: Option<&str>,
+    github_repository: &str,
+    issue_number: u32,
+    comment_id: &str,
+    comment_url: Option<&str>,
+) -> String {
+    let marker = github_comment_sync_marker(github_repository, issue_number, comment_id);
+    let source_url = comment_url
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("https://github.com/{github_repository}/issues/{issue_number}"));
+    let attribution = match author.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(login) => format!("_Synced from GitHub comment by @{login}: {source_url}_"),
+        None => format!("_Synced from GitHub comment: {source_url}_"),
+    };
+    let footer = format!("---\n{attribution}\n{marker}");
+    let trimmed = original_body.trim_end();
+    if trimmed.is_empty() {
+        footer
+    } else {
+        format!("{trimmed}\n\n{footer}")
+    }
+}
+
+/// Synced GitHub issue numbers in `sync.pending_reference_rewrites` that now have at least
+/// one previously unmapped reference present in `sync.synced_numbers` (#628).
+pub fn ready_reference_rewrite_numbers(sync: &GitHubIssueSync) -> Vec<u32> {
+    sync.pending_reference_rewrites
+        .iter()
+        .filter(|(_, unresolved)| {
+            unresolved
+                .iter()
+                .any(|number| sync.synced_numbers.contains_key(number))
+        })
+        .map(|(&github_number, _)| github_number)
+        .collect()
 }
 
 /// Whether a project's GitHub-to-Collapse issue sync has expired. Sync stays on until

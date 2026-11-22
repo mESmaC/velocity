@@ -107,6 +107,7 @@ pub(crate) async fn enable_post_switch_sync(
         if !next.github_repository.eq_ignore_ascii_case(&github_owned) {
             next.synced_numbers.clear();
             next.synced_updated_at.clear();
+            next.pending_reference_rewrites.clear();
             next.high_water_number = 0;
             next.import_finished_at = None;
         }

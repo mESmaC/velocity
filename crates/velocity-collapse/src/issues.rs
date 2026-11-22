@@ -477,6 +477,29 @@ impl CollapseIssueApi {
         parse_json(response, "post the issue comment", true).await
     }
 
+    /// Updates a comment's body (`PATCH .../issues/{number}/comments/{comment_id}`) (#628).
+    pub async fn update_comment(
+        &self,
+        token: &str,
+        owner: &str,
+        name: &str,
+        number: u32,
+        comment_id: u64,
+        body: &str,
+    ) -> Result<CollapseComment, CollapseError> {
+        let path = format!(
+            "{}/{number}/comments/{comment_id}",
+            issues_path(owner, name)
+        );
+        let response = self
+            .request(Method::PATCH, &path, Some(token), None)
+            .json(&CreateCommentRequest { body })
+            .send()
+            .await
+            .map_err(failed)?;
+        parse_json(response, "update the issue comment", true).await
+    }
+
     /// Lists repository labels (`GET .../issues/labels`).
     pub async fn list_labels(
         &self,

@@ -407,7 +407,8 @@ pub fn declared_blockers(text: &str) -> Vec<IssueReference> {
         if !declares {
             continue;
         }
-        for blocker in IssueReference::in_text(&line[BLOCKED_BY_LINE.len()..]) {
+        let cleaned = strip_sync_origin_annotations(&line[BLOCKED_BY_LINE.len()..]);
+        for blocker in IssueReference::in_text(&cleaned) {
             if !blockers.contains(&blocker) {
                 blockers.push(blocker);
             }
@@ -481,7 +482,7 @@ pub fn is_owner_comment(body: &str) -> bool {
 /// `blocked by #N`, `depends on #N` (including lists and ranges such as `after #421–#424`),
 /// ignoring Markdown code spans and fenced code blocks (#617, #618).
 pub fn referenced_blockers_in_text(text: &str) -> Vec<IssueReference> {
-    let cleaned = strip_markdown_code(text);
+    let cleaned = strip_sync_origin_annotations(&strip_markdown_code(text));
     let mut found = Vec::new();
     for line in cleaned.lines() {
         let lowered = line.to_ascii_lowercase();
@@ -513,7 +514,7 @@ pub fn referenced_blockers_in_text(text: &str) -> Vec<IssueReference> {
 /// `#421–#424`) from `text`, ignoring inline/fenced Markdown code spans and links or
 /// shorthand references to other repositories (#618).
 pub fn same_repo_issue_references_in_text(text: &str, repository: &str) -> Vec<IssueReference> {
-    let without_code = strip_markdown_code(text);
+    let without_code = strip_sync_origin_annotations(&strip_markdown_code(text));
     let (cleaned, mut found) = strip_links_for_repository(&without_code, repository);
     let mut skip_hashes_before = 0usize;
     for (hash_pos, _) in cleaned.match_indices('#') {
@@ -582,12 +583,30 @@ fn is_automated_velocity_comment(trimmed: &str) -> bool {
     if PREFIXES.iter().any(|prefix| trimmed.starts_with(prefix)) {
         return true;
     }
-    trimmed
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .map(str::trim)
+    last_non_sync_footer_line(trimmed)
         .is_some_and(|line| line.starts_with("<!-- velocity-") && line.ends_with(" -->"))
+}
+
+fn last_non_sync_footer_line(trimmed: &str) -> Option<&str> {
+    let mut lines = trimmed.lines().rev().map(str::trim).peekable();
+    while lines.peek().is_some_and(|line| line.is_empty()) {
+        lines.next();
+    }
+    if lines.peek().is_some_and(|line| {
+        line.starts_with("<!-- velocity-github-comment-sync:") && line.ends_with(" -->")
+    }) {
+        lines.next();
+        if lines
+            .peek()
+            .is_some_and(|line| line.starts_with("_Synced from GitHub"))
+        {
+            lines.next();
+        }
+        if lines.peek() == Some(&"---") {
+            lines.next();
+        }
+    }
+    lines.find(|line| !line.is_empty())
 }
 
 fn is_plan_comment_text(message: &str) -> bool {
@@ -1017,7 +1036,7 @@ fn collect_leading_blocker_list(rest: &str, out: &mut Vec<IssueReference>) {
     let mut cursor = rest;
     while let Some((first, consumed)) = parse_leading_issue_reference(cursor) {
         push_unique_reference(out, first.clone());
-        cursor = &cursor[consumed..];
+        cursor = skip_leading_origin_annotation(&cursor[consumed..]);
         if let Some((end_num, range_consumed)) = parse_leading_range_end(cursor, &first) {
             let repo = first.repository.as_deref();
             for number in (first.number() + 1)..=end_num {
@@ -1025,13 +1044,41 @@ fn collect_leading_blocker_list(rest: &str, out: &mut Vec<IssueReference>) {
                     push_unique_reference(out, reference);
                 }
             }
-            cursor = &cursor[range_consumed..];
+            cursor = skip_leading_origin_annotation(&cursor[range_consumed..]);
         }
         let Some(separator_len) = consume_blocker_list_separator(cursor) else {
             break;
         };
         cursor = &cursor[separator_len..];
     }
+}
+
+fn skip_leading_origin_annotation(text: &str) -> &str {
+    let ws = horizontal_whitespace_len(text);
+    match crate::collapse_issue_refs::origin_annotation_len(&text[ws..]) {
+        Some(len) => &text[ws + len..],
+        None => text,
+    }
+}
+
+/// Blanks `(GitHub #N)` / `(Collapse #N)` origin annotations added during issue sync (#628)
+/// so blocker scanners never treat the bracketed original number as a second blocker.
+fn strip_sync_origin_annotations(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < text.len() {
+        if let Some(len) = crate::collapse_issue_refs::origin_annotation_len(&text[index..]) {
+            output.push(' ');
+            index += len;
+            continue;
+        }
+        let Some(ch) = text[index..].chars().next() else {
+            break;
+        };
+        output.push(ch);
+        index += ch.len_utf8();
+    }
+    output
 }
 
 fn push_unique_reference(out: &mut Vec<IssueReference>, reference: IssueReference) {
@@ -1368,5 +1415,61 @@ Ignore tilde fence #915\n\
             "Finding body.\n\nBlocked by: mESmaC/velocity#619\n\n<!-- velocity-scout:scout-1 -->"
         );
         Ok(())
+    }
+
+    /// Risk (#628): Rewritten synced references such as `#626 (GitHub #615)` must block only
+    /// on the mapped target `#626` (never the bracketed original `#615`), preserve lists across
+    /// annotations, and keep synced human GitHub comments recognized as owner comments.
+    #[test]
+    fn rewritten_sync_references_block_on_mapped_target_only() {
+        let body = "\
+Blocked by #626 (GitHub #615), which makes Velocity build and run on Linux.
+Waits for #626 (GitHub #615), #627 (GitHub #616) and mESmaC/velocity#628 (GitHub #617).
+Blocked by: #629 (GitHub #618)";
+        let explicit: Vec<String> = explicit_text_blockers(body)
+            .into_iter()
+            .map(|r| r.to_string())
+            .collect();
+        assert_eq!(
+            explicit,
+            vec!["#626", "#627", "mESmaC/velocity#628", "#629"]
+        );
+        let declared: Vec<String> = declared_blockers(body)
+            .into_iter()
+            .map(|r| r.to_string())
+            .collect();
+        assert_eq!(declared, vec!["#629"]);
+        let referenced: Vec<String> = referenced_blockers_in_text(body)
+            .into_iter()
+            .map(|r| r.to_string())
+            .collect();
+        assert!(referenced.contains(&"#626".to_owned()));
+        assert!(!referenced.contains(&"#615".to_owned()));
+        assert!(!referenced.contains(&"#618".to_owned()));
+        let same_repo: Vec<String> = same_repo_issue_references_in_text(body, "mESmaC/velocity")
+            .into_iter()
+            .map(|r| r.to_string())
+            .collect();
+        assert_eq!(same_repo, vec!["#626", "#627", "#628", "#629"]);
+
+        let synced_owner_comment = crate::collapse::format_synced_github_comment_body(
+            "Blocked by #626 (GitHub #615).",
+            Some("alice"),
+            "mESmaC/velocity",
+            616,
+            "IC_1",
+            Some("https://github.com/mESmaC/velocity/issues/616#issuecomment-1"),
+        );
+        assert!(is_owner_comment(&synced_owner_comment));
+
+        let synced_automated_comment = crate::collapse::format_synced_github_comment_body(
+            "Velocity · Rosen change landed.\n\n<!-- velocity-rosen-issue:landed:abc -->",
+            Some("velocity-bot"),
+            "mESmaC/velocity",
+            616,
+            "IC_2",
+            None,
+        );
+        assert!(!is_owner_comment(&synced_automated_comment));
     }
 }
