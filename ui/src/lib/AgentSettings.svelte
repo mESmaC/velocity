@@ -3,7 +3,7 @@
   import SettingsNav from './SettingsNav.svelte';
   import SharedMcpServers from './SharedMcpServers.svelte';
   import './theme/providers.css';
-  import './theme/worktrees.css';
+  import './theme/workspaces.css';
   import {
     localBuildCommands,
     onLocalBuildStatus,
@@ -82,7 +82,7 @@
   change: (effort: EffortLevel) => void,
   reset?: () => void,
 )}
-  <div class="worktree-setting-row">
+  <div class="workspace-setting-row">
     <span>{label}</span>
     <div class="pv-seg" role="group" aria-label={label}>
       {#if reset}
@@ -107,19 +107,19 @@
   </div>
 {/snippet}
 
-<section class="worktree-settings" aria-label="Agent settings">
-  <header class="worktree-settings-head">
+<section class="workspace-settings" aria-label="Agent settings">
+  <header class="workspace-settings-head">
     <h1>Settings</h1>
     <span>applies to every project</span>
   </header>
-  <div class="worktree-settings-body">
+  <div class="workspace-settings-body">
     <SettingsNav current="agent-settings" {send} />
-    <div class="worktree-settings-main">
+    <div class="workspace-settings-main">
       {#if preferences}
         {@const roles = preferences}
         <section>
           <h2>Agent browser</h2>
-          <label class="worktree-setting-row">
+          <label class="workspace-setting-row">
             <span>Concurrent browsers</span>
             <input
               type="number"
@@ -165,7 +165,7 @@
           {@render effortRow('Title', roles.titleEffort, (level) => {
             roles.titleEffort = level;
           })}
-          <p class="worktree-description">
+          <p class="workspace-description">
             Auto uses Medium for trivial reading reviews and High for other
             reviews. An agent's explicit effort overrides its role default.
           </p>
@@ -173,14 +173,14 @@
       {/if}
       <section>
         <h2>Agent activity and recovery</h2>
-        <p class="worktree-description">
+        <p class="workspace-description">
           Silent agents receive a nudge, then restart in their existing
           workspace. Parked agents and builds in the queue never count as
           stalled.
         </p>
         {#if settings}
-          <label class="worktree-setting-row"
-            >Max turns (empty means off)<span class="worktree-input"
+          <label class="workspace-setting-row"
+            >Max turns (empty means off)<span class="workspace-input"
               ><input
                 type="number"
                 min="1"
@@ -194,9 +194,9 @@
               /></span
             ></label
           >
-          <label class="worktree-setting-row"
+          <label class="workspace-setting-row"
             >Max duration in minutes (empty means off)<span
-              class="worktree-input"
+              class="workspace-input"
               ><input
                 type="number"
                 min="1"
@@ -210,8 +210,8 @@
               /></span
             ></label
           >
-          <label class="worktree-setting-row"
-            >Stall timeout in minutes<span class="worktree-input"
+          <label class="workspace-setting-row"
+            >Stall timeout in minutes<span class="workspace-input"
               ><input
                 type="number"
                 min="1"
@@ -219,8 +219,8 @@
               /></span
             ></label
           >
-          <label class="worktree-setting-row"
-            >Running tool timeout in minutes<span class="worktree-input"
+          <label class="workspace-setting-row"
+            >Running tool timeout in minutes<span class="workspace-input"
               ><input
                 type="number"
                 min="1"
@@ -228,8 +228,8 @@
               /></span
             ></label
           >
-          <label class="worktree-setting-row"
-            >Claim release grace in minutes<span class="worktree-input"
+          <label class="workspace-setting-row"
+            >Claim release grace in minutes<span class="workspace-input"
               ><input
                 type="number"
                 min="1"
@@ -237,16 +237,16 @@
               /></span
             ></label
           >
-          <label class="worktree-setting-row">
+          <label class="workspace-setting-row">
             Experimental context hand-off
             <input type="checkbox" bind:checked={settings.context_handoff} />
           </label>
-          <p class="worktree-description">
+          <p class="workspace-description">
             Applies to new Rosen work items. At 120,000 context tokens, Velocity
             can carry the work into a fresh session. See Usage for the
             comparison.
           </p>
-          <p class="worktree-description">
+          <p class="workspace-description">
             Failed agents and agents at a cap keep their workspaces. Open and
             closed changes keep their claims.
           </p>
@@ -255,7 +255,7 @@
       <section>
         {#if settings}
           <h2>Agent launch</h2>
-          <label class="worktree-check">
+          <label class="workspace-check">
             <input
               type="checkbox"
               role="switch"
@@ -263,23 +263,23 @@
             />
             Trim unused agent context
           </label>
-          <p class="worktree-description">
+          <p class="workspace-description">
             New Claude Code and Codex sessions skip desktop integrations and
             provider skill context to use fewer tokens.
           </p>
           <button
-            class="worktree-button"
+            class="workspace-button"
             disabled={saving}
             onclick={() => void save()}>{saving ? 'Saving...' : 'Save'}</button
           >
         {/if}
-        {#if error}<p class="worktree-message error" role="alert">
+        {#if error}<p class="workspace-message error" role="alert">
             {error}
           </p>{/if}
       </section>
       <section>
         <h2>Local builds</h2>
-        <label class="worktree-check">
+        <label class="workspace-check">
           <input
             type="checkbox"
             role="switch"
@@ -290,7 +290,7 @@
           />
           Auto-restart into local builds
         </label>
-        <p class="worktree-description">
+        <p class="workspace-description">
           Restart into the newest local build by itself when waiting issues need
           its agent tooling, or at the next idle check with no turn, land,
           deploy or local build in progress.

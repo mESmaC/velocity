@@ -54,10 +54,10 @@
     named: 'file',
     changes: 'changes',
     wait: 'wait',
-    landed: 'merge',
+    landed: 'land',
     left: 'left',
     failed: 'changes',
-    finished: 'merge',
+    finished: 'land',
   };
 
   function tone(value: NickTone | null): string {

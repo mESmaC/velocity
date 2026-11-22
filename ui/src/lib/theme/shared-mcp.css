@@ -2,18 +2,18 @@
 .shared-mcp-row {
   display: flex;
   align-items: center;
-  gap: var(--worktrees-table-gap);
-  padding: var(--worktrees-table-padding);
-  border-top: var(--worktrees-row-border);
+  gap: var(--workspaces-table-gap);
+  padding: var(--workspaces-table-padding);
+  border-top: var(--workspaces-row-border);
 }
 .shared-mcp-row .name {
-  font: var(--worktrees-path-font);
+  font: var(--workspaces-path-font);
   color: var(--text);
   white-space: nowrap;
 }
 .shared-mcp-row .target {
-  flex: var(--worktrees-flex);
-  min-width: var(--worktrees-zero);
+  flex: var(--workspaces-flex);
+  min-width: var(--workspaces-zero);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -21,11 +21,11 @@
   color: var(--text-2);
 }
 .shared-mcp-row .kind {
-  font: var(--worktrees-table-meta-font);
+  font: var(--workspaces-table-meta-font);
   color: var(--muted);
   white-space: nowrap;
 }
 /* Collapse's read-only server (#430): its switch reads as the row's name. */
-.shared-mcp-row .worktree-check {
+.shared-mcp-row .workspace-check {
   white-space: nowrap;
 }

@@ -2,9 +2,9 @@
 ### F16 · Goal swarm
 
 **Rosen projects.**
-Every member takes its own Rosen workspace from the project's warm pool, with git worktrees as the F5 fallback when Rosen cannot start.
-A launch raises the Rosen warm pool on the machines it uses to the agent count (Rosen §9) instead of Velocity's git pool.
-The same native work choice and atomic AIRC piece lock apply to Rosen and git projects.
+Every member takes its own Rosen workspace from the project's warm pool.
+A launch raises the Rosen warm pool on the machines it uses to the agent count (Rosen §9).
+The same native work choice and atomic AIRC piece lock apply across members.
 Rosen members keep their change identity when they claim a piece; they never create or rename a git branch, open a PR or start a PR watcher.
 Its locked context names the piece, tells the agent to claim code paths with `rosen claim --exclusive <paths>` (plain notices for registration lists and generated files), build and lint through `queue_run` or `rosen run`, and finish by naming its work with `rosen commit`.
 Each Rosen member runs choosing → claimed → editing → named → landed, and a post-land revert or a refused land reopens its change (reverted → reopened) before it takes the next piece.
@@ -16,7 +16,7 @@ That event ticks its tasks and records its built SPEC section, updates the board
 An abandoned item also stops its session and releases its claim before the member takes another item with Keep going on.
 Each round starts a fresh ACP session and gets a short Velocity handoff with its item, workspace, claims and unfinished work from the preceding round.
 The thread view carries the conversation across rounds with a session boundary, and the provider receives only the current round's context (#456).
-`reverted` restores the unfinished tasks and reopens the section only when no other merged thread built it, including deleted history (#376).
+`reverted` restores the unfinished tasks and reopens the section only when no other landed thread built it, including deleted history (#376).
 It keeps ownership with the original thread, updates the board and resumes that thread in its reopened workspace.
 These state changes and the event cursor save together and survive restart.
 
@@ -32,11 +32,10 @@ Each Keep going round has a distinct workspace path, retaining its nick as the f
 A later revert can therefore reopen an earlier round without touching the next round's files.
 Landed issue completions are saved locally, surviving history deletion, so Keep going cannot select an issue again while GitHub's mirror catches up.
 A revert removes that completion and shows the original claim even if GitHub has already closed the issue.
-The git lifecycle described below remains the fallback.
 
 **What it is:**
 - Your T3 Code routine as one action.
-  Today you open 5–20 threads by hand and paste the same prompt into each: read AGENTS.md and start dev, push a branch, open a PR, watch it, keep the workspace on a given drive, remove it after the merge.
+  Today you open 5–20 threads by hand and paste the same prompt into each: read AGENTS.md and start dev, name a change, watch it land, keep the workspace on a given drive, remove it after it lands.
 - A goal swarm starts all of those agents at once, with one prompt and the model mix you choose.
 - Velocity picks work from the enabled inventory using the goal, the build order and the claims board.
   AIRC (F14) keeps two agents off the same piece.
@@ -99,7 +98,7 @@ Rust applies the edit, restores the "rest" rule and draws the dialog again.
    - SPEC.md sections nobody has built.
 3.
    Claims it with `airc_claim`.
-   - **Granted:** it renames its branch for the piece (`vel/<slug>`, or `vel/issue-<n>`), posts its claim with files, and continues.
+   - **Granted:** it keeps its Rosen change identity, posts its claim, and continues.
    - **Refused** (another agent claimed the piece or its files after Velocity read the board): a `refused` event names the holder.
      Velocity checks the claims again and retries the next available candidate in native code without another model call.
    - **Nothing left:** a `left` event is posted; the agent removes its workspace and leaves.
@@ -128,8 +127,8 @@ Unlocked projects return an empty pool.
 SPEC.md's Implementation order/Implementation plan checklist supplies unfinished entries when present; otherwise checklist-bearing Markdown sections supply one piece each.
 Fenced examples are ignored.
 Spec identities use heading context and entry text rather than line offsets.
-A thread's defaulted `spec_section` identity retains ownership and records completion when merged, without editing SPEC.md; deleting merged history retains the identity in the project's defaulted `built_spec_sections`.
-Completion evidence from deleted merged threads is saved separately with the deletion, so reverting a different thread cannot erase it, including after a restart (#376).
+A thread's defaulted `spec_section` identity retains ownership and records completion when landed, without editing SPEC.md; deleting landed history retains the identity in the project's defaulted `built_spec_sections`.
+Completion evidence from deleted landed threads is saved separately with the deletion, so reverting a different thread cannot erase it, including after a restart (#376).
 Selection, atomic claims and launch remain separate §7 items.
 
 For a split spec (F2), the implementation-plan preference applies across all source files.

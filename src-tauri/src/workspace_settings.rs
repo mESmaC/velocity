@@ -8,7 +8,7 @@ use tauri::{AppHandle, Manager, Window};
 use tauri_plugin_dialog::DialogExt;
 use velocity_core::thread_menu::size_label;
 use velocity_core::worktree_view::{
-    WorktreeContext, WorktreePathPreview, WorktreeSettingsEdit, WorktreeSettingsView,
+    WorkspacePathPreview, WorkspaceSettingsEdit, WorkspaceSettingsView, WorktreeContext,
     folder_preview, settings_view,
 };
 use velocity_git::inventory::{measure_worktree, read_drives};
@@ -85,7 +85,7 @@ fn publish_count(application: &AppHandle, project: Option<u32>, count: Option<us
 #[specta::specta]
 pub async fn get_workspace_settings(
     application: AppHandle,
-) -> Result<WorktreeSettingsView, String> {
+) -> Result<WorkspaceSettingsView, String> {
     run_concurrently("get_workspace_settings", move || {
         let managed = application.state::<ManagedStateStore>();
         let context = lock(managed.inner(), "persisted state")?.worktree_context();
@@ -98,9 +98,9 @@ pub async fn get_workspace_settings(
 #[specta::specta]
 pub async fn set_workspace_settings(
     application: AppHandle,
-    edit: WorktreeSettingsEdit,
+    edit: WorkspaceSettingsEdit,
     project_identifier: Option<u32>,
-) -> Result<WorktreeSettingsView, String> {
+) -> Result<WorkspaceSettingsView, String> {
     off_ui_thread_named("set_workspace_settings", move || {
         let managed = application.state::<ManagedStateStore>();
         let mut store = lock(managed.inner(), "persisted state")?;
@@ -114,7 +114,7 @@ pub async fn set_workspace_settings(
     .await
 }
 
-fn preferences(context: &WorktreeContext, location_changed: bool) -> WorktreeSettingsView {
+fn preferences(context: &WorktreeContext, location_changed: bool) -> WorkspaceSettingsView {
     let drives = read_drives().unwrap_or_default();
     settings_view(context, &drives, &Default::default(), &[], location_changed)
 }
@@ -124,7 +124,7 @@ fn preferences(context: &WorktreeContext, location_changed: bool) -> WorktreeSet
 pub async fn preview_workspace_folder(
     application: AppHandle,
     folder: String,
-) -> Result<WorktreePathPreview, String> {
+) -> Result<WorkspacePathPreview, String> {
     run_concurrently("preview_workspace_folder", move || {
         let managed = application.state::<ManagedStateStore>();
         let store = lock(managed.inner(), "persisted state")?;

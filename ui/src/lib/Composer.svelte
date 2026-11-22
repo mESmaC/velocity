@@ -14,7 +14,7 @@
     id,
     placeholder,
     modelPill,
-    showWorktreePill = false,
+    showWorkspacePill = false,
     draftReadOnly = false,
     draftContext = null,
     threadIdentifier,
@@ -24,7 +24,7 @@
     id: string;
     placeholder: string;
     modelPill: ModelPillView;
-    showWorktreePill?: boolean;
+    showWorkspacePill?: boolean;
     draftReadOnly?: boolean;
     draftContext?: string | null;
     /** A thread identifier edits that thread. `null` targets the home draft. */
@@ -109,7 +109,7 @@
   {#if draftContext}
     <div class="composer-context" aria-label="Draft context">
       <span class="pill context-pill">
-        <Icon name="branch" />
+        <Icon name="change" />
         <span>{draftContext}</span>
         <button
           type="button"
@@ -137,14 +137,14 @@
     <button class="pill" type="button" title="Attach" aria-label="Attach"
       ><Icon name="attach" /></button
     >
-    {#if showWorktreePill}
+    {#if showWorkspacePill}
       {#if !draftReadOnly}
         <button
           class="pill"
           type="button"
           title="Workspace for this thread"
-          onclick={() => send({ Request: { SettingsTab: 'worktrees' } })}
-          ><Icon name="branch" /><i>new workspace</i></button
+          onclick={() => send({ Request: { SettingsTab: 'workspaces' } })}
+          ><Icon name="change" /><i>new workspace</i></button
         >
       {/if}
       <button

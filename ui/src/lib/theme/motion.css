@@ -42,7 +42,7 @@
     .send,
     .opt,
     .project-select,
-    .worktree-button,
+    .workspace-button,
     .usage-button,
     .usage-seg button,
     .gs-step button,
@@ -59,15 +59,15 @@
 }
 
 /* Status colours change smoothly: sidebar status icons, swarm segments, lane,
-   pulse and worktree dots, and pull request checks. */
+   pulse and workspace dots, and change checks. */
 :where(
   .status-icon,
   .sg,
   .lane-dot,
   .pulse-dot,
-  .worktree-dot,
+  .workspace-dot,
   .agents-dot,
-  .pull-request-check
+  .change-check
 ) {
   transition:
     background-color var(--motion-duration-base) var(--motion-ease-in-out),

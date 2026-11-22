@@ -73,7 +73,7 @@
   const eventClasses: Record<DutyEventKind, string> = {
     you: 'you',
     approve: 'approve',
-    merge: 'merge',
+    land: 'land',
     changes: 'changes',
     wait: 'wait',
     file: 'file',

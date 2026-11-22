@@ -155,7 +155,7 @@ pub async fn get_thread_menu(
     }))
 }
 
-/// Open worktree in Explorer, Copy worktree path and Open PR on GitHub. Delete has its own
+/// Open workspace in Explorer and Copy workspace path. Delete has its own
 /// command because it can be undone.
 #[tauri::command]
 #[specta::specta]
@@ -182,11 +182,11 @@ pub async fn run_thread_menu_action(
             crate::threads::retry_workspace(&application, (project_identifier, thread_identifier))
                 .await
         }
-        ThreadMenuAction::OpenWorktree => application
+        ThreadMenuAction::OpenWorkspace => application
             .opener()
             .open_path(worktree, None::<&str>)
             .map_err(|error| error.to_string()),
-        ThreadMenuAction::CopyWorktreePath => {
+        ThreadMenuAction::CopyWorkspacePath => {
             application
                 .clipboard()
                 .write_text(worktree.clone())

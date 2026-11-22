@@ -48,7 +48,7 @@
   const cadences: [ScoutCadence, string][] = [
     ['once', 'Once'],
     ['every_thirty_minutes', '30m minimum'],
-    ['after_every_merge', 'After every merge'],
+    ['after_every_land', 'After every land'],
   ];
 
   let dialog: HTMLDialogElement;
@@ -119,7 +119,7 @@
   const reviewSwarm = $derived(defaults?.review_swarm ?? false);
   const reviewWindows: [ScoutCadence, string][] = [
     ['every_thirty_minutes', '30m'],
-    ['after_every_merge', '1m'],
+    ['after_every_land', '1m'],
   ];
   const offeredCadences = $derived(reviewSwarm ? reviewWindows : cadences);
   const selectedCadence = $derived(

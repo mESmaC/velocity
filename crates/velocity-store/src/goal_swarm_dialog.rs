@@ -131,11 +131,11 @@ pub struct GoalSwarmDialog {
     pub project_identifier: u32,
     /// The project's AIRC channel, `#<project>`.
     pub channel: String,
-    pub worktree_root: String,
-    pub default_branch: String,
+    pub workspace_root: String,
+    pub base_ref: String,
     pub choices: GoalSwarmChoices,
     pub quick_picks: Vec<u32>,
-    pub worktrees_hint: String,
+    pub workspaces_hint: String,
     pub models: Vec<GoalModelOption>,
     pub segments: Vec<GoalMixSegment>,
     pub rows: Vec<GoalMixRowView>,
@@ -182,21 +182,21 @@ impl StateStore {
         let rosen = project.version_control == crate::VersionControl::Rosen;
         let mut choices = choices(&mix);
         choices.sources = sources;
-        let (workspace_rule, completion_rule, keep_going_label) = lifecycle_text(project, &root);
+        let (workspace_rule, completion_rule, keep_going_label) = lifecycle_text(&root);
         Some(GoalSwarmDialog {
             workspace_rule,
             completion_rule,
             keep_going_label,
             project_identifier: project.id,
             channel: format!("#{}", project.name),
-            default_branch: project.default_branch.clone(),
+            base_ref: project.default_branch.clone(),
             quick_picks: goal_swarm::QUICK_PICKS.to_vec(),
-            worktrees_hint: if rosen {
+            workspaces_hint: if rosen {
                 format!("{agents} Rosen workspaces")
             } else {
                 goal_swarm::worktrees_hint(agents, &root)
             },
-            worktree_root: root,
+            workspace_root: root,
             models: model_options(settings),
             segments: segments(settings, &mix),
             rows: mix.rows.iter().zip(0..).map(row_view(settings)).collect(),
@@ -256,20 +256,12 @@ fn pool_view(
     }
 }
 
-fn lifecycle_text(project: &ProjectItem, root: &str) -> (String, String, String) {
-    if project.version_control == crate::VersionControl::Rosen {
-        (
-            format!("Its own Rosen workspace under {root}, removed after its change lands"),
-            "Claim files, build and lint, then name its work with rosen commit; its task is done when the change lands".into(),
-            "Keep going: after its change lands, an agent claims the next unclaimed piece in a fresh workspace".into(),
-        )
-    } else {
-        (
-            format!("Its own worktree under {root}, removed after its PR merges"),
-            format!("Commit, push its branch, open a PR against {}, and watch it until it merges", project.default_branch),
-            "Keep going: after its PR merges, an agent claims the next unclaimed piece in a fresh worktree".into(),
-        )
-    }
+fn lifecycle_text(root: &str) -> (String, String, String) {
+    (
+        format!("Its own Rosen workspace under {root}, removed after its change lands"),
+        "Claim files, build and lint, then name its work with rosen commit; its task is done when the change lands".into(),
+        "Keep going: after its change lands, an agent claims the next unclaimed piece in a fresh workspace".into(),
+    )
 }
 
 /// The user's mix with their edit applied, always holding at least "the rest".

@@ -711,7 +711,7 @@
                 {layout}
                 swarm={layout.active_goal_swarm}
                 {send}
-              />{:else if layout.view === 'Settings' && layout.settings_tab === 'worktrees'}
+              />{:else if layout.view === 'Settings' && layout.settings_tab === 'workspaces'}
               {#key layout.project_identifier}
                 <WorkspaceSettings
                   mirror={layout.rosen_mirror}

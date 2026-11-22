@@ -84,29 +84,29 @@
     {error}
     retry={() => refresh().catch(report)}
   />
-  <p class="worktree-description">
+  <p class="workspace-description">
     One join key enrolls a headless machine in Rosen and Velocity dispatch.
     Provider sign-ins and tools come from the machine's existing OS account.
   </p>
-  <div class="worktree-setting-row">
+  <div class="workspace-setting-row">
     <label for="machine-listen">Listen address</label>
-    <label class="worktree-input"
+    <label class="workspace-input"
       ><input id="machine-listen" bind:value={bindAddress} /></label
     >
     <button
-      class="worktree-button mini"
+      class="workspace-button mini"
       disabled={busy}
       onclick={() =>
         void act(() => machineCommands.listen(project, bindAddress))}
       >Enable listener</button
     >
   </div>
-  {#if view?.listener}<p class="worktree-description">
+  {#if view?.listener}<p class="workspace-description">
       Listening on {view.listener}
     </p>{/if}
-  <div class="worktree-setting-row">
+  <div class="workspace-setting-row">
     <label for="machine-address">Address reachable from workers</label>
-    <label class="worktree-input"
+    <label class="workspace-input"
       ><input
         id="machine-address"
         placeholder="hostname:7443"
@@ -114,9 +114,9 @@
       /></label
     >
   </div>
-  <div class="worktree-setting-row">
+  <div class="workspace-setting-row">
     <label for="machine-expiry">Key expiry (seconds)</label>
-    <label class="worktree-input"
+    <label class="workspace-input"
       ><input
         id="machine-expiry"
         type="number"
@@ -126,7 +126,7 @@
       /></label
     >
     <label for="machine-uses">Uses</label>
-    <label class="worktree-input"
+    <label class="workspace-input"
       ><input
         id="machine-uses"
         type="number"
@@ -136,8 +136,8 @@
       /></label
     >
   </div>
-  <div class="worktree-setting-row">
-    <label class="worktree-check"
+  <div class="workspace-setting-row">
+    <label class="workspace-check"
       ><input
         type="radio"
         name="machine-role"
@@ -145,7 +145,7 @@
         value="agent"
       />Agent machine</label
     >
-    <label class="worktree-check"
+    <label class="workspace-check"
       ><input
         type="radio"
         name="machine-role"
@@ -154,45 +154,45 @@
       />Checker</label
     >
     <button
-      class="worktree-button mini"
+      class="workspace-button mini"
       disabled={busy || !view?.listener || !advertisedAddress.trim()}
       onclick={() => void act(createKey)}>Create join key</button
     >
   </div>
   {#if key}
-    <p class="worktree-description">
+    <p class="workspace-description">
       Run on the worker under its provisioned OS account:
     </p>
-    <p class="worktree-path-preview">
+    <p class="workspace-path-preview">
       <code
         >velocity-app machine join --key {key} --data-dir "C:\VelocityWorker" --slots
         40</code
       >
     </p>
-    <p class="worktree-description">
+    <p class="workspace-description">
       This command keeps the worker running. To restart it, use <code
         >velocity-app machine run --data-dir "C:\VelocityWorker" --slots 40</code
       >. A service manager can run the same command.
     </p>
-    <button class="worktree-button mini" onclick={() => (key = '')}
+    <button class="workspace-button mini" onclick={() => (key = '')}
       >Hide key</button
     >
   {/if}
-  <div class="worktree-setting-row">
+  <div class="workspace-setting-row">
     <label for="machine-prompt">Work to dispatch</label>
-    <label class="worktree-input"
+    <label class="workspace-input"
       ><input id="machine-prompt" bind:value={prompt} /></label
     >
   </div>
   {#each view?.machines ?? [] as machine (machine.id)}
-    <div class="worktree-setting-row">
+    <div class="workspace-setting-row">
       <span>{machine.name} · {machine.role} · {machine.status}</span>
       <span class="hint"
         >{contact(machine.last_contact)} · {machine.running_agents.length} running</span
       >
       {#if machine.status === 'pending'}
         <button
-          class="worktree-button mini"
+          class="workspace-button mini"
           disabled={busy}
           onclick={() =>
             void act(() => machineCommands.approve(project, machine.id))}
@@ -201,14 +201,14 @@
       {/if}
       {#if machine.status === 'active'}
         <button
-          class="worktree-button mini"
+          class="workspace-button mini"
           disabled={busy || !machine.dispatch_ready || !prompt.trim()}
           onclick={() => void act(() => dispatch(machine.id))}>Dispatch</button
         >
       {/if}
       {#if machine.status !== 'revoked'}
         <button
-          class="worktree-button mini"
+          class="workspace-button mini"
           disabled={busy}
           onclick={() =>
             void act(() => machineCommands.revoke(project, machine.id))}
@@ -217,14 +217,14 @@
       {/if}
     </div>
     {#if machine.running_agents.length}
-      <p class="worktree-description">{machine.running_agents.join(', ')}</p>
+      <p class="workspace-description">{machine.running_agents.join(', ')}</p>
     {/if}
   {/each}
   {#each view?.recent_dispatch ?? [] as result, index (index)}<p
-      class="worktree-description"
+      class="workspace-description"
     >
       {result}
     </p>{/each}
 
-  {#if notice}<p class="worktree-message" role="status">{notice}</p>{/if}
+  {#if notice}<p class="workspace-message" role="status">{notice}</p>{/if}
 </section>

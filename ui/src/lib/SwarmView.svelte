@@ -34,9 +34,9 @@
     you: 'you',
     named: 'file',
     changes: 'changes',
-    landed: 'merge',
+    landed: 'land',
     failed: 'changes',
-    finished: 'merge',
+    finished: 'land',
   };
 </script>
 

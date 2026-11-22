@@ -50,7 +50,7 @@ pub struct SwarmDialog {
     pub items: Vec<SwarmDialogItem>,
     pub models: Vec<SwarmModelCard>,
     pub split_label: String,
-    pub worktree_root: String,
+    pub workspace_root: String,
     pub summary: String,
     pub launch_label: String,
     pub issues_note: Option<String>,
@@ -99,7 +99,7 @@ impl StateStore {
             split_label: split_label(picked, &models),
             summary: summary(picked, &root),
             launch_label: launch_label(picked),
-            worktree_root: root,
+            workspace_root: root,
             items,
             models,
             issues_note: (!issues.loaded && query.source != SwarmSource::Tasks)
@@ -207,7 +207,7 @@ fn summary(picked: usize, root: &str) -> String {
         String::new()
     };
     format!(
-        "{picked} worktree{}{place} · all start now",
+        "{picked} workspace{}{place} · all start now",
         if picked == 1 { "" } else { "s" }
     )
 }

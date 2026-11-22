@@ -65,7 +65,7 @@
 
 <section aria-label="Shared MCP servers">
   <h2>Shared MCP servers</h2>
-  <p class="worktree-description">
+  <p class="workspace-description">
     Passed to every agent of every provider when its session starts: threads,
     swarms, duty agents and spec interviews. When a name is also in an agent's
     own config, the agent's own entry wins. Servers inherit your environment, so
@@ -74,7 +74,7 @@
   {#if collapse}
     <div class="shared-mcp-row collapse">
       {#if collapse.account}
-        <label class="worktree-check"
+        <label class="workspace-check"
           ><input
             type="checkbox"
             role="switch"
@@ -90,7 +90,7 @@
         ><span class="target" title={collapse.url}
           >Connected · {collapse.account}</span
         ><span class="kind">http</span><button
-          class="worktree-button mini"
+          class="workspace-button mini"
           disabled={collapseBusy}
           onclick={() =>
             void changeCollapse(collapseConnectionCommands.disconnect)}
@@ -101,7 +101,7 @@
           class="target"
           title={collapse.url}>Collapse · not connected</span
         ><button
-          class="worktree-button mini"
+          class="workspace-button mini"
           disabled={collapseBusy}
           onclick={() =>
             void changeCollapse(collapseConnectionCommands.connect)}
@@ -111,12 +111,12 @@
         >
       {/if}
     </div>
-    <p class="worktree-description">
+    <p class="workspace-description">
       Collapse serves read-only data across connected projects. Sign in through
       the browser; credentials stay in the OS credential store.
     </p>
   {/if}
-  {#if collapseError}<p class="worktree-message error" role="alert">
+  {#if collapseError}<p class="workspace-message error" role="alert">
       {collapseError}
     </p>{/if}
   {#each servers as server (server.name)}
@@ -127,7 +127,7 @@
       ><span class="kind"
         >{server.transport.kind === 'url' ? 'http' : 'stdio'}</span
       ><button
-        class="worktree-button mini"
+        class="workspace-button mini"
         aria-label={`Remove ${server.name}`}
         onclick={() => void edit({ Remove: { name: server.name } })}
         >Remove</button
@@ -142,7 +142,7 @@
     }}
   >
     <div class="pv-add-row">
-      <label class="worktree-input"
+      <label class="workspace-input"
         ><span>Name</span><input
           aria-label="Server name"
           placeholder="github"
@@ -150,7 +150,7 @@
           spellcheck="false"
         /></label
       >
-      <label class="worktree-input pv-add-command"
+      <label class="workspace-input pv-add-command"
         ><span>Command or URL</span><input
           aria-label="Server command and arguments, or URL"
           placeholder="npx -y @modelcontextprotocol/server-github"
@@ -158,11 +158,11 @@
           spellcheck="false"
         /></label
       >
-      <button class="worktree-button" type="submit">Add server</button>
+      <button class="workspace-button" type="submit">Add server</button>
     </div>
   </form>
-  {#if error}<p class="worktree-message error" role="alert">{error}</p>{/if}
-  <p class="worktree-description">
+  {#if error}<p class="workspace-message error" role="alert">{error}</p>{/if}
+  <p class="workspace-description">
     New agents get the list; running agents keep theirs.
   </p>
 </section>

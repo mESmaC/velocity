@@ -61,15 +61,14 @@ pub fn issue_thread_label(thread: &ThreadItem) -> String {
             thread.pull_request_number.unwrap_or_default(),
             match thread.review_stage {
                 Some(crate::ReviewStage::Fixing) => "addressing review",
-                Some(crate::ReviewStage::Approved) => "approved · merging",
+                Some(crate::ReviewStage::Approved) => "approved · landing",
                 Some(crate::ReviewStage::ContinuousIntegration) => "checking",
                 _ => "in review",
             }
         ),
         ThreadState::Error => "failed · kept".into(),
-        ThreadState::Closed => "closed · kept".into(),
-        ThreadState::Merged => "merged".into(),
-        // An ACP turn can end while the thread is still waiting to reach its PR.
+        ThreadState::Closed => "abandoned · kept".into(),
+        ThreadState::Landed => "landed".into(),
         ThreadState::Working if thread.activity == AgentActivity::Idle => "agent idle".into(),
         _ => "agent working".into(),
     }

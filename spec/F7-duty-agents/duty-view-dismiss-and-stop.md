@@ -8,5 +8,5 @@
   **Stop** in the header dismisses every agent and removes the role from **Review**; the view goes Home, as it does for a deleted thread.
   Both survive a restart.
   A later + Agent takes the lowest free nick numbers, so a dismissed agent's nick can be reused.
-  Worktrees the agent used stay on disk.
+  Workspaces the agent used stay on disk.
   There is no Undo: + Agent or starting the role again brings agents back.

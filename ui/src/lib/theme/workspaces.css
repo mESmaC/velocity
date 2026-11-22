@@ -1,6 +1,6 @@
 /* Settings: the page shell (header, page nav, scrolling main) shared by every settings
    page, and the Workspaces page itself. */
-.worktree-settings {
+.workspace-settings {
   display: flex;
   flex: 1;
   min-height: 0;
@@ -8,7 +8,7 @@
   flex-direction: column;
 }
 /* The header is one line on every page, so switching pages never moves the nav (#497). */
-.worktree-settings-head {
+.workspace-settings-head {
   display: flex;
   align-items: baseline;
   gap: var(--sp-6);
@@ -16,7 +16,7 @@
   padding: var(--sp-2) var(--sp-3) var(--sp-6);
   border-bottom: 1px solid var(--line-dim);
 }
-.worktree-settings-head h1 {
+.workspace-settings-head h1 {
   flex: none;
   margin: 0;
   font-size: var(--fs-xl);
@@ -24,7 +24,7 @@
   letter-spacing: -0.015em;
   color: var(--text);
 }
-.worktree-settings-head > span {
+.workspace-settings-head > span {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -33,21 +33,21 @@
   font-size: var(--fs-sm);
   color: var(--muted);
 }
-.worktree-settings-body {
+.workspace-settings-body {
   flex: 1;
   min-height: 0;
   min-width: 0;
   display: grid;
   grid-template-columns: 184px minmax(0, 1fr);
 }
-.worktree-settings-nav {
+.workspace-settings-nav {
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
   padding: var(--sp-6) var(--sp-5) var(--sp-6) var(--sp-2);
   border-right: 1px solid var(--line-dim);
 }
-.worktree-settings-nav button {
+.workspace-settings-nav button {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -60,40 +60,40 @@
   color: var(--muted);
   text-align: left;
 }
-.worktree-settings-nav button:hover:not(:disabled):not(.on) {
+.workspace-settings-nav button:hover:not(:disabled):not(.on) {
   color: var(--text);
   background: var(--surface-2);
 }
-.worktree-settings-nav button.on {
+.workspace-settings-nav button.on {
   background: var(--surface-3);
   color: var(--text);
   box-shadow: inset 2px 0 0 var(--accent);
 }
-.worktree-settings-nav button:disabled {
+.workspace-settings-nav button:disabled {
   cursor: default;
 }
-.worktree-settings-nav button span {
+.workspace-settings-nav button span {
   font-size: var(--fs-xs);
   color: var(--faint);
 }
-.worktree-settings-main {
+.workspace-settings-main {
   min-height: 0;
   min-width: 0;
   overflow-y: auto;
   overflow-x: hidden;
   padding: var(--sp-8) var(--sp-10) var(--sp-10);
 }
-.worktree-settings-main > section {
+.workspace-settings-main > section {
   max-width: 720px;
   margin-bottom: var(--sp-10);
 }
-.worktree-settings-main h2 {
+.workspace-settings-main h2 {
   margin: 0 0 var(--sp-2);
   font-size: var(--fs-lg);
   font-weight: var(--fw-semibold);
   color: var(--text);
 }
-.worktree-description {
+.workspace-description {
   margin: 0 0 var(--sp-6);
   font-size: var(--fs-sm);
   line-height: var(--lh-prose);
@@ -111,29 +111,29 @@
   font-weight: var(--fw-semibold);
 }
 @container main-view (width < 640px) {
-  .worktree-settings-body {
+  .workspace-settings-body {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
   }
-  .worktree-settings-nav {
+  .workspace-settings-nav {
     flex-direction: row;
     flex-wrap: wrap;
     border-right: 0;
     border-bottom: 1px solid var(--line-dim);
   }
-  .worktree-settings-main {
+  .workspace-settings-main {
     padding: var(--sp-7);
   }
 }
 
 /* ── drives ──────────────────────────────────────────────────────────────── */
-.worktree-drives {
+.workspace-drives {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: var(--sp-4);
   margin-bottom: var(--sp-6);
 }
-.worktree-drive {
+.workspace-drive {
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
@@ -146,11 +146,11 @@
   box-shadow: var(--glass-hi);
   white-space: normal;
 }
-.worktree-drive:hover {
+.workspace-drive:hover {
   border-color: var(--line-mid);
   background: var(--surface-2);
 }
-.worktree-drive.on {
+.workspace-drive.on {
   border-color: var(--accent-line);
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 1px var(--accent-edge);
@@ -179,28 +179,28 @@
 .drive-bar > span {
   display: block;
   height: 100%;
-  width: var(--worktree-drive-used);
+  width: var(--workspace-drive-used);
   border-radius: var(--r-pill);
   background: var(--text-2);
 }
-.worktree-drive.on .drive-bar > span {
+.workspace-drive.on .drive-bar > span {
   background: var(--accent);
 }
 .drive-free {
   font-size: var(--fs-sm);
   color: var(--muted);
 }
-.worktree-drive.slow .drive-free {
+.workspace-drive.slow .drive-free {
   color: var(--warn);
 }
 
 /* ── location and setting rows ───────────────────────────────────────────── */
-.worktree-location-input {
+.workspace-location-input {
   display: flex;
   gap: var(--sp-4);
   align-items: center;
 }
-.worktree-github-suggestion {
+.workspace-github-suggestion {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -209,7 +209,7 @@
   font-size: var(--fs-sm);
   color: var(--muted);
 }
-.worktree-github-suggestion code {
+.workspace-github-suggestion code {
   font-family: var(--mono);
   color: var(--text-2);
 }
@@ -379,7 +379,7 @@
 .collapse-check-hint {
   overflow-wrap: anywhere;
 }
-.worktree-input {
+.workspace-input {
   flex: 1;
   display: flex;
   align-items: center;
@@ -391,11 +391,11 @@
   border-radius: var(--r-sm);
   background: var(--field);
 }
-.worktree-input:focus-within {
+.workspace-input:focus-within {
   border-color: var(--accent-line);
   box-shadow: var(--focus);
 }
-.worktree-input input {
+.workspace-input input {
   flex: 1;
   min-width: 0;
   width: 0;
@@ -408,13 +408,13 @@
   font: var(--fs-sm) var(--mono);
   color: var(--text);
 }
-.worktree-input > span {
+.workspace-input > span {
   color: var(--muted);
   font: var(--fs-sm) var(--mono);
   white-space: nowrap;
 }
 /* Settings buttons are the shared .btn and .mini. */
-.worktree-button {
+.workspace-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -429,27 +429,27 @@
   font-size: var(--fs-md);
   font-weight: var(--fw-medium);
 }
-.worktree-button:hover:not(:disabled) {
+.workspace-button:hover:not(:disabled) {
   border-color: var(--line);
   background: var(--surface-3);
 }
-.worktree-button.mini {
+.workspace-button.mini {
   height: var(--h-sm);
   padding: 0 var(--sp-4);
   font-size: var(--fs-sm);
 }
-.worktree-button.browse {
+.workspace-button.browse {
   flex: none;
 }
-.worktree-button:disabled {
+.workspace-button:disabled {
   cursor: default;
   color: var(--muted);
 }
-.worktree-button:focus-visible,
-.worktree-drive:focus-visible {
+.workspace-button:focus-visible,
+.workspace-drive:focus-visible {
   box-shadow: var(--focus);
 }
-.worktree-path-preview {
+.workspace-path-preview {
   margin-top: var(--sp-4);
   padding: var(--sp-4) var(--sp-5);
   border: 1px dashed var(--line-mid);
@@ -459,14 +459,14 @@
   color: var(--text-2);
   overflow-wrap: anywhere;
 }
-.worktree-path-preview > span {
+.workspace-path-preview > span {
   color: var(--swarm);
 }
-.worktree-path-preview > small {
+.workspace-path-preview > small {
   color: var(--muted);
   font: inherit;
 }
-.worktree-setting-row {
+.workspace-setting-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -478,36 +478,36 @@
   font-size: var(--fs-md);
   color: var(--text-2);
 }
-.worktree-setting-row > .worktree-input {
+.workspace-setting-row > .workspace-input {
   flex: 0 1 300px;
 }
 /* A number is short: its field is too, wherever the row puts it. */
-.worktree-setting-row > .worktree-input:has(input[type='number']) {
+.workspace-setting-row > .workspace-input:has(input[type='number']) {
   flex: 0 0 96px;
 }
-.worktree-setting-row input[type='number'] {
+.workspace-setting-row input[type='number'] {
   width: 96px;
   font-family: var(--sans);
   font-size: var(--fs-md);
 }
-.worktree-setting-row .worktree-check {
+.workspace-setting-row .workspace-check {
   font-size: var(--fs-md);
 }
-.worktree-setting-row .hint {
+.workspace-setting-row .hint {
   font-size: var(--fs-sm);
   color: var(--muted);
 }
-.worktree-location-notice {
+.workspace-location-notice {
   margin: var(--sp-4) 0 0;
   font-size: var(--fs-sm);
   color: var(--warn);
 }
-.worktree-checks {
+.workspace-checks {
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
 }
-.worktree-check {
+.workspace-check {
   display: inline-flex;
   gap: var(--sp-4);
   align-items: center;
@@ -515,14 +515,14 @@
   color: var(--text-2);
   cursor: pointer;
 }
-.worktree-check input {
+.workspace-check input {
   margin: 0;
 }
-.worktree-check.locked {
+.workspace-check.locked {
   color: var(--text);
   cursor: default;
 }
-.worktree-lock {
+.workspace-lock {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
@@ -533,7 +533,7 @@
   color: var(--duty);
   white-space: nowrap;
 }
-.worktree-lock svg {
+.workspace-lock svg {
   width: var(--icon-sm);
   height: var(--icon-sm);
   fill: none;
@@ -545,7 +545,7 @@
 }
 
 /* ── live workspaces ─────────────────────────────────────────────────────── */
-.worktree-summary {
+.workspace-summary {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -554,14 +554,14 @@
   font-size: var(--fs-md);
   color: var(--text-2);
 }
-.worktree-summary .free-space {
+.workspace-summary .free-space {
   font-size: var(--fs-sm);
   color: var(--muted);
 }
-.worktree-summary .mini {
+.workspace-summary .mini {
   margin-left: auto;
 }
-.worktree-row {
+.workspace-row {
   display: grid;
   width: 100%;
   grid-template-columns: 8px minmax(0, 1.4fr) minmax(0, 1fr) auto auto;
@@ -573,73 +573,73 @@
   font-size: var(--fs-sm);
   text-align: left;
 }
-button.worktree-row:hover {
+button.workspace-row:hover {
   background: var(--surface-2);
 }
-.worktree-dot {
+.workspace-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--text-2);
 }
-.worktree-dot[data-tone='PullRequest'] {
+.workspace-dot[data-tone='Change'] {
   background: var(--info);
 }
-.worktree-dot[data-tone='Fixing'] {
+.workspace-dot[data-tone='Fixing'] {
   background: var(--warn);
 }
-.worktree-dot[data-tone='Duty'] {
+.workspace-dot[data-tone='Duty'] {
   background: var(--duty);
 }
-.worktree-dot[data-tone='Failed'] {
+.workspace-dot[data-tone='Failed'] {
   background: var(--err);
 }
-.worktree-dot[data-tone='Closed'] {
+.workspace-dot[data-tone='Closed'] {
   background: var(--muted);
 }
-.worktree-dot[data-tone='Deleted'] {
+.workspace-dot[data-tone='Deleted'] {
   background: transparent;
   border: 1px solid var(--muted);
 }
-.worktree-row .path {
+.workspace-row .path {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font: var(--fs-sm) var(--mono);
   color: var(--text);
 }
-.worktree-row .owner {
+.workspace-row .owner {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-2);
 }
-.worktree-row .size,
-.worktree-row .state {
+.workspace-row .size,
+.workspace-row .state {
   font-size: var(--fs-xs);
   color: var(--muted);
   text-align: right;
   white-space: nowrap;
 }
-.worktree-row.gone {
+.workspace-row.gone {
   opacity: 0.6;
 }
-.worktree-row.gone .path {
+.workspace-row.gone .path {
   text-decoration: line-through;
   text-decoration-color: var(--faint);
 }
-.worktree-row.gone .state {
+.workspace-row.gone .state {
   color: var(--ok);
 }
-.worktree-size-note,
-.worktree-message {
+.workspace-size-note,
+.workspace-message {
   font-size: var(--fs-sm);
   color: var(--muted);
 }
-.worktree-message {
+.workspace-message {
   color: var(--ok);
 }
-.worktree-message.error {
+.workspace-message.error {
   color: var(--err);
 }
 .workspace-commands {
@@ -649,7 +649,7 @@ button.worktree-row:hover {
   color: var(--text-2);
   font-size: var(--fs-md);
 }
-.workspace-commands .worktree-description {
+.workspace-commands .workspace-description {
   margin: 0;
 }
 .workspace-commands textarea {
@@ -706,13 +706,13 @@ button.worktree-row:hover {
 
 /* ── proofs page ─────────────────────────────────────────────────────────── */
 /* The proof list is prose about each feature; only the names in it are code. */
-.worktree-settings .proof .thm {
+.workspace-settings .proof .thm {
   row-gap: var(--sp-5);
 }
-.worktree-settings .proof .thm code {
+.workspace-settings .proof .thm code {
   font: var(--fs-md) / var(--lh-prose) var(--sans);
   color: var(--text-2);
 }
-.worktree-settings .proof .thm code b {
+.workspace-settings .proof .thm code b {
   color: var(--text);
 }

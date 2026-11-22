@@ -253,7 +253,7 @@ pub struct AircLineView {
     pub mention: bool,
     pub from_you: bool,
     pub task_undo_request: Option<String>,
-    /// Set on `merged` events Rosen recorded for a land.
+    /// Set on land events Rosen recorded.
     pub land_commit: Option<String>,
 }
 
@@ -622,7 +622,7 @@ pub fn event_tone(tag: &str) -> AircTone {
     match tag {
         "claim" => AircTone::Claim,
         "PR" | "issue" | "task" | "swarm" | "pushed" | "updated" | "deploy" => AircTone::Info,
-        "approved" | "merged" | "unblocked" | "rebased" | "proved" | "deployed" => {
+        "approved" | "landed" | "merged" | "unblocked" | "rebased" | "proved" | "deployed" => {
             AircTone::Positive
         }
         "overlap" | "statement" | "waits" | "changes" | "shares" | "order" | "stalled"
@@ -642,7 +642,7 @@ fn claim_state(member: Option<&AircMemberState>) -> (&'static str, Option<u32>) 
         Some(AircMemberState::Review { number, .. }) => ("review", *number),
         Some(AircMemberState::Failed) => ("failed · held", None),
         Some(AircMemberState::Closed { .. }) => ("closed · held", None),
-        Some(AircMemberState::Merged { .. }) => ("merged", None),
+        Some(AircMemberState::Merged { .. }) => ("landed", None),
         Some(AircMemberState::Duty { .. }) | None => ("held", None),
     }
 }
@@ -688,7 +688,7 @@ fn claim_rows(input: &AircModalInput) -> (Vec<AircClaimRow>, usize) {
                 task: claim.task.clone(),
                 state: match (state, number) {
                     ("review", Some(number)) => format!("#{number}"),
-                    ("review", None) => "PR open".into(),
+                    ("review", None) => "Change named".into(),
                     (state, _) => state.into(),
                 },
                 files: claim
@@ -715,7 +715,7 @@ fn dependency_label(
         .map(|number| format!(" (#{number})"))
         .unwrap_or_default();
     Some(format!(
-        "waits for {nick}{pull_request} to merge · shares {file}"
+        "waits for {nick}{pull_request} to land · shares {file}"
     ))
 }
 
@@ -723,7 +723,7 @@ const GROUPS: [&str; 6] = [
     "On duty",
     "Choosing work",
     "Working",
-    "PR open",
+    "Change named",
     "Holding a claim",
     "Left",
 ];
@@ -835,7 +835,7 @@ fn member_row(
             Some((4, (NickDot::Hold, format!("{}closed", number(closed)))))
         }
         Some(AircMemberState::Merged { number: merged }) if !joined => {
-            Some((5, (NickDot::Left, format!("{}merged", number(merged)))))
+            Some((5, (NickDot::Left, format!("{}landed", number(merged)))))
         }
         _ if joined => Some((2, (NickDot::Active, String::new()))),
         _ => Some((5, (NickDot::Left, "left".into()))),

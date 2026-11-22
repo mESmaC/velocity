@@ -755,7 +755,7 @@ fn launch_resumed_session(
     let path = if read_only {
         project.repository_path.as_str()
     } else {
-        thread.worktree_path.as_deref().ok_or("Missing worktree")?
+        thread.worktree_path.as_deref().ok_or("Missing workspace")?
     };
     let (mut agent, bypass_modes) = agent_launch_for_account(&settings, thread.provider, account)
         .map_err(|error| error.to_string())?;
@@ -868,7 +868,7 @@ fn resume_inputs(
                 runtimes.resume_parked(key, path, None, follows_pull_request)
             }
             Opening::AfterLimit(_) => runtimes.resume_parked(
-                key, path, Some("Continue the interrupted work after the subscription limit. Recheck your claim and worktree, then resume from the transcript."), follows_pull_request,
+                key, path, Some("Continue the interrupted work after the subscription limit. Recheck your claim and workspace, then resume from the transcript."), follows_pull_request,
             ),
             Opening::Message(message) => {
                 runtimes.resume_with_message(key, path, message, follows_pull_request)

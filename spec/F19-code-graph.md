@@ -82,12 +82,9 @@ Its accuracy rules come from the A.TXY address memory in MCL4-COE and `elem`: ro
   The marker also wakes the background indexer so Usage can show workspaces catching up.
   The graph compares tree IDs, skips identical subtrees, and obtains only changed blobs that miss the cache or supply manifest data.
   A saved edit reaches lookup and impact in the 2 s snapshot window, and graph source reads use the same immutable tree.
-  On git, a worktree watcher batches edits in the background, tool calls refresh pending changes, and the span check catches any missed edits.
-  Switching git workspaces lists and rehashes the new workspace so unchanged content can reuse the index.
 - **Warming.**
   Opening the Rosen project event stream warms the base, then lands and reverts wake the same background worker to update its tree and parse changed cache misses.
   A workspace starting at a warmed base reuses its index and any retained parses of unchanged blobs.
-  Git warms after base merges on the trigger that catches up the ready pool (F5).
 - **Speed:** a query answers in under 50 ms on a 100,000-line project.
   Building the graph for such a project takes under 10 s with an empty cache and under 1 s with a full one.
 
@@ -211,7 +208,7 @@ These estimates use the #438 transcript method, weighting each tool result by th
 - [ ] Every new agent of every provider has the graph tools with no per-provider setup.
 - [ ] A name defined more than once returns `ambiguous` with every candidate, never one of them.
 - [ ] After an agent edits a file, the next query answers from the edited file, never from an older parse.
-- [ ] After a merge to the base, only the files it changed are parsed.
+- [ ] After a land to the base, only the files it changed are parsed.
 - [ ] A query answers in under 50 ms on a 100,000-line project.
 - [ ] The usage modal reports the active project's graph health, base freshness, coverage, cache and tool usage, and can retry a failed base index.
 - [ ] The usage modal compares tokens and time per turn for the active project with the graph on and off, and its switch decides whether new agents get the graph.

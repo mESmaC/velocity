@@ -300,9 +300,9 @@ export const commands = {
 	chooseModel: (projectIdentifier: number, threadIdentifier: number | null, choice: ModelMenuChoice) => __TAURI_INVOKE<ModelMenuView_Serialize>("choose_model", { projectIdentifier, threadIdentifier, choice }),
 	getWorkPool: (projectIdentifier: number) => __TAURI_INVOKE<WorkPool_Serialize>("get_work_pool", { projectIdentifier }),
 	getWorkChange: (projectIdentifier: number, change: string) => __TAURI_INVOKE<WorkChange>("get_work_change", { projectIdentifier, change }),
-	getWorkspaceSettings: () => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("get_workspace_settings"),
-	setWorkspaceSettings: (edit: WorktreeSettingsEdit, projectIdentifier: number | null) => __TAURI_INVOKE<WorktreeSettingsView_Serialize>("set_workspace_settings", { edit, projectIdentifier }),
-	previewWorkspaceFolder: (folder: string) => __TAURI_INVOKE<WorktreePathPreview>("preview_workspace_folder", { folder }),
+	getWorkspaceSettings: () => __TAURI_INVOKE<WorkspaceSettingsView_Serialize>("get_workspace_settings"),
+	setWorkspaceSettings: (edit: WorkspaceSettingsEdit, projectIdentifier: number | null) => __TAURI_INVOKE<WorkspaceSettingsView_Serialize>("set_workspace_settings", { edit, projectIdentifier }),
+	previewWorkspaceFolder: (folder: string) => __TAURI_INVOKE<WorkspacePathPreview>("preview_workspace_folder", { folder }),
 	browseWorkspaceFolder: () => __TAURI_INVOKE<string | null>("browse_workspace_folder"),
 	listWorkspaces: (projectIdentifier: number) => __TAURI_INVOKE<WorkspaceRow_Serialize[]>("list_workspaces", { projectIdentifier }),
 	deleteWorkspace: (projectIdentifier: number, change: string, path: string) => __TAURI_INVOKE<null>("delete_workspace", { projectIdentifier, change, path }),
@@ -334,7 +334,7 @@ export const commands = {
 	addGoalAgents: (request: AddGoalAgentsRequest) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_goal_agents", { request }),
 	/**
 	 *  The goal swarm view's claims board (F16): every piece in the work pool with its holder
-	 *  and state, then the pieces this swarm merged. Issues come from GitHub and sections
+	 *  and state, then the pieces this swarm landed. Issues come from GitHub and sections
 	 *  from `SPEC.md`, so the pool is read off the UI thread.
 	 */
 	getGoalSwarmBoard: (swarmIdentifier: number) => __TAURI_INVOKE<GoalClaimsBoard_Serialize>("get_goal_swarm_board", { swarmIdentifier }),
@@ -400,7 +400,7 @@ export const commands = {
 	generateDesignSystem: (projectIdentifier: number, regenerate: boolean) => __TAURI_INVOKE<DesignSystemStatus_Serialize>("generate_design_system", { projectIdentifier, regenerate }),
 	/**  The Swarm dialog for the user's current choices; asked again whenever one changes. */
 	getSwarmDialog: (query: SwarmDialogQuery_Deserialize) => __TAURI_INVOKE<SwarmDialog_Serialize>("get_swarm_dialog", { query }),
-	/**  Starts one agent per selected item, all at once, each in its own worktree (F10). */
+	/**  Starts one agent per selected item, all at once, each in its own workspace (F10). */
 	launchSwarm: (request: LaunchSwarmRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("launch_swarm", { request }),
 	/**  + Items: the same launch, adding members to an existing swarm. */
 	addToSwarm: (request: LaunchSwarmRequest_Deserialize) => __TAURI_INVOKE<LayoutSnapshot_Serialize>("add_to_swarm", { request }),
@@ -411,7 +411,7 @@ export const commands = {
 	listTasks: (projectIdentifier: number) => __TAURI_INVOKE<TaskView_Serialize[]>("list_tasks", { projectIdentifier }),
 	getThreadMenu: (threadIdentifier: number) => __TAURI_INVOKE<ThreadMenuView_Serialize | null>("get_thread_menu", { threadIdentifier }),
 	/**
-	 *  Open worktree in Explorer, Copy worktree path and Open PR on GitHub. Delete has its own
+	 *  Open workspace in Explorer and Copy workspace path. Delete has its own
 	 *  command because it can be undone.
 	 */
 	runThreadMenuAction: (projectIdentifier: number, threadIdentifier: number, action: ThreadMenuAction) => __TAURI_INVOKE<null>("run_thread_menu_action", { projectIdentifier, threadIdentifier, action }),
@@ -623,7 +623,7 @@ export type AircLineView_Deserialize = {
 	mention: boolean,
 	from_you: boolean,
 	task_undo_request?: string | null,
-	/**  Set on `merged` events Rosen recorded for a land. */
+	/**  Set on land events Rosen recorded. */
 	land_commit?: string | null,
 };
 
@@ -639,7 +639,7 @@ export type AircLineView_Serialize = {
 	mention: boolean,
 	from_you: boolean,
 	task_undo_request: string | null,
-	/**  Set on `merged` events Rosen recorded for a land. */
+	/**  Set on land events Rosen recorded. */
 	land_commit: string | null,
 };
 
@@ -887,9 +887,9 @@ export type BoardLaneKind =
 "UpNext" | 
 /**  Threads with an agent at work, and the ones that failed. */
 "Running" | 
-/**  Threads whose PR is open. */
+/**  Threads with a named change awaiting land. */
 "InReview" | 
-/**  Threads that finished: merged, done, or closed without merging. */
+/**  Threads that finished: landed, done, or abandoned. */
 "Finished" | 
 /**  Duty agents. They are not work items, so they get their own lane at the end. */
 "OnDuty";
@@ -991,27 +991,19 @@ export type Checkout = Checkout_Serialize | Checkout_Deserialize;
 
 export type Checkout_Deserialize = {
 	repository?: string,
-	/**  Git worktree path; omitted on Rosen workspaces (which use `workspace`). */
-	worktree?: string,
-	/**  Rosen workspace path; omitted on Git worktrees (which use `worktree`). */
+	/**  Rosen workspace path. */
 	workspace?: string,
 	/**  Rosen change ID for this workspace (#540). */
 	change?: string | null,
-	/**  Git branch name; omitted on Rosen workspaces. */
-	branch?: string,
 	base?: string,
 };
 
 export type Checkout_Serialize = {
 	repository?: string,
-	/**  Git worktree path; omitted on Rosen workspaces (which use `workspace`). */
-	worktree?: string,
-	/**  Rosen workspace path; omitted on Git worktrees (which use `worktree`). */
+	/**  Rosen workspace path. */
 	workspace?: string,
 	/**  Rosen change ID for this workspace (#540). */
 	change?: string,
-	/**  Git branch name; omitted on Rosen workspaces. */
-	branch?: string,
 	base?: string,
 };
 
@@ -1022,12 +1014,11 @@ export type Claim_Deserialize = {
 	nick: string,
 	/**
 	 *  The lock key: a work-pool identity (`task:<id>`, `issue:<n>`, `spec:<section>`),
-	 *  a build thread's `branch:<name>`, or the task text. Older records have none and
+	 *  a build thread's `change:<id>`, or the task text. Older records have none and
 	 *  lock on their task text.
 	 */
 	piece?: string,
 	task: string,
-	branch?: string,
 	files?: string[],
 	since: string,
 };
@@ -1037,12 +1028,11 @@ export type Claim_Serialize = {
 	nick: string,
 	/**
 	 *  The lock key: a work-pool identity (`task:<id>`, `issue:<n>`, `spec:<section>`),
-	 *  a build thread's `branch:<name>`, or the task text. Older records have none and
+	 *  a build thread's `change:<id>`, or the task text. Older records have none and
 	 *  lock on their task text.
 	 */
 	piece?: string,
 	task: string,
-	branch?: string,
 	files?: string[],
 	since: string,
 };
@@ -1351,32 +1341,6 @@ export type Comparison_Serialize = {
 	result: TrialResult,
 };
 
-export type ContinuousDispatch = ContinuousDispatch_Serialize | ContinuousDispatch_Deserialize;
-
-export type ContinuousDispatch_Deserialize = {
-	slots?: number,
-	paused?: boolean,
-	/**
-	 *  Do not send an unchanged open issue to another agent after a no-change result or
-	 *  while GitHub still shows an issue whose change just landed.
-	 */
-	attempts?: DispatchAttempt_Deserialize[],
-	/**  Empty threads whose stopped workspace and claims still need cleanup. */
-	cleanup?: number[],
-};
-
-export type ContinuousDispatch_Serialize = {
-	slots: number,
-	paused: boolean,
-	/**
-	 *  Do not send an unchanged open issue to another agent after a no-change result or
-	 *  while GitHub still shows an issue whose change just landed.
-	 */
-	attempts: DispatchAttempt_Serialize[],
-	/**  Empty threads whose stopped workspace and claims still need cleanup. */
-	cleanup: number[],
-};
-
 export type CoverageItem = {
 	/**  Position in the Covers list; `OutlineAction::AddCoverage` names an item by it. */
 	item: number,
@@ -1548,10 +1512,10 @@ export type DesignSystemStatus = DesignSystemStatus_Serialize | DesignSystemStat
 
 /**  Where a project's design system lives and whether it has been generated. */
 export type DesignSystemStatus_Deserialize = {
-	/**  `design-system/<project>/MASTER.md`, relative to the checkout. */
-	master_path?: string,
+	/**  Path to the generated design system file, relative to the checkout. */
+	design_path?: string,
 	exists?: boolean,
-	/**  When MASTER.md was last written, in Unix seconds. */
+	/**  When the design system file was last written, in Unix seconds. */
 	generated_at?: number | null,
 	/**  True when AGENTS.md carries the design system rule. */
 	rule_in_agents?: boolean,
@@ -1564,10 +1528,10 @@ export type DesignSystemStatus_Deserialize = {
 
 /**  Where a project's design system lives and whether it has been generated. */
 export type DesignSystemStatus_Serialize = {
-	/**  `design-system/<project>/MASTER.md`, relative to the checkout. */
-	master_path: string,
+	/**  Path to the generated design system file, relative to the checkout. */
+	design_path: string,
 	exists: boolean,
-	/**  When MASTER.md was last written, in Unix seconds. */
+	/**  When the design system file was last written, in Unix seconds. */
 	generated_at: number | null,
 	/**  True when AGENTS.md carries the design system rule. */
 	rule_in_agents: boolean,
@@ -1640,20 +1604,6 @@ export type DiscoveredSkill_Serialize = {
 export type DismissDutyAgentRequest = {
 	role: DutyRole,
 	nickname: string,
-};
-
-export type DispatchAttempt = DispatchAttempt_Serialize | DispatchAttempt_Deserialize;
-
-export type DispatchAttempt_Deserialize = {
-	repository?: string,
-	number?: number,
-	updated_at?: string,
-};
-
-export type DispatchAttempt_Serialize = {
-	repository: string,
-	number: number,
-	updated_at: string,
 };
 
 /**  Structured payload attached to a `DispatchIdle` health item (#616). */
@@ -1748,36 +1698,6 @@ export type DutyAgentCard = {
 	doing: string,
 };
 
-export type DutyAgentItem = DutyAgentItem_Serialize | DutyAgentItem_Deserialize;
-
-export type DutyAgentItem_Deserialize = {
-	nickname: string,
-	provider: ProviderKind,
-	model_name: string,
-	busy: boolean,
-	doing: string,
-	/**
-	 *  The effort and speed its sessions run at, chosen in the Start a duty agent dialog
-	 *  (F7). `None` follows Settings' defaults for every session.
-	 */
-	effort?: EffortLevel | null,
-	preferred_speed?: SpeedMode | null,
-};
-
-export type DutyAgentItem_Serialize = {
-	nickname: string,
-	provider: ProviderKind,
-	model_name: string,
-	busy: boolean,
-	doing: string,
-	/**
-	 *  The effort and speed its sessions run at, chosen in the Start a duty agent dialog
-	 *  (F7). `None` follows Settings' defaults for every session.
-	 */
-	effort: EffortLevel | null,
-	preferred_speed: SpeedMode | null,
-};
-
 export type DutyDialogDefaults = DutyDialogDefaults_Serialize | DutyDialogDefaults_Deserialize;
 
 export type DutyDialogDefaults_Deserialize = {
@@ -1810,7 +1730,7 @@ export type DutyDialogDefaults_Serialize = {
 	review_swarm: boolean,
 };
 
-export type DutyEventKind = "merge" | "approve" | "changes" | "wait" | "file" | "sweep" | "claim" | "skip" | "task" | "you";
+export type DutyEventKind = "land" | "approve" | "changes" | "wait" | "file" | "sweep" | "claim" | "skip" | "task" | "you";
 
 export type DutyEventPublished = {
 	role: DutyRole,
@@ -1824,36 +1744,7 @@ export type DutyFeedEvent = {
 	message: string,
 };
 
-export type DutyFeedItem = {
-	timestamp: string,
-	actor: string,
-	kind: DutyEventKind,
-	message: string,
-};
-
 export type DutyRole = "scouts";
-
-export type DutyRoleItem = DutyRoleItem_Serialize | DutyRoleItem_Deserialize;
-
-export type DutyRoleItem_Deserialize = {
-	id: number,
-	role: DutyRole,
-	paused: boolean,
-	issues_filed: number,
-	scout_rules: ScoutRuleSettings,
-	agents: DutyAgentItem_Deserialize[],
-	feed: DutyFeedItem[],
-};
-
-export type DutyRoleItem_Serialize = {
-	id: number,
-	role: DutyRole,
-	paused: boolean,
-	issues_filed: number,
-	scout_rules: ScoutRuleSettings,
-	agents: DutyAgentItem_Serialize[],
-	feed: DutyFeedItem[],
-};
 
 export type DutyRuleChip = {
 	text: string,
@@ -1909,12 +1800,7 @@ export type Entry_Deserialize = {
 	text: string,
 	to?: string[],
 	intent?: string | null,
-	/**
-	 *  The PR an event is about, so readers such as the approval record (F7)
-	 *  never parse it back out of the display text.
-	 */
-	pull_request?: number | null,
-	/**  The PR head commit the event applies to (`approved` binds to it). */
+	/**  The head snapshot the event applies to (`approved` binds to it). */
 	head?: string | null,
 	/**  The Rosen change ID this event or workspace belongs to (R2, F14, #540). */
 	change?: string | null,
@@ -1948,12 +1834,7 @@ export type Entry_Serialize = {
 	text: string,
 	to?: string[],
 	intent?: string,
-	/**
-	 *  The PR an event is about, so readers such as the approval record (F7)
-	 *  never parse it back out of the display text.
-	 */
-	pull_request?: number,
-	/**  The PR head commit the event applies to (`approved` binds to it). */
+	/**  The head snapshot the event applies to (`approved` binds to it). */
 	head?: string,
 	/**  The Rosen change ID this event or workspace belongs to (R2, F14, #540). */
 	change?: string,
@@ -2190,43 +2071,16 @@ export type GoalDialogRequest_Serialize = {
  *  Activity feed tags for a goal swarm (SPEC.md F16: claims, refusals, named changes,
  *  waits, lands, reverts and leaves).
  */
-export type GoalEventKind = GoalEventKind_Serialize | GoalEventKind_Deserialize;
-
-/**
- *  Activity feed tags for a goal swarm (SPEC.md F16: claims, refusals, named changes,
- *  waits, lands, reverts and leaves).
- */
-export type GoalEventKind_Deserialize = "you" | "claim" | "refused" | 
-/**  A member named its change. Feeds saved before Rosen call it `opened`. */
-"named" | 
-/**  A member named its change. Feeds saved before Rosen call it `opened`. */
-"opened" | 
-/**  A refused land, a revert or requested changes reopened a member's change. */
-"changes" | "wait" | "landed" | "merged" | "left" | "failed" | "finished";
-
-/**
- *  Activity feed tags for a goal swarm (SPEC.md F16: claims, refusals, named changes,
- *  waits, lands, reverts and leaves).
- */
-export type GoalEventKind_Serialize = "you" | "claim" | "refused" | 
-/**  A member named its change. Feeds saved before Rosen call it `opened`. */
+export type GoalEventKind = "you" | "claim" | "refused" | 
+/**  A member named its change. */
 "named" | 
 /**  A refused land, a revert or requested changes reopened a member's change. */
 "changes" | "wait" | "landed" | "left" | "failed" | "finished";
 
-export type GoalFeedEvent = GoalFeedEvent_Serialize | GoalFeedEvent_Deserialize;
-
-export type GoalFeedEvent_Deserialize = {
+export type GoalFeedEvent = {
 	timestamp: string,
 	actor: string,
-	kind: GoalEventKind_Deserialize,
-	message: string,
-};
-
-export type GoalFeedEvent_Serialize = {
-	timestamp: string,
-	actor: string,
-	kind: GoalEventKind_Serialize,
+	kind: GoalEventKind,
 	message: string,
 };
 
@@ -2317,11 +2171,11 @@ export type GoalSwarmDialog_Deserialize = {
 	project_identifier: number,
 	/**  The project's AIRC channel, `#<project>`. */
 	channel: string,
-	worktree_root: string,
-	default_branch: string,
+	workspace_root: string,
+	base_ref: string,
 	choices: GoalSwarmChoices_Deserialize,
 	quick_picks: number[],
-	worktrees_hint: string,
+	workspaces_hint: string,
 	models: GoalModelOption[],
 	segments: GoalMixSegment[],
 	rows: GoalMixRowView[],
@@ -2343,11 +2197,11 @@ export type GoalSwarmDialog_Serialize = {
 	project_identifier: number,
 	/**  The project's AIRC channel, `#<project>`. */
 	channel: string,
-	worktree_root: string,
-	default_branch: string,
+	workspace_root: string,
+	base_ref: string,
 	choices: GoalSwarmChoices_Serialize,
 	quick_picks: number[],
-	worktrees_hint: string,
+	workspaces_hint: string,
 	models: GoalModelOption[],
 	segments: GoalMixSegment[],
 	rows: GoalMixRowView[],
@@ -2360,60 +2214,6 @@ export type GoalSwarmDialog_Serialize = {
 	launch_label: string,
 	/**  Why Launch is unavailable, when it is. */
 	launch_note: string | null,
-};
-
-/**  One agent slot in a saved goal swarm. */
-export type GoalSwarmMember = GoalSwarmMember_Serialize | GoalSwarmMember_Deserialize;
-
-/**  One agent slot in a saved goal swarm. */
-export type GoalSwarmMember_Deserialize = {
-	nick: string,
-	provider: ProviderKind,
-	model_name: string,
-	effort: EffortLevel,
-	speed: SpeedMode,
-	thread?: number | null,
-	left_reason?: string | null,
-	merged_threads?: number[],
-};
-
-/**  One agent slot in a saved goal swarm. */
-export type GoalSwarmMember_Serialize = {
-	nick: string,
-	provider: ProviderKind,
-	model_name: string,
-	effort: EffortLevel,
-	speed: SpeedMode,
-	thread: number | null,
-	left_reason: string | null,
-	merged_threads: number[],
-};
-
-/**  Persisted goal swarm record on `ProjectItem` (`SPEC.md` F16). */
-export type GoalSwarmRecord = GoalSwarmRecord_Serialize | GoalSwarmRecord_Deserialize;
-
-/**  Persisted goal swarm record on `ProjectItem` (`SPEC.md` F16). */
-export type GoalSwarmRecord_Deserialize = {
-	id: number,
-	prompt: string,
-	sources?: WorkSources,
-	keep_going?: boolean,
-	started: string,
-	mix_summary?: string,
-	members?: GoalSwarmMember_Deserialize[],
-	feed?: GoalFeedEvent_Deserialize[],
-};
-
-/**  Persisted goal swarm record on `ProjectItem` (`SPEC.md` F16). */
-export type GoalSwarmRecord_Serialize = {
-	id: number,
-	prompt: string,
-	sources: WorkSources,
-	keep_going: boolean,
-	started: string,
-	mix_summary: string,
-	members: GoalSwarmMember_Serialize[],
-	feed: GoalFeedEvent_Serialize[],
 };
 
 export type GoalSwarmViewSnapshot = GoalSwarmViewSnapshot_Serialize | GoalSwarmViewSnapshot_Deserialize;
@@ -2433,7 +2233,7 @@ export type GoalSwarmViewSnapshot_Deserialize = {
 	/**  "<n> waiting on another agent's change". */
 	waiting_label?: string | null,
 	cards: GoalAgentCard_Deserialize[],
-	feed: GoalFeedEvent_Deserialize[],
+	feed: GoalFeedEvent[],
 	composer_placeholder: string,
 	/**
 	 *  Changes whenever a claim, named change or land could have moved the claims board, so the
@@ -2457,30 +2257,13 @@ export type GoalSwarmViewSnapshot_Serialize = {
 	/**  "<n> waiting on another agent's change". */
 	waiting_label: string | null,
 	cards: GoalAgentCard_Serialize[],
-	feed: GoalFeedEvent_Serialize[],
+	feed: GoalFeedEvent[],
 	composer_placeholder: string,
 	/**
 	 *  Changes whenever a claim, named change or land could have moved the claims board, so the
 	 *  window reads the board again (`get_goal_swarm_board`).
 	 */
 	board_revision: string,
-};
-
-/**  Goal swarm membership stored on a `ThreadItem` (`SPEC.md` F16). */
-export type GoalThreadMember = GoalThreadMember_Serialize | GoalThreadMember_Deserialize;
-
-/**  Goal swarm membership stored on a `ThreadItem` (`SPEC.md` F16). */
-export type GoalThreadMember_Deserialize = {
-	swarm_id: number,
-	nick: string,
-	choosing?: boolean,
-};
-
-/**  Goal swarm membership stored on a `ThreadItem` (`SPEC.md` F16). */
-export type GoalThreadMember_Serialize = {
-	swarm_id: number,
-	nick: string,
-	choosing: boolean,
 };
 
 /**  The usage modal's code graph section, worked out in Rust (AGENTS.md: no logic in the UI). */
@@ -2603,19 +2386,10 @@ export type InstalledSkillPack_Serialize = {
 	pending_update: SkillPackUpdatePreview_Serialize | null,
 };
 
-/**  An answer, recorded as `key: value` (F3 Ask). */
-export type InterviewDecision = {
-	question: string,
-	key: string,
-	value: string,
-};
-
 export type InterviewDecisionView = {
 	key: string,
 	value: string,
 };
-
-export type InterviewOption = InterviewOption_Serialize | InterviewOption_Deserialize;
 
 export type InterviewOptionView = {
 	label: string,
@@ -2623,21 +2397,7 @@ export type InterviewOptionView = {
 	recommended: boolean,
 };
 
-export type InterviewOption_Deserialize = {
-	label: string,
-	detail?: string,
-	recommended?: boolean,
-};
-
-export type InterviewOption_Serialize = {
-	label: string,
-	detail: string,
-	recommended: boolean,
-};
-
 export type InterviewPhase = "Scan" | "Ask" | "Ready" | "Locked";
-
-export type InterviewQuestion = InterviewQuestion_Serialize | InterviewQuestion_Deserialize;
 
 export type InterviewQuestionView = InterviewQuestionView_Serialize | InterviewQuestionView_Deserialize;
 
@@ -2656,46 +2416,6 @@ export type InterviewQuestionView_Serialize = {
 	why: string,
 	options: InterviewOptionView[],
 };
-
-export type InterviewQuestion_Deserialize = {
-	key: string,
-	text: string,
-	why?: string,
-	options?: InterviewOption_Deserialize[],
-};
-
-export type InterviewQuestion_Serialize = {
-	key: string,
-	text: string,
-	why: string,
-	options: InterviewOption_Serialize[],
-};
-
-export type InterviewRecord = InterviewRecord_Serialize | InterviewRecord_Deserialize;
-
-export type InterviewRecord_Deserialize = {
-	stage: InterviewStage,
-	brief: string,
-	summary?: string,
-	/**  The question waiting for an answer, if any. */
-	question?: InterviewQuestion_Deserialize | null,
-	decisions?: InterviewDecision[],
-	proof_list?: ProofListEntry[],
-	notice?: string | null,
-};
-
-export type InterviewRecord_Serialize = {
-	stage: InterviewStage,
-	brief: string,
-	summary: string,
-	/**  The question waiting for an answer, if any. */
-	question: InterviewQuestion_Serialize | null,
-	decisions: InterviewDecision[],
-	proof_list: ProofListEntry[],
-	notice: string | null,
-};
-
-export type InterviewStage = "scan" | "ask" | "ready" | "locked";
 
 export type InterviewView = InterviewView_Serialize | InterviewView_Deserialize;
 
@@ -3015,7 +2735,7 @@ export type LayoutChrome_Deserialize = {
 	goal_dialog?: GoalDialogRequest_Deserialize | null,
 	slash_items: SlashCommandItem[],
 	slash_selection: string,
-	worktree_label: string,
+	workspace_label: string,
 	providers: ProviderUsage_Deserialize[],
 	airc_open: boolean,
 	airc_unread: string,
@@ -3061,7 +2781,7 @@ export type LayoutChrome_Serialize = {
 	goal_dialog: GoalDialogRequest_Serialize | null,
 	slash_items: SlashCommandItem[],
 	slash_selection: string,
-	worktree_label: string,
+	workspace_label: string,
 	providers: ProviderUsage_Serialize[],
 	airc_open: boolean,
 	airc_unread: string,
@@ -3159,15 +2879,15 @@ export type LayoutIntentRequested_Serialize = {
 	intent: LayoutIntent_Serialize,
 };
 
-export type LayoutIntent_Deserialize = ({ Navigation: NavigationIntent_Deserialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | "SwarmWork" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+export type LayoutIntent_Deserialize = ({ Navigation: NavigationIntent_Deserialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | "SwarmWork" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorkspaceInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
 /**  The project's Collapse repository page, or a landed commit's page (#429). */
-({ OpenOnCollapse?: string | null }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+({ OpenOnCollapse?: string | null }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
 /**  Start a read-only question thread with no workspace, change or claim (#533). */
-({ StartQuestion: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
+({ StartQuestion: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
 	identifier: string,
 	prompt: string,
 	queued: boolean,
-} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
 /**
  *  Withdraws a message you queued that the agent has not read yet (F4). `index` counts
  *  the thread's queued rows, oldest first.
@@ -3175,19 +2895,19 @@ export type LayoutIntent_Deserialize = ({ Navigation: NavigationIntent_Deseriali
 ({ RemoveQueuedMessage: {
 	identifier: string,
 	index: string,
-} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
 /**  Ready card: include or leave out one proposed proof-list entry (F3, F17). */
-({ ToggleProofListEntry: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never };
+({ ToggleProofListEntry: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never };
 
-export type LayoutIntent_Serialize = ({ Navigation: NavigationIntent_Serialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | "SwarmWork" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorktreeInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+export type LayoutIntent_Serialize = ({ Navigation: NavigationIntent_Serialize }) & { AddTask?: never; DispatchIssue?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SwitchProject: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; ToggleProofListEntry?: never } | ({ DispatchIssue: string }) & { AddTask?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "SwarmIssues" | "SwarmWork" | ({ OpenTask: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenIssue: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ OpenWorkspaceInExplorer: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
 /**  The project's Collapse repository page, or a landed commit's page (#429). */
-({ OpenOnCollapse: string | null }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+({ OpenOnCollapse: string | null }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SettingsTab: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | "Usage" | "Updates" | ({ StartPrompt: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
 /**  Start a read-only question thread with no workspace, change or claim (#533). */
-({ StartQuestion: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
+({ StartQuestion: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ SteerThread: {
 	identifier: string,
 	prompt: string,
 	queued: boolean,
-} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
 /**
  *  Withdraws a message you queued that the agent has not read yet (F4). `index` counts
  *  the thread's queued rows, oldest first.
@@ -3195,9 +2915,9 @@ export type LayoutIntent_Serialize = ({ Navigation: NavigationIntent_Serialize }
 ({ RemoveQueuedMessage: {
 	identifier: string,
 	index: string,
-} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
+} }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | ({ AddTask: string }) & { DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never; ToggleProofListEntry?: never } | 
 /**  Ready card: include or leave out one proposed proof-list entry (F3, F17). */
-({ ToggleProofListEntry: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorktreeInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never };
+({ ToggleProofListEntry: string }) & { AddTask?: never; DispatchIssue?: never; Navigation?: never; OpenIssue?: never; OpenOnCollapse?: never; OpenTask?: never; OpenWorkspaceInExplorer?: never; RemoveQueuedMessage?: never; SettingsTab?: never; StartPrompt?: never; StartQuestion?: never; SteerThread?: never; SwitchProject?: never };
 
 export type LayoutSnapshot = LayoutSnapshot_Serialize | LayoutSnapshot_Deserialize;
 
@@ -3260,9 +2980,9 @@ export type LayoutSnapshot_Deserialize = {
 	slash_items: SlashCommandItem[],
 	slash_selection: string,
 	tasks: TaskView_Deserialize[],
-	pull_requests: RailItem_Deserialize[],
+	changes: RailItem_Deserialize[],
 	issues: RailItem_Deserialize[],
-	worktree_label: string,
+	workspace_label: string,
 	providers: ProviderUsage_Deserialize[],
 	airc_open: boolean,
 	airc_unread: string,
@@ -3343,9 +3063,9 @@ export type LayoutSnapshot_Serialize = {
 	slash_items: SlashCommandItem[],
 	slash_selection: string,
 	tasks: TaskView_Serialize[],
-	pull_requests: RailItem_Serialize[],
+	changes: RailItem_Serialize[],
 	issues: RailItem_Serialize[],
-	worktree_label: string,
+	workspace_label: string,
 	providers: ProviderUsage_Serialize[],
 	airc_open: boolean,
 	airc_unread: string,
@@ -4226,36 +3946,6 @@ export type PauseDutyRequest_Serialize = {
 	role: DutyRole | null,
 };
 
-/**
- *  The New project dialog's interview choices, kept until the spec interview
- *  (F3) starts its thread from them.
- */
-export type PendingInterview = PendingInterview_Serialize | PendingInterview_Deserialize;
-
-/**
- *  The New project dialog's interview choices, kept until the spec interview
- *  (F3) starts its thread from them.
- */
-export type PendingInterview_Deserialize = {
-	/**  `None` until a provider is signed in and offers a model (F15, issue #25). */
-	model_name?: string | null,
-	effort: EffortLevel,
-	preferred_speed: SpeedMode,
-	brief: string,
-};
-
-/**
- *  The New project dialog's interview choices, kept until the spec interview
- *  (F3) starts its thread from them.
- */
-export type PendingInterview_Serialize = {
-	/**  `None` until a provider is signed in and offers a model (F15, issue #25). */
-	model_name: string | null,
-	effort: EffortLevel,
-	preferred_speed: SpeedMode,
-	brief: string,
-};
-
 export type PerformanceBudgets = {
 	ui_command_p95_ms: number,
 	store_lock_hold_ms: number,
@@ -4276,28 +3966,6 @@ export type PerformanceDiagnostics = {
 };
 
 export type Period = "Today" | "Week";
-
-export type PersistedState = PersistedState_Serialize | PersistedState_Deserialize;
-
-export type PersistedState_Deserialize = {
-	revision: number,
-	active_project_index: number,
-	projects: ProjectItem_Deserialize[],
-	settings: Settings_Deserialize,
-	/**  Deleted rows must never let delayed agent or watcher events address a new thread. */
-	next_thread_identifiers?: { [key in number]: number },
-	thread_started_at?: { [key in number]: { [key in number]: string } },
-};
-
-export type PersistedState_Serialize = {
-	revision: number,
-	active_project_index: number,
-	projects: ProjectItem_Serialize[],
-	settings: Settings_Serialize,
-	/**  Deleted rows must never let delayed agent or watcher events address a new thread. */
-	next_thread_identifiers: { [key in number]: number },
-	thread_started_at: { [key in number]: { [key in number]: string } },
-};
 
 export type Phase = "editing" | "named" | "landing" | "landed" | "green" | "reverted" | "abandoned";
 
@@ -4571,90 +4239,12 @@ export type ProjectHealthView_Serialize = {
 	history: ProjectHealthHistoryEntry_Serialize[],
 };
 
-export type ProjectItem = ProjectItem_Serialize | ProjectItem_Deserialize;
-
-export type ProjectItem_Deserialize = {
-	id: number,
-	name: string,
-	location_kind: ProjectLocationKind,
-	repository_path: string,
-	default_branch: string,
-	github_remote?: string | null,
-	/**
-	 *  Root spec file, historically SPEC.md. Readers also include Markdown under spec/;
-	 *  keeping the saved path preserves existing projects and their configured root.
-	 */
-	spec_path: string,
-	spec_locked: boolean,
-	/**  Completed F16 pieces retained after their merged thread history is deleted. */
-	built_spec_sections?: string[],
-	skills?: ProjectSkills_Deserialize,
-	settled_expanded?: boolean,
-	continuous_dispatch?: ContinuousDispatch_Deserialize,
-	active_thread_id?: number | null,
-	merged_today: number,
-	tasks: TaskItem_Deserialize[],
-	threads: ThreadItem_Deserialize[],
-	/**  The spec interview Create asked for and nothing has started yet (F2, F3). */
-	pending_interview?: PendingInterview_Deserialize | null,
-	/**  Duty roles started on this project (F7). */
-	duty_roles?: DutyRoleItem_Deserialize[],
-	/**  Swarms launched on this project, newest first (F10). */
-	swarms?: SwarmRecord_Deserialize[],
-	/**  Goal swarms launched on this project, newest first (F16). */
-	goal_swarms?: GoalSwarmRecord_Deserialize[],
-	/**  New projects use Rosen. Older Git records migrate at startup (F5, #419). */
-	version_control?: VersionControl,
-	rosen_work_items?: WorkItem_Deserialize[],
-	/**  Latest mirror failure, retained while the push remains unsuccessful (F5). */
-	rosen_mirror?: MirrorState_Deserialize | null,
-};
-
-export type ProjectItem_Serialize = {
-	id: number,
-	name: string,
-	location_kind: ProjectLocationKind,
-	repository_path: string,
-	default_branch: string,
-	github_remote: string | null,
-	/**
-	 *  Root spec file, historically SPEC.md. Readers also include Markdown under spec/;
-	 *  keeping the saved path preserves existing projects and their configured root.
-	 */
-	spec_path: string,
-	spec_locked: boolean,
-	/**  Completed F16 pieces retained after their merged thread history is deleted. */
-	built_spec_sections: string[],
-	skills: ProjectSkills_Serialize,
-	settled_expanded: boolean,
-	continuous_dispatch: ContinuousDispatch_Serialize,
-	active_thread_id: number | null,
-	merged_today: number,
-	tasks: TaskItem_Serialize[],
-	threads: ThreadItem_Serialize[],
-	/**  The spec interview Create asked for and nothing has started yet (F2, F3). */
-	pending_interview: PendingInterview_Serialize | null,
-	/**  Duty roles started on this project (F7). */
-	duty_roles: DutyRoleItem_Serialize[],
-	/**  Swarms launched on this project, newest first (F10). */
-	swarms: SwarmRecord_Serialize[],
-	/**  Goal swarms launched on this project, newest first (F16). */
-	goal_swarms: GoalSwarmRecord_Serialize[],
-	/**  New projects use Rosen. Older Git records migrate at startup (F5, #419). */
-	version_control: VersionControl,
-	rosen_work_items: WorkItem_Serialize[],
-	/**  Latest mirror failure, retained while the push remains unsuccessful (F5). */
-	rosen_mirror: MirrorState_Serialize | null,
-};
-
 export type ProjectLabel = "local" | "github" | "speccing";
 
 export type ProjectList = {
 	revision: number,
 	rows: ProjectRow[],
 };
-
-export type ProjectLocationKind = "local" | "git_hub";
 
 export type ProjectLocationRequest = ProjectLocationRequest_Serialize | ProjectLocationRequest_Deserialize;
 
@@ -4728,36 +4318,6 @@ export type ProjectSelectionView_Serialize = {
 	menu_open: boolean,
 };
 
-export type ProjectSkills = ProjectSkills_Serialize | ProjectSkills_Deserialize;
-
-export type ProjectSkills_Deserialize = {
-	/**  What the latest project scan suggested (F3, F18 Suggestions); the cards show why. */
-	suggestions?: SkillSuggestion_Deserialize[],
-	/**
-	 *  Suggestions you turned off, as `pack` or `pack/bundle`. A re-check after a merge
-	 *  never turns these back on ("switched on unless you turn them off").
-	 */
-	declined?: string[],
-} & ({
-	/**  Packs and bundles to load at session start. Older saves called this map "packs". */
-	always_on?: { [key in string]: PackSelection_Deserialize },
-} & {
-	/**  Packs and bundles to load at session start. Older saves called this map "packs". */
-	packs?: { [key in string]: PackSelection_Deserialize },
-});
-
-export type ProjectSkills_Serialize = {
-	/**  Packs and bundles to load at session start. Older saves called this map "packs". */
-	always_on: { [key in string]: PackSelection_Serialize },
-	/**  What the latest project scan suggested (F3, F18 Suggestions); the cards show why. */
-	suggestions: SkillSuggestion_Serialize[],
-	/**
-	 *  Suggestions you turned off, as `pack` or `pack/bundle`. A re-check after a merge
-	 *  never turns these back on ("switched on unless you turn them off").
-	 */
-	declined: string[],
-};
-
 /**  One language's row on the card. */
 export type ProofLevel = {
 	language: string,
@@ -4772,15 +4332,6 @@ export type ProofLevel = {
 
 /**  How firmly a language's code is tied to the proven model (SPEC.md §2 "Proof level"). */
 export type ProofLevelKind = "Model" | "Reference" | "Code";
-
-/**
- *  One feature the Ready card proposes for a Lean proof (F3, F17). You switch entries off
- *  before locking; the ones left on are written into SPEC.md.
- */
-export type ProofListEntry = {
-	feature: string,
-	included: boolean,
-};
 
 export type ProofListEntryView = {
 	feature: string,
@@ -5262,7 +4813,7 @@ export type PulseCount_Serialize = {
 	count: string,
 };
 
-export type PulseKind = "Duty" | "Spec" | "Running" | "Watching" | "Failed" | "MergedToday";
+export type PulseKind = "Duty" | "Spec" | "Running" | "Watching" | "Failed" | "LandedToday";
 
 /**  Whether git's credential helper holds a push token for Collapse's feed endpoints (#576). */
 export type PushTokenStatus = 
@@ -5291,23 +4842,23 @@ export type RailItem_Serialize = {
 	metadata: string,
 };
 
-/**  Right-rail tasks, issues, pull requests and Rosen work pool, sent only when changed (#553). */
+/**  Right-rail tasks, issues, changes and Rosen work pool, sent only when changed (#553). */
 export type RailSlice = RailSlice_Serialize | RailSlice_Deserialize;
 
-/**  Right-rail tasks, issues, pull requests and Rosen work pool, sent only when changed (#553). */
+/**  Right-rail tasks, issues, changes and Rosen work pool, sent only when changed (#553). */
 export type RailSlice_Deserialize = {
 	tasks: TaskView_Deserialize[],
-	pull_requests: RailItem_Deserialize[],
+	changes: RailItem_Deserialize[],
 	issues: RailItem_Deserialize[],
 	tasks_draft: boolean,
 	task_count_label: string,
 	rosen_work?: RosenWorkView_Deserialize | null,
 };
 
-/**  Right-rail tasks, issues, pull requests and Rosen work pool, sent only when changed (#553). */
+/**  Right-rail tasks, issues, changes and Rosen work pool, sent only when changed (#553). */
 export type RailSlice_Serialize = {
 	tasks: TaskView_Serialize[],
-	pull_requests: RailItem_Serialize[],
+	changes: RailItem_Serialize[],
 	issues: RailItem_Serialize[],
 	tasks_draft: boolean,
 	task_count_label: string,
@@ -5420,8 +4971,6 @@ export type RepositoryPickerView_Serialize = {
 	 */
 	typed: string | null,
 };
-
-export type ReviewStage = "continuous_integration" | "review" | "fixing" | "approved";
 
 export type RewriteView = RewriteView_Serialize | RewriteView_Deserialize;
 
@@ -5571,7 +5120,7 @@ export type SaveDiagnostics = {
 	breaching: boolean,
 };
 
-export type ScoutCadence = "once" | "every_thirty_minutes" | "after_every_merge";
+export type ScoutCadence = "once" | "every_thirty_minutes" | "after_every_land";
 
 export type ScoutFocusArea = "bugs" | "stress" | "proof_gaps" | "spec_drift" | "performance" | "security" | "dead_code" | "ux";
 
@@ -5586,7 +5135,7 @@ export type ScoutRuleSettings = {
 export type Settings = Settings_Serialize | Settings_Deserialize;
 
 export type Settings_Deserialize = {
-	worktrees: WorktreeSettings_Deserialize,
+	workspaces: WorkspaceSettings_Deserialize,
 	providers: ProviderSettings_Deserialize,
 	agents: AgentSettings_Deserialize,
 	proofs: ProofSettings,
@@ -5594,7 +5143,7 @@ export type Settings_Deserialize = {
 };
 
 export type Settings_Serialize = {
-	worktrees: WorktreeSettings_Serialize,
+	workspaces: WorkspaceSettings_Serialize,
 	providers: ProviderSettings_Serialize,
 	agents: AgentSettings_Serialize,
 	proofs: ProofSettings,
@@ -5990,34 +5539,6 @@ export type SkillSettingsEdit = ({ Pack: {
 	enabled: boolean,
 } }) & { Pack?: never };
 
-/**
- *  One pack the project scan found a reason for, with the bundles that reason implies
- *  (the Game dev router plus only the detected engine's bundle).
- */
-export type SkillSuggestion = SkillSuggestion_Serialize | SkillSuggestion_Deserialize;
-
-/**
- *  One pack the project scan found a reason for, with the bundles that reason implies
- *  (the Game dev router plus only the detected engine's bundle).
- */
-export type SkillSuggestion_Deserialize = {
-	pack?: string,
-	bundles?: string[],
-	/**  What the scan found, e.g. `UI found: ui/ (Svelte + Tailwind)`. */
-	reason?: string,
-};
-
-/**
- *  One pack the project scan found a reason for, with the bundles that reason implies
- *  (the Game dev router plus only the detected engine's bundle).
- */
-export type SkillSuggestion_Serialize = {
-	pack: string,
-	bundles: string[],
-	/**  What the scan found, e.g. `UI found: ui/ (Svelte + Tailwind)`. */
-	reason: string,
-};
-
 export type SkillsSettingsView = SkillsSettingsView_Serialize | SkillsSettingsView_Deserialize;
 
 export type SkillsSettingsView_Deserialize = {
@@ -6189,30 +5710,6 @@ export type SubagentView_Serialize = {
 	blocks: TranscriptBlock_Serialize[],
 };
 
-export type Supervision = Supervision_Serialize | Supervision_Deserialize;
-
-export type Supervision_Deserialize = {
-	started?: number,
-	last_update?: number,
-	turns?: number,
-	nudged?: boolean,
-	unavailable_since?: number | null,
-	released?: boolean,
-	pushed_commit?: string | null,
-	retry_after?: number | null,
-};
-
-export type Supervision_Serialize = {
-	started: number,
-	last_update: number,
-	turns: number,
-	nudged: boolean,
-	unavailable_since: number | null,
-	released: boolean,
-	pushed_commit: string | null,
-	retry_after: number | null,
-};
-
 export type SwarmCard = SwarmCard_Serialize | SwarmCard_Deserialize;
 
 export type SwarmCard_Deserialize = {
@@ -6306,7 +5803,7 @@ export type SwarmDialog_Deserialize = {
 	items: SwarmDialogItem[],
 	models: SwarmModelCard_Deserialize[],
 	split_label: string,
-	worktree_root: string,
+	workspace_root: string,
 	summary: string,
 	launch_label: string,
 	issues_note?: string | null,
@@ -6321,66 +5818,28 @@ export type SwarmDialog_Serialize = {
 	items: SwarmDialogItem[],
 	models: SwarmModelCard_Serialize[],
 	split_label: string,
-	worktree_root: string,
+	workspace_root: string,
 	summary: string,
 	launch_label: string,
 	issues_note: string | null,
 };
 
-export type SwarmEventKind = SwarmEventKind_Serialize | SwarmEventKind_Deserialize;
-
-export type SwarmEventKind_Deserialize = "you" | 
-/**  A member named its change. Feeds saved before Rosen call it `opened`. */
+export type SwarmEventKind = "you" | 
+/**  A member named its change. */
 "named" | 
-/**  A member named its change. Feeds saved before Rosen call it `opened`. */
-"opened" | 
-/**
- *  A change was refused, reverted or reopened. Saved `rebase` lines from the removed
- *  git rebase notice read as this kind, so old state still loads.
- */
-"changes" | 
-/**
- *  A change was refused, reverted or reopened. Saved `rebase` lines from the removed
- *  git rebase notice read as this kind, so old state still loads.
- */
-"rebase" | "landed" | "merged" | "failed" | "finished";
-
-export type SwarmEventKind_Serialize = "you" | 
-/**  A member named its change. Feeds saved before Rosen call it `opened`. */
-"named" | 
-/**
- *  A change was refused, reverted or reopened. Saved `rebase` lines from the removed
- *  git rebase notice read as this kind, so old state still loads.
- */
+/**  A change was refused, reverted or reopened. */
 "changes" | "landed" | "failed" | "finished";
 
-export type SwarmEventPublished = SwarmEventPublished_Serialize | SwarmEventPublished_Deserialize;
-
-export type SwarmEventPublished_Deserialize = {
+export type SwarmEventPublished = {
 	project_identifier: number,
 	swarm_identifier: number,
-	event: SwarmFeedEvent_Deserialize,
+	event: SwarmFeedEvent,
 };
 
-export type SwarmEventPublished_Serialize = {
-	project_identifier: number,
-	swarm_identifier: number,
-	event: SwarmFeedEvent_Serialize,
-};
-
-export type SwarmFeedEvent = SwarmFeedEvent_Serialize | SwarmFeedEvent_Deserialize;
-
-export type SwarmFeedEvent_Deserialize = {
+export type SwarmFeedEvent = {
 	timestamp: string,
 	actor: string,
-	kind: SwarmEventKind_Deserialize,
-	message: string,
-};
-
-export type SwarmFeedEvent_Serialize = {
-	timestamp: string,
-	actor: string,
-	kind: SwarmEventKind_Serialize,
+	kind: SwarmEventKind,
 	message: string,
 };
 
@@ -6391,12 +5850,6 @@ export type SwarmLegendItem = {
 	stage: SwarmStage,
 	count: number,
 	label: string,
-};
-
-export type SwarmMember = {
-	thread: number,
-	/**  The card's `a<n>` agent id, counted per swarm. */
-	agent_number: number,
 };
 
 export type SwarmModelCard = SwarmModelCard_Serialize | SwarmModelCard_Deserialize;
@@ -6415,36 +5868,6 @@ export type SwarmModelCard_Serialize = {
 	provider_name: string,
 	model_name: string,
 	selected: boolean,
-};
-
-export type SwarmRecord = SwarmRecord_Serialize | SwarmRecord_Deserialize;
-
-export type SwarmRecord_Deserialize = {
-	id: number,
-	source: SwarmSource,
-	/**  `HH:MM` the swarm launched. */
-	started: string,
-	/**
-	 *  Close each issue once its change lands (default on). Rosen rebases members at
-	 *  their step boundaries, so a saved `rebase_on_merge` option is ignored on load.
-	 */
-	close_issues?: boolean,
-	members?: SwarmMember[],
-	feed?: SwarmFeedEvent_Deserialize[],
-};
-
-export type SwarmRecord_Serialize = {
-	id: number,
-	source: SwarmSource,
-	/**  `HH:MM` the swarm launched. */
-	started: string,
-	/**
-	 *  Close each issue once its change lands (default on). Rosen rebases members at
-	 *  their step boundaries, so a saved `rebase_on_merge` option is ignored on load.
-	 */
-	close_issues: boolean,
-	members: SwarmMember[],
-	feed: SwarmFeedEvent_Serialize[],
 };
 
 /**  Where a swarm takes its items from (F10 Source). */
@@ -6473,7 +5896,7 @@ export type SwarmViewSnapshot_Deserialize = {
 	segments: SwarmStage[],
 	legend: SwarmLegendItem[],
 	cards: SwarmCard_Deserialize[],
-	feed: SwarmFeedEvent_Deserialize[],
+	feed: SwarmFeedEvent[],
 	composer_placeholder: string,
 };
 
@@ -6487,7 +5910,7 @@ export type SwarmViewSnapshot_Serialize = {
 	segments: SwarmStage[],
 	legend: SwarmLegendItem[],
 	cards: SwarmCard_Serialize[],
-	feed: SwarmFeedEvent_Serialize[],
+	feed: SwarmFeedEvent[],
 	composer_placeholder: string,
 };
 
@@ -6587,17 +6010,15 @@ export type ThreadDetailMeta_Deserialize = {
 	title: string,
 	titling: boolean,
 	title_model_name: string,
-	branch: string,
-	worktree_path: string,
-	worktree_short_path: string,
-	worktree_chip: WorktreeChipView,
+	change_label: string,
+	workspace_path: string,
+	workspace_short_path: string,
+	workspace_chip: WorkspaceChipView,
 	added: string,
 	deleted: string,
 	elapsed_label: string,
 	has_diff_action: boolean,
 	has_editor_action: boolean,
-	pull_request_number: string | null,
-	has_ship_pr_button: boolean,
 	agent_busy: boolean,
 	read_only: boolean,
 	no_change_reason?: string | null,
@@ -6622,17 +6043,15 @@ export type ThreadDetailMeta_Serialize = {
 	title: string,
 	titling: boolean,
 	title_model_name: string,
-	branch: string,
-	worktree_path: string,
-	worktree_short_path: string,
-	worktree_chip: WorktreeChipView,
+	change_label: string,
+	workspace_path: string,
+	workspace_short_path: string,
+	workspace_chip: WorkspaceChipView,
 	added: string,
 	deleted: string,
 	elapsed_label: string,
 	has_diff_action: boolean,
 	has_editor_action: boolean,
-	pull_request_number: string | null,
-	has_ship_pr_button: boolean,
 	agent_busy: boolean,
 	read_only: boolean,
 	no_change_reason: string | null,
@@ -6655,17 +6074,15 @@ export type ThreadDetailSnapshot_Deserialize = {
 	title: string,
 	titling: boolean,
 	title_model_name: string,
-	branch: string,
-	worktree_path: string,
-	worktree_short_path: string,
-	worktree_chip: WorktreeChipView,
+	change_label: string,
+	workspace_path: string,
+	workspace_short_path: string,
+	workspace_chip: WorkspaceChipView,
 	added: string,
 	deleted: string,
 	elapsed_label: string,
 	has_diff_action: boolean,
 	has_editor_action: boolean,
-	pull_request_number: string | null,
-	has_ship_pr_button: boolean,
 	agent_busy: boolean,
 	/**  Read-only question thread: no workspace, change, claim or landable status (#533). */
 	read_only: boolean,
@@ -6692,17 +6109,15 @@ export type ThreadDetailSnapshot_Serialize = {
 	title: string,
 	titling: boolean,
 	title_model_name: string,
-	branch: string,
-	worktree_path: string,
-	worktree_short_path: string,
-	worktree_chip: WorktreeChipView,
+	change_label: string,
+	workspace_path: string,
+	workspace_short_path: string,
+	workspace_chip: WorkspaceChipView,
 	added: string,
 	deleted: string,
 	elapsed_label: string,
 	has_diff_action: boolean,
 	has_editor_action: boolean,
-	pull_request_number: string | null,
-	has_ship_pr_button: boolean,
 	agent_busy: boolean,
 	/**  Read-only question thread: no workspace, change, claim or landable status (#533). */
 	read_only: boolean,
@@ -6723,117 +6138,9 @@ export type ThreadDetailSnapshot_Serialize = {
 	subagents: SubagentView_Serialize[],
 };
 
-export type ThreadGroup = "Draft" | "Duty" | "Swarm" | "Spec" | "Working" | "Review" | "Error" | "Closed" | "Done" | "Merged" | "Settled";
+export type ThreadGroup = "Draft" | "Duty" | "Swarm" | "Spec" | "Working" | "Review" | "Error" | "Closed" | "Done" | "Landed" | "Settled";
 
-export type ThreadIssue = ThreadIssue_Serialize | ThreadIssue_Deserialize;
-
-export type ThreadIssue_Deserialize = {
-	repository?: string,
-	number?: number,
-	/**  Issue title when assigned, used to detect number collisions after a host switch (#614). */
-	title?: string | null,
-	/**  Issue host where this issue originated (`github` or `collapse`), when known (#614). */
-	host?: IssueHost | null,
-};
-
-export type ThreadIssue_Serialize = {
-	repository: string,
-	number: number,
-	/**  Issue title when assigned, used to detect number collisions after a host switch (#614). */
-	title?: string,
-	/**  Issue host where this issue originated (`github` or `collapse`), when known (#614). */
-	host?: IssueHost,
-};
-
-export type ThreadItem = ThreadItem_Serialize | ThreadItem_Deserialize;
-
-export type ThreadItem_Deserialize = {
-	supervision?: Supervision_Deserialize,
-	id: number,
-	title: string,
-	state: ThreadState,
-	activity: AgentActivity,
-	branch_name: string,
-	worktree_path: string | null,
-	/**  Operational role determining the session's MCP tool set (#533). */
-	role?: ThreadRole,
-	worktree_role?: WorktreeRole,
-	pull_request_number?: number | null,
-	/**  The Rosen change the thread works on, when its workspace came from Rosen (F5). */
-	rosen_change?: string | null,
-	dependency_wait?: string | null,
-	/**  The agent's ACP session id, which a parked thread loads again on resume (§2.2). */
-	agent_session?: string | null,
-	provider_queued?: boolean,
-	/**  Conversation retained across process restarts (§3.2). */
-	transcript?: TranscriptBlock_Deserialize[],
-	review_stage?: ReviewStage | null,
-	task_ids: number[],
-	issue?: ThreadIssue_Deserialize | null,
-	/**  F16 inventory identity; merged threads record built sections without editing SPEC.md. */
-	spec_section?: string | null,
-	additions: number,
-	deletions: number,
-	elapsed_seconds: number,
-	provider: ProviderKind,
-	/**  The account bound to the session. Zero is the existing CLI login. */
-	provider_account?: number,
-	preferred_account?: number | null,
-	model_name: string,
-	effort: EffortLevel,
-	preferred_speed: SpeedMode,
-	effective_speed: SpeedMode,
-	model_supports_fast: boolean,
-	/**  Spec interview threads only (F3). */
-	interview?: InterviewRecord_Deserialize | null,
-	/**  Goal swarm membership and choosing-work phase (F16). */
-	goal_member?: GoalThreadMember_Deserialize | null,
-};
-
-export type ThreadItem_Serialize = {
-	supervision: Supervision_Serialize,
-	id: number,
-	title: string,
-	state: ThreadState,
-	activity: AgentActivity,
-	branch_name: string,
-	worktree_path: string | null,
-	/**  Operational role determining the session's MCP tool set (#533). */
-	role: ThreadRole,
-	worktree_role: WorktreeRole,
-	pull_request_number: number | null,
-	/**  The Rosen change the thread works on, when its workspace came from Rosen (F5). */
-	rosen_change: string | null,
-	dependency_wait: string | null,
-	/**  The agent's ACP session id, which a parked thread loads again on resume (§2.2). */
-	agent_session: string | null,
-	provider_queued: boolean,
-	/**  Conversation retained across process restarts (§3.2). */
-	transcript: TranscriptBlock_Serialize[],
-	review_stage: ReviewStage | null,
-	task_ids: number[],
-	issue: ThreadIssue_Serialize | null,
-	/**  F16 inventory identity; merged threads record built sections without editing SPEC.md. */
-	spec_section: string | null,
-	additions: number,
-	deletions: number,
-	elapsed_seconds: number,
-	provider: ProviderKind,
-	/**  The account bound to the session. Zero is the existing CLI login. */
-	provider_account: number,
-	preferred_account: number | null,
-	model_name: string,
-	effort: EffortLevel,
-	preferred_speed: SpeedMode,
-	effective_speed: SpeedMode,
-	model_supports_fast: boolean,
-	/**  Spec interview threads only (F3). */
-	interview: InterviewRecord_Serialize | null,
-	/**  Goal swarm membership and choosing-work phase (F16). */
-	goal_member: GoalThreadMember_Serialize | null,
-};
-
-export type ThreadMenuAction = "RetryWorkspace" | "OpenWorktree" | "CopyWorktreePath" | "Delete";
+export type ThreadMenuAction = "RetryWorkspace" | "OpenWorkspace" | "CopyWorkspacePath" | "Delete";
 
 export type ThreadMenuEntry = ThreadMenuEntry_Serialize | ThreadMenuEntry_Deserialize;
 
@@ -6881,20 +6188,7 @@ export type ThreadMessageMode = {
 	mode: MessageMode,
 };
 
-/**  The operational role of a Velocity agent session (#533). */
-export type ThreadRole = 
-/**  Standard implementation thread (composer, dispatch, swarm, goal swarm, interview). */
-"builder" | 
-/**  Post-land review worker reviewing a landed change or no-change issue. */
-"reviewer" | 
-/**  Adversarial base scout sweep worker. */
-"scout" | 
-/**  Narrow fix-forward thread (build repair, CI repair, revert recovery). */
-"follow_up" | 
-/**  Read-only question or feedback thread with no workspace, change, claim or landable status. */
-"question";
-
-export type ThreadState = "draft" | "spec" | "working" | "review" | "error" | "closed" | "done" | "merged";
+export type ThreadState = "draft" | "spec" | "working" | "review" | "error" | "closed" | "done" | "landed";
 
 export type ThreadStatusChanged = {
 	project_identifier: number,
@@ -7058,9 +6352,9 @@ export type TranscriptBlock_Deserialize = ({ UserMessage: {
 	value: string,
 } }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | 
 /**
- *  A line Velocity delivered to the agent (an F14 "via AIRC" message or event, a PR
- *  follow-through notice), shown once the agent read it. It is never a user message
- *  and never sits in the composer queue (#231).
+ *  A line Velocity delivered to the agent (an F14 "via AIRC" message or event, or a
+ *  change follow-through notice), shown once the agent read it. It is never a user
+ *  message and never sits in the composer queue (#231).
  */
 ({ Notice: {
 	text: string,
@@ -7088,15 +6382,15 @@ export type TranscriptBlock_Serialize = ({ UserMessage: {
 	value: string,
 } }) & { AgentMessage?: never; Diff?: never; ErrorCard?: never; Notice?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never } | 
 /**
- *  A line Velocity delivered to the agent (an F14 "via AIRC" message or event, a PR
- *  follow-through notice), shown once the agent read it. It is never a user message
- *  and never sits in the composer queue (#231).
+ *  A line Velocity delivered to the agent (an F14 "via AIRC" message or event, or a
+ *  change follow-through notice), shown once the agent read it. It is never a user
+ *  message and never sits in the composer queue (#231).
  */
 ({ Notice: {
 	text: string,
 } }) & { AgentMessage?: never; Decision?: never; Diff?: never; ErrorCard?: never; StatusLine?: never; ToolGroup?: never; UserMessage?: never };
 
-export type TranscriptModeView = "FullTranscript" | "CollapsedWithPrHistory" | "ExpandedWithPrHistory" | "CollapsedWithLandHistory" | "ExpandedWithLandHistory";
+export type TranscriptModeView = "FullTranscript" | "CollapsedWithLandHistory" | "ExpandedWithLandHistory";
 
 /**  One incremental update to a thread's transcript blocks (#553). */
 export type TranscriptPatch = TranscriptPatch_Serialize | TranscriptPatch_Deserialize;
@@ -7270,12 +6564,6 @@ export type UsageWindowView = {
 	summary: string,
 };
 
-/**
- *  How a project's agents get their working folders (F5). Rosen is first-class; git
- *  worktrees are used only when the project chooses git; Rosen launches never fall back.
- */
-export type VersionControl = "rosen" | "git";
-
 /**  A visible person hold shown on the project's Work view with the action that releases it (#526). */
 export type VisibleHold = {
 	reason: string,
@@ -7398,12 +6686,44 @@ export type WorkedSummaryView_Serialize = {
 	proved: boolean,
 };
 
+export type WorkspaceChipView = "Hidden" | "Live" | "Deleted";
+
+export type WorkspaceDriveView = {
+	root: string,
+	name: string,
+	kind: string,
+	free_label: string,
+	used_percent: number,
+	selected: boolean,
+	slow: boolean,
+};
+
+/**  The path preview for a folder the user is still typing, before it is saved. */
+export type WorkspacePathPreview = {
+	preview_root: string,
+	example_path: string,
+};
+
 export type WorkspacePreparation = {
 	warm_pool_size: number,
 	prepare_commands: string[],
 };
 
 export type WorkspaceRow = WorkspaceRow_Serialize | WorkspaceRow_Deserialize;
+
+export type WorkspaceRowTone = "Working" | "Change" | "Fixing" | "Failed" | "Closed" | "Duty" | "Deleted";
+
+export type WorkspaceRowView = {
+	owner_identifier: number,
+	owner: string,
+	path: string,
+	short_path: string,
+	size: string,
+	label: string,
+	tone: WorkspaceRowTone,
+	warning: string,
+	deleted: boolean,
+};
 
 export type WorkspaceRow_Deserialize = {
 	change: string,
@@ -7423,49 +6743,15 @@ export type WorkspaceRow_Serialize = {
 	kept: string | null,
 };
 
-export type WorktreeChipView = "Hidden" | "Live" | "Deleted";
+export type WorkspaceSettings = WorkspaceSettings_Serialize | WorkspaceSettings_Deserialize;
 
-export type WorktreeDriveView = {
-	root: string,
-	name: string,
-	kind: string,
-	free_label: string,
-	used_percent: number,
-	selected: boolean,
-	slow: boolean,
-};
+export type WorkspaceSettingsEdit = ({ Root: string }) & { CopyFiles?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ Drive: string }) & { CopyFiles?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ Folder: string }) & { CopyFiles?: never; Drive?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ OverrideEnabled: boolean }) & { CopyFiles?: never; Drive?: never; Folder?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ ProjectRoot: string }) & { CopyFiles?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ ShareBuildCache: boolean }) & { CopyFiles?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; UseRosen?: never } | ({ CopyFiles: string }) & { Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ SetupCommand: string }) & { CopyFiles?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; ShareBuildCache?: never; UseRosen?: never } | ({ ReadyCount: number }) & { CopyFiles?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | 
+/**  The project's version control (F5): Rosen is the only version control. */
+({ UseRosen: boolean }) & { CopyFiles?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never };
 
-/**  The path preview for a folder the user is still typing, before it is saved. */
-export type WorktreePathPreview = {
-	preview_root: string,
-	example_path: string,
-};
+export type WorkspaceSettingsView = WorkspaceSettingsView_Serialize | WorkspaceSettingsView_Deserialize;
 
-export type WorktreeRole = "thread" | "review" | "sweep";
-
-export type WorktreeRowTone = "Working" | "PullRequest" | "Fixing" | "Failed" | "Closed" | "Duty" | "Deleted";
-
-export type WorktreeRowView = {
-	owner_identifier: number,
-	owner: string,
-	path: string,
-	short_path: string,
-	size: string,
-	label: string,
-	tone: WorktreeRowTone,
-	warning: string,
-	deleted: boolean,
-};
-
-export type WorktreeSettings = WorktreeSettings_Serialize | WorktreeSettings_Deserialize;
-
-export type WorktreeSettingsEdit = ({ Root: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ Drive: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ Folder: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ OverrideEnabled: boolean }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ ProjectRoot: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ DeleteLocalBranch: boolean }) & { CopyFiles?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ ShareBuildCache: boolean }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; UseRosen?: never } | ({ CopyFiles: string }) & { DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | ({ SetupCommand: string }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; ShareBuildCache?: never; UseRosen?: never } | ({ ReadyCount: number }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never; UseRosen?: never } | 
-/**  The project's version control (F5): Rosen when true, git when false. */
-({ UseRosen: boolean }) & { CopyFiles?: never; DeleteLocalBranch?: never; Drive?: never; Folder?: never; OverrideEnabled?: never; ProjectRoot?: never; ReadyCount?: never; Root?: never; SetupCommand?: never; ShareBuildCache?: never };
-
-export type WorktreeSettingsView = WorktreeSettingsView_Serialize | WorktreeSettingsView_Deserialize;
-
-export type WorktreeSettingsView_Deserialize = {
+export type WorkspaceSettingsView_Deserialize = {
 	revision: number,
 	project_identifier?: number | null,
 	project_name: string,
@@ -7477,13 +6763,12 @@ export type WorktreeSettingsView_Deserialize = {
 	example_path: string,
 	separator: string,
 	project_override?: string | null,
-	delete_local_branch: boolean,
 	share_build_cache: boolean,
 	copy_files: string,
 	setup_command: string,
 	ready_count: number,
-	drives: WorktreeDriveView[],
-	rows: WorktreeRowView[],
+	drives: WorkspaceDriveView[],
+	rows: WorkspaceRowView[],
 	live_count: string,
 	total_size: string,
 	free_space: string,
@@ -7494,7 +6779,7 @@ export type WorktreeSettingsView_Deserialize = {
 	version_control_note: string,
 };
 
-export type WorktreeSettingsView_Serialize = {
+export type WorkspaceSettingsView_Serialize = {
 	revision: number,
 	project_identifier: number | null,
 	project_name: string,
@@ -7506,13 +6791,12 @@ export type WorktreeSettingsView_Serialize = {
 	example_path: string,
 	separator: string,
 	project_override: string | null,
-	delete_local_branch: boolean,
 	share_build_cache: boolean,
 	copy_files: string,
 	setup_command: string,
 	ready_count: number,
-	drives: WorktreeDriveView[],
-	rows: WorktreeRowView[],
+	drives: WorkspaceDriveView[],
+	rows: WorkspaceRowView[],
 	live_count: string,
 	total_size: string,
 	free_space: string,
@@ -7523,26 +6807,24 @@ export type WorktreeSettingsView_Serialize = {
 	version_control_note: string,
 };
 
-export type WorktreeSettings_Deserialize = {
+export type WorkspaceSettings_Deserialize = {
 	location_root?: string | null,
-	delete_local_branch_on_merge: boolean,
+	delete_local_change_on_land?: boolean,
 	share_rust_build_cache: boolean,
 	warm_pool_count: number,
 	project_roots?: { [key in number]: string },
 	copy_files?: string,
 	setup_command?: string,
-	/**  Per-project commands, including an explicit empty command to skip setup. */
 	project_setup_commands?: { [key in number]: string },
 };
 
-export type WorktreeSettings_Serialize = {
+export type WorkspaceSettings_Serialize = {
 	location_root: string | null,
-	delete_local_branch_on_merge: boolean,
+	delete_local_change_on_land: boolean,
 	share_rust_build_cache: boolean,
 	warm_pool_count: number,
 	project_roots: { [key in number]: string },
 	copy_files: string,
 	setup_command: string,
-	/**  Per-project commands, including an explicit empty command to skip setup. */
 	project_setup_commands: { [key in number]: string },
 };

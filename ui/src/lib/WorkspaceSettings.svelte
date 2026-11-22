@@ -14,9 +14,9 @@
     type MirrorState,
     type ProjectGitHubRepository,
     type WorkspacePreferences,
-    type WorktreeSettingsEdit,
+    type WorkspaceSettingsEdit,
   } from './ipc';
-  import './theme/worktrees.css';
+  import './theme/workspaces.css';
 
   let {
     send,
@@ -95,7 +95,7 @@
     }
   }
 
-  function edit(change: WorktreeSettingsEdit) {
+  function edit(change: WorkspaceSettingsEdit) {
     const project = projectIdentifier;
     queue = queue.then(async () => {
       try {
@@ -115,13 +115,13 @@
   });
 </script>
 
-<section class="worktree-settings" aria-label="Workspaces settings">
-  <header class="worktree-settings-head">
+<section class="workspace-settings" aria-label="Workspaces settings">
+  <header class="workspace-settings-head">
     <h1>Settings</h1>
   </header>
-  <div class="worktree-settings-body">
-    <SettingsNav current="worktrees" {send} />
-    <div class="worktree-settings-main">
+  <div class="workspace-settings-body">
+    <SettingsNav current="workspaces" {send} />
+    <div class="workspace-settings-main">
       <PaneState
         name="Workspace preferences"
         network={false}
@@ -138,18 +138,18 @@
         {#if projectIdentifier !== null && githubView}
           <section>
             <h2>Issues and CI on GitHub</h2>
-            <p class="worktree-description">
+            <p class="workspace-description">
               GitHub repository used for continuous dispatch, the issues rail,
               base CI, releases and Rosen pin bumps.
             </p>
             <form
-              class="worktree-location-input"
+              class="workspace-location-input"
               onsubmit={(event) => {
                 event.preventDefault();
                 void saveGitHub(githubInput);
               }}
             >
-              <label class="worktree-input">
+              <label class="workspace-input">
                 <span>github.com/</span>
                 <input
                   aria-label="Issues and CI on GitHub"
@@ -162,19 +162,19 @@
               </label>
               <button
                 type="submit"
-                class="worktree-button browse"
+                class="workspace-button browse"
                 disabled={githubSaving}
                 >{githubSaving ? 'Saving…' : 'Save'}</button
               >
             </form>
             {#if suggestedDownstream}
-              <div class="worktree-github-suggestion">
+              <div class="workspace-github-suggestion">
                 <span
                   >Collapse forwards to <code>{suggestedDownstream}</code></span
                 >
                 <button
                   type="button"
-                  class="worktree-button mini"
+                  class="workspace-button mini"
                   disabled={githubSaving}
                   onclick={() => void saveGitHub(suggestedDownstream)}
                   >Use {suggestedDownstream}</button
@@ -182,9 +182,9 @@
               </div>
             {/if}
             {#if githubError}
-              <p class="worktree-message error" role="alert">{githubError}</p>
+              <p class="workspace-message error" role="alert">{githubError}</p>
             {:else if githubSaved}
-              <p class="worktree-message" role="status">
+              <p class="workspace-message" role="status">
                 {githubView.repository
                   ? `Issues and CI linked to ${githubView.repository}.`
                   : 'GitHub repository cleared.'}
@@ -199,9 +199,9 @@
         />
         <section>
           <h2>Agent setup</h2>
-          <div class="worktree-setting-row">
+          <div class="workspace-setting-row">
             <label for="workspace-copy">Copy untracked files</label>
-            <label class="worktree-input">
+            <label class="workspace-input">
               <input
                 id="workspace-copy"
                 value={view.copy_files}
@@ -212,9 +212,9 @@
             </label>
           </div>
           {#if projectIdentifier !== null}
-            <div class="worktree-setting-row">
+            <div class="workspace-setting-row">
               <label for="workspace-setup">After-take setup command</label>
-              <label class="worktree-input">
+              <label class="workspace-input">
                 <input
                   id="workspace-setup"
                   value={view.setup_command}
@@ -225,8 +225,8 @@
               </label>
             </div>
           {/if}
-          <div class="worktree-setting-row">
-            <label class="worktree-check">
+          <div class="workspace-setting-row">
+            <label class="workspace-check">
               <input
                 type="checkbox"
                 checked={view.share_build_cache}
@@ -236,10 +236,10 @@
               Share the Rust build cache between this project's workspaces
             </label>
           </div>
-          <div class="worktree-setting-row">
+          <div class="workspace-setting-row">
             <span>Skills linked for each agent</span>
             <button
-              class="worktree-button mini"
+              class="workspace-button mini"
               onclick={() => send({ Request: { SettingsTab: 'skills' } })}
               >Manage skills</button
             >

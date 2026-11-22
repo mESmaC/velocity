@@ -11,7 +11,7 @@
     - The sidebar is one floating glass pane, and each rail panel is its own pane.
     - The main column has no panel: content sits straight on the window.
     - The title bar is 40 px: the brand and project switcher on the left, the Focus / Board switch and the project pulse in the centre, and a search field that opens the command palette on the right.
-    - The thread header has two lines: the title (18 px) with Tokens, Diff and Editor beside it, and the meta line (branch, workspace, diff counts, time) as chips under it.
+    - The thread header has two lines: the title (18 px) with Tokens, Diff and Editor beside it, and the meta line (change, workspace, diff counts, time) as chips under it.
     - Side panes narrow as the window narrows, and the rail collapses below 76 rem of window width.
     - The sidebar collapses below 54 rem.
     - Threads and Activity buttons open the collapsed panes, and their keyboard shortcuts open the pane before focusing the search or task entry.
@@ -52,7 +52,7 @@
 
   | Colour | Use |
   |---|---|
-  | ok `#5fd08a` | merged / done |
+  | ok `#5fd08a` | landed / done |
   | warn `#f0b651` | named · watching / CI / fixing |
   | err `#ff7369` | failed / changes requested |
   | accent `#6a8dff` | running |
@@ -102,7 +102,7 @@
 
 ### Pane states (#416)
 
-Sidebar threads, Changes / pull requests, Issues, every AIRC tab, Machines, Settings → Workspaces / Providers / Skills, the first transcript update and Usage share one pane-state component.
+Sidebar threads, Changes, Issues, every AIRC tab, Machines, Settings → Workspaces / Providers / Skills, the first transcript update and Usage share one pane-state component.
 Loading shows neutral skeleton rows with an accessible loading label.
 Empty copy names what is missing and how to add it or select its project; an empty search says that no threads match.
 Failures name the affected data and one recovery action, never backend JSON, stack traces or command stderr.

@@ -120,7 +120,7 @@
 {#if settings !== null}
   <section aria-label="Deploy secrets">
     <h2>Deploy secrets</h2>
-    <p class="worktree-description">
+    <p class="workspace-description">
       Secrets for <code>rosen.toml</code> <code>[deploy]</code> steps are stored
       in Windows Credential Manager under
       <code>velocity/deploy/&lt;project&gt;/&lt;NAME&gt;</code>, passed only to
@@ -139,18 +139,18 @@
     />
     {#if settings}
       {#if settings.config_error}
-        <p class="worktree-message error" role="alert">
+        <p class="workspace-message error" role="alert">
           {settings.config_error}
         </p>
       {/if}
       {#if !settings.supported}
-        <p class="worktree-message" role="status">
+        <p class="workspace-message" role="status">
           Deploy secret storage requires Windows Credential Manager.
         </p>
       {/if}
 
       {#if settings.steps.length > 0}
-        <div class="worktree-setting-row deploy-block">
+        <div class="workspace-setting-row deploy-block">
           <span>Configured deploy steps</span>
           <div class="deploy-step-list">
             {#each settings.steps as step (step.name)}
@@ -171,7 +171,7 @@
       {/if}
 
       {#if settings.secrets.length > 0}
-        <div class="worktree-setting-row deploy-block">
+        <div class="workspace-setting-row deploy-block">
           <span>Stored secrets</span>
           <div class="deploy-secret-list">
             {#each settings.secrets as secret (secret.name)}
@@ -228,7 +228,7 @@
                   />
                   <button
                     type="submit"
-                    class="worktree-button mini"
+                    class="workspace-button mini"
                     disabled={busy ||
                       !settings.supported ||
                       !(secretInputs.get(secret.name) ?? '').trim()}
@@ -237,7 +237,7 @@
                   {#if secret.stored}
                     <button
                       type="button"
-                      class="worktree-button mini"
+                      class="workspace-button mini"
                       disabled={busy || !settings.supported}
                       onclick={() => void clearSecret(secret.name)}
                       >Clear</button
@@ -250,7 +250,7 @@
         </div>
       {/if}
 
-      <div class="worktree-setting-row deploy-block">
+      <div class="workspace-setting-row deploy-block">
         <span>Add secret</span>
         <form
           class="deploy-secret-form"
@@ -278,7 +278,7 @@
           />
           <button
             type="submit"
-            class="worktree-button mini"
+            class="workspace-button mini"
             disabled={busy ||
               !settings.supported ||
               !newSecretName.trim() ||
@@ -288,9 +288,9 @@
       </div>
 
       {#if actionError}
-        <p class="worktree-message error" role="alert">{actionError}</p>
+        <p class="workspace-message error" role="alert">{actionError}</p>
       {:else if notice}
-        <p class="worktree-message" role="status">{notice}</p>
+        <p class="workspace-message" role="status">{notice}</p>
       {/if}
     {/if}
   </section>

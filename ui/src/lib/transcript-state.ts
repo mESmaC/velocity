@@ -113,7 +113,7 @@ export function applyTranscriptPatches(
   return { blocks, ids, revision: nextRevision };
 }
 
-function mergeThreadMeta(
+function combineThreadMeta(
   meta: ThreadDetailMeta,
   blocks: TranscriptBlock[],
   transcriptRevision: number,
@@ -160,7 +160,7 @@ export function applyLayoutDelta(
   }
   if (delta.rail) {
     next.tasks = delta.rail.tasks;
-    next.pull_requests = delta.rail.pull_requests;
+    next.changes = delta.rail.changes;
     next.issues = delta.rail.issues;
     next.tasks_draft = delta.rail.tasks_draft;
     next.task_count_label = delta.rail.task_count_label;
@@ -186,7 +186,7 @@ export function applyLayoutDelta(
     nextTranscript = updatedTranscript;
 
     if (delta.active_thread_meta) {
-      next.active_thread = mergeThreadMeta(
+      next.active_thread = combineThreadMeta(
         delta.active_thread_meta,
         nextTranscript.blocks,
         nextTranscript.revision,

@@ -583,7 +583,7 @@
 {#if settings !== null}
   <section aria-label="Collapse project settings">
     <h2>Collapse</h2>
-    <p class="worktree-description">
+    <p class="workspace-description">
       Live state feed, ledger push, channel lines and owner action relay for
       this project's Rosen server.
     </p>
@@ -598,12 +598,12 @@
     {#if settings}
       {@const linked = settings.collapse_root !== null}
       {#if settings.config_error}
-        <p class="worktree-message error" role="alert">
+        <p class="workspace-message error" role="alert">
           {settings.config_error}
         </p>
       {/if}
 
-      <div class="worktree-setting-row collapse-relay-block collapse-cutover">
+      <div class="workspace-setting-row collapse-relay-block collapse-cutover">
         <div class="collapse-relay-header">
           <span>Move to Collapse</span>
           <span class="hint">
@@ -666,7 +666,7 @@
           role="radiogroup"
           aria-label="GitHub downstream mirror"
         >
-          <label class="worktree-check">
+          <label class="workspace-check">
             <input
               type="radio"
               name={`move-downstream-${currentProject}`}
@@ -676,7 +676,7 @@
             />
             Remove GitHub downstream
           </label>
-          <label class="worktree-check">
+          <label class="workspace-check">
             <input
               type="radio"
               name={`move-downstream-${currentProject}`}
@@ -690,7 +690,7 @@
         <div class="collapse-row-value">
           <button
             type="button"
-            class="worktree-button"
+            class="workspace-button"
             disabled={busy ||
               moving ||
               !settings.collapse_connected ||
@@ -718,7 +718,7 @@
           <div class="collapse-row-value">
             <button
               type="button"
-              class="worktree-button mini collapse-danger"
+              class="workspace-button mini collapse-danger"
               disabled={busy ||
                 moving ||
                 reimporting ||
@@ -763,7 +763,7 @@
                   href={reimportUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  class="worktree-button mini collapse-cutover-link"
+                  class="workspace-button mini collapse-cutover-link"
                   onclick={(event) => {
                     event.preventDefault();
                     void collapseCommands.openPage(reimportUrl);
@@ -813,7 +813,7 @@
                     href={externalUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    class="worktree-button mini collapse-cutover-link"
+                    class="workspace-button mini collapse-cutover-link"
                     onclick={(event) => {
                       event.preventDefault();
                       void collapseCommands.openPage(externalUrl);
@@ -862,7 +862,7 @@
         {/if}
       </div>
 
-      <div class="worktree-setting-row">
+      <div class="workspace-setting-row">
         <span>Collapse root</span>
         <div class="collapse-row-value">
           {#if settings.collapse_root}
@@ -875,7 +875,7 @@
           {#if settings.collapse_repository}
             <button
               type="button"
-              class="worktree-button mini"
+              class="workspace-button mini"
               disabled={busy}
               onclick={() => void openOnCollapse()}>Open on Collapse ↗</button
             >
@@ -883,7 +883,7 @@
           {#if !linked}
             <button
               type="button"
-              class="worktree-button mini"
+              class="workspace-button mini"
               disabled={busy || Boolean(settings.config_error)}
               onclick={() =>
                 void linkProject(
@@ -909,7 +909,7 @@
         {/if}
       </div>
 
-      <div class="worktree-setting-row">
+      <div class="workspace-setting-row">
         <span>Push token</span>
         <div class="collapse-row-value">
           <span
@@ -924,7 +924,7 @@
           {#if settings.collapse_repository && (settings.push_token.kind === 'missing' || settings.push_token.kind === 'partial')}
             <button
               type="button"
-              class="worktree-button mini"
+              class="workspace-button mini"
               disabled={busy}
               onclick={() => void linkProject('live')}
               >{busy ? 'Updating…' : 'Restore push token'}</button
@@ -933,31 +933,31 @@
         </div>
       </div>
 
-      <div class="worktree-setting-row">
+      <div class="workspace-setting-row">
         <span>State feed</span>
         <div class="collapse-health">
           <span class="hint">{feedSummary(settings.state_feed, linked)}</span>
           {#if settings.state_feed.last_error}
-            <p class="worktree-message error collapse-error" role="alert">
+            <p class="workspace-message error collapse-error" role="alert">
               {settings.state_feed.last_error}
             </p>
           {/if}
         </div>
       </div>
 
-      <div class="worktree-setting-row">
+      <div class="workspace-setting-row">
         <span>Ledger push</span>
         <div class="collapse-health">
           <span class="hint">{feedSummary(settings.ledger_push, linked)}</span>
           {#if settings.ledger_push.last_error}
-            <p class="worktree-message error collapse-error" role="alert">
+            <p class="workspace-message error collapse-error" role="alert">
               {settings.ledger_push.last_error}
             </p>
           {/if}
         </div>
       </div>
 
-      <div class="worktree-setting-row collapse-relay-block">
+      <div class="workspace-setting-row collapse-relay-block">
         <div class="collapse-relay-header">
           <span>Issues on</span>
           <span class="hint">
@@ -971,7 +971,7 @@
           role="radiogroup"
           aria-label="Issues host"
         >
-          <label class="worktree-check">
+          <label class="workspace-check">
             <input
               type="radio"
               name={`issue-host-${currentProject}`}
@@ -982,7 +982,7 @@
             />
             GitHub
           </label>
-          <label class="worktree-check">
+          <label class="workspace-check">
             <input
               type="radio"
               name={`issue-host-${currentProject}`}
@@ -1012,7 +1012,7 @@
           {#if settings.collapse_issues_token_stored}
             <button
               type="button"
-              class="worktree-button mini"
+              class="workspace-button mini"
               disabled={busy}
               onclick={() => void clearIssuesToken()}>Clear</button
             >
@@ -1035,14 +1035,14 @@
           />
           <button
             type="submit"
-            class="worktree-button mini"
+            class="workspace-button mini"
             disabled={busy || !issuesTokenInput.trim()}>Save token</button
           >
         </form>
         {#if settings.issue_host === 'collapse'}
           {@const issueSync = settings.github_issue_sync}
           <div class="collapse-row-value">
-            <label class="worktree-check">
+            <label class="workspace-check">
               <input
                 type="checkbox"
                 checked={issueSync?.enabled ?? false}
@@ -1055,7 +1055,7 @@
             {#if issueSync?.enabled}
               <button
                 type="button"
-                class="worktree-button mini"
+                class="workspace-button mini"
                 disabled={busy}
                 onclick={() => void syncGithubIssuesNow()}>Sync now</button
               >
@@ -1080,7 +1080,7 @@
               {/if}
             </span>
             {#if issueSync.last_error}
-              <p class="worktree-message error collapse-error" role="alert">
+              <p class="workspace-message error collapse-error" role="alert">
                 {issueSync.last_error}
               </p>
             {/if}
@@ -1093,8 +1093,8 @@
         {/if}
       </div>
 
-      <div class="worktree-setting-row">
-        <label class="worktree-check">
+      <div class="workspace-setting-row">
+        <label class="workspace-check">
           <input
             type="checkbox"
             checked={settings.collapse_channel}
@@ -1109,7 +1109,7 @@
         </span>
       </div>
 
-      <div class="worktree-setting-row collapse-relay-block">
+      <div class="workspace-setting-row collapse-relay-block">
         <div class="collapse-relay-header">
           <span>Relay actions</span>
           <span class="hint">
@@ -1117,9 +1117,9 @@
             every start.
           </span>
         </div>
-        <div class="worktree-checks collapse-relay-list">
+        <div class="workspace-checks collapse-relay-list">
           {#each relayOptions as option (option.kind)}
-            <label class="worktree-check">
+            <label class="workspace-check">
               <input
                 type="checkbox"
                 checked={settings.relay_allow.includes(option.kind)}
@@ -1132,7 +1132,7 @@
           {/each}
         </div>
         {#if settings.relay_revoked}
-          <p class="worktree-message error collapse-error" role="alert">
+          <p class="workspace-message error collapse-error" role="alert">
             The Collapse relay machine is revoked on this server. Enabling any
             action re-enrolls it.
           </p>
@@ -1140,17 +1140,17 @@
       </div>
 
       {#if linked}
-        <div class="worktree-setting-row">
+        <div class="workspace-setting-row">
           <div>
             <span>Unlink Collapse</span>
-            <p class="worktree-description collapse-unlink-hint">
+            <p class="workspace-description collapse-unlink-hint">
               Removes <code>collapse</code> from <code>rosen.toml</code> through a
               landed change and clears the relay allow-list.
             </p>
           </div>
           <button
             type="button"
-            class="worktree-button mini collapse-danger"
+            class="workspace-button mini collapse-danger"
             disabled={busy || Boolean(settings.config_error)}
             onclick={() => void unlink()}
           >
@@ -1160,7 +1160,7 @@
       {/if}
 
       {#if releaseCreds}
-        <div class="worktree-setting-row collapse-relay-block">
+        <div class="workspace-setting-row collapse-relay-block">
           <div class="collapse-relay-header">
             <span>Release credentials</span>
             <span class="hint">
@@ -1181,7 +1181,7 @@
             {#if releaseCreds.updater_key_stored}
               <button
                 type="button"
-                class="worktree-button mini"
+                class="workspace-button mini"
                 disabled={busy}
                 onclick={() => void clearSigningKey()}>Clear</button
               >
@@ -1212,7 +1212,7 @@
             />
             <button
               type="submit"
-              class="worktree-button mini"
+              class="workspace-button mini"
               disabled={busy || !signingKeyInput.trim()}>Save key</button
             >
           </form>
@@ -1227,14 +1227,14 @@
             {#if releaseCreds.collapse_release_token_source === 'sign_in'}
               <button
                 type="button"
-                class="worktree-button mini"
+                class="workspace-button mini"
                 disabled={busy || !releaseCreds.collapse_connected}
                 onclick={() => void replaceReleaseToken()}>Replace</button
               >
             {:else if !releaseCreds.collapse_release_token_stored && releaseCreds.collapse_connected}
               <button
                 type="button"
-                class="worktree-button mini"
+                class="workspace-button mini"
                 disabled={busy}
                 onclick={() => void replaceReleaseToken()}>Create</button
               >
@@ -1242,7 +1242,7 @@
             {#if releaseCreds.collapse_release_token_stored}
               <button
                 type="button"
-                class="worktree-button mini"
+                class="workspace-button mini"
                 disabled={busy}
                 onclick={() => void clearReleaseToken()}>Clear</button
               >
@@ -1265,7 +1265,7 @@
             />
             <button
               type="submit"
-              class="worktree-button mini"
+              class="workspace-button mini"
               disabled={busy || !releaseTokenInput.trim()}>Save token</button
             >
           </form>
@@ -1273,9 +1273,9 @@
       {/if}
 
       {#if actionError}
-        <p class="worktree-message error" role="alert">{actionError}</p>
+        <p class="workspace-message error" role="alert">{actionError}</p>
       {:else if notice}
-        <p class="worktree-message" role="status">{notice}</p>
+        <p class="workspace-message" role="status">{notice}</p>
       {/if}
     {/if}
   </section>

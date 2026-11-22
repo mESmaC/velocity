@@ -151,7 +151,7 @@ pub async fn add_goal_agents(
 }
 
 /// The goal swarm view's claims board (F16): every piece in the work pool with its holder
-/// and state, then the pieces this swarm merged. Issues come from GitHub and sections
+/// and state, then the pieces this swarm landed. Issues come from GitHub and sections
 /// from `SPEC.md`, so the pool is read off the UI thread.
 #[tauri::command]
 #[specta::specta]

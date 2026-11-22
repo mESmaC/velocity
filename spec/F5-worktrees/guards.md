@@ -7,5 +7,5 @@
 
 Rule files:
 
-- [Worktree folder names are unique per project, never generic names like workspace](guards-worktree-folder-names-are-unique-per.md)
+- [Workspace folder names are unique per project, never generic names like workspace](guards-worktree-folder-names-are-unique-per.md)
 - [A slug made from a title (a model title, a Task List item or a SPEC section) is at most 40 characters](guards-a-slug-made-from-a-title.md)

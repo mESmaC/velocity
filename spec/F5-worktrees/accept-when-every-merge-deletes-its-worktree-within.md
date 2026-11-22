@@ -1,4 +1,4 @@
-#### Accept when · Every merge deletes its worktree within one event cycle
+#### Accept when · Every land deletes its workspace within one event cycle
 
 <!-- split-spec: {"order":777,"kind":"markdown","indentation":0} -->
-- [ ] Every merge deletes its worktree within one event cycle.
+- [ ] Every land deletes its workspace within one event cycle.

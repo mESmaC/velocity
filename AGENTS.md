@@ -11,7 +11,7 @@ Velocity is a Rust + Tauri desktop IDE for running coding agents in parallel.
 
 ## Terms
 
-- **Session card**: the short per-thread header Velocity prepends to your opening prompt with your identity, Rosen change (or git branch), held claims, overlapping changes, base tip, queue depth and any unavailable tools.
+- **Session card**: the short per-thread header Velocity prepends to your opening prompt with your identity, Rosen change, held claims, overlapping changes, base tip, queue depth and any unavailable tools.
 - **Scout**: an automated duty agent that sweeps landed code for bugs and attaches a failing reproduction script to each issue it files.
 - **Review swarm**: automated post-land reviewers that inspect landed changes and file issues or review comments without blocking landing.
 - **Receipts**: checker attestations required before landing in `before-land` Rosen projects; building agents never submit receipts in Velocity's `after-land` mode.
@@ -19,7 +19,7 @@ Velocity is a Rust + Tauri desktop IDE for running coding agents in parallel.
 ## Rosen workspace
 
 - Use Rosen terms: workspace, change, snapshot, name the change, land, base, stored conflict, land history and path claim. A Rosen workspace has `.rosen`. Work in the workspace Velocity assigned and leave its cleanup to Velocity.
-- Every write is snapshotted to the Rosen server automatically within 2 seconds; skip git branch, commit, push and PR steps.
+- Every write is snapshotted to the Rosen server automatically within 2 seconds; skip git commands and PR steps.
 - Claim every intended code path before editing with `rosen claim --exclusive <paths>` (or the `rosen` MCP `claim` tool with `exclusive: true`). The first exclusive claim wins; plain `rosen claim <paths>` notices are for registration lists and generated files, which `--exclusive` refuses. Use `rosen share <paths>` for deliberate overlap, the parking `wait` tool in the `rosen` MCP server (or `rosen wait <paths>`) for a dependency (if any path is held, end your turn and Velocity parks and resumes your thread when the paths are free) and `rosen release <paths>` to give up a claim.
 - Never run `git` or `gh` directly in a Rosen workspace. Use AIRC issue tools (`issue_read`, `issue_create`, `issue_comment`, `issue_ready_to_close`, `issue_blocked_upstream`, `issue_hold`, `issue_close_not_planned`) for GitHub issues, and `workflow_run` from `velocity-run` for owner-allowed GitHub Actions workflows.
 - When the thread owns a GitHub issue (shown in the session card), call AIRC `issue_comment` when you start, when a finding changes the plan and when blocked (name blocking issues in `blocked_by` and end your turn). Call `issue_blocked_upstream` for an upstream PR or release, `issue_close_not_planned` when its spec section was removed, and `issue_hold` only when physical hardware or an explicit scope hold requires a person (never for spec defaults). Call `issue_ready_to_close` with completion evidence when done and leave the issue open for Velocity.

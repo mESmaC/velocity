@@ -181,10 +181,10 @@
   align-items: center;
   gap: var(--sp-4);
 }
-.sk-add .worktree-input > input {
+.sk-add .workspace-input > input {
   font-family: var(--mono);
 }
-.worktree-settings-main pre {
+.workspace-settings-main pre {
   max-height: 420px;
   overflow: auto;
   margin: var(--sp-4) 0;

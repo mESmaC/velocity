@@ -2,11 +2,11 @@ import { commands } from '../bindings';
 
 export type {
   LandedWorkspacePreparation,
+  WorkspacePathPreview,
   WorkspacePreparation,
   WorkspaceRow,
-  WorktreePathPreview,
-  WorktreeSettingsEdit,
-  WorktreeSettingsView_Serialize as WorkspacePreferences,
+  WorkspaceSettingsEdit,
+  WorkspaceSettingsView as WorkspacePreferences,
 } from '../bindings';
 
 export const workspaceCommands = {

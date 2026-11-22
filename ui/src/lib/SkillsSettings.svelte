@@ -12,7 +12,7 @@
     type SkillPackUpdatePreview,
     type LayoutAction,
   } from './ipc';
-  import './theme/worktrees.css';
+  import './theme/workspaces.css';
   import './theme/skills.css';
   let {
     send,
@@ -152,14 +152,14 @@
   }
 </script>
 
-<section class="worktree-settings" aria-label="Skill settings">
-  <header class="worktree-settings-head">
+<section class="workspace-settings" aria-label="Skill settings">
+  <header class="workspace-settings-head">
     <h1>Settings</h1>
     <span>machine-wide</span>
   </header>
-  <div class="worktree-settings-body">
+  <div class="workspace-settings-body">
     <SettingsNav current="skills" {send} />
-    <div class="worktree-settings-main">
+    <div class="workspace-settings-main">
       <PaneState
         name="Skills"
         network={false}
@@ -170,7 +170,7 @@
       {#if view}
         <section>
           <h2>Skill library</h2>
-          <p class="worktree-description">
+          <p class="workspace-description">
             Type <b>$</b> in the composer to invoke an installed skill in any project.
           </p>
           <div class="sk-budget" class:warn={view.default_budget_warning}>
@@ -304,7 +304,7 @@
                 {#if card.details.design_system}
                   {@const design = card.details.design_system}
                   <div class="row">
-                    Design system <code>{design.master_path}</code>
+                    Design system <code>{design.design_path}</code>
                     <span>{design.summary}</span>
                     <button
                       class="mini"
@@ -360,7 +360,7 @@
         </section>
         <section>
           <h2>Add a skill pack</h2>
-          <p class="worktree-description">
+          <p class="workspace-description">
             Any GitHub repo that follows the Agent Skills standard (a folder per
             skill with a SKILL.md).
           </p>
@@ -371,7 +371,7 @@
               install(repository);
             }}
           >
-            <label class="worktree-input"
+            <label class="workspace-input"
               >github.com/<input
                 aria-label="Skill pack repository"
                 placeholder="owner/repo"
@@ -388,7 +388,7 @@
           </form>
           {#each customInstallations as pack (pack.pack_id)}
             {#if pack.status.state !== 'complete'}
-              <p class="worktree-description" role="status">
+              <p class="workspace-description" role="status">
                 {pack.name} · {pack.status.message}
               </p>
             {/if}

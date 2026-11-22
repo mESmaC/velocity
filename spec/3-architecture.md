@@ -9,7 +9,7 @@
   All visual values come from the reference UI: its `:root` is copied exactly, and missing values are copied from its winning CSS declarations into supplemental reference tokens (§6).
 - **Backend (Rust)** owns:
   - agent processes
-  - git and worktrees
+  - Rosen servers and workspaces
   - GitHub access
   - the file system
   - persisted state
@@ -20,4 +20,4 @@
   Every provider signs in with OAuth on your own subscription, the way T3 Code does.
   Velocity talks to each provider's own agent over ACP (§3.2) and never asks for or stores an API key (F15).
   Each agent records its provider, model, effort (Low / Medium / High / Max) and speed (Regular / Fast, F15).
-- **GitHub:** issues, PRs, reviews, CI checks and merges.
+- **GitHub:** issues, the git mirror and base CI.

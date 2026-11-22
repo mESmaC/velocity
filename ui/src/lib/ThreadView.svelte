@@ -11,8 +11,8 @@
   import TranscriptBlocks from './TranscriptBlocks.svelte';
   import { followTranscript } from './follow-transcript';
   import {
+    applySubagentUpdate,
     formatRunningSubagents,
-    mergeSubagentUpdate,
   } from './subagent-format';
   import {
     collapseCommands,
@@ -71,7 +71,7 @@
       ) {
         return;
       }
-      liveSubagents = mergeSubagentUpdate(liveSubagents, payload.subagent);
+      liveSubagents = applySubagentUpdate(liveSubagents, payload.subagent);
     });
     return () => {
       stopped = true;
@@ -353,37 +353,39 @@
     <div class="meta">
       {#if thread.read_only}
         <span
-          class="branch"
+          class="change"
           title="Read-only question thread · no workspace, change or claim"
         >
           <Icon name="search" /><span class="label">read-only</span>
         </span>
       {:else if change}
-        <span class="branch mono" title={change.identifier}>
-          <Icon name="branch" /><span class="label">{change.identifier}</span>
+        <span class="change mono" title={change.identifier}>
+          <Icon name="change" /><span class="label">{change.identifier}</span>
         </span>
-      {:else if thread.branch}
-        <span class="branch" title={thread.branch}
-          ><Icon name="branch" /><span class="label">{thread.branch}</span
+      {:else if thread.change_label}
+        <span class="change" title={thread.change_label}
+          ><Icon name="change" /><span class="label">{thread.change_label}</span
           ></span
         >
       {/if}
-      {#if thread.worktree_chip === 'Live'}
+      {#if thread.workspace_chip === 'Live'}
         <button
           type="button"
           class="wt"
-          title={`${thread.worktree_path} · open in Explorer`}
+          title={`${thread.workspace_path} · open in Explorer`}
           onclick={() =>
-            send({ Request: { OpenWorktreeInExplorer: thread.worktree_path } })}
+            send({
+              Request: { OpenWorkspaceInExplorer: thread.workspace_path },
+            })}
         >
           <Icon name="folder" /><span class="label"
-            >{thread.worktree_short_path}</span
+            >{thread.workspace_short_path}</span
           >
         </button>
-      {:else if thread.worktree_chip === 'Deleted'}
-        <span class="wt gone" title={thread.worktree_path}>
+      {:else if thread.workspace_chip === 'Deleted'}
+        <span class="wt gone" title={thread.workspace_path}>
           <Icon name="folder" />{change
-            ? thread.worktree_short_path
+            ? thread.workspace_short_path
             : 'workspace deleted'}
         </span>
       {/if}
@@ -419,7 +421,7 @@
         onclick={() => (usageOpen = !usageOpen)}
         ><Icon name="usage" />Tokens</button
       >
-      {#if thread.has_diff_action && (!change || thread.worktree_chip === 'Live')}
+      {#if thread.has_diff_action && (!change || thread.workspace_chip === 'Live')}
         <button
           type="button"
           class="btn"
@@ -429,7 +431,7 @@
           Diff <kbd>D</kbd>
         </button>
       {/if}
-      {#if thread.has_editor_action && (!change || thread.worktree_chip === 'Live')}
+      {#if thread.has_editor_action && (!change || thread.workspace_chip === 'Live')}
         <button
           type="button"
           class="btn"
@@ -439,7 +441,7 @@
           Editor <kbd>E</kbd>
         </button>
       {/if}
-      {#if actionable && thread.worktree_chip === 'Live'}
+      {#if actionable && thread.workspace_chip === 'Live'}
         <button
           type="button"
           class="btn primary"

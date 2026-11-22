@@ -64,7 +64,7 @@
   <div class="collapse-deleted-actions">
     <button
       type="button"
-      class="worktree-button mini"
+      class="workspace-button mini"
       disabled={busy}
       onclick={onRestore}
     >
@@ -73,7 +73,7 @@
     {#if deleted.purge_available}
       <button
         type="button"
-        class="worktree-button mini collapse-danger"
+        class="workspace-button mini collapse-danger"
         disabled={busy}
         onclick={confirmPurge}
       >
@@ -85,7 +85,7 @@
         href={settingsUrl}
         target="_blank"
         rel="noopener noreferrer"
-        class="worktree-button mini collapse-deleted-link"
+        class="workspace-button mini collapse-deleted-link"
         onclick={(event) => {
           event.preventDefault();
           void collapseCommands.openPage(settingsUrl);
@@ -139,7 +139,7 @@
     font-size: var(--fs-xs);
     color: var(--muted);
   }
-  .collapse-deleted-notice.compact :global(.worktree-button.mini) {
+  .collapse-deleted-notice.compact :global(.workspace-button.mini) {
     width: auto;
     display: inline-flex;
     align-items: center;

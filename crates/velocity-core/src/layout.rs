@@ -15,7 +15,7 @@ pub enum ThreadGroup {
     Error,
     Closed,
     Done,
-    Merged,
+    Landed,
     Settled,
 }
 
@@ -69,7 +69,7 @@ pub enum PulseKind {
     Running,
     Watching,
     Failed,
-    MergedToday,
+    LandedToday,
 }
 
 pub fn group_index(group: ThreadGroup) -> usize {
@@ -83,7 +83,7 @@ pub fn group_index(group: ThreadGroup) -> usize {
         ThreadGroup::Error => 6,
         ThreadGroup::Closed => 7,
         ThreadGroup::Done => 8,
-        ThreadGroup::Merged => 9,
+        ThreadGroup::Landed => 9,
         ThreadGroup::Settled => 10,
     }
 }
@@ -127,7 +127,7 @@ pub fn pulse_contribution(kind: PulseKind, row: LayoutRow) -> usize {
         PulseKind::Running => usize::from(matches!(row.group, ThreadGroup::Working)),
         PulseKind::Watching => usize::from(matches!(row.group, ThreadGroup::Review)),
         PulseKind::Failed => usize::from(matches!(row.group, ThreadGroup::Error)),
-        PulseKind::MergedToday => 0,
+        PulseKind::LandedToday => 0,
     }
 }
 

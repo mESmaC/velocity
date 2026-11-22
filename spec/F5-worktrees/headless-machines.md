@@ -1,6 +1,6 @@
 #### Rosen · Headless machines (#270)
 
-Settings → Worktrees → Machines enables a per-project Rosen TLS listener and creates join keys through `rosen-client` with an advertised address, expiry in seconds, use limit and role (agent machine or checker).
+Settings → Workspaces → Machines enables a per-project Rosen TLS listener and creates join keys through `rosen-client` with an advertised address, expiry in seconds, use limit and role (agent machine or checker).
 It lists machines with their role, status, last contact and running agent names.
 Pending machines can be approved with one click; enrolled machines can be revoked there.
 The listener address is saved with the project's Rosen data and survives restarts.

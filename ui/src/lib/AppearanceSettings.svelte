@@ -2,7 +2,7 @@
   import SettingsNav from './SettingsNav.svelte';
   import PaneState from './PaneState.svelte';
   import type { LayoutAction, UiZoomAdjustment, UiZoomView } from './ipc';
-  import './theme/worktrees.css';
+  import './theme/workspaces.css';
 
   let {
     zoom,
@@ -19,14 +19,14 @@
   } = $props();
 </script>
 
-<div class="worktree-settings">
-  <header class="worktree-settings-head"><h1>Settings</h1></header>
-  <div class="worktree-settings-body">
+<div class="workspace-settings">
+  <header class="workspace-settings-head"><h1>Settings</h1></header>
+  <div class="workspace-settings-body">
     <SettingsNav current="appearance" {send} />
-    <div class="worktree-settings-main">
+    <div class="workspace-settings-main">
       <section aria-labelledby="ui-zoom-heading">
         <h2 id="ui-zoom-heading">UI zoom</h2>
-        <p class="worktree-description">
+        <p class="workspace-description">
           Resize text, controls, and panes across Velocity.
         </p>
         {#if zoom}

@@ -13,7 +13,12 @@ pub enum ThreadState {
     Error,
     Closed,
     Done,
-    Merged,
+    Landed,
+}
+
+impl ThreadState {
+    #[allow(non_upper_case_globals)]
+    pub const Merged: Self = Self::Landed;
 }
 
 /// Agent activity states (`SPEC.md` §2.2).

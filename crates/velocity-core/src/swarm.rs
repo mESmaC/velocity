@@ -94,7 +94,20 @@ pub enum TrackStep {
     Failed,
 }
 
-#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[cfg(feature = "bindings")]
+#[derive(serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename = "SwarmEventKind", rename_all = "snake_case")]
+enum SwarmEventKindBinding {
+    You,
+    /// A member named its change.
+    Named,
+    /// A change was refused, reverted or reopened.
+    Changes,
+    Landed,
+    Failed,
+    Finished,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SwarmEventKind {
@@ -102,8 +115,8 @@ pub enum SwarmEventKind {
     /// A member named its change. Feeds saved before Rosen call it `opened`.
     #[serde(alias = "opened")]
     Named,
-    /// A change was refused, reverted or reopened. Saved `rebase` lines from the removed
-    /// git rebase notice read as this kind, so old state still loads.
+    /// A change was refused, reverted or reopened. Saved `rebase` lines from earlier
+    /// feeds read as this kind, so old state still loads.
     #[serde(alias = "rebase")]
     Changes,
     #[serde(alias = "merged")]
@@ -117,6 +130,7 @@ pub enum SwarmEventKind {
 pub struct SwarmFeedEvent {
     pub timestamp: String,
     pub actor: String,
+    #[cfg_attr(feature = "bindings", specta(type = SwarmEventKindBinding))]
     pub kind: SwarmEventKind,
     pub message: String,
 }

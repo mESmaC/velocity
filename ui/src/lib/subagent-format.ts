@@ -126,7 +126,7 @@ export function findUnmatchedSubagents(
 }
 
 /** Replaces an existing subagent entry by identifier, or appends it in order. */
-export function mergeSubagentUpdate(
+export function applySubagentUpdate(
   list: SubagentView[],
   updated: SubagentView,
 ): SubagentView[] {

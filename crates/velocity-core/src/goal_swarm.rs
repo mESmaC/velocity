@@ -341,7 +341,26 @@ pub fn launch_label(agents: u32) -> String {
 
 /// Activity feed tags for a goal swarm (SPEC.md F16: claims, refusals, named changes,
 /// waits, lands, reverts and leaves).
-#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[cfg(feature = "bindings")]
+#[derive(serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename = "GoalEventKind", rename_all = "snake_case")]
+enum GoalEventKindBinding {
+    You,
+    Claim,
+    Refused,
+    /// A member named its change.
+    Named,
+    /// A refused land, a revert or requested changes reopened a member's change.
+    Changes,
+    Wait,
+    Landed,
+    Left,
+    Failed,
+    Finished,
+}
+
+/// Activity feed tags for a goal swarm (SPEC.md F16: claims, refusals, named changes,
+/// waits, lands, reverts and leaves).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalEventKind {
@@ -367,6 +386,7 @@ pub enum GoalEventKind {
 pub struct GoalFeedEvent {
     pub timestamp: String,
     pub actor: String,
+    #[cfg_attr(feature = "bindings", specta(type = GoalEventKindBinding))]
     pub kind: GoalEventKind,
     pub message: String,
 }

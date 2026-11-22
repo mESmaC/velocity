@@ -164,7 +164,7 @@ pub struct LayoutData {
     pub projects: Vec<PaletteItem>,
     pub tasks: Vec<TaskView>,
     pub completed_task_count: usize,
-    pub pull_requests: Vec<RailItem>,
+    pub changes: Vec<RailItem>,
     pub issues: Vec<RailItem>,
     pub merged_today: usize,
     pub providers: Vec<ProviderUsage>,
@@ -351,7 +351,7 @@ pub enum LayoutIntent {
         #[cfg_attr(feature = "bindings", specta(type = String))]
         usize,
     ),
-    OpenWorktreeInExplorer(String),
+    OpenWorkspaceInExplorer(String),
     /// The project's Collapse repository page, or a landed commit's page (#429).
     OpenOnCollapse(Option<String>),
     SettingsTab(String),
@@ -553,9 +553,9 @@ pub struct LayoutSnapshot {
     #[cfg_attr(feature = "bindings", specta(type = String))]
     pub slash_selection: usize,
     pub tasks: Vec<TaskView>,
-    pub pull_requests: Vec<RailItem>,
+    pub changes: Vec<RailItem>,
     pub issues: Vec<RailItem>,
-    pub worktree_label: String,
+    pub workspace_label: String,
     pub providers: Vec<ProviderUsage>,
     pub airc_open: bool,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
@@ -639,7 +639,7 @@ pub struct LayoutChrome {
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
     #[cfg_attr(feature = "bindings", specta(type = String))]
     pub slash_selection: usize,
-    pub worktree_label: String,
+    pub workspace_label: String,
     pub providers: Vec<ProviderUsage>,
     pub airc_open: bool,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
@@ -688,7 +688,7 @@ impl LayoutChrome {
             goal_dialog: snapshot.goal_dialog.clone(),
             slash_items: snapshot.slash_items.clone(),
             slash_selection: snapshot.slash_selection,
-            worktree_label: snapshot.worktree_label.clone(),
+            workspace_label: snapshot.workspace_label.clone(),
             providers: snapshot.providers.clone(),
             airc_open: snapshot.airc_open,
             airc_unread: snapshot.airc_unread,
@@ -719,7 +719,7 @@ pub struct SidebarSlice {
     pub pulse: Vec<PulseCount>,
 }
 
-/// Right-rail tasks, issues, pull requests and Rosen work pool, sent only when changed (#553).
+/// Right-rail tasks, issues, changes and Rosen work pool, sent only when changed (#553).
 #[cfg_attr(
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
@@ -727,7 +727,7 @@ pub struct SidebarSlice {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RailSlice {
     pub tasks: Vec<TaskView>,
-    pub pull_requests: Vec<RailItem>,
+    pub changes: Vec<RailItem>,
     pub issues: Vec<RailItem>,
     pub tasks_draft: bool,
     pub task_count_label: String,
@@ -738,7 +738,7 @@ impl RailSlice {
     pub fn from_snapshot(snapshot: &LayoutSnapshot) -> Self {
         Self {
             tasks: snapshot.tasks.clone(),
-            pull_requests: snapshot.pull_requests.clone(),
+            changes: snapshot.changes.clone(),
             issues: snapshot.issues.clone(),
             tasks_draft: snapshot.tasks_draft,
             task_count_label: snapshot.task_count_label.clone(),

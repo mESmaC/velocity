@@ -17,11 +17,11 @@
     Swarm: 'swarm',
     Spec: 'issue',
     Working: 'circle',
-    Review: 'pr',
+    Review: 'review',
     Error: 'alert',
     Closed: 'circle',
     Done: 'check',
-    Merged: 'check',
+    Landed: 'check',
   };
   const emptyLane: Record<string, string> = {
     UpNext: 'No tasks or issues are waiting.',

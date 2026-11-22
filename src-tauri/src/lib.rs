@@ -1,7 +1,6 @@
 use anyhow::Context;
 use std::path::Path;
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
-use velocity_store::PersistedState;
 
 mod agent_activity;
 mod agents;
@@ -252,7 +251,6 @@ fn bindings() -> Builder<tauri::Wry> {
 
 fn event_bindings(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
     builder
-        .typ::<PersistedState>()
         .typ::<airc_events::AircEventPublished>()
         .typ::<airc_events::AircMessagePublished>()
         .typ::<airc_modal::AircModalPublished>()

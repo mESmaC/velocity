@@ -2,8 +2,8 @@
   import {
     workspaceCommands,
     type WorkspacePreferences,
-    type WorktreePathPreview,
-    type WorktreeSettingsEdit,
+    type WorkspacePathPreview,
+    type WorkspaceSettingsEdit,
   } from './ipc';
 
   let {
@@ -12,10 +12,10 @@
     onError,
   }: {
     view: WorkspacePreferences;
-    edit: (change: WorktreeSettingsEdit) => void;
+    edit: (change: WorkspaceSettingsEdit) => void;
     onError: (reason: unknown) => void;
   } = $props();
-  let preview = $state<WorktreePathPreview | null>(null);
+  let preview = $state<WorkspacePathPreview | null>(null);
   let previewRequest = 0;
 
   async function previewFolder(folder: string) {
@@ -28,7 +28,7 @@
     }
   }
 
-  function save(change: WorktreeSettingsEdit) {
+  function save(change: WorkspaceSettingsEdit) {
     previewRequest += 1;
     preview = null;
     edit(change);
@@ -54,11 +54,11 @@
 
 <section>
   <h2>Workspace location</h2>
-  <p class="worktree-description">Location changes apply to new workspaces.</p>
-  <div class="worktree-drives">
+  <p class="workspace-description">Location changes apply to new workspaces.</p>
+  <div class="workspace-drives">
     {#each view.drives as drive (drive.root)}
       <button
-        class="worktree-drive"
+        class="workspace-drive"
         class:on={drive.selected}
         class:slow={drive.slow}
         aria-pressed={drive.selected}
@@ -75,7 +75,7 @@
           aria-valuemax="100"
           aria-valuenow={drive.used_percent}
         >
-          <span style={`--worktree-drive-used: ${drive.used_percent}%`}></span>
+          <span style={`--workspace-drive-used: ${drive.used_percent}%`}></span>
         </span>
         <span class="drive-free"
           >{drive.free_label}{drive.slow ? ' · slow for builds' : ''}</span
@@ -83,8 +83,8 @@
       </button>
     {/each}
   </div>
-  <div class="worktree-location-input">
-    <label class="worktree-input">
+  <div class="workspace-location-input">
+    <label class="workspace-input">
       <span>{view.drive}</span>
       <input
         aria-label="Workspace folder"
@@ -95,18 +95,18 @@
         onchange={(event) => save({ Folder: event.currentTarget.value })}
       />
     </label>
-    <button class="worktree-button browse" onclick={() => void browse()}
+    <button class="workspace-button browse" onclick={() => void browse()}
       >Browse…</button
     >
   </div>
-  <div class="worktree-path-preview">
+  <div class="workspace-path-preview">
     {preview?.preview_root ?? view.preview_root}<span>&lt;project&gt;</span
     >{view.separator}<span>&lt;change&gt;</span>
     <br /><small>e.g. {preview?.example_path ?? view.example_path}</small>
   </div>
   {#if view.project_identifier !== null}
-    <div class="worktree-setting-row">
-      <label class="worktree-check">
+    <div class="workspace-setting-row">
+      <label class="workspace-check">
         <input
           type="checkbox"
           checked={view.project_override !== null}
@@ -116,7 +116,7 @@
         Use a different location for <b>{view.project_name}</b>
       </label>
       {#if view.project_override !== null}
-        <label class="worktree-input">
+        <label class="workspace-input">
           <input
             aria-label="Project workspace location"
             value={view.project_override}
@@ -130,6 +130,6 @@
     </div>
   {/if}
   {#if view.location_notice}
-    <p class="worktree-location-notice">{view.location_notice}</p>
+    <p class="workspace-location-notice">{view.location_notice}</p>
   {/if}
 </section>

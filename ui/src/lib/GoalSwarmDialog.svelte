@@ -245,7 +245,7 @@
               >
             {/each}
           </span>
-          <span class="hint">{view?.worktrees_hint ?? ''}</span>
+          <span class="hint">{view?.workspaces_hint ?? ''}</span>
         </div>
       </div>
 

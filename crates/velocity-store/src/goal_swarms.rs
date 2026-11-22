@@ -101,7 +101,7 @@ pub struct GoalSwarmMember {
     pub thread: Option<u32>,
     #[serde(default)]
     pub left_reason: Option<String>,
-    #[serde(default)]
+    #[serde(default, rename = "landed_threads", alias = "merged_threads")]
     pub merged_threads: Vec<u32>,
 }
 

@@ -28,7 +28,7 @@ pub struct SwarmRecord {
     /// `HH:MM` the swarm launched.
     pub started: String,
     /// Close each issue once its change lands (default on). Rosen rebases members at
-    /// their step boundaries, so a saved `rebase_on_merge` option is ignored on load.
+    /// their step boundaries, so older saved rebase options are ignored on load.
     #[serde(default = "enabled")]
     pub close_issues: bool,
     #[serde(default)]

@@ -66,7 +66,7 @@ pub struct WorktreeSize {
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorktreeDriveView {
+pub struct WorkspaceDriveView {
     pub root: String,
     pub name: String,
     pub kind: String,
@@ -81,9 +81,9 @@ pub struct WorktreeDriveView {
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WorktreeRowTone {
+pub enum WorkspaceRowTone {
     Working,
-    PullRequest,
+    Change,
     Fixing,
     Failed,
     Closed,
@@ -96,14 +96,14 @@ pub enum WorktreeRowTone {
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorktreeRowView {
+pub struct WorkspaceRowView {
     pub owner_identifier: u32,
     pub owner: String,
     pub path: String,
     pub short_path: String,
     pub size: String,
     pub label: String,
-    pub tone: WorktreeRowTone,
+    pub tone: WorkspaceRowTone,
     pub warning: String,
     pub deleted: bool,
 }
@@ -113,7 +113,7 @@ pub struct WorktreeRowView {
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorktreeSettingsView {
+pub struct WorkspaceSettingsView {
     pub revision: u32,
     pub project_identifier: Option<u32>,
     pub project_name: String,
@@ -125,13 +125,12 @@ pub struct WorktreeSettingsView {
     pub example_path: String,
     pub separator: String,
     pub project_override: Option<String>,
-    pub delete_local_branch: bool,
     pub share_build_cache: bool,
     pub copy_files: String,
     pub setup_command: String,
     pub ready_count: u32,
-    pub drives: Vec<WorktreeDriveView>,
-    pub rows: Vec<WorktreeRowView>,
+    pub drives: Vec<WorkspaceDriveView>,
+    pub rows: Vec<WorkspaceRowView>,
     pub live_count: String,
     pub total_size: String,
     pub free_space: String,
@@ -146,18 +145,17 @@ pub struct WorktreeSettingsView {
     feature = "bindings",
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
-pub enum WorktreeSettingsEdit {
+pub enum WorkspaceSettingsEdit {
     Root(String),
     Drive(String),
     Folder(String),
     OverrideEnabled(bool),
     ProjectRoot(String),
-    DeleteLocalBranch(bool),
     ShareBuildCache(bool),
     CopyFiles(String),
     SetupCommand(String),
     ReadyCount(u32),
-    /// The project's version control (F5): Rosen when true, git when false.
+    /// The project's version control (F5): Rosen is the only version control.
     UseRosen(bool),
 }
 
@@ -167,17 +165,17 @@ pub enum WorktreeSettingsEdit {
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorktreePathPreview {
+pub struct WorkspacePathPreview {
     pub preview_root: String,
     pub example_path: String,
 }
 
 /// Previews a folder on the saved drive, so typing can update the preview
 /// while the folder itself is saved only when the input commits.
-pub fn folder_preview(context: &WorktreeContext, folder: &str) -> WorktreePathPreview {
+pub fn folder_preview(context: &WorktreeContext, folder: &str) -> WorkspacePathPreview {
     let drive = split_location(&context.preferences.root).0;
     let root = join_location(&drive, folder);
-    WorktreePathPreview {
+    WorkspacePathPreview {
         preview_root: preview_prefix(&root),
         example_path: example_path(&root, &context.project_name),
     }
@@ -277,10 +275,10 @@ pub fn format_bytes(bytes: u128) -> String {
     }
 }
 
-fn drive_view(drive: &DriveInfo, selected_root: &str) -> WorktreeDriveView {
+fn drive_view(drive: &DriveInfo, selected_root: &str) -> WorkspaceDriveView {
     let used = drive.total_bytes.saturating_sub(drive.free_bytes);
     let percent = u128::from(used) * 100 / u128::from(drive.total_bytes.max(1));
-    WorktreeDriveView {
+    WorkspaceDriveView {
         root: drive.root.clone(),
         name: drive.name.clone(),
         kind: drive.kind.clone(),
@@ -291,28 +289,28 @@ fn drive_view(drive: &DriveInfo, selected_root: &str) -> WorktreeDriveView {
     }
 }
 
-fn row_presentation(owner: &WorktreeOwner) -> (String, WorktreeRowTone) {
+fn row_presentation(owner: &WorktreeOwner) -> (String, WorkspaceRowTone) {
     match owner.status {
-        WorktreeDisplayStatus::Working => ("working".into(), WorktreeRowTone::Working),
+        WorktreeDisplayStatus::Working => ("working".into(), WorkspaceRowTone::Working),
         WorktreeDisplayStatus::PullRequest(number) => (
             format!("change #{number}"),
             if owner.fixing {
-                WorktreeRowTone::Fixing
+                WorkspaceRowTone::Fixing
             } else {
-                WorktreeRowTone::PullRequest
+                WorkspaceRowTone::Change
             },
         ),
-        WorktreeDisplayStatus::Failed => ("failed · kept".into(), WorktreeRowTone::Failed),
-        WorktreeDisplayStatus::Closed => ("closed · kept".into(), WorktreeRowTone::Closed),
-        WorktreeDisplayStatus::Review => ("review".into(), WorktreeRowTone::Duty),
-        WorktreeDisplayStatus::Sweep => ("sweep".into(), WorktreeRowTone::Duty),
-        WorktreeDisplayStatus::Ready => ("ready".into(), WorktreeRowTone::Duty),
-        WorktreeDisplayStatus::Prebuilding => ("ready · building".into(), WorktreeRowTone::Duty),
-        WorktreeDisplayStatus::Deleted => ("deleted · landed".into(), WorktreeRowTone::Deleted),
+        WorktreeDisplayStatus::Failed => ("failed · kept".into(), WorkspaceRowTone::Failed),
+        WorktreeDisplayStatus::Closed => ("closed · kept".into(), WorkspaceRowTone::Closed),
+        WorktreeDisplayStatus::Review => ("review".into(), WorkspaceRowTone::Duty),
+        WorktreeDisplayStatus::Sweep => ("sweep".into(), WorkspaceRowTone::Duty),
+        WorktreeDisplayStatus::Ready => ("ready".into(), WorkspaceRowTone::Duty),
+        WorktreeDisplayStatus::Prebuilding => ("ready · building".into(), WorkspaceRowTone::Duty),
+        WorktreeDisplayStatus::Deleted => ("deleted · landed".into(), WorkspaceRowTone::Deleted),
     }
 }
 
-pub fn row_view(owner: &WorktreeOwner, measurement: Option<&WorktreeSize>) -> WorktreeRowView {
+pub fn row_view(owner: &WorktreeOwner, measurement: Option<&WorktreeSize>) -> WorkspaceRowView {
     let (label, tone) = row_presentation(owner);
     let (drive, _) = split_location(&owner.path);
     let mut suffix: Vec<_> = Path::new(&owner.path)
@@ -322,7 +320,7 @@ pub fn row_view(owner: &WorktreeOwner, measurement: Option<&WorktreeSize>) -> Wo
         .map(|part| part.as_os_str().to_string_lossy().into_owned())
         .collect();
     suffix.reverse();
-    WorktreeRowView {
+    WorkspaceRowView {
         owner_identifier: owner.identifier,
         owner: owner.title.clone(),
         path: owner.path.clone(),
@@ -376,9 +374,9 @@ pub fn settings_view(
     context: &WorktreeContext,
     drives: &[DriveInfo],
     measurements: &WorktreeMeasurements,
-    deleted: &[WorktreeRowView],
+    deleted: &[WorkspaceRowView],
     location_changed: bool,
-) -> WorktreeSettingsView {
+) -> WorkspaceSettingsView {
     let preferences = &context.preferences;
     let effective_root = effective_project_root(context);
     let live = live_owners(context, measurements);
@@ -388,7 +386,7 @@ pub fn settings_view(
         .collect();
     rows.extend_from_slice(deleted);
     let (drive, folder) = split_location(&preferences.root);
-    WorktreeSettingsView {
+    WorkspaceSettingsView {
         revision: 0,
         project_identifier: context.project_identifier,
         project_name: context.project_name.clone(),
@@ -400,7 +398,6 @@ pub fn settings_view(
         example_path: example_path(&preferences.root, &context.project_name),
         separator: std::path::MAIN_SEPARATOR.to_string(),
         project_override: preferences.project_override.clone(),
-        delete_local_branch: preferences.delete_local_branch,
         share_build_cache: preferences.share_build_cache,
         copy_files: preferences.copy_files.clone(),
         setup_command: preferences.setup_command.clone(),

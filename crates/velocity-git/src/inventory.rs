@@ -10,8 +10,8 @@ use sysinfo::{DiskKind, Disks};
 use thiserror::Error;
 use velocity_core::worktree_settings::deleted_row_window_start;
 use velocity_core::worktree_view::{
-    self, DriveInfo, WorktreeContext, WorktreeMeasurements, WorktreeRowTone, WorktreeRowView,
-    WorktreeSettingsView, WorktreeSize, path_spelling,
+    self, DriveInfo, WorkspaceRowTone, WorkspaceRowView, WorkspaceSettingsView, WorktreeContext,
+    WorktreeMeasurements, WorktreeSize, path_spelling,
 };
 
 #[derive(Debug, Error)]
@@ -49,7 +49,7 @@ impl WorktreeRuntime {
     pub fn snapshot(
         &self,
         context: &WorktreeContext,
-    ) -> Result<WorktreeSettingsView, InventoryError> {
+    ) -> Result<WorkspaceSettingsView, InventoryError> {
         self.inventory
             .lock()
             .map_err(|error| InventoryError::State(error.to_string()))
@@ -70,7 +70,7 @@ impl WorktreeRuntime {
     pub fn start(
         self: &Arc<Self>,
         source: Arc<dyn WorktreeSource>,
-        publish: Arc<dyn Fn(WorktreeSettingsView) + Send + Sync>,
+        publish: Arc<dyn Fn(WorkspaceSettingsView) + Send + Sync>,
     ) -> Result<(), InventoryError> {
         let runtime = Arc::clone(self);
         let state_source = Arc::clone(&source);
@@ -256,9 +256,9 @@ pub fn measure_worktree(path: &Path, stopped: &AtomicBool) -> Result<u64, Invent
 pub struct WorktreeInventory {
     drives: Vec<DriveInfo>,
     measurements: WorktreeMeasurements,
-    previous: BTreeMap<Option<u32>, Vec<WorktreeRowView>>,
-    deleted: BTreeMap<Option<u32>, Vec<(Instant, WorktreeRowView)>>,
-    latest: Option<WorktreeSettingsView>,
+    previous: BTreeMap<Option<u32>, Vec<WorkspaceRowView>>,
+    deleted: BTreeMap<Option<u32>, Vec<(Instant, WorkspaceRowView)>>,
+    latest: Option<WorkspaceSettingsView>,
     context_revision: u32,
     location_changed: bool,
     drive_error: String,
@@ -327,7 +327,7 @@ impl WorktreeInventory {
         self.location_changed = true;
     }
 
-    pub fn snapshot(&mut self, context: &WorktreeContext) -> WorktreeSettingsView {
+    pub fn snapshot(&mut self, context: &WorktreeContext) -> WorkspaceSettingsView {
         if context.revision < self.context_revision
             && let Some(view) = &self.latest
         {
@@ -373,7 +373,7 @@ impl WorktreeInventory {
         view
     }
 
-    fn track_deleted(&mut self, project: Option<u32>, rows: &[WorktreeRowView], merged: &[u32]) {
+    fn track_deleted(&mut self, project: Option<u32>, rows: &[WorkspaceRowView], merged: &[u32]) {
         let now = Instant::now();
         let recent = self.deleted.entry(project).or_default();
         recent.retain(|(deleted_at, row)| {
@@ -391,11 +391,11 @@ impl WorktreeInventory {
                     continue;
                 }
                 row.deleted = true;
-                row.tone = WorktreeRowTone::Deleted;
+                row.tone = WorkspaceRowTone::Deleted;
                 row.size.clear();
                 row.warning.clear();
                 row.label = if merged.contains(&row.owner_identifier) {
-                    "deleted · merged"
+                    "deleted · landed"
                 } else {
                     "deleted"
                 }

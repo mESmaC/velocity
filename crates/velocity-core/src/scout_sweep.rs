@@ -125,7 +125,7 @@ pub fn sweep_prompt(brief: &SweepBrief) -> String {
         prompt.push_str(&format!("\nThe user asks the scouts: {instruction}\n"));
     }
     prompt.push_str(
-        "\nThis worktree is a detached checkout that is reset before your next sweep: do not commit, push or open PRs, and do not fix what you find. End your turn with a one-line summary of what you filed.\n",
+        "\nThis workspace is a detached checkout that is reset before your next sweep: do not name changes or modify the base, and do not fix what you find. End your turn with a one-line summary of what you filed.\n",
     );
     crate::text_budget::prompt_excerpt(
         &prompt,
@@ -160,7 +160,7 @@ fn sweep_steps(rules: &ScoutRuleSettings, stress_diff_input_count: u32) -> Strin
             "- Diff at least {stress_diff_input_count} generated inputs for each feature that has a compiled model, split across as many `scout_compare` calls as its input size limit needs.\n"
         ));
     }
-    steps.push_str("- Write new tests and stress scripts that expose failures. Keep each failing script in the worktree; it is your evidence.\n");
+    steps.push_str("- Write new tests and stress scripts that expose failures. Keep each failing script in the workspace; it is your evidence.\n");
     for area in &rules.focus_areas {
         steps.push_str(&format!("- {}: {}\n", area.label(), focus_guide(*area)));
     }

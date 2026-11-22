@@ -19,8 +19,8 @@
 
 <style>
   .server-status {
-    padding: var(--worktrees-drive-padding);
-    border-bottom: var(--worktrees-head-border);
+    padding: var(--workspaces-drive-padding);
+    border-bottom: var(--workspaces-head-border);
     background: var(--surface);
     color: var(--warn);
     font-size: var(--reference-body-font-size);
@@ -31,7 +31,7 @@
     display: block;
   }
   pre {
-    margin: var(--worktrees-zero);
+    margin: var(--workspaces-zero);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     color: var(--text-2);

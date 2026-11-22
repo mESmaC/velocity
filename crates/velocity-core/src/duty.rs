@@ -72,14 +72,23 @@ pub fn default_scout_focus_areas() -> Vec<ScoutFocusArea> {
     ]
 }
 
-#[cfg_attr(feature = "bindings", derive(specta::Type))]
+#[cfg(feature = "bindings")]
+#[derive(serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename = "ScoutCadence", rename_all = "snake_case")]
+enum ScoutCadenceBinding {
+    Once,
+    EveryThirtyMinutes,
+    AfterEveryLand,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScoutCadence {
     Once,
     #[default]
     EveryThirtyMinutes,
-    AfterEveryMerge,
+    #[serde(alias = "after_every_merge")]
+    AfterEveryLand,
 }
 
 impl ScoutCadence {
@@ -87,7 +96,7 @@ impl ScoutCadence {
         match self {
             Self::Once => "once",
             Self::EveryThirtyMinutes => "30m minimum",
-            Self::AfterEveryMerge => "after every merge",
+            Self::AfterEveryLand => "after every land",
         }
     }
 
@@ -95,7 +104,7 @@ impl ScoutCadence {
         match self {
             Self::Once => "Sweep once",
             Self::EveryThirtyMinutes => "At least 30m between scheduled sweeps",
-            Self::AfterEveryMerge => "Sweep after every merge",
+            Self::AfterEveryLand => "Sweep after every land",
         }
     }
 }
@@ -107,6 +116,7 @@ pub struct ScoutRuleSettings {
     pub assume_every_part_fails: bool,
     pub run_stress_against_models: bool,
     pub label_issues_for_dispatch: bool,
+    #[cfg_attr(feature = "bindings", specta(type = ScoutCadenceBinding))]
     pub cadence: ScoutCadence,
 }
 
@@ -161,11 +171,11 @@ pub struct DutyAgentCard {
     pub speed: Option<crate::state::SpeedMode>,
 }
 
-#[cfg_attr(feature = "bindings", derive(specta::Type))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DutyEventKind {
-    Merge,
+#[cfg(feature = "bindings")]
+#[derive(serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename = "DutyEventKind", rename_all = "snake_case")]
+pub enum DutyEventKindBinding {
+    Land,
     Approve,
     Changes,
     Wait,
@@ -177,11 +187,33 @@ pub enum DutyEventKind {
     You,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DutyEventKind {
+    #[serde(alias = "merge")]
+    Land,
+    Approve,
+    Changes,
+    Wait,
+    File,
+    Sweep,
+    Claim,
+    Skip,
+    Task,
+    You,
+}
+
+impl DutyEventKind {
+    #[allow(non_upper_case_globals)]
+    pub const Merge: Self = Self::Land;
+}
+
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DutyFeedEvent {
     pub timestamp: String,
     pub actor: String,
+    #[cfg_attr(feature = "bindings", specta(type = DutyEventKindBinding))]
     pub kind: DutyEventKind,
     pub message: String,
 }
@@ -286,11 +318,11 @@ impl DutyRoleEntry {
     }
 }
 
-/// Cadence is the existing duty setting: after every merge requests a one-minute
+/// Cadence is the existing duty setting: after every land requests a one-minute
 /// response, periodic sweeps a thirty-minute response. Once still drains all reviews.
 pub fn review_window_seconds(cadence: ScoutCadence) -> u64 {
     match cadence {
-        ScoutCadence::AfterEveryMerge => 60,
+        ScoutCadence::AfterEveryLand => 60,
         ScoutCadence::Once | ScoutCadence::EveryThirtyMinutes => 30 * 60,
     }
 }

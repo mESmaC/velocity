@@ -123,7 +123,7 @@
   vertical-align: var(--duty-event-dot-vertical-align);
   background: var(--muted);
 }
-.duty-view .ev.merge .what::before,
+.duty-view .ev.land .what::before,
 .duty-view .ev.approve .what::before {
   background: var(--ok);
 }

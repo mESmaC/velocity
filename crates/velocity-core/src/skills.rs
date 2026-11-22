@@ -11,7 +11,7 @@ pub struct ProjectSkills {
     /// What the latest project scan suggested (F3, F18 Suggestions); the cards show why.
     #[serde(default)]
     pub suggestions: Vec<SkillSuggestion>,
-    /// Suggestions you turned off, as `pack` or `pack/bundle`. A re-check after a merge
+    /// Suggestions you turned off, as `pack` or `pack/bundle`. A re-check after a land
     /// never turns these back on ("switched on unless you turn them off").
     #[serde(default)]
     pub declined: Vec<String>,

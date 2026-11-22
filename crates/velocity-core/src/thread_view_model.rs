@@ -15,7 +15,7 @@ use crate::thread_view::{
     derive(serde::Serialize, serde::Deserialize, specta::Type)
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WorktreeChipView {
+pub enum WorkspaceChipView {
     Hidden,
     Live,
     Deleted,
@@ -180,9 +180,9 @@ pub enum TranscriptBlock {
         key: String,
         value: String,
     },
-    /// A line Velocity delivered to the agent (an F14 "via AIRC" message or event, a PR
-    /// follow-through notice), shown once the agent read it. It is never a user message
-    /// and never sits in the composer queue (#231).
+    /// A line Velocity delivered to the agent (an F14 "via AIRC" message or event, or a
+    /// change follow-through notice), shown once the agent read it. It is never a user
+    /// message and never sits in the composer queue (#231).
     Notice {
         text: String,
     },
@@ -195,8 +195,6 @@ pub enum TranscriptBlock {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TranscriptModeView {
     FullTranscript,
-    CollapsedWithPrHistory,
-    ExpandedWithPrHistory,
     CollapsedWithLandHistory,
     ExpandedWithLandHistory,
 }
@@ -327,10 +325,10 @@ pub struct ThreadDetailSnapshot {
     pub title: String,
     pub titling: bool,
     pub title_model_name: String,
-    pub branch: String,
-    pub worktree_path: String,
-    pub worktree_short_path: String,
-    pub worktree_chip: WorktreeChipView,
+    pub change_label: String,
+    pub workspace_path: String,
+    pub workspace_short_path: String,
+    pub workspace_chip: WorkspaceChipView,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
     #[cfg_attr(feature = "bindings", specta(type = String))]
     pub added: usize,
@@ -340,10 +338,6 @@ pub struct ThreadDetailSnapshot {
     pub elapsed_label: String,
     pub has_diff_action: bool,
     pub has_editor_action: bool,
-    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number::optional"))]
-    #[cfg_attr(feature = "bindings", specta(type = Option<String>))]
-    pub pull_request_number: Option<usize>,
-    pub has_ship_pr_button: bool,
     pub agent_busy: bool,
     /// Read-only question thread: no workspace, change, claim or landable status (#533).
     pub read_only: bool,
@@ -548,10 +542,10 @@ pub struct ThreadDetailMeta {
     pub title: String,
     pub titling: bool,
     pub title_model_name: String,
-    pub branch: String,
-    pub worktree_path: String,
-    pub worktree_short_path: String,
-    pub worktree_chip: WorktreeChipView,
+    pub change_label: String,
+    pub workspace_path: String,
+    pub workspace_short_path: String,
+    pub workspace_chip: WorkspaceChipView,
     #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number"))]
     #[cfg_attr(feature = "bindings", specta(type = String))]
     pub added: usize,
@@ -561,10 +555,6 @@ pub struct ThreadDetailMeta {
     pub elapsed_label: String,
     pub has_diff_action: bool,
     pub has_editor_action: bool,
-    #[cfg_attr(feature = "bindings", serde(with = "crate::ipc_number::optional"))]
-    #[cfg_attr(feature = "bindings", specta(type = Option<String>))]
-    pub pull_request_number: Option<usize>,
-    pub has_ship_pr_button: bool,
     pub agent_busy: bool,
     pub read_only: bool,
     pub no_change_reason: Option<String>,
@@ -587,17 +577,15 @@ impl ThreadDetailMeta {
             title: snapshot.title.clone(),
             titling: snapshot.titling,
             title_model_name: snapshot.title_model_name.clone(),
-            branch: snapshot.branch.clone(),
-            worktree_path: snapshot.worktree_path.clone(),
-            worktree_short_path: snapshot.worktree_short_path.clone(),
-            worktree_chip: snapshot.worktree_chip,
+            change_label: snapshot.change_label.clone(),
+            workspace_path: snapshot.workspace_path.clone(),
+            workspace_short_path: snapshot.workspace_short_path.clone(),
+            workspace_chip: snapshot.workspace_chip,
             added: snapshot.added,
             deleted: snapshot.deleted,
             elapsed_label: snapshot.elapsed_label.clone(),
             has_diff_action: snapshot.has_diff_action,
             has_editor_action: snapshot.has_editor_action,
-            pull_request_number: snapshot.pull_request_number,
-            has_ship_pr_button: snapshot.has_ship_pr_button,
             agent_busy: snapshot.agent_busy,
             read_only: snapshot.read_only,
             no_change_reason: snapshot.no_change_reason.clone(),
@@ -922,7 +910,10 @@ pub fn initial_worktree_step_group(worktree_path: &str, base_branch: &str) -> Ve
 /// Projects a `ThreadDetailEntry` into a serializable `ThreadDetailSnapshot`.
 pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot {
     let (chip, mode) = if entry.read_only {
-        (WorktreeChipView::Hidden, TranscriptModeView::FullTranscript)
+        (
+            WorkspaceChipView::Hidden,
+            TranscriptModeView::FullTranscript,
+        )
     } else {
         thread_presentation(entry)
     };
@@ -954,17 +945,15 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
         titling: entry.titling,
         title_model_name: entry.title_model_name.clone(),
         account_label: entry.account_label.clone(),
-        branch: entry.branch.clone(),
-        worktree_path: entry.worktree_path.clone(),
-        worktree_short_path: shorten_worktree_path(&entry.worktree_path),
-        worktree_chip: chip,
+        change_label: entry.branch.clone(),
+        workspace_path: entry.worktree_path.clone(),
+        workspace_short_path: shorten_worktree_path(&entry.worktree_path),
+        workspace_chip: chip,
         added: entry.added,
         deleted: entry.deleted,
         elapsed_label: entry.elapsed_label.clone(),
         has_diff_action: !entry.read_only && actions.has_diff_action,
         has_editor_action: !entry.read_only && actions.has_editor_action,
-        pull_request_number: actions.pr_number,
-        has_ship_pr_button: actions.has_ship_pr_button,
         agent_busy: entry.agent_busy,
         read_only: entry.read_only,
         no_change_reason: entry.no_change_reason.clone(),
@@ -991,14 +980,14 @@ pub fn project_thread_detail(entry: &ThreadDetailEntry) -> ThreadDetailSnapshot 
     }
 }
 
-fn thread_presentation(entry: &ThreadDetailEntry) -> (WorktreeChipView, TranscriptModeView) {
+fn thread_presentation(entry: &ThreadDetailEntry) -> (WorkspaceChipView, TranscriptModeView) {
     if let Some(change) = &entry.rosen_change {
         let chip = if entry.worktree_path.is_empty() {
-            WorktreeChipView::Hidden
+            WorkspaceChipView::Hidden
         } else if change.stage.finished() {
-            WorktreeChipView::Deleted
+            WorkspaceChipView::Deleted
         } else {
-            WorktreeChipView::Live
+            WorkspaceChipView::Live
         };
         let has_history = !change.lands.is_empty();
         let mode = match (change.stage, entry.show_work, has_history) {
@@ -1013,15 +1002,15 @@ fn thread_presentation(entry: &ThreadDetailEntry) -> (WorktreeChipView, Transcri
         return (chip, mode);
     }
     let chip = match thread_view::worktree_chip_state(!entry.branch.is_empty(), entry.lifecycle) {
-        WorktreeChipState::Hidden => WorktreeChipView::Hidden,
-        WorktreeChipState::Live => WorktreeChipView::Live,
-        WorktreeChipState::Deleted => WorktreeChipView::Deleted,
+        WorktreeChipState::Hidden => WorkspaceChipView::Hidden,
+        WorktreeChipState::Live => WorkspaceChipView::Live,
+        WorktreeChipState::Deleted => WorkspaceChipView::Deleted,
     };
     let mode =
         match thread_view::transcript_mode(entry.pull_request_number.is_some(), entry.show_work) {
             TranscriptMode::FullTranscript => TranscriptModeView::FullTranscript,
-            TranscriptMode::CollapsedWithPrHistory => TranscriptModeView::CollapsedWithPrHistory,
-            TranscriptMode::ExpandedWithPrHistory => TranscriptModeView::ExpandedWithPrHistory,
+            TranscriptMode::CollapsedWithPrHistory => TranscriptModeView::CollapsedWithLandHistory,
+            TranscriptMode::ExpandedWithPrHistory => TranscriptModeView::ExpandedWithLandHistory,
         };
     (chip, mode)
 }

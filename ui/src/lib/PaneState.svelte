@@ -95,7 +95,7 @@
 
 <style>
   .pane-state {
-    padding: var(--worktrees-nav-padding);
+    padding: var(--workspaces-nav-padding);
     color: var(--muted);
     font-size: var(--agents-help-size);
     display: grid;

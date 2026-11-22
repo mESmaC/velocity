@@ -9,12 +9,13 @@ pub struct Claim {
     pub member: String,
     pub nick: String,
     /// The lock key: a work-pool identity (`task:<id>`, `issue:<n>`, `spec:<section>`),
-    /// a build thread's `branch:<name>`, or the task text. Older records have none and
+    /// a build thread's `change:<id>`, or the task text. Older records have none and
     /// lock on their task text.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub piece: String,
     pub task: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[cfg_attr(feature = "bindings", specta(skip))]
     pub branch: String,
     /// The Rosen change ID this claim belongs to, when the member works on one (#532).
     #[serde(default, skip_serializing_if = "Option::is_none")]

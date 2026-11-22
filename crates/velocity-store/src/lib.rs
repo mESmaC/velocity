@@ -89,7 +89,7 @@ pub const DEFAULT_TITLE_MODEL_NAME: &str = "GPT-6 Luna";
 pub enum StoreError {
     #[error("Agent timeouts and caps must be positive; use off for unlimited caps")]
     AgentSetting,
-    #[error("Invalid worktree setting: {0}")]
+    #[error("Invalid workspace setting: {0}")]
     WorktreeSetting(String),
     #[error("Invalid shared MCP server: {0}")]
     SharedMcpServer(String),
@@ -152,7 +152,13 @@ pub enum ThreadState {
     Error,
     Closed,
     Done,
-    Merged,
+    #[serde(alias = "merged")]
+    Landed,
+}
+
+impl ThreadState {
+    #[allow(non_upper_case_globals)]
+    pub const Merged: Self = Self::Landed;
 }
 
 impl From<ThreadState> for CoreThreadState {
@@ -165,7 +171,7 @@ impl From<ThreadState> for CoreThreadState {
             ThreadState::Error => Self::Error,
             ThreadState::Closed => Self::Closed,
             ThreadState::Done => Self::Done,
-            ThreadState::Merged => Self::Merged,
+            ThreadState::Landed => Self::Landed,
         }
     }
 }
@@ -180,7 +186,7 @@ impl From<CoreThreadState> for ThreadState {
             CoreThreadState::Error => Self::Error,
             CoreThreadState::Closed => Self::Closed,
             CoreThreadState::Done => Self::Done,
-            CoreThreadState::Merged => Self::Merged,
+            CoreThreadState::Landed => Self::Landed,
         }
     }
 }
@@ -483,6 +489,11 @@ where
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct WorktreeSettings {
     pub location_root: Option<String>,
+    #[serde(
+        default,
+        rename = "delete_local_change_on_land",
+        alias = "delete_local_branch_on_merge"
+    )]
     pub delete_local_branch_on_merge: bool,
     pub share_rust_build_cache: bool,
     pub warm_pool_count: u32,
@@ -600,6 +611,7 @@ pub struct ProofSettings {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct Settings {
+    #[serde(rename = "workspaces", alias = "worktrees")]
     pub worktrees: WorktreeSettings,
     pub providers: ProviderSettings,
     pub agents: AgentSettings,
@@ -797,8 +809,13 @@ pub struct ThreadItem {
     pub title: String,
     pub state: ThreadState,
     pub activity: AgentActivity,
+    #[serde(rename = "change_name", alias = "branch_name")]
     pub branch_name: String,
-    #[serde(deserialize_with = "deserialize_optional_non_empty_string")]
+    #[serde(
+        rename = "workspace_path",
+        alias = "worktree_path",
+        deserialize_with = "deserialize_optional_non_empty_string"
+    )]
     #[specta(type = Option<String>)]
     pub worktree_path: Option<String>,
     /// Bind the profile to its original location even when the workspace setting changes.
@@ -808,11 +825,21 @@ pub struct ThreadItem {
     /// Operational role determining the session's MCP tool set (#533).
     #[serde(default)]
     pub role: velocity_core::tool_policy::ThreadRole,
-    #[serde(default)]
+    #[serde(default, rename = "workspace_role", alias = "worktree_role")]
     pub worktree_role: WorktreeRole,
-    #[serde(default, skip_serializing)]
+    #[serde(
+        default,
+        skip_serializing,
+        rename = "workspace_path_id",
+        alias = "worktree_path_id"
+    )]
     #[specta(skip)]
     pub worktree_path_id: Option<String>,
+    #[serde(
+        default,
+        rename = "legacy_change_number",
+        alias = "pull_request_number"
+    )]
     pub pull_request_number: Option<u32>,
     /// The Rosen change the thread works on, when its workspace came from Rosen (F5).
     #[serde(default)]
@@ -1264,21 +1291,22 @@ pub struct ProjectItem {
     pub name: String,
     pub location_kind: ProjectLocationKind,
     pub repository_path: String,
+    #[serde(rename = "base_ref", alias = "default_branch")]
     pub default_branch: String,
     pub github_remote: Option<String>,
     /// Root spec file, historically SPEC.md. Readers also include Markdown under spec/;
     /// keeping the saved path preserves existing projects and their configured root.
     pub spec_path: String,
     pub spec_locked: bool,
-    /// Completed F16 pieces retained after their merged thread history is deleted.
+    /// Completed F16 pieces retained after their landed thread history is deleted.
     #[serde(default)]
     pub built_spec_sections: Vec<String>,
-    /// Completion evidence from deleted merged threads cannot be inferred from live history.
+    /// Completion evidence from deleted landed threads cannot be inferred from live history.
     #[serde(default)]
     #[specta(skip)]
     pub(crate) deleted_thread_built_spec_sections: Vec<String>,
     /// Landed goal issues stay completed while the GitHub mirror catches up, and
-    /// after merged thread history is deleted. A revert removes the completion.
+    /// after landed thread history is deleted. A revert removes the completion.
     #[serde(default)]
     #[specta(skip)]
     pub completed_goal_issues: Vec<issues::ThreadIssue>,
@@ -1292,9 +1320,10 @@ pub struct ProjectItem {
     #[serde(default)]
     pub continuous_dispatch: continuous_dispatch::ContinuousDispatch,
     pub active_thread_id: Option<u32>,
+    #[serde(rename = "landed_today", alias = "merged_today")]
     pub merged_today: u32,
-    /// The local day `merged_today` counts lands for (see `landed_today`).
-    #[serde(default)]
+    /// The local day `landed_today` counts lands for (see `landed_today`).
+    #[serde(default, rename = "landed_day", alias = "merged_day")]
     #[specta(skip)]
     pub(crate) merged_day: u32,
     pub tasks: Vec<TaskItem>,
@@ -1320,8 +1349,8 @@ pub struct ProjectItem {
     #[serde(default)]
     #[specta(skip)]
     pub airc_seen: u64,
-    /// Deleted threads' worktrees that are still on disk, retried in the background (F12).
-    #[serde(default)]
+    /// Deleted threads' workspaces that are still on disk, retried in the background (F12).
+    #[serde(default, rename = "deleted_workspaces", alias = "deleted_worktrees")]
     #[specta(skip)]
     pub deleted_worktrees: Vec<deleted_worktrees::DeletedWorktree>,
     /// The highest task number ever given out (F8). A deleted task's number is never
@@ -2025,4 +2054,69 @@ fn default_tool_timeout() -> u32 {
 
 fn default_trim_agent_context() -> bool {
     true
+}
+
+#[cfg(test)]
+mod vocabulary_migration_tests {
+    use super::*;
+
+    // Risk (#417): persisted state saved with git-era field names must keep loading
+    // through `#[serde(alias)]` and save back with Rosen vocabulary field names.
+    #[test]
+    fn legacy_git_field_names_load_via_serde_alias_and_save_with_rosen_names()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut baseline = PersistedState::default();
+        let mut project = ProjectItem::new(1, "Demo".into(), r"C:\demo".into());
+        project.threads.push(ThreadItem::new(1, "Work".into()));
+        baseline.projects.push(project);
+        let mut raw = serde_json::to_value(&baseline)?;
+        let root = raw.as_object_mut().ok_or("root object")?;
+        let settings = root
+            .get_mut("settings")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("settings object")?;
+        let mut workspaces = settings.remove("workspaces").ok_or("workspaces field")?;
+        if let Some(ws) = workspaces.as_object_mut() {
+            let delete = ws.remove("delete_local_change_on_land").unwrap_or_default();
+            ws.insert("delete_local_branch_on_merge".into(), delete);
+        }
+        settings.insert("worktrees".into(), workspaces);
+        let proj = root["projects"][0]
+            .as_object_mut()
+            .ok_or("project object")?;
+        proj.remove("base_ref");
+        proj.insert("default_branch".into(), serde_json::json!("master"));
+        proj.remove("landed_today");
+        proj.insert("merged_today".into(), serde_json::json!(3));
+        let thread = proj["threads"][0].as_object_mut().ok_or("thread object")?;
+        thread.insert("state".into(), serde_json::json!("merged"));
+        thread.remove("change_name");
+        thread.insert("branch_name".into(), serde_json::json!("vel/old"));
+        thread.remove("workspace_path");
+        thread.insert("worktree_path".into(), serde_json::json!(r"C:\ws\old"));
+        thread.remove("workspace_role");
+        thread.insert("worktree_role".into(), serde_json::json!("review"));
+
+        let loaded: PersistedState = serde_json::from_value(raw)?;
+        assert_eq!(loaded.projects[0].default_branch, "master");
+        assert_eq!(loaded.projects[0].merged_today, 3);
+        let loaded_thread = &loaded.projects[0].threads[0];
+        assert_eq!(loaded_thread.state, ThreadState::Landed);
+        assert_eq!(loaded_thread.branch_name, "vel/old");
+        assert_eq!(loaded_thread.worktree_path.as_deref(), Some(r"C:\ws\old"));
+        assert_eq!(loaded_thread.worktree_role, WorktreeRole::Review);
+
+        let saved = serde_json::to_value(&loaded)?;
+        assert!(saved["settings"].get("workspaces").is_some());
+        assert!(saved["settings"].get("worktrees").is_none());
+        assert_eq!(saved["projects"][0]["base_ref"], "master");
+        assert_eq!(saved["projects"][0]["landed_today"], 3);
+        assert_eq!(saved["projects"][0]["threads"][0]["state"], "landed");
+        assert_eq!(saved["projects"][0]["threads"][0]["change_name"], "vel/old");
+        assert_eq!(
+            saved["projects"][0]["threads"][0]["workspace_path"],
+            r"C:\ws\old"
+        );
+        Ok(())
+    }
 }

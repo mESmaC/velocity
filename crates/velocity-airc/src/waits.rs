@@ -13,17 +13,19 @@ use std::path::Path;
 pub struct Checkout {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub repository: String,
-    /// Git worktree path; omitted on Rosen workspaces (which use `workspace`).
+    /// Legacy checkout path; omitted on Rosen workspaces (which use `workspace`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[cfg_attr(feature = "bindings", specta(skip))]
     pub worktree: String,
-    /// Rosen workspace path; omitted on Git worktrees (which use `worktree`).
+    /// Rosen workspace path.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub workspace: String,
     /// Rosen change ID for this workspace (#540).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change: Option<String>,
-    /// Git branch name; omitted on Rosen workspaces.
+    /// Legacy ref name; omitted on Rosen workspaces.
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[cfg_attr(feature = "bindings", specta(skip))]
     pub branch: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub base: String,

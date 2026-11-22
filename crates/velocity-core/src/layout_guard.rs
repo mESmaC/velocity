@@ -34,7 +34,7 @@ fn launch_kind(intent: &LayoutIntent, interview_thread: bool) -> Option<LaunchKi
         | LayoutIntent::SwarmWork
         | LayoutIntent::OpenTask(_)
         | LayoutIntent::OpenIssue(_)
-        | LayoutIntent::OpenWorktreeInExplorer(_)
+        | LayoutIntent::OpenWorkspaceInExplorer(_)
         | LayoutIntent::OpenOnCollapse(_)
         | LayoutIntent::SettingsTab(_)
         | LayoutIntent::Usage

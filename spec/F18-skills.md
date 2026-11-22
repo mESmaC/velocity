@@ -74,7 +74,7 @@ When Kimi's folder is confirmed, the extra row is dropped, and Velocity removes 
     Existing skills and ignore rules are preserved.
     Pack MCP discovery uses the registered project or workspace path.
 - **Committed** (per project): the always-on skills are copied into the repo at the pinned commit, for collaborators who don't use Velocity.
-  Updating the pin then goes through a PR like any other change.
+  Updating the pin then goes through a change like any other change.
 - **Skills you installed yourself** are left alone (§3.2 Tool access).
   Velocity's links sit next to them.
   If a name clashes, your own skill wins and the card says so.
@@ -104,7 +104,7 @@ Skills add knowledge; they never remove a tool.
 
 **Accept when:**
 - [ ] Installing a pack once makes it available from the composer in any project.
-- [ ] Linked skills never appear in `git status` or in a PR.
+- [ ] Linked skills never appear in a Rosen snapshot or change.
 - [ ] A pack's pin moves only after its diff is shown, and only when you confirm.
 - [ ] Adding REA to a project's always-on list gives its new sessions REA's MCP tools.
 - [ ] The `$` menu lists installed skills and selecting one makes its manifest available to that turn.

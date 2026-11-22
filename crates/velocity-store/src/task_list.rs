@@ -393,16 +393,14 @@ fn thread_label(thread: &ThreadItem) -> String {
         .pull_request_number
         .map(|number| format!("#{number}"));
     match thread.state {
-        ThreadState::Merged => number
-            .map(|number| format!("merged · {number}"))
-            .unwrap_or_else(|| "merged".into()),
+        ThreadState::Landed => number
+            .map(|number| format!("landed · {number}"))
+            .unwrap_or_else(|| "landed".into()),
         ThreadState::Review => number
             .map(|number| format!("{number} · {}", review_label(thread)))
-            .unwrap_or_else(|| "in review".into()),
-        ThreadState::Error => "failed · worktree kept".into(),
-        ThreadState::Closed => "closed · worktree kept".into(),
-        // The agent's turn ended before its PR is followed (a draft claim, or the watcher's
-        // next pass): it is waiting, not working (#280).
+            .unwrap_or_else(|| "named".into()),
+        ThreadState::Error => "failed · workspace kept".into(),
+        ThreadState::Closed => "abandoned · workspace kept".into(),
         ThreadState::Working if thread.activity == crate::AgentActivity::Idle => {
             "agent idle".into()
         }
@@ -413,7 +411,7 @@ fn review_label(thread: &ThreadItem) -> &'static str {
     match thread.review_stage {
         Some(crate::ReviewStage::ContinuousIntegration) => "checking",
         Some(crate::ReviewStage::Fixing) => "addressing review",
-        Some(crate::ReviewStage::Approved) => "approved · merging",
+        Some(crate::ReviewStage::Approved) => "approved · landing",
         _ => "in review",
     }
 }

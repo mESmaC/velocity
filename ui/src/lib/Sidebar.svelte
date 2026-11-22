@@ -35,11 +35,11 @@
     Swarm: 'swarm',
     Spec: 'issue',
     Working: 'circle',
-    Review: 'pr',
+    Review: 'review',
     Error: 'alert',
     Closed: 'circle',
     Done: 'check',
-    Merged: 'check',
+    Landed: 'check',
     Settled: 'check',
   };
 
@@ -241,10 +241,10 @@
     >
     <span class="spacer"></span>
     <button
-      class="worktree-indicator"
+      class="workspace-indicator"
       title="Settings · Workspaces"
-      onclick={() => send({ Request: { SettingsTab: 'worktrees' } })}
-      ><Icon name="folder" />{layout.worktree_label}</button
+      onclick={() => send({ Request: { SettingsTab: 'workspaces' } })}
+      ><Icon name="folder" />{layout.workspace_label}</button
     >
     {#if layout.providers.length}<button
         class="provider-limits usage-trigger"

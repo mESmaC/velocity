@@ -9,7 +9,7 @@ use velocity_core::worktree_settings::{
     WorktreeDisplayStatus, WorktreePreferenceChange, WorktreePreferences, update_preferences,
 };
 use velocity_core::worktree_view::{
-    WorktreeContext, WorktreeOwner, WorktreeSettingsEdit, join_location, split_location,
+    WorkspaceSettingsEdit, WorktreeContext, WorktreeOwner, join_location, split_location,
 };
 
 pub fn default_copy_files() -> String {
@@ -118,23 +118,23 @@ impl StateStore {
 
     pub fn edit_worktree_settings(
         &mut self,
-        edit: WorktreeSettingsEdit,
+        edit: WorkspaceSettingsEdit,
         project_identifier: Option<u32>,
     ) -> Result<bool, StoreError> {
         let context = self.worktree_context();
         if matches!(
             edit,
-            WorktreeSettingsEdit::OverrideEnabled(_)
-                | WorktreeSettingsEdit::ProjectRoot(_)
-                | WorktreeSettingsEdit::SetupCommand(_)
-                | WorktreeSettingsEdit::UseRosen(_)
+            WorkspaceSettingsEdit::OverrideEnabled(_)
+                | WorkspaceSettingsEdit::ProjectRoot(_)
+                | WorkspaceSettingsEdit::SetupCommand(_)
+                | WorkspaceSettingsEdit::UseRosen(_)
         ) && context.project_identifier != project_identifier
         {
             return Err(StoreError::WorktreeSetting(
                 "The selected project changed; retry this edit".into(),
             ));
         }
-        if let WorktreeSettingsEdit::UseRosen(rosen) = edit {
+        if let WorkspaceSettingsEdit::UseRosen(rosen) = edit {
             require_project(&context)?;
             let choice = if rosen {
                 VersionControl::Rosen
@@ -144,7 +144,7 @@ impl StateStore {
             let project = context.project_identifier.unwrap_or_default();
             return self.set_version_control(project, choice).map(|()| false);
         }
-        let edits_setup = matches!(edit, WorktreeSettingsEdit::SetupCommand(_));
+        let edits_setup = matches!(edit, WorkspaceSettingsEdit::SetupCommand(_));
         let change = preference_change(&context, edit)?;
         let location_changed = velocity_core::worktree_settings::changes_location(&change);
         let preferences = update_preferences(context.preferences, change);
@@ -221,10 +221,10 @@ fn validate_root(root: &str) -> Result<(), StoreError> {
 
 fn preference_change(
     context: &WorktreeContext,
-    edit: WorktreeSettingsEdit,
+    edit: WorkspaceSettingsEdit,
 ) -> Result<WorktreePreferenceChange, StoreError> {
+    use WorkspaceSettingsEdit as Edit;
     use WorktreePreferenceChange as Change;
-    use WorktreeSettingsEdit as Edit;
     let preferences = &context.preferences;
     Ok(match edit {
         Edit::Root(root) => Change::Root(root),
@@ -252,7 +252,6 @@ fn preference_change(
             require_project(context)?;
             Change::ProjectOverride(Some(root))
         }
-        Edit::DeleteLocalBranch(enabled) => Change::DeleteLocalBranch(enabled),
         Edit::ShareBuildCache(enabled) => Change::ShareBuildCache(enabled),
         Edit::CopyFiles(files) => {
             velocity_git::parse_untracked_file_list(&files)
@@ -273,14 +272,13 @@ fn preference_change(
     })
 }
 
-/// The open threads that started the other way from the project's choice: a Rosen change
-/// in a git project, or a git worktree in a Rosen project (its own fallback included).
+/// The open threads that started the other way from the project's choice.
 fn other_version_control_threads(project: &ProjectItem) -> usize {
     let rosen = project.version_control == VersionControl::Rosen;
     project
         .threads
         .iter()
-        .filter(|thread| thread.state != ThreadState::Merged)
+        .filter(|thread| thread.state != ThreadState::Landed)
         .filter(|thread| thread.worktree_path.is_some())
         .filter(|thread| thread.rosen_change.is_some() != rosen)
         .count()
@@ -288,7 +286,7 @@ fn other_version_control_threads(project: &ProjectItem) -> usize {
 
 fn require_project(context: &WorktreeContext) -> Result<(), StoreError> {
     context.project_identifier.map(|_| ()).ok_or_else(|| {
-        StoreError::WorktreeSetting("Select a project to edit its worktree settings".into())
+        StoreError::WorktreeSetting("Select a project to edit its workspace settings".into())
     })
 }
 

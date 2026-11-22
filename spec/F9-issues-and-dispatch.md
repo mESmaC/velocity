@@ -132,16 +132,16 @@ A paused dispatch starts no bounded review; the evidence check and the two-hour 
 - **Collapsed rows**: every row starts collapsed to its title line and label line, so a long list stays scrollable.
   Clicking a row (or Enter, Space, →/←) expands it to show the recommendation and blocked count for a question, or the opening paragraph of the issue body, with an Open button that opens the issue (or its thread, once dispatched).
   Which rows are expanded is per project and survives refreshes.
-  - **Accept** opens a one-line SPEC.md PR that records the answer as *(proposed)*.
+  - **Accept** opens a one-line SPEC.md change that records the answer as *(proposed)*.
     The named change lands through Rosen (F7), and the blocked pieces become claimable.
   - Agents never wait on a question: they file it and claim other work (Rule 1).
   - **Why:** unanswered questions, not code, were what kept most of a milestone unclaimable.
 - **Dispatch** (hover button, `I`, or the palette): starts one agent on the issue, in its own workspace, with the normal lifecycle.
-  The issue stays listed with its agent's live state until the PR merges, which closes it.
+  The issue stays listed with its agent's live state until the change lands, which closes it.
   - `I` opens the palette filtered to issues.
     Dispatched threads keep the issue title and use `vel/issue-<n>` (with a unique suffix when needed), without calling the title model.
     Their saved issue identity includes the repository; repeat dispatch opens the owning thread.
     Deleting that thread frees the issue after Undo expires (F12).
   - A question's recommended answer is read from a `Recommended answer:` or `Recommendation:` paragraph; its `Blocks:` bullet list supplies the blocked-item count.
     Questions without a recorded recommendation stay readable on GitHub.
-    Accept starts the normal agent lifecycle with a prompt limited to the one-line proposed SPEC answer and its PR.
+    Accept starts the normal agent lifecycle with a prompt limited to the one-line proposed SPEC answer and its change.

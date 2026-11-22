@@ -32,7 +32,7 @@ Velocity's own proof list:
 | Feature | SPEC | What could go wrong |
 |---|---|---|
 | Claim lock | F14 | two agents hold the same piece or file |
-| Targeted rebases and landing | F6 | an affected agent isn't rebased, or a merge drops a change |
+| Targeted rebases and landing | F6 | an affected agent isn't rebased, or a land drops a change |
 | Workspace deletion | F5, F12 | a workspace with unpushed work, or another thread's, is deleted |
 | Goal swarm work choice | F16 | a piece is taken twice, or an agent leaves while a piece is unclaimed |
 | Stall detection and claim release | §2.2 | a live agent's claims are released, or a dead agent's never are |
@@ -81,24 +81,24 @@ Each language in the change reaches the strongest level available to it:
 |---|---|---|
 | **code** (on request) | A translator turns the code into Lean, and the proof shows the translated code refines the design model. | Any language with a translator set for the project. Rust ships with Aeneas (its safe subset). More translators are added per language in Settings → Proofs (Q23). |
 | **reference** (default) | The Lean model exports a compact fixture table, and one test checks the code against it. For larger input spaces, the model is compiled (Lean 4 compiles to C) and exported with `@[export]`. Scouts' stress scripts run the code and the model on the same inputs and diff the outputs. C and C++ link the model directly. Python, TypeScript and every other language call it through their FFI or a small process. | Every language |
-| **model** | Only the design is proven. The PR is flagged, and scouts treat it as a proof gap. | Every language |
+| **model** | Only the design is proven. The change is flagged, and scouts treat it as a proof gap. | Every language |
 
 **How Velocity reads the level** *(proposed)*.
-For each proof-list feature a PR touches (a file in `proofs/<Feature>/`, its root module or its fixture table, where `<Feature>/Design.lean` exists), Velocity reads the checkout without building anything:
+For each proof-list feature a change touches (a file in `proofs/<Feature>/`, its root module or its fixture table, where `<Feature>/Design.lean` exists), Velocity reads the checkout without building anything:
 - **code** for Rust when `proofs/<Feature>/Generated/` holds the Aeneas translation and `proofs/<Feature>/Confidence.lean` exists;
 - **reference** for each language whose tracked code outside `proofs/` names the feature's fixture table `proofs/fixtures/<feature>.tsv` (the folder name in kebab case: `TargetedRebase` → `targeted-rebase`), a test or a stress driver;
-- **model** otherwise, listed for each language the PR changes, or once with no language when it changes no code.
+- **model** otherwise, listed for each language the change modifies, or once with no language when it changes no code.
 
 A language's strongest level is code where a translator exists (Rust: Aeneas) and reference everywhere else until Q23 adds translators.
 The levels go on the proof check report with the other checks, one line per feature and language with its evidence.
 A model-only level where a stronger one is available is flagged there and never fails the checks.
 
-**Generated translations** (Aeneas output) are marked generated in `.gitattributes`, so they stay out of language statistics and PR diffs.
+**Generated translations** (Aeneas output) are marked generated in `.gitattributes`, so they stay out of language statistics and change diffs.
 
 **Bug fixes:** no design proof.
 In a proof-list feature, the confidence proof must cover the input the scout's evidence failed on.
 Elsewhere, a fix has no Lean.
-The fixing agent copies the scout's script into `stress/` unchanged as part of its PR.
+The fixing agent copies the scout's script into `stress/` unchanged as part of its change.
 Copying isn't writing: Velocity checks the file matches the issue's attachment byte for byte.
 
 **What proof workers check after a land:**
@@ -125,7 +125,7 @@ How the checks run:
   Scouts run them on sweeps, and the release gate runs the full stress suite.
   The Windows release gate builds the Rust stress harnesses together in the workspace with a two-job Cargo build limit, caches the workspace crates and runs the scripts serially.
   A stress run ends with the time each step took, slowest first, and the release gate adds that list and its own stage times to the job summary (#434).
-  They never run in per-PR GitHub CI.
+  They never run in per-change checks.
 
 **Proof card** (in the land history, F6):
 - the proof folder, and "N theorems proved";
@@ -136,14 +136,14 @@ How the checks run:
 How the card is made *(proposed)*:
 - **Where and when.**
   For each new head of a thread's named change, Velocity runs the checks above in the background in the thread's own workspace, once that workspace is checked out at exactly the head with no edits under `proofs/` (otherwise the next observation retries).
-  The card sits under "PR opened" in the land history; a PR that touches no proof file, fixture table or proof-list feature has no card.
+  The card sits under "Change named" in the land history; a change that touches no proof file, fixture table or proof-list feature has no card.
 - **Track.**
   The "Proved" step runs while the head is unchecked, is done when the checks pass and fails when one fails.
-  It reads "No proofs" when the PR changes nothing to prove.
+  It reads "No proofs" when the change modifies nothing to prove.
   A pass ticks "· proved" on the collapsed work line and posts a `proved` event naming the proof folders, the theorem count and each language's level.
 - **Levels.**
   One row per feature and language, read as "How Velocity reads the level" says; a flagged model-only level is shown in amber.
-  A PR that changes only a proof-list feature's fixture table still gets a card, with its fixture rows and levels.
+  A change that modifies only a proof-list feature's fixture table still gets a card, with its fixture rows and levels.
 - **`stress` events.**
   Each issue a scout files posts a `stress` event naming its evidence script.
 

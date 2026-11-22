@@ -248,7 +248,7 @@
             <input type="checkbox" checked disabled />
             <span
               >Each agent works in its own workspace under <code
-                >{view?.worktree_root ?? ''}</code
+                >{view?.workspace_root ?? ''}</code
               >, deleted when its change lands</span
             >
             <span class="lockt"><Icon name="lock" /> always</span>

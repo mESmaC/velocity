@@ -3,10 +3,9 @@
 
 - **Sending from the home composer** starts a thread.
   It gets a Rosen workspace and change from the project base and starts at once.
-  The legacy GitHub backend creates a git worktree and branch instead.
 - **Thread titles:** the title model (Settings → Providers → Thread titles, F15) names the thread from your first message, as a short imperative title.
   - The thread starts with the first words of your message as its title.
-    Workspace setup proceeds immediately with the message slug, which also supplies the branch name for Git projects.
+    Workspace setup proceeds immediately with the message slug.
   - While Velocity requests a title in the background, the sidebar title pulses and the header shows "titling · <model>".
     A usable reply within 30 seconds replaces the display title and is saved.
   - Velocity reuses a warm title session for the same project and title settings.
@@ -49,7 +48,7 @@
 
 **Accept when:**
 - [ ] Messages never interrupt a running agent; they are queued (Rule 1).
-- [ ] A finished task opens its own PR.
+- [ ] A finished task names its own change.
       There is no "Ship PR" button or `/ship` command.
 
 **Rosen-first reference (#414, #422, #437):**

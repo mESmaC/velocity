@@ -61,7 +61,7 @@ pub(crate) fn get_swarm_dialog_now(
         .ok_or_else(|| "Select or create a project first".into())
 }
 
-/// Starts one agent per selected item, all at once, each in its own worktree (F10).
+/// Starts one agent per selected item, all at once, each in its own workspace (F10).
 #[tauri::command]
 #[specta::specta]
 pub async fn launch_swarm(

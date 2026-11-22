@@ -40,6 +40,7 @@ pub struct DutyAgentItem {
 pub struct DutyFeedItem {
     pub timestamp: String,
     pub actor: String,
+    #[specta(type = velocity_core::duty::DutyEventKindBinding)]
     pub kind: DutyEventKind,
     pub message: String,
 }

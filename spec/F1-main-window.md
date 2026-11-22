@@ -70,8 +70,8 @@ There are two views of the same work, switched from the title bar or with `B`:
     It is drawn as a dashed outline, because this work isn't in the pipeline yet, and it has a Swarm button when it holds anything.
   - **Running:** swarms, spec interviews, working threads and failed threads.
     A failed card is tinted red.
-  - **In review:** threads whose PR is open.
-  - **Finished:** threads that merged, are done, or abandoned.
+  - **In review:** threads whose change is named.
+  - **Finished:** threads that landed, are done, or abandoned.
   - **Review:** Scouts and the review swarm.
     They are not work items.
 - The four pipeline lanes always show, with a one-line note when empty, so the pipeline keeps its shape.

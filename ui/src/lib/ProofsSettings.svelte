@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import SettingsNav from './SettingsNav.svelte';
-  import './theme/worktrees.css';
+  import './theme/workspaces.css';
   import './theme/providers.css';
   import './theme/thread-view.css';
   import {
@@ -55,30 +55,30 @@
   }
 </script>
 
-<section class="worktree-settings" aria-label="Proof settings">
-  <header class="worktree-settings-head">
+<section class="workspace-settings" aria-label="Proof settings">
+  <header class="workspace-settings-head">
     <h1>Settings</h1>
     <span>proof list and design proofs of this project</span>
   </header>
-  <div class="worktree-settings-body">
+  <div class="workspace-settings-body">
     <SettingsNav current="proofs" {send} />
-    <div class="worktree-settings-main">
+    <div class="workspace-settings-main">
       {#if view}
         <section>
           <h2>Proof list</h2>
-          <p class="worktree-description">
+          <p class="workspace-description">
             Only these features are proven in Lean, after their code. Every
             other feature ships with no Lean. SPEC.md records the list; adding a
             feature takes your decision there.
           </p>
           {#if !view.spec_found}
-            <p class="worktree-size-note">This project has no SPEC.md yet.</p>
+            <p class="workspace-size-note">This project has no SPEC.md yet.</p>
           {:else if !view.proof_list_found}
-            <p class="worktree-size-note">
+            <p class="workspace-size-note">
               SPEC.md has no proof list. Locking the spec interview writes one.
             </p>
           {:else if view.proof_list.length === 0}
-            <p class="worktree-size-note">
+            <p class="workspace-size-note">
               The proof list is empty: nothing in this project ships with Lean.
             </p>
           {:else}
@@ -97,15 +97,15 @@
         </section>
         <section>
           <h2>Design proofs</h2>
-          <p class="worktree-description">
+          <p class="workspace-description">
             Each design proof in the Lake project, and how firmly each
             language's code is tied to its model. A model-only level where a
             stronger one is available shows in amber.
           </p>
           {#if view.lake_project === null}
-            <p class="worktree-size-note">This project has no Lake project.</p>
+            <p class="workspace-size-note">This project has no Lake project.</p>
           {:else if view.design_proofs.length === 0}
-            <p class="worktree-size-note">
+            <p class="workspace-size-note">
               No design proofs in <code>{view.lake_project}/</code> yet.
             </p>
           {:else}
@@ -132,7 +132,7 @@
         </section>
         <section>
           <h2>Code-level translators</h2>
-          <p class="worktree-description">
+          <p class="workspace-description">
             A translator turns a language's code into Lean, so its confidence
             proof can reach the code level when an issue asks for one. Every
             other language tops out at the reference level: a fixture table
@@ -152,26 +152,26 @@
         </section>
         <section>
           <h2>Stress diffs</h2>
-          <p class="worktree-description">
+          <p class="workspace-description">
             Scouts run the code and the compiled Lean model on the same
             generated inputs and file every disagreement with its input.
           </p>
-          <label class="worktree-setting-row"
-            >Inputs per feature<span class="worktree-input"
+          <label class="workspace-setting-row"
+            >Inputs per feature<span class="workspace-input"
               ><input type="number" min="1" bind:value={inputs} /></span
             ></label
           >
           <button
-            class="worktree-button"
+            class="workspace-button"
             disabled={saving || !(inputs >= 1)}
             onclick={() => void save()}>{saving ? 'Saving...' : 'Save'}</button
           >
-          {#if saved}<p class="worktree-message" role="status">
+          {#if saved}<p class="workspace-message" role="status">
               Saved. The next sweep uses it.
             </p>{/if}
         </section>
       {/if}
-      {#if error}<p class="worktree-message error" role="alert">
+      {#if error}<p class="workspace-message error" role="alert">
           {error}
         </p>{/if}
     </div>

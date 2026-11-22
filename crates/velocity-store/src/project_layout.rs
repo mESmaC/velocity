@@ -159,7 +159,7 @@ pub(crate) fn read_model_for(
             .iter()
             .filter(|task| task.state == TaskState::Done)
             .count();
-        data.pull_requests = pull_requests(project);
+        data.changes = named_changes(project);
         data.merged_today = merged_today;
     }
     data.providers = crate::provider_views::provider_usage(&state.settings);
@@ -494,7 +494,7 @@ pub(crate) fn thread_metadata(thread: &ThreadItem) -> String {
     .into()
 }
 
-fn pull_requests(project: &ProjectItem) -> Vec<RailItem> {
+fn named_changes(project: &ProjectItem) -> Vec<RailItem> {
     let mut seen = BTreeSet::new();
     project
         .threads

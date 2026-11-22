@@ -1,8 +1,95 @@
 use anyhow::Context;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
-use velocity_core::state::ui_zoom::{UiZoomAdjustment, UiZoomView};
-use velocity_store::{Settings, StateStore, StoreLock};
+use velocity_core::state::ui_zoom::{UiZoom, UiZoomAdjustment, UiZoomView};
+use velocity_store::{
+    AgentSettings, ProofSettings, ProviderSettings, Settings, StateStore, StoreLock,
+    WorktreeSettings,
+};
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename = "WorkspaceSettings")]
+pub struct AppWorkspaceSettings {
+    pub location_root: Option<String>,
+    #[serde(default)]
+    pub delete_local_change_on_land: bool,
+    pub share_rust_build_cache: bool,
+    pub warm_pool_count: u32,
+    #[serde(default)]
+    pub project_roots: BTreeMap<u32, String>,
+    #[serde(default)]
+    pub copy_files: String,
+    #[serde(default)]
+    pub setup_command: String,
+    #[serde(default)]
+    pub project_setup_commands: BTreeMap<u32, String>,
+}
+
+impl From<WorktreeSettings> for AppWorkspaceSettings {
+    fn from(settings: WorktreeSettings) -> Self {
+        Self {
+            location_root: settings.location_root,
+            delete_local_change_on_land: settings.delete_local_branch_on_merge,
+            share_rust_build_cache: settings.share_rust_build_cache,
+            warm_pool_count: settings.warm_pool_count,
+            project_roots: settings.project_roots,
+            copy_files: settings.copy_files,
+            setup_command: settings.setup_command,
+            project_setup_commands: settings.project_setup_commands,
+        }
+    }
+}
+
+impl From<AppWorkspaceSettings> for WorktreeSettings {
+    fn from(settings: AppWorkspaceSettings) -> Self {
+        Self {
+            location_root: settings.location_root,
+            delete_local_branch_on_merge: settings.delete_local_change_on_land,
+            share_rust_build_cache: settings.share_rust_build_cache,
+            warm_pool_count: settings.warm_pool_count,
+            project_roots: settings.project_roots,
+            copy_files: settings.copy_files,
+            setup_command: settings.setup_command,
+            project_setup_commands: settings.project_setup_commands,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename = "Settings")]
+pub struct AppSettings {
+    pub workspaces: AppWorkspaceSettings,
+    pub providers: ProviderSettings,
+    pub agents: AgentSettings,
+    pub proofs: ProofSettings,
+    #[serde(default)]
+    pub ui_zoom: UiZoom,
+}
+
+impl From<Settings> for AppSettings {
+    fn from(settings: Settings) -> Self {
+        Self {
+            workspaces: settings.worktrees.into(),
+            providers: settings.providers,
+            agents: settings.agents,
+            proofs: settings.proofs,
+            ui_zoom: settings.ui_zoom,
+        }
+    }
+}
+
+impl From<AppSettings> for Settings {
+    fn from(settings: AppSettings) -> Self {
+        Self {
+            worktrees: settings.workspaces.into(),
+            providers: settings.providers,
+            agents: settings.agents,
+            proofs: settings.proofs,
+            ui_zoom: settings.ui_zoom,
+        }
+    }
+}
 
 pub type ManagedStateStore = StoreLock;
 
@@ -116,32 +203,35 @@ pub fn save_now(application: &AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn get_settings(application: AppHandle) -> Result<Settings, String> {
+pub async fn get_settings(application: AppHandle) -> Result<AppSettings, String> {
     crate::layout::run_concurrently("get_settings", move || {
         let store = application.state::<ManagedStateStore>();
         let guard = store
             .lock()
             .map_err(|_| String::from("Persisted state store lock is poisoned"))?;
-        Ok(guard.settings())
+        Ok(guard.settings().into())
     })
     .await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub async fn set_settings(application: AppHandle, settings: Settings) -> Result<Settings, String> {
+pub async fn set_settings(
+    application: AppHandle,
+    settings: AppSettings,
+) -> Result<AppSettings, String> {
     crate::layout::off_ui_thread_named("set_settings", move || {
         let store = application.state::<ManagedStateStore>();
         let mut guard = store
             .lock()
             .map_err(|_| String::from("Persisted state store lock is poisoned"))?;
         let saved = guard
-            .set_settings(settings)
+            .set_settings(settings.into())
             .map_err(|error| error.to_string())?;
         application
             .state::<velocity_browser::BrowserHub>()
             .limit(saved.agents.browser_limit);
-        Ok(saved)
+        Ok(saved.into())
     })
     .await
 }

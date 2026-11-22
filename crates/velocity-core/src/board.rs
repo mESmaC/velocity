@@ -1,5 +1,5 @@
 //! The Board view (SPEC.md F1, "Board"): every piece of work as a card in lanes that read
-//! left to right, from work nobody has started to work that merged.
+//! left to right, from work nobody has started to work that landed.
 //!
 //! It is a second way to look at what the sidebar and the rail already show, so the lanes
 //! are a pure mapping from those lists. Nothing here holds state.
@@ -18,9 +18,9 @@ pub enum BoardLaneKind {
     UpNext,
     /// Threads with an agent at work, and the ones that failed.
     Running,
-    /// Threads whose PR is open.
+    /// Threads with a named change awaiting land.
     InReview,
-    /// Threads that finished: merged, done, or closed without merging.
+    /// Threads that finished: landed, done, or abandoned.
     Finished,
     /// Duty agents. They are not work items, so they get their own lane at the end.
     OnDuty,
@@ -125,7 +125,7 @@ fn lane_of(group: ThreadGroup) -> Option<BoardLaneKind> {
             Some(BoardLaneKind::Running)
         }
         ThreadGroup::Review => Some(BoardLaneKind::InReview),
-        ThreadGroup::Closed | ThreadGroup::Done | ThreadGroup::Merged | ThreadGroup::Settled => {
+        ThreadGroup::Closed | ThreadGroup::Done | ThreadGroup::Landed | ThreadGroup::Settled => {
             Some(BoardLaneKind::Finished)
         }
     }

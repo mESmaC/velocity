@@ -26,7 +26,7 @@ pub const PULSE: [(PulseKind, &str); 6] = [
     (PulseKind::Running, "running"),
     (PulseKind::Watching, "changes watched"),
     (PulseKind::Failed, "failed"),
-    (PulseKind::MergedToday, "landed today"),
+    (PulseKind::LandedToday, "landed today"),
 ];
 
 pub fn group_title(group: ThreadGroup) -> &'static str {
@@ -40,7 +40,7 @@ pub fn group_title(group: ThreadGroup) -> &'static str {
         ThreadGroup::Error => "Failed",
         ThreadGroup::Closed => "Abandoned",
         ThreadGroup::Done => "Done",
-        ThreadGroup::Merged => "Landed",
+        ThreadGroup::Landed => "Landed",
         ThreadGroup::Settled => "Settled",
     }
 }
@@ -59,7 +59,7 @@ const COMMANDS: [(&str, &str, CommandTarget); 15] = {
         ("New project…", "Ctrl Shift N", Navigation(NewProject)),
         ("Edit AGENTS.md", "file", Settings("agents")),
         ("Add a task to the Task List", "T", Navigation(Task)),
-        ("Settings · Workspaces", "Ctrl ,", Settings("worktrees")),
+        ("Settings · Workspaces", "Ctrl ,", Settings("workspaces")),
         ("Settings · Providers (sign in)", "", Settings("providers")),
         ("Settings · Appearance", "", Settings("appearance")),
         ("Settings · Proofs", "", Settings("proofs")),

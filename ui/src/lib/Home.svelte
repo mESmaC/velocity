@@ -31,7 +31,7 @@
       ? 'Ask a question (read-only · no workspace, change or claim)'
       : 'Ask anything. @ files, $ skills, / commands'}
     modelPill={layout.composer_model_pill}
-    showWorktreePill={true}
+    showWorkspacePill={true}
     draftReadOnly={layout.draft_read_only}
     draftContext={layout.draft_context}
     threadIdentifier={null}

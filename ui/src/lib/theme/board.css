@@ -180,7 +180,7 @@ button.card:hover {
   color: var(--warn);
 }
 .card[data-status='Done'] .status-icon,
-.card[data-status='Merged'] .status-icon {
+.card[data-status='Landed'] .status-icon {
   color: var(--ok);
 }
 .card[data-status='Duty'] .status-icon {

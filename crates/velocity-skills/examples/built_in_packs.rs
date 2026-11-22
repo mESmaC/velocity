@@ -71,7 +71,7 @@ fn print_cards(library: &SkillLibrary, choices: &ProjectSkills, checkout: &Path)
         if let Some(design) = &card.details.design_system {
             println!(
                 "  design system {} exists={} rule={}",
-                design.master_path, design.exists, design.rule_in_agents
+                design.design_path, design.exists, design.rule_in_agents
             );
         }
         if let Some(server) = &card.details.shared_server {
@@ -121,7 +121,7 @@ fn design_system(library: &SkillLibrary, project: &Path) -> Outcome {
     let status = generate_design_system(library, project, "Serenity Spa", false)?;
     println!(
         "\ndesign system: {} exists={} rule_in_agents={}",
-        status.master_path, status.exists, status.rule_in_agents
+        status.design_path, status.exists, status.rule_in_agents
     );
     println!("{}", fs::read_to_string(project.join("AGENTS.md"))?);
     println!("{}", git(project, &["log", "--oneline", "--name-only"])?);

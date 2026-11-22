@@ -27,10 +27,10 @@ pub struct FailedCheck {
     pub stopped: Option<StoppedCheck>,
 }
 
-/// What the author's agent is told when its approved change no longer merges onto the base.
+/// What the author's agent is told when its approved change no longer combines cleanly onto the base.
 pub fn conflict_message(change: &str, base_branch: &str, files: &[String]) -> String {
     let mut message = format!(
-        "Your Rosen change `{}` needs repair before merging onto `{base_branch}`: {}. Run `rosen rebase` in your workspace. Combine both sides of text conflict markers; regenerate generated artifacts on the combined inputs using the commands below. Run `rosen resolve <file>` for each remaining conflict, then name the work again with `rosen commit -m \"<what changed>\"` so it lands again under the project's review policy.\n",
+        "Your Rosen change `{}` needs repair before landing onto `{base_branch}`: {}. Run `rosen rebase` in your workspace. Combine both sides of text conflict markers; regenerate generated artifacts on the combined inputs using the commands below. Run `rosen resolve <file>` for each remaining conflict, then name the work again with `rosen commit -m \"<what changed>\"` so it lands again under the project's review policy.\n",
         short_change(change),
         files.join(", "),
     );
@@ -80,7 +80,7 @@ pub fn stale_bindings_refusal() -> (String, String) {
     (
         format!("`{BINDINGS}` is stale"),
         format!(
-            "Your change touches Tauri command or event registration, and `{BINDINGS}` in its merge onto the base no longer matches what the Rust code exports. Velocity checked it with `export-bindings --check` before landing. Run `rosen rebase` in your workspace after any ancestors in the stack land.\n\n{}",
+            "Your change touches Tauri command or event registration, and `{BINDINGS}` when combined onto the base no longer matches what the Rust code exports. Velocity checked it with `export-bindings --check` before landing. Run `rosen rebase` in your workspace after any ancestors in the stack land.\n\n{}",
             regeneration_instructions(&[BINDINGS.to_owned()]),
         ),
     )

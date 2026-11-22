@@ -45,8 +45,8 @@ impl ThreadMenuFacts {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThreadMenuAction {
     RetryWorkspace,
-    OpenWorktree,
-    CopyWorktreePath,
+    OpenWorkspace,
+    CopyWorkspacePath,
     Delete,
 }
 
@@ -68,7 +68,7 @@ pub enum ThreadMenuEntry {
 /// Whether the thread still has its own worktree. A spec thread runs in the project's main
 /// checkout, so its path, if any, is never a worktree Velocity may remove (F3, F5).
 pub fn owns_worktree(state: ThreadState, worktree_path: Option<&str>) -> bool {
-    worktree_path.is_some() && !matches!(state, ThreadState::Merged | ThreadState::Spec)
+    worktree_path.is_some() && !matches!(state, ThreadState::Landed | ThreadState::Spec)
 }
 
 /// The menu for one thread, or `None` when the row has no menu.
@@ -90,12 +90,12 @@ pub fn thread_menu(facts: &ThreadMenuFacts) -> Option<Vec<ThreadMenuEntry>> {
     }
     if let Some(path) = worktree {
         entries.push(item(
-            ThreadMenuAction::OpenWorktree,
+            ThreadMenuAction::OpenWorkspace,
             "Open workspace in Explorer",
             Some(path.to_owned()),
         ));
         entries.push(item(
-            ThreadMenuAction::CopyWorktreePath,
+            ThreadMenuAction::CopyWorkspacePath,
             "Copy workspace path",
             None,
         ));

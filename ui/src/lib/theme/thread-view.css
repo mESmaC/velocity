@@ -65,7 +65,7 @@
 .thread-head .meta > * {
   flex: none;
 }
-.thread-head .meta .branch {
+.thread-head .meta .change {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
@@ -84,7 +84,7 @@
   border-radius: var(--r-xs);
   color: var(--text-2);
 }
-.thread-head .meta .branch,
+.thread-head .meta .change,
 .thread-head .meta .wt {
   flex: 0 1 auto;
   min-width: 0;

@@ -43,7 +43,7 @@
       data-kind={count.kind}
       title={`${count.count} ${count.label}`}
       aria-label={`${count.count} ${count.label}`}
-      >{#if count.kind !== 'MergedToday'}<span class="pulse-dot"
+      >{#if count.kind !== 'LandedToday'}<span class="pulse-dot"
         ></span>{:else}↳{/if}{count.count}
       <span class="pulse-label">{count.label}</span></span
     >

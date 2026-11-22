@@ -26,12 +26,12 @@ const SEARCH_SCRIPTS: &[&str] = &[
 #[cfg_attr(feature = "bindings", derive(specta::Type))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesignSystemStatus {
-    /// `design-system/<project>/MASTER.md`, relative to the checkout.
+    /// Path to the generated design system file, relative to the checkout.
     #[serde(default)]
-    pub master_path: String,
+    pub design_path: String,
     #[serde(default)]
     pub exists: bool,
-    /// When MASTER.md was last written, in Unix seconds.
+    /// When the design system file was last written, in Unix seconds.
     #[serde(default)]
     pub generated_at: Option<u32>,
     /// True when AGENTS.md carries the design system rule.
@@ -183,8 +183,8 @@ pub fn design_system_query(project_name: &str, spec_markdown: Option<&str>) -> S
 
 /// Reads the design system's status from the checkout.
 pub fn design_system_status(checkout: &Path, project_name: &str) -> DesignSystemStatus {
-    let master_path = design_system_master_path(project_name);
-    let master = checkout.join(&master_path);
+    let design_path = design_system_master_path(project_name);
+    let master = checkout.join(&design_path);
     let generated_at = fs::metadata(&master)
         .ok()
         .filter(fs::Metadata::is_file)
@@ -202,7 +202,7 @@ pub fn design_system_status(checkout: &Path, project_name: &str) -> DesignSystem
         None => String::from("not generated yet"),
     };
     DesignSystemStatus {
-        master_path,
+        design_path,
         exists: generated_at.is_some(),
         generated_at,
         rule_in_agents,

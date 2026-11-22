@@ -19,7 +19,7 @@
     ProvidersView,
     SpeedMode,
   } from './ipc';
-  import './theme/worktrees.css';
+  import './theme/workspaces.css';
   import './theme/providers.css';
 
   let { send }: { send: (action: LayoutAction) => void } = $props();
@@ -167,17 +167,17 @@
     </div>
     <div class="pv-actions">
       {#if provider.phase === 'SignedIn' && provider.custom}<button
-          class="worktree-button mini"
+          class="workspace-button mini"
           onclick={() => signOut(provider.provider)}>Sign out</button
         >{:else if provider.phase === 'Waiting' || provider.phase === 'Installing'}<button
-          class="worktree-button mini"
+          class="workspace-button mini"
           onclick={() => signOut(provider.provider)}>Cancel</button
         >{:else if provider.phase === 'NotInstalled'}{#if provider.install_command}<button
-            class="worktree-button"
+            class="workspace-button"
             title={`Runs ${provider.install_command}`}
             onclick={() => install(provider.provider)}>Install</button
           >{/if}{:else if provider.phase !== 'Checking' && provider.phase !== 'SignedIn' && provider.custom}<button
-          class="worktree-button"
+          class="workspace-button"
           disabled={!provider.can_sign_in}
           title={provider.can_sign_in
             ? 'OAuth in your browser'
@@ -187,14 +187,14 @@
         >{/if}
       {#if provider.can_add_account}
         <button
-          class="worktree-button"
+          class="workspace-button"
           onclick={() =>
             run(providerCommands.account(provider.provider, 'Add'))}
           >Add account</button
         >
       {/if}
       {#if provider.custom}<button
-          class="worktree-button mini"
+          class="workspace-button mini"
           title="Remove this agent. Its threads keep their history."
           onclick={() => removeAgent(provider.provider)}>Remove</button
         >{/if}
@@ -216,7 +216,7 @@
         /></label
       ><span>· stdio</span>
       {#if provider.command_edited}<button
-          class="worktree-button mini"
+          class="workspace-button mini"
           title="Return to the built-in command"
           onclick={() => setCommand(provider.provider, null)}>Reset</button
         >{/if}
@@ -250,7 +250,7 @@
           {#if account.waiting}
             <span>Finish signing in in your browser…</span>
             <button
-              class="worktree-button mini"
+              class="workspace-button mini"
               onclick={() =>
                 run(providerCommands.account(provider.provider, 'Cancel'))}
               >Cancel</button
@@ -260,7 +260,7 @@
               <span>Default</span>
             {:else}
               <button
-                class="worktree-button mini"
+                class="workspace-button mini"
                 onclick={() =>
                   run(
                     providerCommands.account(provider.provider, {
@@ -270,7 +270,7 @@
               >
             {/if}
             <button
-              class="worktree-button mini"
+              class="workspace-button mini"
               onclick={() =>
                 run(
                   providerCommands.account(provider.provider, {
@@ -280,7 +280,7 @@
             >
           {:else}
             <button
-              class="worktree-button mini"
+              class="workspace-button mini"
               disabled={account.id === 0 &&
                 (!provider.can_sign_in || provider.phase === 'Waiting')}
               onclick={() =>
@@ -412,18 +412,18 @@
   </div>
 {/snippet}
 
-<section class="worktree-settings" aria-label="Providers settings">
-  <header class="worktree-settings-head">
+<section class="workspace-settings" aria-label="Providers settings">
+  <header class="workspace-settings-head">
     <h1>Settings</h1>
     <span>applies to every project</span>
   </header>
-  <div class="worktree-settings-body">
+  <div class="workspace-settings-body">
     <SettingsNav
       current="providers"
       providersLabel={view?.signed_in_label ?? ''}
       {send}
     />
-    <div class="worktree-settings-main">
+    <div class="workspace-settings-main">
       <PaneState
         name="Providers"
         {error}
@@ -433,7 +433,7 @@
       {#if view}
         <section>
           <h2>Providers</h2>
-          <p class="worktree-description">
+          <p class="workspace-description">
             Agents run on your own subscriptions. Each provider signs in with
             OAuth in your browser, the way T3 Code does. Velocity talks to every
             provider's agent over ACP (Agent Client Protocol), the same protocol
@@ -452,21 +452,21 @@
                 addAgent();
               }}
             >
-              <p class="worktree-description">
+              <p class="workspace-description">
                 Any agent that speaks ACP over stdio, as in Zed. It gets its own
                 card, its models are read over ACP, and it runs unrestricted
                 with every tool. It inherits your non-credential environment, so
                 there is no field for a variable or a key.
               </p>
               <div class="pv-add-row">
-                <label class="worktree-input"
+                <label class="workspace-input"
                   ><span>Name</span><input
                     aria-label="Agent name"
                     bind:value={agentName}
                     spellcheck="false"
                   /></label
                 >
-                <label class="worktree-input pv-add-command"
+                <label class="workspace-input pv-add-command"
                   ><span>Command</span><input
                     aria-label="Agent command and arguments"
                     placeholder="gemini --experimental-acp"
@@ -476,21 +476,21 @@
                 >
               </div>
               <div class="pv-add-row">
-                <button class="worktree-button" type="submit">Add agent</button
+                <button class="workspace-button" type="submit">Add agent</button
                 ><button
-                  class="worktree-button mini"
+                  class="workspace-button mini"
                   type="button"
                   onclick={cancelAdding}>Cancel</button
                 >
               </div>
             </form>{:else}<button
-              class="worktree-button pv-add-open"
+              class="workspace-button pv-add-open"
               onclick={() => (adding = true)}>Add an ACP agent</button
             >{/if}
         </section>
         <section>
           <h2>Default for new threads</h2>
-          <p class="worktree-description">
+          <p class="workspace-description">
             Spec interviews, duty agents and swarms choose their models in their
             own dialogs. A thread can switch models from the composer.
           </p>
@@ -503,7 +503,7 @@
         </section>
         <section>
           <h2>Thread titles</h2>
-          <p class="worktree-description">
+          <p class="workspace-description">
             A small, fast model names each thread from your first message, and
             the change is named from the title. It runs once per thread, so pick
             something quick.
@@ -520,7 +520,7 @@
                   >· the default</span
                 >{/if}{:else}<span>·</span>
               <button
-                class="worktree-button mini"
+                class="workspace-button mini"
                 onclick={() => edit('TitleReset')}
                 >Reset to GPT-6 Luna · Low · Fast</button
               >{/if}
@@ -528,7 +528,7 @@
         </section>
         <section>
           <h2>Agent environment</h2>
-          <p class="worktree-description">
+          <p class="workspace-description">
             Agents, queued runs and agent shims do not inherit credential
             variables (<code>*_KEY</code>, <code>*_KEY_PATH</code>,
             <code>*_TOKEN</code>, <code>*_SECRET</code>,
@@ -545,7 +545,7 @@
               addPassthrough();
             }}
           >
-            <label class="worktree-input pv-env-input"
+            <label class="workspace-input pv-env-input"
               ><span>Variable</span><input
                 aria-label="Pass-through environment variable name"
                 placeholder="MY_TOOL_TOKEN"
@@ -554,7 +554,7 @@
               /></label
             >
             <button
-              class="worktree-button"
+              class="workspace-button"
               type="submit"
               disabled={!passthroughInput.trim()}>Allow</button
             >

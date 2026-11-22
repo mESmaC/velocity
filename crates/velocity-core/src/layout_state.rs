@@ -181,7 +181,7 @@ impl Default for LayoutState {
             revision: 0,
             transcript_revision: 0,
             view: NavigationView::Home,
-            settings_tab: "worktrees".into(),
+            settings_tab: "workspaces".into(),
             selected_thread: None,
             search: String::new(),
             show_numbers: false,
@@ -1183,9 +1183,9 @@ impl LayoutState {
             slash_items,
             slash_selection,
             tasks,
-            pull_requests: self.data.pull_requests.clone(),
+            changes: self.data.changes.clone(),
             issues,
-            worktree_label: self.worktree_label(),
+            workspace_label: self.workspace_label(),
             providers: self.data.providers.clone(),
             airc_open: self.airc_open,
             airc_unread: self.airc_badge().unread,
@@ -1727,7 +1727,7 @@ impl LayoutState {
             self.view = NavigationView::Agents;
         }
         if let LayoutIntent::SettingsTab(tab) = &intent
-            && (tab == "worktrees"
+            && (tab == "workspaces"
                 || tab == "providers"
                 || tab == "appearance"
                 || tab == "skills"
@@ -2134,7 +2134,7 @@ impl LayoutState {
         PULSE
             .into_iter()
             .filter_map(|(kind, label)| {
-                let count = if matches!(kind, layout::PulseKind::MergedToday) {
+                let count = if matches!(kind, layout::PulseKind::LandedToday) {
                     self.data.merged_today
                 } else {
                     self.data
@@ -2226,7 +2226,7 @@ impl LayoutState {
         items
     }
 
-    fn worktree_label(&self) -> String {
+    fn workspace_label(&self) -> String {
         match self.workspace_count {
             Some(1) => "1 workspace".into(),
             Some(count) => format!("{count} workspaces"),

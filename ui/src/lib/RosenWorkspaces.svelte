@@ -136,7 +136,7 @@
 {#if configuration !== null}
   <section>
     <h2>Warm pool</h2>
-    <p class="worktree-description">
+    <p class="workspace-description">
       Rosen reads these settings from <code>rosen.toml</code>. Edits apply after
       the change lands.
     </p>
@@ -150,7 +150,7 @@
     />
     {#if configuration}
       {#if configuration.config_error}
-        <p class="worktree-message error" role="alert">
+        <p class="workspace-message error" role="alert">
           {configuration.config_error}
         </p>
       {/if}
@@ -160,9 +160,9 @@
           void propose();
         }}
       >
-        <div class="worktree-setting-row">
+        <div class="workspace-setting-row">
           <label for="workspace-pool-size">Workspaces to keep ready</label>
-          <label class="worktree-input">
+          <label class="workspace-input">
             <input
               id="workspace-pool-size"
               type="number"
@@ -186,7 +186,7 @@
         </div>
         <div class="workspace-commands">
           <label for="workspace-prepare">Prepare commands</label>
-          <p id="workspace-prepare-help" class="worktree-description">
+          <p id="workspace-prepare-help" class="workspace-description">
             One command per line.
           </p>
           <textarea
@@ -202,10 +202,10 @@
               if (draft) draft.commands = event.currentTarget.value;
             }}></textarea>
         </div>
-        <div class="worktree-summary">
+        <div class="workspace-summary">
           <button
             type="submit"
-            class="worktree-button"
+            class="workspace-button"
             disabled={!draft || saving || Boolean(configuration.config_error)}
           >
             {saving ? 'Creating change…' : 'Create change'}
@@ -213,7 +213,7 @@
           {#if draft}
             <button
               type="button"
-              class="worktree-button"
+              class="workspace-button"
               disabled={saving}
               onclick={() => (draft = null)}>Reset</button
             >
@@ -221,7 +221,7 @@
         </div>
       </form>
       {#if change}
-        <p class="worktree-message" role="status">
+        <p class="workspace-message" role="status">
           Created Rosen change <code>{change}</code>.
         </p>
       {/if}
@@ -230,7 +230,7 @@
 {/if}
 
 {#if actionError}
-  <p class="worktree-message error" role="alert">{actionError}</p>
+  <p class="workspace-message error" role="alert">{actionError}</p>
 {/if}
 
 <section>
@@ -246,7 +246,7 @@
     automatic={false}
   />
   {#if rows?.length}
-    <p class="worktree-description">
+    <p class="workspace-description">
       {rows.length} on this machine. Sizes exclude linked directories.
     </p>
     <table class="workspace-inventory">
@@ -283,7 +283,7 @@
             >
             <td>
               <button
-                class="worktree-button mini"
+                class="workspace-button mini"
                 aria-label={`Delete workspace for ${row.change}`}
                 disabled={deleting !== null}
                 onclick={() => void remove(row)}

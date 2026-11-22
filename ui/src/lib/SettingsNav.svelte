@@ -8,7 +8,7 @@
     send,
   }: {
     current:
-      | 'worktrees'
+      | 'workspaces'
       | 'providers'
       | 'appearance'
       | 'skills'
@@ -19,11 +19,11 @@
   } = $props();
 </script>
 
-<nav class="worktree-settings-nav" aria-label="Settings pages">
+<nav class="workspace-settings-nav" aria-label="Settings pages">
   <button
-    class:on={current === 'worktrees'}
-    aria-current={current === 'worktrees' ? 'page' : undefined}
-    onclick={() => send({ Request: { SettingsTab: 'worktrees' } })}
+    class:on={current === 'workspaces'}
+    aria-current={current === 'workspaces' ? 'page' : undefined}
+    onclick={() => send({ Request: { SettingsTab: 'workspaces' } })}
     >Workspaces</button
   >
   <button

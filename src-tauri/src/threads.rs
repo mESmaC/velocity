@@ -185,11 +185,25 @@ fn finish_stopping(
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename = "ThreadState", rename_all = "snake_case")]
+enum ThreadStateBinding {
+    Draft,
+    Spec,
+    Working,
+    Review,
+    Error,
+    Closed,
+    Done,
+    Landed,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type, Event)]
 #[tauri_specta(event_name = "thread://status")]
 pub struct ThreadStatusChanged {
     pub project_identifier: u32,
     pub thread_identifier: u32,
+    #[specta(type = ThreadStateBinding)]
     pub state: ThreadState,
     pub activity: AgentActivity,
 }

@@ -16,10 +16,8 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
 1. **Agents never wait for approval.** Every agent runs with full permissions (bypass / yolo / unrestricted) until it finishes. Every agent also has its full toolset: all of its provider's built-in tools, your MCP servers and skills, the shell, the network and Velocity's GitHub tools (§3.2 Tool access). Velocity has no approval prompts, no plan-approval gates and no "needs you" states. Messages sent to a busy agent are queued and picked up at its next step. They never interrupt it.
 2. **The spec comes first.** Every new project starts with a spec interview. No build work starts until the spec is locked.
 3. **A task is finished when its change lands.** The agent names its work (`rosen commit -m`) and repairs anything a stored conflict or post-land revert sends back to it.
-   - **Legacy GitHub projects:** an agent opens a PR, watches it until it merges, fixes CI and answers every review comment.
 4. **Review follows landing.** Velocity uses Rosen's after-land policy, so a named change lands as soon as it combines cleanly with the base. A batched integration build runs the build, lint and full tests, then bisects failures for fix-forward work (#480). Review, scouting and proof verification follow the land without blocking development (#382). The release is the gate (F7).
 5. **One workspace per unit of work.** Every thread and agent has its own Rosen change and workspace. Rosen deletes the workspace when the change lands or is abandoned.
-   - **Legacy GitHub projects:** each job has its own git worktree, deleted after its PR merges.
 6. **AGENTS.md is direct and explicit.** Hedged or vague wording counts as a defect.
 7. **Agents coordinate through claims, not conversation.** AIRC coordinates work choice and project events; Rosen records path claims with claim, share and wait. Every agent claims its work and paths and waits for a dependency change to land before rebasing. Agents can message each other, but only when a claim, overlap or dependency needs words. A dependency wait is not an approval gate (Rule 1).
 8. **Implementation first.** Agents build working functionality before anything else.
@@ -35,19 +33,16 @@ These hold for every feature. A feature that breaks one of them is wrong, whatev
   A beta release with that build and no open release-blocker issue skips the rest of the release gate (F1, #434).
 - Discoveries can report problems in either Velocity or Rosen to their own repositories, with separate title matching and filing results (F14, #303).
 - Generated lockfiles and bindings are regenerated rather than line-merged; F5 specifies the commands in durable rebase notices, including rebases with no text conflicts (#404).
-- A Rosen project never falls back to a git worktree when workspace creation fails: transient errors retry Rosen for about a minute, and a lasting failure leaves the thread in `error` with the Rosen error and a retry action (F5, #407).
+- A Rosen project never falls back to git when workspace creation fails: transient errors retry Rosen for about a minute, and a lasting failure leaves the thread in `error` with the Rosen error and a retry action (F5, #407).
 - Rosen AIRC record acknowledgements and dependency subscriptions replay from an explicit cursor so simultaneous Goal Swarm setup cannot miss its own events; record event waits fail after 30 seconds (F14, #409).
-- Switching from Rosen to git carries Rosen's landed base into the default branch before new worktrees or ready-pool slots start; divergent history is refused with an explanation (F5, #369).
 
 ---
 
 ## 2. Concepts
 
 **Rosen vocabulary (#417):** workspace; change; automatic snapshot or named snapshot (`rosen commit -m`); name the change; land; base; stored conflict (`rosen resolve`); land history; abandoned; pre-land and post-land checks (green, culprit, reverted); path claims (`rosen claim`, `rosen share`, `rosen wait`).
-GitHub terminology applies to literal GitHub operations, issues and the git mirror.
-The migration is phased by the owner decision on #417: UI copy and spec wording first; Rust, saved fields and IPC names migrate with #421 (status pane), #422 (thread view), #423 (workspaces) and #424 (after-land review), then a final sweep follows their lands.
-Until those changes land, code names, wire values and the §3.1 command/event spellings below remain the implemented names; renamed saved fields accept their old names with `#[serde(alias)]`.
-The existing GitHub workflow sections describe the legacy git backend while those changes replace it.
+GitHub terminology applies only to literal GitHub operations (issues and the git mirror).
+Saved state fields renamed in `velocity-store` keep loading older files through `#[serde(alias)]`.
 
 
 | Term | Meaning |
@@ -62,7 +57,7 @@ The existing GitHub workflow sections describe the legacy git backend while thos
 | **Workspace** | A Rosen workspace for one thread or agent, attached to its own change from the project base. |
 | **AIRC** | The project's coordination channel. It is first a log of claims and project events (changes, reviews, lands, issues, Task List changes); agents can also message each other. Overlaps and dependencies are settled there and shared ledgers are kept there, so no agent works in isolation. Modelled on xros_chat. |
 | **Claim** | An agent's public statement of its task, change and the paths it expects to touch. Claims on a piece of work are locked: the first claim wins and a later one is refused with the holder's nick. |
-| **Design proof** | `proofs/<Feature>/Design.lean`: the feature modelled in Lean, proven correct, within a stated cost bound, and no worse than a stated class of alternatives. Only for features on the proof list (F17), written after the code in the same PR. |
+| **Design proof** | `proofs/<Feature>/Design.lean`: the feature modelled in Lean, proven correct, within a stated cost bound, and no worse than a stated class of alternatives. Only for features on the proof list (F17), written after the code in the same change. |
 | **Confidence proof** | Ties what was built to the design model. By default, the model exports a fixture table and one test checks the code against it; a code translation runs only when an issue asks for it. "Don't state your confidence; prove it." |
 | **Proof level** | How firmly a language's code is tied to the proven model: **code** (the code itself is translated into Lean and proven), **reference** (the code is stress-tested against the compiled Lean model) or **model** (only the design is proven). |
 | **Skill** | An Agent Skills folder (`SKILL.md` plus optional scripts, references and data) that an agent loads when a task needs it. Velocity installs skill packs machine-wide and lets projects choose which skills load in every session (F18). |
@@ -75,11 +70,11 @@ The existing GitHub workflow sections describe the legacy git backend while thos
 | `draft` | (top, unnamed) | New thread, not sent yet. |
 | `spec` | Spec interview | Interview in progress. Phases: `scan` → `ask` → `ready` → `locked`. |
 | `working` | Running | Agent works in its workspace; an idle conversation can resume on the next message (§3.2). |
-| `review` | named · watching | PR is open; the agent watches it. Stages: `ci`, `review`, `fixing`, `approved`. |
+| `review` | named · watching | Change is named; Velocity watches it land. Stages: `ci`, `review`, `fixing`, `approved`. |
 | `error` | Failed | Agent stopped on an error. Its workspace is kept. |
-| `closed` | Settled | PR abandoned. Its workspace is kept. |
+| `closed` | Settled | Change abandoned. Its workspace is kept. |
 | `done` | Settled | Spec locked (spec threads only). |
-| `merged` | Settled | PR merged and workspace deleted. The thread is finished. |
+| `landed` | Settled | Change landed and workspace deleted. The thread is finished. |
 
 The sidebar shows groups in this order: draft, Review, Swarms, Spec interview, Running, named · watching, Failed, Settled. Settled is collapsed by default, shows its count and a chevron, and is the only collapsible group. Its expanded state is saved per project. While collapsed it still lists the open thread, so the thread in the main view is always in the sidebar. Finished swarm members move there immediately; idle working threads and failures stay in their active groups. Search reveals matching settled threads even while collapsed. Empty groups are hidden, except "Review", which offers to start agents when empty.
 The draft row, New thread, shows at the top while no thread is open, and takes the first row number.
@@ -95,12 +90,12 @@ A thread's state (§2.1) says where it is in its lifecycle. Its **activity** say
 |---|---|---|
 | `thinking` | The agent is producing output. | ACP message chunks |
 | `executing` | A tool call is running. | ACP `tool_call` |
-| `parked` | The agent is waiting on another agent's PR (`airc_wait`). Its ACP session is ended to free a provider slot, and its workspace and claims are kept. | `airc_wait` |
+| `parked` | The agent is waiting on another agent's change (`rosen wait`). Its ACP session is ended to free a provider slot, and its workspace and claims are kept. | `rosen wait` |
 | `stalled` | No ACP update for the stall timeout (below) while not parked. | Velocity |
 | `at limit` | The agent hit a per-agent cap or its account's subscription limit. This stays set until the agent resumes. | Velocity, provider |
 | `idle` | The agent's turn ended and nothing is queued. | ACP turn end |
 
-**Parked agents wake on events, not by polling.** A wait subscribes the agent to the `merged` event of the PR it waits on. When that event fires, Velocity resumes the session (`session/load`, or a new session with the transcript if the agent can't load one), rebases, and posts `unblocked`. If the PR is closed, fails or is deleted, the agent wakes and the wait ends. A dependency wait also ends after 20 minutes, including across app restarts; the resumed agent is told the wait expired and to coordinate with the holder or proceed. Expiry does not rebase or release either claim.
+**Parked agents wake on events, not by polling.** A wait subscribes the agent to the land of the change it waits on. When that change lands, Velocity resumes the session (`session/load`, or a new session with the transcript if the agent can't load one), rebases, and posts `unblocked`. If the change is abandoned, fails or is deleted, the agent wakes and the wait ends. A dependency wait also ends after 20 minutes, including across app restarts; the resumed agent is told the wait expired and to coordinate with the holder or proceed. Expiry does not rebase or release either claim.
 
 **Stall timeout** (decided, Q20): 5 minutes without an ACP update. Three cases never count as silence:
 - **A running tool call** gets 30 minutes *(proposed)*. A build, a test run or `lake build` reports nothing until it ends, and restarting the session would kill it and start it again.
@@ -124,20 +119,20 @@ Both timeouts are set in Settings → Agents (F13).
 - **Per-agent caps:** max turns and max duration, set in Settings → Agents (F13). Off by default.
 - **Hitting a limit:** when an agent hits a cap or its provider's limit, its activity becomes `at limit`.
 - **Release after a grace period:** if an agent stays `at limit`, or its thread has failed (§2.1 `error`), for 10 minutes (decided, Q20; set in Settings → Agents), Velocity releases its claims. It posts a `released` event and the piece goes back to the pool (F16). The workspace is still kept (F5).
-- **An open PR keeps its claims** *(proposed)*. A thread with an open PR is never released. A second agent on the piece would open a duplicate.
-- **Prior work is offered, never assigned** (decided, Q20). When the released agent pushed a branch, the `released` event names the branch and its last pushed commit. The work pool shows them on the piece, and the agent that claims it next is told "<nick> left work on `<branch>` at `<sha7>`". That agent starts in its own fresh workspace from `master` as always (Rule 5) and decides whether to merge the branch in. The released agent's workspace stays with its thread.
+- **A named change keeps its claims** *(proposed)*. A thread with a named change is never released. A second agent on the piece would open a duplicate.
+- **Prior work is offered, never assigned** (decided, Q20). When the released agent stored snapshots on a change, the `released` event names the change and its latest snapshot. The work pool shows them on the piece, and the agent that claims it next is told "<nick> left work on `<change>` at `<sha7>`". That agent starts in its own fresh workspace from the base as always (Rule 5) and decides whether to carry the prior work over. The released agent's workspace stays with its thread.
 - **At an account's limit** (#444, F15), Velocity resumes the thread on the next available account of the same provider.
   When every account is exhausted, a paused thread waits for an account to become available.
   A provider error with no reset time uses a 15-minute retry *(proposed)*.
   The grace period can still return a claimed piece to the pool.
 - **Resuming after a release** *(proposed)*: an agent whose claims were released claims its piece again before it continues. If another agent holds the piece by then, the thread fails with "piece taken by <nick>" and keeps its workspace.
-- **Closed changes:** a closed PR keeps its claims until you delete the thread. Closing is a decision someone made, so it isn't treated as a failure.
+- **Abandoned changes:** an abandoned change keeps its claims until you delete the thread. Abandoning is a decision someone made, so it isn't treated as a failure.
 
 The native supervisor checks live build threads once a second.
 Its defaulted checkpoint in `state.json` retains completed turns, the session start, the last ACP update at a durable transition, the nudge, and the unavailability grace deadline.
 The exact live ACP heartbeat stays in memory; streaming batches do not write supervision checkpoints.
 Streaming batches save each thread's live transcript at most once every 5 seconds per thread, and always at the end of a turn, into its own `transcripts/<project>/<thread>.jsonl` file so copying every chunk of every agent into the store no longer starves the window (#273, #552).
-Settled (`merged` and `done`) threads archive out of live state into per-project settled records (`projects/<project>.settled.json`) and load their transcripts on demand when opened in the UI (#552).
+Settled (`landed` and `done`) threads archive out of live state into per-project settled records (`projects/<project>.settled.json`) and load their transcripts on demand when opened in the UI (#552).
 A change to saved state only updates memory; a background writer takes an `Arc` handle under the store lock and writes only the changed root (`state.json`), active project (`projects/<project>.json`), settled archive, and transcript files outside the lock at most once a second, and once more as Velocity exits or hands over to an installer (#285, #320, #552).
 A crash loses at most the last second of changes, and mid-turn at most those last seconds of transcript.
 Session start, turn end, nudge and the first subsequent ACP update persist checkpoints; a resumed session starts a fresh silence clock.

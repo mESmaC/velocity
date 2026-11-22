@@ -36,8 +36,8 @@
   <header class="thread-head">
     <h1>{thread.title}</h1>
     <div class="meta">
-      {#if thread.branch}
-        <span class="branch"><Icon name="branch" />{thread.branch}</span>
+      {#if thread.change_label}
+        <span class="change"><Icon name="change" />{thread.change_label}</span>
       {/if}
       <span>{interview.status_label}</span>
       {#if thread.model_pill.model_name}<span

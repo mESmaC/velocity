@@ -20,11 +20,11 @@ pub struct Entry {
     pub to: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intent: Option<String>,
-    /// The PR an event is about, so readers such as the approval record (F7)
-    /// never parse it back out of the display text.
+    /// Legacy change number carried by older channel records.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "bindings", specta(skip))]
     pub pull_request: Option<u32>,
-    /// The PR head commit the event applies to (`approved` binds to it).
+    /// The head snapshot the event applies to (`approved` binds to it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head: Option<String>,
     /// The Rosen change ID this event or workspace belongs to (R2, F14, #540).

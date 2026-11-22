@@ -56,7 +56,7 @@ Any other ACP agent can be added beside the four (Custom ACP agents, below).
   While all accounts are at their limit, a paused thread waits and resumes automatically when an account has room.
 - **Max agents at once** (off by default): a cap on concurrently running agents for this provider.
   - Agents over the cap wait as "queued · <provider>" and start when a slot frees.
-  - Parked agents (§2.2) don't hold a slot, so waiting on another PR never blocks new work.
+  - Parked agents (§2.2) don't hold a slot, so waiting on another change never blocks new work.
   - The card accepts a positive whole number; empty means off.
     Caps apply across projects and roles, including resumed sessions.
     Background thread titles use a separate serial queue so title generation cannot delay a new thread's agent.

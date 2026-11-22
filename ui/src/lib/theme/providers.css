@@ -242,7 +242,7 @@
   border: 1px dashed var(--line-mid);
   border-radius: var(--r-lg);
 }
-.pv-add .worktree-description {
+.pv-add .workspace-description {
   margin: 0;
 }
 .pv-add-row {
