@@ -6,6 +6,7 @@
 //! 4. Optionally keep GitHub as a one-way downstream copy (C4), or remove it.
 //! 5. Run `rosen collapse check` and report every step's result.
 
+use std::path::Path;
 use std::time::Duration;
 
 use tauri::AppHandle;
@@ -17,7 +18,8 @@ use velocity_core::collapse::{
     CollapseCheckItemStatus, CollapseCheckSummary, DeletedCollapseRepository,
     DeletedRepositoryAction, ForwarderState, IssueHost, MoveToCollapseStepId,
     MoveToCollapseStepResult, MoveToCollapseStepStatus, collapse_forwarding_signal,
-    downstream_settings_page, github_repository_from_remote, repository_name_for,
+    downstream_settings_page, github_repository_from_remote, move_to_collapse_can_switch_mirror,
+    repository_name_for,
 };
 use velocity_core::project_health::short_commit;
 use velocity_rosen::ProjectServer;
@@ -125,6 +127,12 @@ pub async fn move_to_collapse(
         Err(error) => return Err(error.to_string()),
     };
     let collapse_repository = provisioned.repository();
+    let github_repository = match github_repository {
+        Some(repo) => Some(repo),
+        None => {
+            resolve_github_from_collapse(&credentials, &provisioned.owner, &provisioned.name).await
+        }
+    };
     let (steps, check) = run_cutover_steps(
         &application,
         &subject,
@@ -138,9 +146,14 @@ pub async fn move_to_collapse(
     .await?;
     let _ = refresh_health(&application).await;
     let settings = read_project_collapse_settings(&application, project).await?;
-    let ok = steps
-        .iter()
-        .all(|step| step.status != MoveToCollapseStepStatus::Failed)
+    let import_passed = steps.iter().any(|step| {
+        step.step == MoveToCollapseStepId::ImportIssues
+            && move_to_collapse_can_switch_mirror(step.status)
+    });
+    let ok = import_passed
+        && steps
+            .iter()
+            .all(|step| step.status != MoveToCollapseStepStatus::Failed)
         && check.as_ref().is_none_or(|report| report.ok);
     let summary = if ok {
         format!(
@@ -163,6 +176,76 @@ pub async fn move_to_collapse(
         settings,
         deleted_repository: None,
     })
+}
+
+/// `import_collapse_issues` (§3.1): runs the same GitHub issue import step Move to Collapse
+/// uses, for a Collapse-hosted project whose issues were never imported (#612).
+#[tauri::command]
+#[specta::specta]
+pub async fn import_collapse_issues(
+    application: AppHandle,
+    project_identifier: u32,
+) -> Result<MoveToCollapseStepResult, String> {
+    let subject = mirror_subject(&application, project_identifier)?;
+    let collapse_repository = subject
+        .repository
+        .clone()
+        .ok_or("This project does not mirror to Collapse")?;
+    let (owner, name) = collapse_repository
+        .split_once('/')
+        .ok_or("Invalid Collapse repository name")?;
+    let server = crate::rosen::server(&application, project_identifier).await?;
+    let mut github_repository = resolve_github_repository_for_project(
+        &application,
+        project_identifier,
+        &subject,
+        &server,
+        None,
+    )
+    .await?;
+    if github_repository.is_none()
+        && let Some(credentials) = load_credentials().await?
+    {
+        github_repository = resolve_github_from_collapse(&credentials, owner, name).await;
+    }
+    let (step, high_water) = run_import_issues(
+        &subject.repository_path,
+        owner,
+        name,
+        github_repository.as_deref(),
+        None,
+    )
+    .await;
+    if step.status == MoveToCollapseStepStatus::Passed {
+        velocity_github::IssueClient::invalidate_open_issues_for(
+            IssueHost::Collapse,
+            &collapse_repository,
+        );
+        crate::project_health::mark_collapse_issues_imported(
+            &application,
+            project_identifier,
+            &collapse_repository,
+        );
+        if let Some(github) = github_repository.as_deref() {
+            let _ = crate::collapse_issue_sync::enable_post_switch_sync(
+                &application,
+                project_identifier,
+                github,
+                high_water,
+                true,
+            )
+            .await;
+        }
+        let _ = toast(&application, format!("{}: {}", subject.name, step.summary));
+    } else {
+        crate::project_health::record_collapse_import_error(
+            &application,
+            project_identifier,
+            &collapse_repository,
+            &step.summary,
+        );
+    }
+    Ok(step)
 }
 
 async fn provision_for_cutover(
@@ -248,17 +331,19 @@ async fn run_cutover_steps(
     dashboard: &[RepositoryActivity],
 ) -> Result<(Vec<MoveToCollapseStepResult>, Option<CollapseCheckSummary>), String> {
     let mut steps = Vec::with_capacity(5);
-    let import_step = step_import_issues(
-        provisioned,
+    let (import_step, high_water) = run_import_issues(
+        &subject.repository_path,
+        &provisioned.owner,
+        &provisioned.name,
         github_repository,
         request.github_import_token.as_deref(),
     )
     .await;
-    let import_failed = import_step.status == MoveToCollapseStepStatus::Failed;
+    let can_switch = move_to_collapse_can_switch_mirror(import_step.status);
     steps.push(import_step);
-    if import_failed {
+    if !can_switch {
         let reason =
-            "Waiting for GitHub issue import to succeed; fix Step 1 and re-run Move to Collapse.";
+            "Waiting for GitHub issue import to pass; fix Step 1 and re-run Move to Collapse.";
         steps.push(skipped_step(
             MoveToCollapseStepId::SwitchMirror,
             "Switch mirror to Collapse",
@@ -305,7 +390,14 @@ async fn run_cutover_steps(
         ));
     } else {
         steps.push(
-            step_set_issues_and_ci(application, request.project_identifier, provisioned).await?,
+            step_set_issues_and_ci(
+                application,
+                request.project_identifier,
+                provisioned,
+                github_repository,
+                high_water,
+            )
+            .await?,
         );
         steps.push(
             step_configure_downstream(
@@ -332,7 +424,24 @@ async fn resolve_github_repository(
     server: &ProjectServer,
     request: &MoveToCollapseRequest,
 ) -> Result<Option<String>, String> {
-    if let Some(explicit) = request.github_repository.as_deref()
+    resolve_github_repository_for_project(
+        application,
+        project,
+        subject,
+        server,
+        request.github_repository.as_deref(),
+    )
+    .await
+}
+
+async fn resolve_github_repository_for_project(
+    application: &AppHandle,
+    project: u32,
+    subject: &MirrorSubject,
+    server: &ProjectServer,
+    explicit_override: Option<&str>,
+) -> Result<Option<String>, String> {
+    if let Some(explicit) = explicit_override
         && !explicit.trim().is_empty()
     {
         return velocity_new_project::parse_github_repository(explicit)
@@ -352,17 +461,23 @@ async fn resolve_github_repository(
     {
         return Ok(Some(from_mirror));
     }
-    let from_health = crate::state::with_store(application, move |store| {
-        store
-            .project(project)
-            .and_then(|item| item.collapse_mirror_health.as_ref())
+    let from_store = crate::state::with_store(application, move |store| {
+        let item = store.project(project)?;
+        item.collapse_mirror_health
+            .as_ref()
             .and_then(|health| health.downstream_github.clone())
+            .or_else(|| {
+                item.github_issue_sync
+                    .as_ref()
+                    .map(|sync| sync.github_repository.trim().to_owned())
+                    .filter(|repo| !repo.is_empty())
+            })
     })
     .await
     .ok()
     .flatten();
-    if from_health.is_some() {
-        return Ok(from_health);
+    if from_store.is_some() {
+        return Ok(from_store);
     }
     let path = subject.repository_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -370,6 +485,34 @@ async fn resolve_github_repository(
     })
     .await
     .map_err(|error| error.to_string())
+}
+
+async fn resolve_github_from_collapse(
+    credentials: &CollapseCredentials,
+    owner: &str,
+    name: &str,
+) -> Option<String> {
+    if let Ok(Some(remote)) =
+        velocity_collapse::repository_downstream(credentials, owner, name).await
+        && let Some(github) = github_repository_from_remote(&remote)
+    {
+        return Some(github);
+    }
+    let token = tauri::async_runtime::spawn_blocking(velocity_collapse::resolve_issues_token)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten()?;
+    let status = velocity_collapse::get_issue_import_status(&token, owner, name)
+        .await
+        .ok()?;
+    for candidate in [status.github_repository, status.suggested_github_repository] {
+        let trimmed = candidate.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_owned());
+        }
+    }
+    None
 }
 
 fn resolve_collapse_target(
@@ -425,17 +568,22 @@ fn match_dashboard_casing(
     (owner.to_owned(), name.to_owned())
 }
 
-async fn step_import_issues(
-    provisioned: &ProvisionedMirror,
+async fn run_import_issues(
+    repository_path: &Path,
+    owner: &str,
+    name: &str,
     github_repository: Option<&str>,
     github_import_token: Option<&str>,
-) -> MoveToCollapseStepResult {
+) -> (MoveToCollapseStepResult, Option<u32>) {
     let title = "Import GitHub issues".to_owned();
     let Some(github) = github_repository else {
-        return skipped_step(
-            MoveToCollapseStepId::ImportIssues,
-            &title,
-            "No GitHub repository configured for issue import.",
+        return (
+            skipped_step(
+                MoveToCollapseStepId::ImportIssues,
+                &title,
+                "No GitHub repository configured for issue import. Enter the GitHub repository (owner/repo) above and re-run Move to Collapse.",
+            ),
+            None,
         );
     };
     let token = tauri::async_runtime::spawn_blocking(velocity_collapse::resolve_issues_token)
@@ -444,37 +592,68 @@ async fn step_import_issues(
         .and_then(Result::ok)
         .flatten();
     let Some(token) = token else {
-        return failed_step(
-            MoveToCollapseStepId::ImportIssues,
-            &title,
-            "No Collapse token available for issue import.".into(),
-            Some("Save a Collapse personal access token with the 'issues' scope in Collapse settings, then re-run Move to Collapse.".into()),
-            None,
+        if verify_github_repository_has_no_issues(repository_path, github).await {
+            return (empty_github_passed_step(title, github), Some(0));
+        }
+        return (
+            failed_step(
+                MoveToCollapseStepId::ImportIssues,
+                &title,
+                "No Collapse token available for issue import.".into(),
+                Some("Save a Collapse personal access token with the 'issues' scope in Collapse settings, then re-run Move to Collapse.".into()),
+                None,
+                None,
+            ),
             None,
         );
     };
     match velocity_collapse::import_github_issues_and_wait(
         &token,
-        &provisioned.owner,
-        &provisioned.name,
+        owner,
+        name,
         github,
         github_import_token,
     )
     .await
     {
-        Ok(status) => {
+        Ok(status) if status.has_finished() => {
+            let high_water = status.result.as_ref().map(|counts| {
+                u32::try_from(counts.next_number.saturating_sub(1)).unwrap_or(u32::MAX)
+            });
             let (summary, detail) = format_import_summary(github, status.result.as_ref());
-            MoveToCollapseStepResult {
-                step: MoveToCollapseStepId::ImportIssues,
-                title,
-                status: MoveToCollapseStepStatus::Passed,
-                summary,
-                detail,
-                action_url: None,
-                action_label: None,
+            (
+                MoveToCollapseStepResult {
+                    step: MoveToCollapseStepId::ImportIssues,
+                    title,
+                    status: MoveToCollapseStepStatus::Passed,
+                    summary,
+                    detail,
+                    action_url: None,
+                    action_label: None,
+                },
+                high_water,
+            )
+        }
+        Ok(_) => {
+            if verify_github_repository_has_no_issues(repository_path, github).await {
+                return (empty_github_passed_step(title, github), Some(0));
             }
+            (
+                failed_step(
+                    MoveToCollapseStepId::ImportIssues,
+                    &title,
+                    format!("Collapse did not record a completed import for {github}."),
+                    Some("Re-run Move to Collapse once Collapse finishes importing issues.".into()),
+                    None,
+                    None,
+                ),
+                None,
+            )
         }
         Err(failure) => {
+            if verify_github_repository_has_no_issues(repository_path, github).await {
+                return (empty_github_passed_step(title, github), Some(0));
+            }
             let detail = if failure.needs_issues_token {
                 Some("Issue import requires a Collapse personal access token with the 'issues' scope. Save one in Collapse settings below and re-run Move to Collapse.".into())
             } else {
@@ -486,16 +665,43 @@ async fn step_import_issues(
                 .action_url
                 .as_ref()
                 .map(|_| "Open GitHub App permissions".to_owned());
-            failed_step(
-                MoveToCollapseStepId::ImportIssues,
-                &title,
-                failure.message,
-                detail,
-                failure.action_url,
-                action_label,
+            (
+                failed_step(
+                    MoveToCollapseStepId::ImportIssues,
+                    &title,
+                    failure.message,
+                    detail,
+                    failure.action_url,
+                    action_label,
+                ),
+                None,
             )
         }
     }
+}
+
+fn empty_github_passed_step(title: String, github: &str) -> MoveToCollapseStepResult {
+    MoveToCollapseStepResult {
+        step: MoveToCollapseStepId::ImportIssues,
+        title,
+        status: MoveToCollapseStepStatus::Passed,
+        summary: format!("Verified {github} has no GitHub issues; nothing to import."),
+        detail: None,
+        action_url: None,
+        action_label: None,
+    }
+}
+
+async fn verify_github_repository_has_no_issues(repository_path: &Path, github: &str) -> bool {
+    let directory = repository_path.to_path_buf();
+    let repo = github.to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        velocity_github::IssueClient::for_repository(&directory, &repo)
+            .and_then(|client| client.total_issue_count())
+            .is_ok_and(|count| count == 0)
+    })
+    .await
+    .unwrap_or(false)
 }
 
 fn format_import_summary(
@@ -752,6 +958,8 @@ async fn step_set_issues_and_ci(
     application: &AppHandle,
     project: u32,
     provisioned: &ProvisionedMirror,
+    github_repository: Option<&str>,
+    high_water_number: Option<u32>,
 ) -> Result<MoveToCollapseStepResult, String> {
     let repo = provisioned.repository();
     let refresh = crate::state::try_with_store(application, move |store| {
@@ -769,6 +977,18 @@ async fn step_set_issues_and_ci(
         .await
         .map_err(|error| error.to_string())??;
     }
+    velocity_github::IssueClient::invalidate_open_issues_for(IssueHost::Collapse, &repo);
+    crate::project_health::mark_collapse_issues_imported(application, project, &repo);
+    if let Some(github) = github_repository {
+        let _ = crate::collapse_issue_sync::enable_post_switch_sync(
+            application,
+            project,
+            github,
+            high_water_number,
+            false,
+        )
+        .await;
+    }
     crate::base_ci::wake(application);
     let has_issues_token =
         tauri::async_runtime::spawn_blocking(velocity_collapse::load_issues_token)
@@ -778,9 +998,9 @@ async fn step_set_issues_and_ci(
             .flatten()
             .is_some();
     let detail = if has_issues_token {
-        Some("Dispatch, AIRC issue tools, base CI repairs, release gate and pin tracking now run against Collapse and Rosen.".into())
+        Some("Dispatch, AIRC issue tools, base CI repairs, release gate and pin tracking now run against Collapse and Rosen. New GitHub issues sync one-way into Collapse for 14 days (toggleable in Collapse settings).".into())
     } else {
-        Some("Issues and CI switched to Collapse and Rosen. Save a Collapse PAT with 'issues' scope in Collapse settings below to allow commenting and closing issues.".into())
+        Some("Issues and CI switched to Collapse and Rosen. Save a Collapse PAT with 'issues' scope in Collapse settings below to allow commenting, closing and syncing new GitHub issues.".into())
     };
     Ok(MoveToCollapseStepResult {
         step: MoveToCollapseStepId::SetIssuesAndCi,

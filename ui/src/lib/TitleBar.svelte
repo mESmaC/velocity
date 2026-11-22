@@ -19,8 +19,12 @@
   } = $props();
 
   let collapseForwarding = $state<ProjectHealthItem | null>(null);
+  let collapseIssuesImport = $state<ProjectHealthItem | null>(null);
   const activeCollapseForwarding = $derived(
     layout?.project_identifier != null ? collapseForwarding : null,
+  );
+  const activeCollapseIssuesImport = $derived(
+    layout?.project_identifier != null ? collapseIssuesImport : null,
   );
 </script>
 
@@ -100,6 +104,7 @@
             project={layout.project_identifier}
             {send}
             onForwardingWarning={(item) => (collapseForwarding = item)}
+            onIssuesImportWarning={(item) => (collapseIssuesImport = item)}
           />
         {/if}
       </div>
@@ -135,5 +140,6 @@
     project={layout?.project_identifier ?? null}
     collapse={layout?.collapse_mirror_health ?? null}
     collapseForwarding={activeCollapseForwarding}
+    collapseIssuesImport={activeCollapseIssuesImport}
   />
 </div>

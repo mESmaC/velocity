@@ -345,6 +345,149 @@ impl DeletedCollapseRepository {
 /// project's downstream copy is not being updated (#579, #611).
 pub const COLLAPSE_FORWARDING_SIGNAL: &str = "GitHub copy is not being updated";
 
+/// Project health and title bar warning shown when a project's issue host is Collapse but
+/// Collapse's GitHub issue import has never finished for that repository (#612).
+pub const COLLAPSE_ISSUES_NOT_IMPORTED_SIGNAL: &str =
+    "Issues on Collapse were never imported from GitHub";
+
+/// Default duration (14 days) that Velocity keeps mirroring newly opened GitHub issues into
+/// Collapse after switching a project's issue host to Collapse (#612).
+pub const GITHUB_ISSUE_SYNC_DEFAULT_WINDOW_SECS: u64 = 14 * 24 * 60 * 60;
+
+/// Persisted one-way sync state for mirroring GitHub issues opened after switching a
+/// project's issue host to Collapse (#612).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GitHubIssueSync {
+    /// Whether Velocity periodically mirrors newly opened GitHub issues to Collapse.
+    #[serde(default)]
+    pub enabled: bool,
+    /// GitHub `owner/repository` watched for newly opened issues.
+    #[serde(default)]
+    pub github_repository: String,
+    /// Highest GitHub issue number covered by the initial import or already mirrored.
+    #[serde(default)]
+    pub high_water_number: u32,
+    /// Maps mirrored GitHub issue numbers to their created Collapse issue numbers.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub synced_numbers: std::collections::BTreeMap<u32, u32>,
+    /// Optional Unix seconds when this transitional sync automatically turns off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_secs: Option<u64>,
+    /// Unix milliseconds of the last successful poll, when any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_synced_at_ms: Option<u64>,
+    /// Last sync error from the most recent poll, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+/// Serializable status of post-switch one-way GitHub issue sync for Collapse settings (#612).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "bindings", derive(specta::Type))]
+pub struct GitHubIssueSyncView {
+    pub enabled: bool,
+    pub github_repository: String,
+    pub high_water_number: u32,
+    pub synced_count: u32,
+    /// Decimal Unix milliseconds when transitional sync expires, if a window is set.
+    #[serde(default)]
+    pub expires_at_ms: Option<String>,
+    /// Decimal Unix milliseconds when the last sync pass completed, if any.
+    #[serde(default)]
+    pub last_synced_at_ms: Option<String>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+}
+
+impl GitHubIssueSync {
+    pub fn to_view(&self) -> GitHubIssueSyncView {
+        GitHubIssueSyncView {
+            enabled: self.enabled,
+            github_repository: self.github_repository.clone(),
+            high_water_number: self.high_water_number,
+            synced_count: u32::try_from(self.synced_numbers.len()).unwrap_or(u32::MAX),
+            expires_at_ms: self
+                .expires_at_secs
+                .map(|secs| secs.saturating_mul(1000).to_string()),
+            last_synced_at_ms: self.last_synced_at_ms.map(|ms| ms.to_string()),
+            last_error: self.last_error.clone(),
+        }
+    }
+}
+
+/// Whether Collapse's issue import status shows that no import has ever finished (#612).
+pub fn collapse_import_never_finished(
+    running: bool,
+    last_synced_at: Option<&str>,
+    has_result: bool,
+) -> bool {
+    !running && !has_result && last_synced_at.is_none_or(|timestamp| timestamp.trim().is_empty())
+}
+
+/// Whether a project should show the "Issues on Collapse were never imported from GitHub"
+/// warning in project health and the title bar (#612).
+///
+/// Always warns when the host is Collapse, the Collapse import never finished, and either
+/// a GitHub repository is known or Collapse currently holds 0 (or unknown) issues.
+pub fn collapse_issues_import_warning_needed(
+    issue_host: IssueHost,
+    has_collapse_repository: bool,
+    import_never_finished: bool,
+    has_github_source: bool,
+    collapse_issue_count: Option<u64>,
+) -> bool {
+    if issue_host != IssueHost::Collapse || !has_collapse_repository || !import_never_finished {
+        return false;
+    }
+    has_github_source || collapse_issue_count.is_none_or(|count| count == 0)
+}
+
+/// Whether Move to Collapse may advance to the mirror switch step (#612).
+/// Only an explicitly passed import step allows cut-over; skipped and failed imports stop.
+pub fn move_to_collapse_can_switch_mirror(import_status: MoveToCollapseStepStatus) -> bool {
+    import_status == MoveToCollapseStepStatus::Passed
+}
+
+/// Hidden idempotency marker appended to GitHub issues mirrored one-way into Collapse (#612).
+pub fn github_sync_marker(github_repository: &str, number: u32) -> String {
+    format!("<!-- velocity-github-sync: {github_repository}#{number} -->")
+}
+
+/// Formats the body of a newly opened GitHub issue mirrored one-way into Collapse (#612).
+pub fn format_synced_github_issue_body(
+    original_body: &str,
+    github_repository: &str,
+    number: u32,
+) -> String {
+    let marker = github_sync_marker(github_repository, number);
+    let footer = format!(
+        "---\n_Synced from GitHub: https://github.com/{github_repository}/issues/{number}_\n{marker}"
+    );
+    let trimmed = original_body.trim_end();
+    if trimmed.is_empty() {
+        footer
+    } else {
+        format!("{trimmed}\n\n{footer}")
+    }
+}
+
+/// Whether a project's transitional GitHub-to-Collapse issue sync window has expired (#612).
+pub fn github_sync_expired(sync: &GitHubIssueSync, now_secs: u64) -> bool {
+    sync.enabled
+        && sync
+            .expires_at_secs
+            .is_some_and(|expires_at| now_secs >= expires_at)
+}
+
+/// Whether GitHub issue `#number` should be mirrored one-way into Collapse (#612).
+pub fn should_sync_github_issue(sync: &GitHubIssueSync, number: u32, now_secs: u64) -> bool {
+    sync.enabled
+        && !sync.github_repository.trim().is_empty()
+        && !github_sync_expired(sync, now_secs)
+        && number > sync.high_water_number
+        && !sync.synced_numbers.contains_key(&number)
+}
+
 /// Formats the title bar and project health warning for a missing or failing GitHub downstream
 /// copy: `"GitHub copy is not being updated: <reason>"` (#611).
 pub fn collapse_forwarding_signal(reason: &str) -> String {
@@ -789,5 +932,91 @@ mod tests {
         assert_eq!(land_page("mESmaC/velocity", "short"), None);
         assert_eq!(land_page("mESmaC/velocity", "not-a-hex-sha"), None);
         assert_eq!(land_page("not-a-repo", "6079aa13df4d"), None);
+    }
+
+    #[test]
+    fn collapse_import_warning_and_cutover_gate_follow_612() {
+        use super::{
+            GitHubIssueSync, IssueHost, MoveToCollapseStepStatus, collapse_import_never_finished,
+            collapse_issues_import_warning_needed, format_synced_github_issue_body,
+            github_sync_expired, github_sync_marker, move_to_collapse_can_switch_mirror,
+            should_sync_github_issue,
+        };
+
+        assert!(collapse_import_never_finished(false, None, false));
+        assert!(!collapse_import_never_finished(true, None, false));
+        assert!(!collapse_import_never_finished(
+            false,
+            Some("2026-11-22T00:00:00Z"),
+            false
+        ));
+        assert!(!collapse_import_never_finished(false, None, true));
+
+        assert!(collapse_issues_import_warning_needed(
+            IssueHost::Collapse,
+            true,
+            true,
+            true,
+            Some(0),
+        ));
+        assert!(collapse_issues_import_warning_needed(
+            IssueHost::Collapse,
+            true,
+            true,
+            false,
+            Some(0),
+        ));
+        assert!(!collapse_issues_import_warning_needed(
+            IssueHost::Collapse,
+            true,
+            true,
+            false,
+            Some(3),
+        ));
+        assert!(!collapse_issues_import_warning_needed(
+            IssueHost::GitHub,
+            true,
+            true,
+            true,
+            Some(0),
+        ));
+        assert!(!collapse_issues_import_warning_needed(
+            IssueHost::Collapse,
+            true,
+            false,
+            true,
+            Some(0),
+        ));
+
+        assert!(move_to_collapse_can_switch_mirror(
+            MoveToCollapseStepStatus::Passed
+        ));
+        assert!(!move_to_collapse_can_switch_mirror(
+            MoveToCollapseStepStatus::Skipped
+        ));
+        assert!(!move_to_collapse_can_switch_mirror(
+            MoveToCollapseStepStatus::Failed
+        ));
+        assert!(!move_to_collapse_can_switch_mirror(
+            MoveToCollapseStepStatus::Warning
+        ));
+
+        let mut sync = GitHubIssueSync {
+            enabled: true,
+            github_repository: "mESmaC/velocity".into(),
+            high_water_number: 612,
+            expires_at_secs: Some(1_000),
+            ..GitHubIssueSync::default()
+        };
+        assert!(!should_sync_github_issue(&sync, 612, 500));
+        assert!(should_sync_github_issue(&sync, 613, 500));
+        assert!(!should_sync_github_issue(&sync, 613, 1_000));
+        assert!(github_sync_expired(&sync, 1_000));
+        sync.synced_numbers.insert(613, 614);
+        assert!(!should_sync_github_issue(&sync, 613, 500));
+
+        let body = format_synced_github_issue_body("Bug details", "mESmaC/velocity", 613);
+        assert!(body.contains("https://github.com/mESmaC/velocity/issues/613"));
+        assert!(body.contains(&github_sync_marker("mESmaC/velocity", 613)));
     }
 }

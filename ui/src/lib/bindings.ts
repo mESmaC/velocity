@@ -57,10 +57,25 @@ export const commands = {
 	/**  `set_collapse_mcp { enabled }` (§3.1): the Settings switch. Running agents keep theirs. */
 	setCollapseMcp: (enabled: boolean) => __TAURI_INVOKE<CollapseConnection_Serialize>("set_collapse_mcp", { enabled }),
 	/**
+	 *  `import_collapse_issues` (§3.1): runs the same GitHub issue import step Move to Collapse
+	 *  uses, for a Collapse-hosted project whose issues were never imported (#612).
+	 */
+	importCollapseIssues: (projectIdentifier: number) => __TAURI_INVOKE<MoveToCollapseStepResult_Serialize>("import_collapse_issues", { projectIdentifier }),
+	/**
 	 *  `move_to_collapse` (§3.1): runs the full GitHub-to-Collapse cut-over for a Rosen project,
 	 *  reports each step's result and `rosen collapse check`, and is safe to re-run (#592).
 	 */
 	moveToCollapse: (request: MoveToCollapseRequest_Deserialize) => __TAURI_INVOKE<MoveToCollapseResult_Serialize>("move_to_collapse", { request }),
+	/**
+	 *  `set_github_issue_sync` (§3.1): turns the post-switch one-way GitHub-to-Collapse issue
+	 *  sync on or off for a Collapse-hosted project (#612).
+	 */
+	setGithubIssueSync: (projectIdentifier: number, enabled: boolean) => __TAURI_INVOKE<ProjectCollapseSettings_Serialize>("set_github_issue_sync", { projectIdentifier, enabled }),
+	/**
+	 *  `sync_github_issues_now` (§3.1): runs one immediate pass of the post-switch one-way
+	 *  GitHub-to-Collapse issue sync for `project_identifier` (#612).
+	 */
+	syncGithubIssuesNow: (projectIdentifier: number) => __TAURI_INVOKE<ProjectCollapseSettings_Serialize>("sync_github_issues_now", { projectIdentifier }),
 	/**
 	 *  `clear_collapse_issues_token` (§3.1): removes the saved Collapse `issues` token from
 	 *  Windows Credential Manager (#589).
@@ -1901,6 +1916,35 @@ export type GhRateRow = {
 	breaching: boolean,
 };
 
+/**  Serializable status of post-switch one-way GitHub issue sync for Collapse settings (#612). */
+export type GitHubIssueSyncView = GitHubIssueSyncView_Serialize | GitHubIssueSyncView_Deserialize;
+
+/**  Serializable status of post-switch one-way GitHub issue sync for Collapse settings (#612). */
+export type GitHubIssueSyncView_Deserialize = {
+	enabled: boolean,
+	github_repository: string,
+	high_water_number: number,
+	synced_count: number,
+	/**  Decimal Unix milliseconds when transitional sync expires, if a window is set. */
+	expires_at_ms?: string | null,
+	/**  Decimal Unix milliseconds when the last sync pass completed, if any. */
+	last_synced_at_ms?: string | null,
+	last_error?: string | null,
+};
+
+/**  Serializable status of post-switch one-way GitHub issue sync for Collapse settings (#612). */
+export type GitHubIssueSyncView_Serialize = {
+	enabled: boolean,
+	github_repository: string,
+	high_water_number: number,
+	synced_count: number,
+	/**  Decimal Unix milliseconds when transitional sync expires, if a window is set. */
+	expires_at_ms: string | null,
+	/**  Decimal Unix milliseconds when the last sync pass completed, if any. */
+	last_synced_at_ms: string | null,
+	last_error: string | null,
+};
+
 /**  One repository the signed-in account owns or can see through an organisation. */
 export type GitHubRepository = GitHubRepository_Serialize | GitHubRepository_Deserialize;
 
@@ -2370,7 +2414,7 @@ export type GraphStatus_Serialize = {
 
 export type HealthSeverity = "Info" | "Warning" | "Error";
 
-export type HealthSignalKind = "MirrorBehind" | "CollapseProactiveAuth" | "CollapseForwarding" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "PostLandStalled" | "UpdaterManifestBehind" | "ReleaseGateRefused" | "AircIssueToolFailed" | "Deploy" | "LocalBuildRestartFailed";
+export type HealthSignalKind = "MirrorBehind" | "CollapseProactiveAuth" | "CollapseForwarding" | "CollapseIssuesNotImported" | "IntegrationUncovered" | "BaseRed" | "LandedIssuesWaiting" | "IssueParked" | "ReviewStalled" | "DispatchIdle" | "PostLandStopped" | "PostLandStalled" | "UpdaterManifestBehind" | "ReleaseGateRefused" | "AircIssueToolFailed" | "Deploy" | "LocalBuildRestartFailed";
 
 /**  A model you hid from the pickers by clicking its chip (F15 Models). */
 export type HiddenModel = {
@@ -4190,6 +4234,8 @@ export type ProjectCollapseSettings_Deserialize = {
 	github_repository?: string | null,
 	/**  Downstream GitHub `owner/repository` last reported by Collapse, when configured (#592). */
 	downstream_github?: string | null,
+	/**  Status of post-switch one-way sync of newly opened GitHub issues into Collapse (#612). */
+	github_issue_sync?: GitHubIssueSyncView_Deserialize | null,
 };
 
 /**  Project settings view for the Collapse section (#576, #589, #592). */
@@ -4215,6 +4261,8 @@ export type ProjectCollapseSettings_Serialize = {
 	github_repository: string | null,
 	/**  Downstream GitHub `owner/repository` last reported by Collapse, when configured (#592). */
 	downstream_github: string | null,
+	/**  Status of post-switch one-way sync of newly opened GitHub issues into Collapse (#612). */
+	github_issue_sync: GitHubIssueSyncView_Serialize | null,
 };
 
 /**  Project settings view for `[deploy]` steps and Windows Credential Manager secrets (#594). */

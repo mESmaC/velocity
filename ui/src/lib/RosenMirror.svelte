@@ -16,6 +16,7 @@
     project = null,
     collapse = null,
     collapseForwarding = null,
+    collapseIssuesImport = null,
   }: {
     state: MirrorState | null;
     // The project's base trails its mirror while a catch-up is pending (#520).
@@ -29,10 +30,51 @@
     collapse?: CollapseMirrorHealth | null;
     // Missing or failing GitHub downstream copy surfaced in the title bar (#611).
     collapseForwarding?: ProjectHealthItem | null;
+    // Collapse issue host whose GitHub issues were never imported (#612).
+    collapseIssuesImport?: ProjectHealthItem | null;
   } = $props();
 
   let running = $state('');
   let error = $state('');
+  let importingIssues = $state(false);
+  let importError = $state('');
+  let importActionUrl = $state<string | null>(null);
+  let importActionLabel = $state<string | null>(null);
+
+  $effect(() => {
+    void project;
+    void collapseIssuesImport;
+    if (!collapseIssuesImport) {
+      importError = '';
+      importActionUrl = null;
+      importActionLabel = null;
+    }
+  });
+
+  async function importCollapseIssuesNow() {
+    const target = project;
+    if (target === null || importingIssues) return;
+    importingIssues = true;
+    importError = '';
+    importActionUrl = null;
+    importActionLabel = null;
+    try {
+      const step = await collapseCommands.importIssues(target);
+      if (target === project && step.status !== 'passed') {
+        importError = step.detail
+          ? `${step.summary} ${step.detail}`
+          : step.summary;
+        importActionUrl = safeExternalUrl(step.action_url);
+        importActionLabel = step.action_label ?? null;
+      }
+    } catch (reason) {
+      if (target === project) {
+        importError = reason instanceof Error ? reason.message : String(reason);
+      }
+    } finally {
+      if (target === project) importingIssues = false;
+    }
+  }
 
   // Rosen answers with a toast; a refusal stays here beside the divergence.
   async function run(
@@ -137,6 +179,41 @@
       </div>
     {/if}
     {#if error}<p role="alert">{error}</p>{/if}
+  </section>
+{/if}
+{#if collapseIssuesImport}
+  <section
+    class="mirror-status"
+    role="status"
+    aria-label="Collapse issue import status"
+  >
+    <strong>{collapseIssuesImport.signal}</strong>
+    {#if collapseIssuesImport.detail}<pre>{collapseIssuesImport.detail}</pre>{/if}
+    {#if project !== null}
+      <div class="mirror-actions">
+        <button
+          type="button"
+          class="mini"
+          disabled={importingIssues}
+          onclick={() => void importCollapseIssuesNow()}
+          >{importingIssues ? 'Importing…' : 'Import now'}</button
+        >
+        {#if importActionUrl}
+          <a
+            class="mini"
+            href={importActionUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onclick={(event) => {
+              event.preventDefault();
+              if (importActionUrl)
+                void collapseCommands.openPage(importActionUrl);
+            }}>{importActionLabel ?? 'Open'} ↗</a
+          >
+        {/if}
+      </div>
+    {/if}
+    {#if importError}<p role="alert">{importError}</p>{/if}
   </section>
 {/if}
 {#if collapseForwarding && !collapse?.archived}

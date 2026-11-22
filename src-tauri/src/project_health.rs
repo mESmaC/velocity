@@ -17,7 +17,9 @@ use velocity_core::base_ci::{
     format_ci_repair_action_for_source,
 };
 use velocity_core::collapse::{
-    ForwarderState, collapse_forwarding_needs_attention, collapse_forwarding_signal,
+    COLLAPSE_ISSUES_NOT_IMPORTED_SIGNAL, ForwarderState, IssueHost,
+    collapse_forwarding_needs_attention, collapse_forwarding_signal,
+    collapse_import_never_finished, collapse_issues_import_warning_needed,
     downstream_settings_page,
 };
 use velocity_core::project_health::{
@@ -46,11 +48,13 @@ use crate::rosen_mirror::MirrorRetryOutcome;
 
 const SOURCE: &str = "project health";
 const COLLAPSE_FORWARDING_KEY: &str = "collapse-forwarding";
+const COLLAPSE_ISSUES_NOT_IMPORTED_KEY: &str = "collapse-issues-not-imported";
 const LOCAL_BUILD_RESTART_FAILED_KEY: &str = "local-build-restart-failed";
 const FIRST_CHECK: Duration = Duration::from_secs(30);
 const CHECK_INTERVAL: Duration = Duration::from_secs(60);
 const MIRROR_RETRY_COOLDOWN_SECS: u64 = 10 * 60;
 const REVIEW_CHECK_COOLDOWN_SECS: u64 = 10 * 60;
+const COLLAPSE_IMPORT_CHECK_COOLDOWN_SECS: u64 = 5 * 60;
 const RECENT_ACTION_TTL_SECS: u64 = 20 * 60;
 const MANUAL_PARKED_LIMIT_SECS: u64 = 2 * 60 * 60;
 const RELEASE_HEALTH_COOLDOWN_SECS: u64 = 15 * 60;
@@ -89,6 +93,18 @@ struct ProjectHealthTracker {
     pending_release: Option<PendingRelease>,
     retried_release_runs: HashSet<u64>,
     collapse_forwarding: Option<CollapseForwardingRecord>,
+    collapse_import: Option<CollapseImportCache>,
+}
+
+#[derive(Clone)]
+struct CollapseImportCache {
+    collapse_repository: String,
+    checked_at_secs: u64,
+    import_finished: bool,
+    running: bool,
+    github_repository: Option<String>,
+    collapse_issue_count: Option<u64>,
+    last_error: Option<String>,
 }
 
 #[derive(Clone)]
@@ -537,6 +553,164 @@ pub(crate) fn sync_collapse_forwarding(
     }
 }
 
+/// Marks Collapse GitHub issue import finished for `project` and clears the
+/// "Issues on Collapse were never imported from GitHub" warning immediately (#612).
+pub(crate) fn mark_collapse_issues_imported(
+    application: &AppHandle,
+    project: u32,
+    collapse_repository: &str,
+) {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let now = unix_seconds();
+    let updated = {
+        let mut reg = registry(&managed);
+        reg.projects.entry(project).or_default().collapse_import = Some(CollapseImportCache {
+            collapse_repository: collapse_repository.to_owned(),
+            checked_at_secs: now,
+            import_finished: true,
+            running: false,
+            github_repository: None,
+            collapse_issue_count: None,
+            last_error: None,
+        });
+        let list = reg.views.entry(project).or_default();
+        let before = list.len();
+        list.retain(|item| item.key != COLLAPSE_ISSUES_NOT_IMPORTED_KEY);
+        (list.len() != before).then(|| list.clone())
+    };
+    if let Some(items) = updated {
+        emit_view(application, project, items);
+    }
+}
+
+/// Clears the Collapse issue import health row (for example when switching back to GitHub) (#612).
+pub(crate) fn clear_collapse_issues_not_imported(application: &AppHandle, project: u32) {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let updated = {
+        let mut reg = registry(&managed);
+        if let Some(tracker) = reg.projects.get_mut(&project) {
+            tracker.collapse_import = None;
+        }
+        let list = reg.views.entry(project).or_default();
+        let before = list.len();
+        list.retain(|item| item.key != COLLAPSE_ISSUES_NOT_IMPORTED_KEY);
+        (list.len() != before).then(|| list.clone())
+    };
+    if let Some(items) = updated {
+        emit_view(application, project, items);
+    }
+}
+
+/// Records the latest failed `import_collapse_issues` attempt on the active health row (#612).
+pub(crate) fn record_collapse_import_error(
+    application: &AppHandle,
+    project: u32,
+    collapse_repository: &str,
+    error: &str,
+) {
+    let Some(managed) = application.try_state::<ManagedProjectHealth>() else {
+        return;
+    };
+    let now_ms = unix_millis();
+    let now = now_ms / 1000;
+    let updated = {
+        let mut reg = registry(&managed);
+        let tracker = reg.projects.entry(project).or_default();
+        let mut cache = tracker
+            .collapse_import
+            .clone()
+            .filter(|entry| {
+                entry
+                    .collapse_repository
+                    .eq_ignore_ascii_case(collapse_repository)
+            })
+            .unwrap_or(CollapseImportCache {
+                collapse_repository: collapse_repository.to_owned(),
+                checked_at_secs: now,
+                import_finished: false,
+                running: false,
+                github_repository: None,
+                collapse_issue_count: Some(0),
+                last_error: None,
+            });
+        cache.last_error = Some(error.to_owned());
+        let item = collapse_issues_not_imported_item(&cache, now_ms);
+        tracker.collapse_import = Some(cache);
+        let list = reg.views.entry(project).or_default();
+        upsert_item(list, item);
+        list.clone()
+    };
+    emit_view(application, project, updated);
+}
+
+/// Invalidates cached Collapse import status for `project` and checks it right away (#612).
+pub(crate) fn recheck_collapse_import_soon(application: &AppHandle, project: u32) {
+    with_tracker(application, project, |tracker| {
+        tracker.collapse_import = None;
+    });
+    spawn_collapse_import_check(application, project);
+}
+
+/// Triggers an immediate Collapse import status check when switching to a Collapse-hosted
+/// project whose import status has not been checked yet (#612).
+pub(crate) fn recheck_collapse_import_if_unchecked(application: &AppHandle, project: u32) {
+    let unchecked = with_tracker(application, project, |tracker| {
+        tracker.collapse_import.is_none()
+    });
+    if unchecked {
+        spawn_collapse_import_check(application, project);
+    }
+}
+
+fn spawn_collapse_import_check(application: &AppHandle, project: u32) {
+    let handle = application.clone();
+    tauri::async_runtime::spawn(async move {
+        let item = crate::state::with_store(&handle, move |store| store.project(project).cloned())
+            .await
+            .ok()
+            .flatten();
+        let Some(project_item) = item else {
+            return;
+        };
+        if project_item.effective_issue_host() != IssueHost::Collapse {
+            clear_collapse_issues_not_imported(&handle, project);
+            return;
+        }
+        let now_ms = unix_millis();
+        let now = now_ms / 1000;
+        let next = check_collapse_issues_import(&handle, &project_item, now, now_ms).await;
+        let Some(managed) = handle.try_state::<ManagedProjectHealth>() else {
+            return;
+        };
+        let updated = {
+            let mut reg = registry(&managed);
+            let list = reg.views.entry(project).or_default();
+            match next {
+                Some(entry) => {
+                    let changed = list
+                        .iter()
+                        .find(|existing| existing.key == COLLAPSE_ISSUES_NOT_IMPORTED_KEY)
+                        != Some(&entry);
+                    upsert_item(list, entry);
+                    changed.then(|| list.clone())
+                }
+                None => {
+                    let before = list.len();
+                    list.retain(|existing| existing.key != COLLAPSE_ISSUES_NOT_IMPORTED_KEY);
+                    (list.len() != before).then(|| list.clone())
+                }
+            }
+        };
+        if let Some(items) = updated {
+            emit_view(&handle, project, items);
+        }
+    });
+}
+
 async fn check_all_projects(application: &AppHandle) {
     let Ok(app_data) = application.path().app_data_dir() else {
         return;
@@ -574,6 +748,9 @@ async fn check_project(application: &AppHandle, app_data: &Path, project: &Proje
         items.push(item);
     }
     if let Some(item) = check_collapse_forwarding(application, project, now_ms) {
+        items.push(item);
+    }
+    if let Some(item) = check_collapse_issues_import(application, project, now, now_ms).await {
         items.push(item);
     }
     if let Some(item) = check_mirror(application, project, &server, now, now_ms).await {
@@ -1261,6 +1438,167 @@ fn collapse_forwarding_item(
         settings_repo.and_then(downstream_settings_page),
         "Open Collapse settings",
     )
+}
+
+/// Signal: issues host is Collapse, but Collapse's GitHub issue import never finished (#612).
+async fn check_collapse_issues_import(
+    application: &AppHandle,
+    project: &ProjectItem,
+    now: u64,
+    now_ms: u64,
+) -> Option<ProjectHealthItem> {
+    if project.effective_issue_host() != IssueHost::Collapse {
+        return None;
+    }
+    let collapse_repository = project.collapse_repository.as_deref()?;
+    let cached = with_tracker(application, project.id, |tracker| {
+        tracker.collapse_import.clone()
+    });
+    let cache = match cached {
+        Some(entry)
+            if entry
+                .collapse_repository
+                .eq_ignore_ascii_case(collapse_repository)
+                && (entry.import_finished
+                    || now.saturating_sub(entry.checked_at_secs)
+                        < COLLAPSE_IMPORT_CHECK_COOLDOWN_SECS) =>
+        {
+            entry
+        }
+        previous => {
+            let fresh = fetch_collapse_import_cache(project, collapse_repository, now).await;
+            match fresh {
+                Some(entry) => {
+                    with_tracker(application, project.id, |tracker| {
+                        tracker.collapse_import = Some(entry.clone());
+                    });
+                    entry
+                }
+                None => previous.filter(|entry| {
+                    entry
+                        .collapse_repository
+                        .eq_ignore_ascii_case(collapse_repository)
+                })?,
+            }
+        }
+    };
+    let never_finished = collapse_import_never_finished(cache.running, None, cache.import_finished);
+    let warn = collapse_issues_import_warning_needed(
+        project.effective_issue_host(),
+        project.collapse_repository.is_some(),
+        never_finished,
+        cache.github_repository.is_some(),
+        cache.collapse_issue_count,
+    );
+    warn.then(|| collapse_issues_not_imported_item(&cache, now_ms))
+}
+
+async fn fetch_collapse_import_cache(
+    project: &ProjectItem,
+    collapse_repository: &str,
+    now: u64,
+) -> Option<CollapseImportCache> {
+    let (owner, name) = collapse_repository.split_once('/')?;
+    let token = tauri::async_runtime::spawn_blocking(velocity_collapse::resolve_issues_token)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten()?;
+    let status = velocity_collapse::get_issue_import_status(&token, owner, name)
+        .await
+        .ok()?;
+    let import_finished = status.has_finished();
+    let github_repository = detect_github_source(project, &status).await;
+    let collapse_issue_count = if !import_finished && !status.running && github_repository.is_none()
+    {
+        fetch_collapse_issue_count(&token, owner, name).await
+    } else {
+        None
+    };
+    let last_error = (!status.error.trim().is_empty()).then(|| status.error.trim().to_owned());
+    Some(CollapseImportCache {
+        collapse_repository: collapse_repository.to_owned(),
+        checked_at_secs: now,
+        import_finished,
+        running: status.running,
+        github_repository,
+        collapse_issue_count,
+        last_error,
+    })
+}
+
+async fn detect_github_source(
+    project: &ProjectItem,
+    status: &velocity_collapse::GitHubIssueImportStatus,
+) -> Option<String> {
+    if let Some(saved) = project.github_remote.as_deref() {
+        let trimmed = saved.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_owned());
+        }
+    }
+    if let Some(downstream) = project
+        .collapse_mirror_health
+        .as_ref()
+        .and_then(|health| health.downstream_github.as_deref())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        return Some(downstream.to_owned());
+    }
+    for candidate in [
+        &status.github_repository,
+        &status.suggested_github_repository,
+    ] {
+        let trimmed = candidate.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_owned());
+        }
+    }
+    let path = std::path::PathBuf::from(&project.repository_path);
+    tauri::async_runtime::spawn_blocking(move || {
+        velocity_github::checkout_repository(&path).map(|name| name.full_name())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+async fn fetch_collapse_issue_count(token: &str, owner: &str, name: &str) -> Option<u64> {
+    let api = velocity_collapse::issues::CollapseIssueApi::new().ok()?;
+    let velocity_collapse::issues::Conditional::Modified { value, .. } = api
+        .list_issues(Some(token), owner, name, Some("all"), None, 1, 0, None)
+        .await
+        .ok()?
+    else {
+        return None;
+    };
+    let total = value.open_count.max(0) + value.closed_count.max(0);
+    u64::try_from(total).ok()
+}
+
+fn collapse_issues_not_imported_item(
+    cache: &CollapseImportCache,
+    now_ms: u64,
+) -> ProjectHealthItem {
+    let action = match cache.last_error.as_deref() {
+        Some(error) => format!("Last import attempt failed: {error}"),
+        None => "Click Import now to import GitHub issues into Collapse so dispatch can see them"
+            .to_owned(),
+    };
+    let detail = match cache.github_repository.as_deref() {
+        Some(github) => Some(format!("{github} → {}", cache.collapse_repository)),
+        None => Some(cache.collapse_repository.clone()),
+    };
+    ProjectHealthItem::new(
+        COLLAPSE_ISSUES_NOT_IMPORTED_KEY,
+        HealthSignalKind::CollapseIssuesNotImported,
+        HealthSeverity::Warning,
+        COLLAPSE_ISSUES_NOT_IMPORTED_SIGNAL,
+        action,
+        now_ms,
+    )
+    .with_detail(detail)
 }
 
 /// Signal 1: Mirror behind the base for more than 10 min (#509).

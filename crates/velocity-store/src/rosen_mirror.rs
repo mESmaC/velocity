@@ -207,6 +207,26 @@ impl StateStore {
         Ok(true)
     }
 
+    /// Saves the project's post-switch one-way GitHub issue sync configuration and progress
+    /// (#612), reporting whether the stored record changed.
+    pub fn save_github_issue_sync(
+        &mut self,
+        project: u32,
+        sync: Option<velocity_core::collapse::GitHubIssueSync>,
+    ) -> Result<bool, StoreError> {
+        let unchanged = self
+            .project(project)
+            .is_none_or(|item| item.github_issue_sync == sync);
+        if unchanged {
+            return Ok(false);
+        }
+        self.edit_project_in_place(project, |item| {
+            item.github_issue_sync = sync;
+            (true, ())
+        })?;
+        Ok(true)
+    }
+
     /// Saves what Collapse last reported for the project's mirror and reports whether it
     /// changed (#427). `None` clears it, as when Collapse no longer lists the repository.
     pub fn save_collapse_mirror_health(
@@ -446,12 +466,13 @@ mod tests {
         Ok(())
     }
 
-    // Risk (#589): a project's Issues on (GitHub | Collapse) setting lost on reload would
-    // silently redirect dispatch, holds and agent issue tools to the wrong host.
+    // Risk (#589, #612): a project with a Collapse repository but no explicit issue host must
+    // stay on GitHub so never-imported Collapse repositories do not hide open GitHub issues,
+    // and explicit host + post-switch sync state must survive save and reload.
     #[test]
     fn issue_host_defaults_and_survives_reload() -> Result<(), Box<dyn std::error::Error>> {
         use velocity_core::base_ci::{BaseCi, BaseCiState};
-        use velocity_core::collapse::IssueHost;
+        use velocity_core::collapse::{GitHubIssueSync, IssueHost};
 
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -466,18 +487,20 @@ mod tests {
             store.state.projects[0].effective_issue_host(),
             IssueHost::GitHub
         );
-        // Once mirrored to Collapse, default flips to Collapse.
+        // Linking a Collapse repository alone does NOT flip the issue host (#612).
+        assert!(store.save_github_remote(1, Some("mESmaC/one".into()))?);
         assert!(store.save_collapse_repository(1, Some("mESmaC/one".into()), Some(true))?);
+        assert_eq!(store.state.projects[0].issue_host, None);
         assert_eq!(
             store.state.projects[0].effective_issue_host(),
-            IssueHost::Collapse
+            IssueHost::GitHub
         );
         assert_eq!(
             store.state.projects[0].issue_host_repository(),
-            Some((IssueHost::Collapse, "mESmaC/one".into()))
+            Some((IssueHost::GitHub, "mESmaC/one".into()))
         );
-        // Explicit override to GitHub persists across reload.
-        assert!(store.save_github_remote(1, Some("mESmaC/one".into()))?);
+
+        // Explicit GitHub host persists across reload.
         assert!(store.save_issue_host(1, IssueHost::GitHub)?);
         assert!(!store.save_issue_host(1, IssueHost::GitHub)?);
         store.save_base_ci(
@@ -498,8 +521,22 @@ mod tests {
             IssueHost::GitHub
         );
         assert!(store.state.projects[0].base_ci.is_some());
+
+        // Switching explicitly to Collapse activates Collapse and clears cached GitHub CI.
         assert!(store.save_issue_host(1, IssueHost::Collapse)?);
         assert_eq!(store.state.projects[0].base_ci, None);
+        let mut sync = GitHubIssueSync {
+            enabled: true,
+            github_repository: "mESmaC/one".into(),
+            high_water_number: 42,
+            expires_at_secs: Some(1_900_000_000),
+            last_synced_at_ms: Some(1_800_000_000_000),
+            last_error: None,
+            ..GitHubIssueSync::default()
+        };
+        sync.synced_numbers.insert(43, 44);
+        assert!(store.save_github_issue_sync(1, Some(sync.clone()))?);
+        assert!(!store.save_github_issue_sync(1, Some(sync.clone()))?);
 
         let store = StateStore::load_or_default(&directory)?;
         assert_eq!(
@@ -510,6 +547,11 @@ mod tests {
             store.state.projects[0].effective_issue_host(),
             IssueHost::Collapse
         );
+        assert_eq!(
+            store.state.projects[0].issue_host_repository(),
+            Some((IssueHost::Collapse, "mESmaC/one".into()))
+        );
+        assert_eq!(store.state.projects[0].github_issue_sync, Some(sync));
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

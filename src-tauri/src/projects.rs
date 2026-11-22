@@ -85,6 +85,10 @@ pub async fn switch_project(window: Window, identifier: u32) -> Result<LayoutSna
             identifier,
             crate::skills::SuggestionCheck::Opened,
         );
+        crate::project_health::recheck_collapse_import_if_unchecked(
+            window.app_handle(),
+            identifier,
+        );
         Ok(snapshot)
     })
     .await

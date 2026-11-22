@@ -12,6 +12,7 @@ import {
   type MirrorToCollapseResult_Serialize,
   type MoveToCollapseRequest_Deserialize,
   type MoveToCollapseResult_Serialize,
+  type MoveToCollapseStepResult_Serialize,
   type ProjectCollapseSettings,
 } from '../bindings';
 export type {
@@ -25,6 +26,7 @@ export type {
   CollapseRelayKind,
   DeletedCollapseRepository_Serialize as DeletedCollapseRepository,
   DeletedRepositoryAction,
+  GitHubIssueSyncView_Serialize as GitHubIssueSyncView,
   IssueHost,
   MirrorToCollapseResult_Serialize as MirrorToCollapseResult,
   MoveToCollapseRequest_Deserialize as MoveToCollapseRequest,
@@ -91,6 +93,17 @@ export const collapseCommands = {
     request: MoveToCollapseRequest_Deserialize,
   ): Promise<MoveToCollapseResult_Serialize> =>
     commands.moveToCollapse(request),
+  importIssues: (
+    project: number,
+  ): Promise<MoveToCollapseStepResult_Serialize> =>
+    commands.importCollapseIssues(project),
+  setGithubIssueSync: (
+    project: number,
+    enabled: boolean,
+  ): Promise<ProjectCollapseSettings> =>
+    commands.setGithubIssueSync(project, enabled),
+  syncGithubIssuesNow: (project: number): Promise<ProjectCollapseSettings> =>
+    commands.syncGithubIssuesNow(project),
 };
 
 // Collapse's read-only MCP server (#430). The tokens stay in the OS credential

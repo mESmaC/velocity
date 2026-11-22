@@ -19,10 +19,12 @@
     project = null,
     send,
     onForwardingWarning,
+    onIssuesImportWarning,
   }: {
     project: number | null;
     send: (action: LayoutAction) => void;
     onForwardingWarning?: (item: ProjectHealthItem | null) => void;
+    onIssuesImportWarning?: (item: ProjectHealthItem | null) => void;
   } = $props();
 
   const POPOUT_MS = 8000;
@@ -36,6 +38,10 @@
   let items = $state.raw<ProjectHealthItem[]>([]);
   let popouts = $state.raw<ProjectHealthItem[]>([]);
   let menu = $state<HTMLElement>();
+  let importingIssues = $state(false);
+  let importIssuesError = $state('');
+  let importIssuesUrl = $state<string | null>(null);
+  let importIssuesUrlLabel = $state<string | null>(null);
   // What each signal said when last shown. The timestamp is left out, so a check
   // that re-confirms the same signal doesn't pop it out again.
   let seen = new Map<string, string>();
@@ -62,10 +68,18 @@
     }
   }
 
-  function publishForwardingWarning(next: ProjectHealthItem[]) {
+  function publishHeaderWarnings(next: ProjectHealthItem[]) {
     onForwardingWarning?.(
       next.find((item) => item.kind === 'CollapseForwarding') ?? null,
     );
+    const importItem =
+      next.find((item) => item.kind === 'CollapseIssuesNotImported') ?? null;
+    onIssuesImportWarning?.(importItem);
+    if (!importItem) {
+      importIssuesError = '';
+      importIssuesUrl = null;
+      importIssuesUrlLabel = null;
+    }
   }
 
   function receive(next: ProjectHealthItem[], announce: boolean) {
@@ -76,7 +90,7 @@
         : [];
     seen = new Map(next.map((item) => [item.key, fingerprint(item)]));
     items = next;
-    publishForwardingWarning(next);
+    publishHeaderWarnings(next);
     const live = new Set(next.map((item) => item.key));
     const freshKeys = new Set(fresh.map((item) => item.key));
     const kept = popouts.filter(
@@ -123,12 +137,42 @@
     void collapseCommands.openPage(url);
   }
 
+  async function importCollapseIssues() {
+    const id = currentProject;
+    if (id === null || importingIssues) return;
+    importingIssues = true;
+    importIssuesError = '';
+    importIssuesUrl = null;
+    importIssuesUrlLabel = null;
+    try {
+      const step = await collapseCommands.importIssues(id);
+      if (id === currentProject && step.status !== 'passed') {
+        importIssuesError = step.detail
+          ? `${step.summary} ${step.detail}`
+          : step.summary;
+        importIssuesUrl = safeExternalUrl(step.action_url);
+        importIssuesUrlLabel = step.action_label ?? null;
+      }
+    } catch (reason) {
+      if (id === currentProject) {
+        importIssuesError =
+          reason instanceof Error ? reason.message : String(reason);
+      }
+    } finally {
+      if (id === currentProject) importingIssues = false;
+    }
+  }
+
   $effect(() => {
     const id = currentProject;
     items = [];
     seen = new Map();
+    importingIssues = false;
+    importIssuesError = '';
+    importIssuesUrl = null;
+    importIssuesUrlLabel = null;
     clearPopouts();
-    publishForwardingWarning([]);
+    publishHeaderWarnings([]);
     if (id === null) return;
     let stopped = false;
     // The first view, from the read or an early event, only fills the badge.
@@ -197,6 +241,28 @@
         type="button"
         onclick={() => openThread(threadId)}>Open thread</button
       >
+    {/if}
+    {#if item.kind === 'CollapseIssuesNotImported' && currentProject !== null}
+      <button
+        class="mini health-open"
+        type="button"
+        disabled={importingIssues}
+        onclick={() => void importCollapseIssues()}
+        >{importingIssues ? 'Importing…' : 'Import now'}</button
+      >
+      {#if !popout && importIssuesError}
+        <div class="health-detail" role="alert">{importIssuesError}</div>
+      {/if}
+      {#if !popout && importIssuesUrl}
+        <a
+          class="mini health-open"
+          href={importIssuesUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          onclick={(event) => openActionUrl(event, importIssuesUrl!)}
+          >{importIssuesUrlLabel ?? 'Open'} ↗</a
+        >
+      {/if}
     {/if}
     {#if actionUrl}
       <a

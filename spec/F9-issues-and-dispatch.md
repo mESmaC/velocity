@@ -85,7 +85,10 @@ Closure waits for the GitHub mirror to contain the landed commit and honours **C
 A revert cancels pending closure and reopens the issue with the culprit output or reason.
 Discussion and closure happen asynchronously alongside the Work projection and landing.
 
-**Issue host (#589).** Each project chooses where its issues live through the per-project **Issues on: GitHub | Collapse** setting, defaulting to Collapse whenever the project mirrors to Collapse.
+**Issue host (#589, #612).** Each project chooses where its issues live through the per-project **Issues on: GitHub | Collapse** setting, staying on GitHub until explicitly switched to Collapse (which Move to Collapse saves only after its GitHub issue import step passes).
+A project with a Collapse repository and no saved issue host stays on GitHub.
+When a project's issue host is Collapse but Collapse's import status has never finished for that repository, Velocity surfaces `Issues on Collapse were never imported from GitHub` in project health and the title bar with a one-click **Import now** action that runs the same import Move to Collapse uses.
+After switching to Collapse, Velocity keeps a one-way sync of newly opened GitHub issues from the old host into Collapse for 14 days (or until the owner turns it off in Collapse settings), deduplicated above the cut-over high-water mark so existing Collapse issues are never overwritten while issues filed on GitHub by habit or older agents still reach dispatch.
 Dispatch, holds, dependencies, the AIRC issue tools (`issue_read`, `issue_create`, `issue_comment`, `issue_ready_to_close`, `issue_blocked_upstream`, `issue_hold`, `issue_close_not_planned`), bounded parked reviews, and Rosen land, close and reopen comments all run through the project's issue host while exposing the same agent tools and arguments.
 The Collapse backend uses Collapse's C14 Issues REST API under `/api/repositories/{owner}/{name}/issues`, watches the no-wake edge change cursor (`/issues/cursor`) and reads incremental deltas (`/issues/changes?after=<cursor>`), supports `?numbers=` batch reads, and bypasses GitHub's `gh_rate` budget.
 Writes on Collapse authenticate with an owner personal access token carrying the `issues` scope stored in the OS credential store (`velocity:collapse.sh:issues`), with reads falling back to the connected Collapse personal token.

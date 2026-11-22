@@ -436,6 +436,16 @@ impl IssueClient {
         })
     }
 
+    /// Total number of open and closed issues (excluding PRs) in this GitHub repository (#612).
+    pub fn total_issue_count(&self) -> Result<u32, GitHubCommandError> {
+        let transport = self.github_transport()?;
+        transport.graphql_at(
+            "query($owner:String!,$name:String!) { repository(owner:$owner,name:$name) { issues(states:[OPEN,CLOSED]) { totalCount } } }",
+            transport.variables(0),
+            "/data/repository/issues/totalCount",
+        )
+    }
+
     /// Every open and closed issue in the repository, excluding PRs (#589, #590).
     pub fn inventory(&self) -> Result<IssueInventory, GitHubCommandError> {
         if let IssueBackend::Collapse(collapse) = &self.backend {

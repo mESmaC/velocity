@@ -43,6 +43,7 @@ pub enum HealthSignalKind {
     MirrorBehind,
     CollapseProactiveAuth,
     CollapseForwarding,
+    CollapseIssuesNotImported,
     IntegrationUncovered,
     BaseRed,
     LandedIssuesWaiting,

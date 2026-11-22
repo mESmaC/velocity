@@ -81,6 +81,17 @@ pub struct GitHubIssueImportStatus {
     pub moved_to: String,
 }
 
+impl GitHubIssueImportStatus {
+    /// Whether Collapse has recorded at least one completed GitHub issue import (#612).
+    pub fn has_finished(&self) -> bool {
+        self.result.is_some()
+            || self
+                .last_synced_at
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+    }
+}
+
 /// Structured failure from Collapse's issue import endpoint, preserving remediation URLs
 /// (for example GitHub App installation/permissions) and token-scope errors.
 #[derive(Clone, Debug, PartialEq, Eq)]

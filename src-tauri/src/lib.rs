@@ -17,6 +17,7 @@ mod code_graph;
 mod collapse;
 mod collapse_connection;
 mod collapse_cutover;
+mod collapse_issue_sync;
 mod collapse_mirror;
 mod continuous_dispatch;
 mod diagnostics;
@@ -106,7 +107,10 @@ fn bindings() -> Builder<tauri::Wry> {
         collapse_connection::disconnect_collapse,
         collapse_connection::get_collapse_connection,
         collapse_connection::set_collapse_mcp,
+        collapse_cutover::import_collapse_issues,
         collapse_cutover::move_to_collapse,
+        collapse_issue_sync::set_github_issue_sync,
+        collapse_issue_sync::sync_github_issues_now,
         collapse_mirror::clear_collapse_issues_token,
         collapse_mirror::get_project_collapse_settings,
         collapse_mirror::mirror_to_collapse,
@@ -439,6 +443,7 @@ pub fn run() -> anyhow::Result<()> {
             rosen::initialize(application.handle())?;
             rosen_mirror::initialize(application.handle());
             collapse_mirror::initialize(application.handle());
+            collapse_issue_sync::initialize(application.handle());
             kept_worktrees::initialize(application.handle());
             github_requests::initialize(application.handle());
             issue_panel::initialize(application.handle());

@@ -23,8 +23,8 @@ use velocity_collapse::{
 };
 use velocity_core::collapse::{
     CollapseFeedHealth, CollapseMirrorHealth, CollapseRelayKind, DeletedCollapseRepository,
-    DeletedRepositoryAction, ForwarderState, IssueHost, PushTokenStatus, allowed_settings_page,
-    dashboard_poll_active, dashboard_poll_delay,
+    DeletedRepositoryAction, ForwarderState, GitHubIssueSyncView, IssueHost, PushTokenStatus,
+    allowed_settings_page, dashboard_poll_active, dashboard_poll_delay,
 };
 use velocity_core::project_health::short_commit;
 use velocity_new_project::{
@@ -398,6 +398,8 @@ pub struct ProjectCollapseSettings {
     pub github_repository: Option<String>,
     /// Downstream GitHub `owner/repository` last reported by Collapse, when configured (#592).
     pub downstream_github: Option<String>,
+    /// Status of post-switch one-way sync of newly opened GitHub issues into Collapse (#612).
+    pub github_issue_sync: Option<GitHubIssueSyncView>,
 }
 
 /// Result of a Collapse settings action that lands a `rosen.toml` change (#576).
@@ -509,6 +511,17 @@ pub async fn set_project_issue_host(
             .map_err(|error| error.to_string())
     })
     .await?;
+    match host {
+        IssueHost::Collapse => {
+            crate::project_health::recheck_collapse_import_soon(&application, project_identifier);
+        }
+        IssueHost::GitHub => {
+            crate::project_health::clear_collapse_issues_not_imported(
+                &application,
+                project_identifier,
+            );
+        }
+    }
     crate::base_ci::wake(&application);
     read_project_collapse_settings(&application, project_identifier).await
 }
@@ -626,6 +639,7 @@ pub(crate) async fn read_project_collapse_settings(
         issue_host,
         github_repository,
         downstream_github,
+        github_issue_sync,
     ) = crate::state::try_with_store(application, move |store| {
         let item = store.project(project).ok_or("Unknown project")?;
         Ok((
@@ -637,6 +651,9 @@ pub(crate) async fn read_project_collapse_settings(
             item.collapse_mirror_health
                 .as_ref()
                 .and_then(|health| health.downstream_github.clone()),
+            item.github_issue_sync
+                .as_ref()
+                .map(velocity_core::collapse::GitHubIssueSync::to_view),
         ))
     })
     .await?;
@@ -700,6 +717,7 @@ pub(crate) async fn read_project_collapse_settings(
         collapse_connected,
         github_repository,
         downstream_github,
+        github_issue_sync,
     })
 }
 

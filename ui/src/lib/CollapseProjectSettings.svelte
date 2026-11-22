@@ -401,6 +401,49 @@
     }
   }
 
+  async function toggleGithubIssueSync(enabled: boolean) {
+    if (busy || !settings) return;
+    const target = currentProject;
+    busy = true;
+    actionError = '';
+    notice = '';
+    try {
+      const updated = await collapseCommands.setGithubIssueSync(
+        target,
+        enabled,
+      );
+      if (target === currentProject) {
+        settings = updated;
+        notice = enabled
+          ? 'Enabled one-way sync of newly opened GitHub issues into Collapse.'
+          : 'Turned off one-way GitHub issue sync.';
+      }
+    } catch (reason) {
+      if (target === currentProject) actionError = formatError(reason);
+    } finally {
+      if (target === currentProject) busy = false;
+    }
+  }
+
+  async function syncGithubIssuesNow() {
+    if (busy || !settings) return;
+    const target = currentProject;
+    busy = true;
+    actionError = '';
+    notice = '';
+    try {
+      const updated = await collapseCommands.syncGithubIssuesNow(target);
+      if (target === currentProject) {
+        settings = updated;
+        notice = 'Checked GitHub for newly opened issues.';
+      }
+    } catch (reason) {
+      if (target === currentProject) actionError = formatError(reason);
+    } finally {
+      if (target === currentProject) busy = false;
+    }
+  }
+
   async function saveIssuesToken() {
     if (busy || !issuesTokenInput.trim()) return;
     const target = currentProject;
@@ -813,9 +856,9 @@
         <div class="collapse-relay-header">
           <span>Issues on</span>
           <span class="hint">
-            Defaults to Collapse for projects mirrored to Collapse. Dispatch,
-            holds, dependencies, AIRC issue tools and Rosen land/close comments
-            follow this host.
+            Stays on GitHub until switched explicitly or after Move to Collapse
+            imports issues. Dispatch, holds, dependencies, AIRC issue tools and
+            Rosen land/close comments follow this host.
           </span>
         </div>
         <div
@@ -891,6 +934,57 @@
             disabled={busy || !issuesTokenInput.trim()}>Save token</button
           >
         </form>
+        {#if settings.issue_host === 'collapse'}
+          {@const issueSync = settings.github_issue_sync}
+          <div class="collapse-row-value">
+            <label class="worktree-check">
+              <input
+                type="checkbox"
+                checked={issueSync?.enabled ?? false}
+                disabled={busy}
+                onchange={(event) =>
+                  void toggleGithubIssueSync(event.currentTarget.checked)}
+              />
+              One-way sync of new GitHub issues to Collapse
+            </label>
+            {#if issueSync?.enabled}
+              <button
+                type="button"
+                class="worktree-button mini"
+                disabled={busy}
+                onclick={() => void syncGithubIssuesNow()}>Sync now</button
+              >
+            {/if}
+          </div>
+          {#if issueSync}
+            <span class="hint">
+              {#if issueSync.enabled}
+                Watching {issueSync.github_repository} above #{issueSync.high_water_number}
+                · {issueSync.synced_count} synced{#if issueSync.expires_at_ms}
+                  · ends {new Date(
+                    Number(issueSync.expires_at_ms),
+                  ).toLocaleDateString()}{/if}{#if issueSync.last_synced_at_ms}
+                  · last checked {formatTimestamp(
+                    issueSync.last_synced_at_ms,
+                  )}{/if}
+              {:else if issueSync.github_repository}
+                Off ({issueSync.github_repository}, {issueSync.synced_count} synced)
+              {:else}
+                Off
+              {/if}
+            </span>
+            {#if issueSync.last_error}
+              <p class="worktree-message error collapse-error" role="alert">
+                {issueSync.last_error}
+              </p>
+            {/if}
+          {:else}
+            <span class="hint">
+              Mirrors issues opened on GitHub by habit or older agents into
+              Collapse for 14 days after cut-over, or until turned off.
+            </span>
+          {/if}
+        {/if}
       </div>
 
       <div class="worktree-setting-row">
