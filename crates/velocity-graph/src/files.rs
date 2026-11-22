@@ -25,9 +25,7 @@ pub struct SourceFile {
 
 /// Every file git tracks or doesn't ignore under `root`.
 pub fn list(root: &Path) -> Result<Vec<String>, Error> {
-    let output = hidden_command("git")
-        .arg("-C")
-        .arg(root)
+    let output = git_command(root)
         .args([
             "ls-files",
             "-z",
@@ -78,9 +76,7 @@ pub fn walk(root: &Path) -> Result<Vec<String>, Error> {
 pub fn stage_git_base(root: &Path, commit: &str, staging: &Path) -> Result<(), Error> {
     let tree = staging.join("tree");
     std::fs::create_dir(&tree)?;
-    let listing = hidden_command("git")
-        .arg("-C")
-        .arg(root)
+    let listing = git_command(root)
         .args(["ls-tree", "-rz", commit])
         .output()?;
     if !listing.status.success() {
@@ -89,9 +85,7 @@ pub fn stage_git_base(root: &Path, commit: &str, staging: &Path) -> Result<(), E
         ));
     }
 
-    let mut git = hidden_command("git")
-        .arg("-C")
-        .arg(root)
+    let mut git = git_command(root)
         .args(["cat-file", "--batch"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -242,9 +236,7 @@ pub fn generated_name(path: &str) -> bool {
 }
 
 pub fn git_blob(root: &Path, base: &str, path: &str) -> Option<String> {
-    let output = hidden_command("git")
-        .arg("-C")
-        .arg(root)
+    let output = git_command(root)
         .args(["show", "--end-of-options", &format!("{base}:{path}")])
         .output()
         .ok()?;
@@ -294,6 +286,22 @@ pub(crate) fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> std::proce
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
+/// Runs the host `git` binary inside `root`, bypassing Velocity's agent `git` shim so
+/// internal graph reads of Git sibling projects still work from inside Rosen sessions (#600).
+pub(crate) fn git_command(root: &Path) -> std::process::Command {
+    let mut command = hidden_command("git");
+    command
+        .arg("-C")
+        .arg(root)
+        .env_remove(velocity_rosen::agent_run::BLOCK_VCS_ENV);
+    if let Some(path) = std::env::var_os("PATH")
+        && let Ok(cleaned) = velocity_rosen::agent_run::toolchain_path_from(&path)
+    {
+        command.env("PATH", cleaned);
     }
     command
 }

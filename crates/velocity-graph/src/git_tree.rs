@@ -11,7 +11,7 @@ use std::process::Stdio;
 use rosen_core::ObjectId;
 
 use crate::Error;
-use crate::files::hidden_command;
+use crate::files::git_command;
 
 pub struct GitTree {
     repository: PathBuf,
@@ -71,9 +71,7 @@ impl GitTree {
 /// The full ID of the commit `revision` names. `--end-of-options` keeps a revision that
 /// starts with `-` from being read as an option.
 fn resolve(repository: &Path, revision: &str) -> Result<String, Error> {
-    let output = hidden_command("git")
-        .arg("-C")
-        .arg(repository)
+    let output = git_command(repository)
         .args(["rev-parse", "--verify", "--quiet", "--end-of-options"])
         .arg(format!("{revision}^{{commit}}"))
         .output()?;
@@ -90,9 +88,7 @@ fn resolve(repository: &Path, revision: &str) -> Result<String, Error> {
 /// The commit's regular and executable files. Symlinks and submodules are left out, as
 /// they are from a Rosen tree.
 fn list(repository: &Path, commit: &str) -> Result<BTreeMap<String, ObjectId>, Error> {
-    let output = hidden_command("git")
-        .arg("-C")
-        .arg(repository)
+    let output = git_command(repository)
         .args(["ls-tree", "-r", "-z", "--full-tree", commit])
         .output()?;
     if !output.status.success() {
@@ -132,9 +128,7 @@ fn read_blobs(repository: &Path, ids: Vec<ObjectId>) -> Result<HashMap<ObjectId,
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let mut git = hidden_command("git")
-        .arg("-C")
-        .arg(repository)
+    let mut git = git_command(repository)
         .args(["cat-file", "--batch"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

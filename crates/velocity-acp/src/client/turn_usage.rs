@@ -228,6 +228,7 @@ fn code_read(
                     | "graph_overlaps"
                     | "graph_grep"
                     | "graph_glob"
+                    | "project_read"
             )
     }) {
         return None;

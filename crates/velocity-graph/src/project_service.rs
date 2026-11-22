@@ -60,6 +60,10 @@ pub(crate) enum Action {
 struct Request {
     workspace: PathBuf,
     rosen: Option<String>,
+    #[serde(default)]
+    base: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_branch: Option<String>,
     changed: Vec<String>,
     action: Action,
 }
@@ -141,9 +145,38 @@ impl Project {
         let request = Request {
             workspace: workspace.to_path_buf(),
             rosen: self.rosen.as_ref().map(ToString::to_string),
+            base: false,
+            base_branch: None,
             changed,
             action,
         };
+        self.send_request(&request, timeout)
+    }
+
+    /// Sends one read-only base query to `--graph-project` for a sibling project (#600).
+    pub fn request_base_timed(
+        &self,
+        workspace: &Path,
+        base_branch: &str,
+        action: Action,
+        timeout: Duration,
+    ) -> Result<(Reply, Duration), String> {
+        let request = Request {
+            workspace: workspace.to_path_buf(),
+            rosen: self.rosen.as_ref().map(ToString::to_string),
+            base: true,
+            base_branch: Some(base_branch.to_owned()),
+            changed: Vec::new(),
+            action,
+        };
+        self.send_request(&request, timeout)
+    }
+
+    fn send_request(
+        &self,
+        request: &Request,
+        timeout: Duration,
+    ) -> Result<(Reply, Duration), String> {
         let mut guard = self
             .client
             .lock()
@@ -159,7 +192,7 @@ impl Project {
             return Err("The project graph client is unavailable".into());
         };
         client.runtime.block_on(async {
-            tokio::time::timeout(timeout, self.exchange(&mut client.stream, &request))
+            tokio::time::timeout(timeout, self.exchange(&mut client.stream, request))
                 .await
                 .map_err(|_| "The project graph is busy".to_owned())?
         })
@@ -399,6 +432,7 @@ struct ProjectGraph {
     cache: Option<Cache>,
     rosen_views: Vec<WarmView>,
     git_view: Option<Tools>,
+    git_base_view: Option<(PathBuf, Tools)>,
     mention_refresh: Option<(PathBuf, Instant)>,
 }
 
@@ -423,18 +457,33 @@ impl ProjectGraph {
             }
             Err(error) => {
                 self.git_view = None;
+                self.git_base_view = None;
                 Err(error.to_string())
             }
         }
     }
 
     fn run(&mut self, cache: &Path, request: Request) -> Result<Reply, Error> {
+        let base_query = request.base;
+        let workspace = request.workspace.clone();
         let (tools, is_rosen) = self.select(cache, &request)?;
         Ok(match request.action {
             Action::Refresh | Action::WarmBase => Reply::plain(String::new()),
             Action::Map => Reply::plain(tools.map()),
             Action::Task(title) => Reply::plain(tools.task_matches(&title).unwrap_or_default()),
-            Action::Tool { name, arguments } => run_tool(tools, is_rosen, &name, &arguments),
+            Action::Tool { name, arguments } => {
+                if base_query
+                    && name == "graph_read"
+                    && let Err(message) =
+                        crate::projects::refuse_secret_base_read(&workspace, tools, &arguments)
+                {
+                    return Ok(Reply {
+                        failed: true,
+                        ..Reply::plain(message)
+                    });
+                }
+                run_tool(tools, is_rosen, &name, &arguments)
+            }
             Action::Mentions(texts) => {
                 let graph = &tools.index().graph;
                 let mentions = texts
@@ -488,19 +537,60 @@ impl ProjectGraph {
             request.action,
             Action::ChangeSignatureWarnings { .. } | Action::DispatchSignatureWarnings { .. }
         );
-        let base = matches!(request.action, Action::WarmBase)
+        let base = request.base
+            || matches!(request.action, Action::WarmBase)
             || (mentions || signature_query) && request.rosen.is_some();
-        let rosen = base || WorkspaceMarker::path(&request.workspace).is_file();
+        let rosen = (base && request.rosen.is_some())
+            || WorkspaceMarker::path(&request.workspace).is_file();
         if rosen {
             let address = request
                 .rosen
                 .as_deref()
                 .ok_or_else(|| Error::Invalid("Missing project Rosen endpoint".into()))?;
-            let tools = self.select_rosen(cache, address, &request.workspace, base)?;
-            return Ok((tools, true));
+            match self.select_rosen(cache, address, &request.workspace, base) {
+                Ok(()) => return Ok((&mut self.rosen_views[0].tools, true)),
+                Err(Error::Rosen(rosen_client::Error::NotRunning(_)))
+                    if request.base && request.workspace.is_dir() => {}
+                Err(error) => return Err(error),
+            }
+        }
+        if request.base {
+            let tools =
+                self.select_git_base(cache, &request.workspace, request.base_branch.as_deref())?;
+            return Ok((tools, false));
         }
         let tools = self.select_git(cache, request, mentions)?;
         Ok((tools, false))
+    }
+
+    fn select_git_base(
+        &mut self,
+        cache: &Path,
+        workspace: &Path,
+        branch: Option<&str>,
+    ) -> Result<&mut Tools, Error> {
+        if let Some(revision) = crate::projects::resolve_git_base_revision(workspace, branch) {
+            let reuse = self
+                .git_base_view
+                .as_ref()
+                .is_some_and(|(root, tools)| root == workspace && tools.index().is_git());
+            if !reuse {
+                let index = Index::open_git(workspace, &revision, cache)?;
+                self.git_base_view = Some((workspace.to_path_buf(), Tools::new(index)));
+            }
+            let (_, tools) = self
+                .git_base_view
+                .as_mut()
+                .ok_or_else(|| Error::Invalid("Project base graph unavailable".into()))?;
+            tools.select_commit(workspace, &revision)?;
+            return Ok(tools);
+        }
+        let index = Index::open_snapshot(workspace, cache, |_, _| {})?;
+        self.git_base_view = Some((workspace.to_path_buf(), Tools::new(index)));
+        self.git_base_view
+            .as_mut()
+            .map(|(_, tools)| tools)
+            .ok_or_else(|| Error::Invalid("Project base graph unavailable".into()))
     }
 
     fn select_rosen(
@@ -509,7 +599,7 @@ impl ProjectGraph {
         address: &str,
         workspace: &Path,
         base: bool,
-    ) -> Result<&mut Tools, Error> {
+    ) -> Result<(), Error> {
         if self.endpoint.as_deref() != Some(address) {
             self.rosen_views.clear();
             self.endpoint = Some(address.to_owned());
@@ -526,7 +616,7 @@ impl ProjectGraph {
         };
         let root = if base { Path::new("base") } else { workspace };
         if self.reuse_warm_view(&key, root, target_tree, base)? {
-            return Ok(&mut self.rosen_views[0].tools);
+            return Ok(());
         }
         let index = self.build_rosen_index(cache, address, root, target_tree, base)?;
         self.insert_view(WarmView {
@@ -534,7 +624,7 @@ impl ProjectGraph {
             tree: target_tree,
             tools: Tools::new(index),
         });
-        Ok(&mut self.rosen_views[0].tools)
+        Ok(())
     }
 
     /// Reuses an exact `(key, tree)` view, another view at the exact same immutable tree,

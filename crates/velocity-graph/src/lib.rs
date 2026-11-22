@@ -17,6 +17,7 @@ mod markdown;
 mod mcp;
 mod program;
 mod project_service;
+mod projects;
 mod query;
 mod resolve;
 mod rosen;

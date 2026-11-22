@@ -87,6 +87,7 @@ pub(super) fn tool_source(name: &str, kind: Option<ToolKind>, input: Option<&Val
         "graph_overlaps",
         "graph_grep",
         "graph_glob",
+        "project_read",
     ]
     .iter()
     .any(|tool| name.ends_with(tool))

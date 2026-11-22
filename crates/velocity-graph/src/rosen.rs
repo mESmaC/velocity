@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use rosen_client::protocol::{
-    ObjectQuery, OverlapQuery, ReadAnswer, ReadRequest, Request, Response,
+    ErrorCode, ObjectQuery, OverlapQuery, ReadAnswer, ReadRequest, Request, Response,
 };
 use rosen_client::snapshot::WorkspaceMarker;
 use rosen_client::{Client, Endpoint};
@@ -284,6 +284,65 @@ impl Source {
 
     fn request<T>(&self, future: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
         wait(shared_runtime()?, future)
+    }
+}
+
+pub(crate) enum RosenBaseRead {
+    File(Vec<u8>),
+    Directory,
+    NotFound,
+    Refused,
+}
+
+pub(crate) enum RosenBaseError {
+    NotRunning,
+    Other(String),
+}
+
+/// Reads `path` from a project's Rosen `base` tree after enforcing the project's base
+/// `rosen.toml` `ignore` list and `.env`/secret filter (#600).
+pub(crate) fn read_base_file(
+    endpoint: &Endpoint,
+    path: &str,
+) -> Result<RosenBaseRead, RosenBaseError> {
+    let runtime = shared_runtime().map_err(|error| RosenBaseError::Other(error.to_string()))?;
+    let path = path.to_owned();
+    let result = wait(runtime, async move {
+        let client = connect_timed(endpoint).await?;
+        let config = check_transport(
+            endpoint,
+            &client,
+            client.base_config().await.map_err(Error::from),
+        )
+        .await?;
+        if crate::projects::is_refused_path(&path, &config.ignore) {
+            return Ok(RosenBaseRead::Refused);
+        }
+        let request = ReadRequest {
+            at: Some(String::from("base")),
+            path,
+        };
+        let answer = check_transport(
+            endpoint,
+            &client,
+            client.read_file(request).await.map_err(Error::from),
+        )
+        .await;
+        match answer {
+            Ok(ReadAnswer::File { data, .. }) => Ok(RosenBaseRead::File(data)),
+            Ok(ReadAnswer::Directory { .. }) => Ok(RosenBaseRead::Directory),
+            Err(Error::Rosen(rosen_client::Error::Server(server_error)))
+                if server_error.code == ErrorCode::NotFound =>
+            {
+                Ok(RosenBaseRead::NotFound)
+            }
+            Err(error) => Err(error),
+        }
+    });
+    match result {
+        Ok(read) => Ok(read),
+        Err(Error::Rosen(rosen_client::Error::NotRunning(_))) => Err(RosenBaseError::NotRunning),
+        Err(error) => Err(RosenBaseError::Other(error.to_string())),
     }
 }
 

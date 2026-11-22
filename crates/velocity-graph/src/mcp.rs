@@ -2,7 +2,7 @@
 //! started as `velocity --graph-mcp <app-data> <project-id> <worktree>`, serving one agent on
 //! stdin/stdout.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -18,6 +18,10 @@ use velocity_rosen::mcp_latency::{LatencyRecorder, duration_ms};
 use crate::Error;
 use crate::index::Index;
 use crate::project_service::{Action, Project, QUERY_TIMEOUT, Reply};
+use crate::projects::{
+    RegisteredProject, format_readable_projects, list_projects, query_local_base,
+    read_project_file, resolve_project,
+};
 use crate::status::WorkspaceStatus;
 use crate::tools::{CallError, Tools};
 use crate::usage::record_tool;
@@ -53,7 +57,7 @@ const NOISE: [&str; 10] = [
 
 /// Shared server guidance published once in the session preface rather than in every MCP
 /// tool description (#538). Stated as facts, not orders (Graphify #2202).
-pub const INSTRUCTIONS: &str = "The velocity-graph tools map the workspace's code and spec. graph_find locates symbols, files, spec sections and §7 items by name, alias or description. graph_read on a file gives a symbol outline with line ranges; graph_read on a symbol or spec alias (§7, §3.1, F16) gives its links and, with source: true, its lines. graph_spec returns the split spec's heading tree with addresses. graph_impact finds dependents, graph_run chains lookups, and graph_grep / graph_glob search text and files respecting gitignore. Inferred, ambiguous and unconfirmed links are leads to verify.";
+pub const INSTRUCTIONS: &str = "The velocity-graph tools map the workspace's code and spec. graph_find locates symbols, files, spec sections and §7 items by name, alias or description. graph_read on a file gives a symbol outline with line ranges; graph_read on a symbol or spec alias (§7, §3.1, F16) gives its links and, with source: true, its lines. graph_spec returns the split spec's heading tree with addresses. graph_impact finds dependents, graph_run chains lookups, and graph_grep / graph_glob search text and files respecting gitignore. Pass project to graph_find or graph_read to query another registered project's base graph, or call project_read to read files from its base checkout. Inferred, ambiguous and unconfirmed links are leads to verify.";
 
 pub fn server_arguments(app_data: &Path, project: &str, worktree: &Path) -> Vec<String> {
     vec![
@@ -75,15 +79,17 @@ pub fn serve_stdio(arguments: &[OsString]) -> Result<(), Error> {
     let app_data = Path::new(app_data);
     let cache = crate::usage::folder(app_data, project);
     let endpoint = project_endpoint(app_data, project);
+    let executable = std::env::current_exe()?;
     let backend = Backend::Shared(Box::new(Project::new(
         cache.clone(),
-        std::env::current_exe()?,
+        executable.clone(),
         endpoint,
     )));
     serve_connection(
         PathBuf::from(worktree),
         cache,
         Some(app_data.to_path_buf()),
+        Some(executable),
         backend,
         thread,
         role,
@@ -195,6 +201,9 @@ struct Connection {
     backend: Backend,
     root: PathBuf,
     cache: PathBuf,
+    app_data: Option<PathBuf>,
+    executable: Option<PathBuf>,
+    sibling_workers: Mutex<HashMap<u32, Arc<Project>>>,
     dirty: Mutex<HashSet<String>>,
     request: Mutex<()>,
     status: WorkspaceStatus,
@@ -227,7 +236,9 @@ pub fn serve(
         tools: Box::default(),
         endpoint,
     };
-    serve_connection(root, cache, None, backend, None, None, false, input, output)
+    serve_connection(
+        root, cache, None, None, backend, None, None, false, input, output,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -235,6 +246,7 @@ fn serve_connection(
     root: PathBuf,
     cache: PathBuf,
     app_data: Option<PathBuf>,
+    executable: Option<PathBuf>,
     backend: Backend,
     thread: Option<String>,
     role: Option<velocity_rosen::tool_policy::ThreadRole>,
@@ -259,6 +271,9 @@ fn serve_connection(
         backend,
         root,
         cache,
+        app_data,
+        executable,
+        sibling_workers: Mutex::default(),
         dirty: Mutex::default(),
         request: Mutex::default(),
         status,
@@ -512,7 +527,8 @@ fn call(parameters: &Value, connection: &Connection) -> (Value, bool) {
             let action = arguments["action"].as_str().unwrap_or("list");
             return match action {
                 "list" => {
-                    let schemas: Vec<Value> = tool_list()
+                    let readable = connection.readable_projects();
+                    let schemas: Vec<Value> = tool_list(&readable)
                         .into_iter()
                         .filter(|entry| {
                             entry["name"].as_str().is_some_and(|tool_name| {
@@ -622,12 +638,40 @@ impl Connection {
         }
     }
 
+    fn readable_projects(&self) -> Vec<RegisteredProject> {
+        self.app_data
+            .as_deref()
+            .map(list_projects)
+            .unwrap_or_default()
+    }
+
+    fn resolve_target_project(
+        &self,
+        requested: &str,
+    ) -> Result<(&Path, RegisteredProject), CallError> {
+        let app_data = self
+            .app_data
+            .as_deref()
+            .ok_or_else(|| "Cross-project reads require Velocity app data".to_owned())?;
+        let projects = list_projects(app_data);
+        let project = resolve_project(&projects, requested)?;
+        Ok((app_data, project))
+    }
+
     fn call(
         &self,
         name: &str,
         arguments: &Value,
     ) -> Result<(String, crate::usage::ToolOutcome, CallTiming), CallError> {
         let started = Instant::now();
+        if name == "project_read" {
+            return self.call_project_read(arguments, started);
+        }
+        if matches!(name, "graph_find" | "graph_read")
+            && let Some(project_name) = optional_project(arguments)?
+        {
+            return self.call_sibling_graph(&project_name, name, arguments, started);
+        }
         if let Some(text) = self.call_workspace_search(name, arguments)? {
             return Ok((
                 text,
@@ -644,6 +688,101 @@ impl Connection {
             }
             Backend::Shared(project) => self.call_shared(project, name, arguments),
         }
+    }
+
+    fn call_project_read(
+        &self,
+        arguments: &Value,
+        started: Instant,
+    ) -> Result<(String, crate::usage::ToolOutcome, CallTiming), CallError> {
+        let project_name = arguments["project"]
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "`project` is required".to_owned())?;
+        let (app_data, target) = self.resolve_target_project(project_name)?;
+        let text = read_project_file(app_data, &target, arguments)?;
+        Ok((
+            text,
+            crate::usage::ToolOutcome::Exact,
+            CallTiming {
+                connect_ms: 0,
+                work_ms: duration_ms(started.elapsed()),
+            },
+        ))
+    }
+
+    fn call_sibling_graph(
+        &self,
+        project_name: &str,
+        name: &str,
+        arguments: &Value,
+        started: Instant,
+    ) -> Result<(String, crate::usage::ToolOutcome, CallTiming), CallError> {
+        let (app_data, target) = self.resolve_target_project(project_name)?;
+        let stripped = strip_project_argument(arguments);
+        if matches!(self.backend, Backend::Shared(_))
+            && let Some(executable) = self.executable.as_ref()
+        {
+            let worker = self.sibling_worker(app_data, executable, &target);
+            let action = Action::Tool {
+                name: name.into(),
+                arguments: stripped,
+            };
+            let (reply, pipe_connect) = worker
+                .request_base_timed(
+                    &target.repository_path,
+                    &target.default_branch,
+                    action,
+                    QUERY_TIMEOUT,
+                )
+                .map_err(CallError::from)?;
+            let connect_ms = duration_ms(pipe_connect).saturating_add(reply.rosen_connect_ms);
+            if reply.failed {
+                return Err(CallError {
+                    message: reply.text,
+                    outcome: reply.outcome,
+                });
+            }
+            return Ok((
+                reply.text,
+                reply.outcome,
+                CallTiming {
+                    connect_ms,
+                    work_ms: reply.work_ms,
+                },
+            ));
+        }
+        let (text, outcome) = query_local_base(app_data, &target, name, &stripped)?;
+        Ok((
+            text,
+            outcome,
+            CallTiming {
+                connect_ms: 0,
+                work_ms: duration_ms(started.elapsed()),
+            },
+        ))
+    }
+
+    fn sibling_worker(
+        &self,
+        app_data: &Path,
+        executable: &Path,
+        target: &RegisteredProject,
+    ) -> Arc<Project> {
+        let mut workers = self
+            .sibling_workers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        Arc::clone(workers.entry(target.id).or_insert_with(|| {
+            let cache = crate::usage::folder(app_data, &target.id.to_string());
+            let endpoint = target.is_rosen.then(|| {
+                velocity_rosen::ProjectServer::new(app_data, target.id)
+                    .endpoint()
+                    .clone()
+            });
+            Arc::new(Project::new(cache, executable.to_path_buf(), endpoint))
+        }))
     }
 
     fn call_workspace_search(
@@ -760,6 +899,29 @@ fn refresh(tools: &mut Tools, connection: &Connection) -> Result<(), CallError> 
     Ok(())
 }
 
+fn optional_project(arguments: &Value) -> Result<Option<String>, CallError> {
+    match arguments.get("project") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                Err("`project` must be a non-empty project name".into())
+            } else {
+                Ok(Some(trimmed.to_owned()))
+            }
+        }
+        Some(_) => Err("`project` must be a string".into()),
+    }
+}
+
+fn strip_project_argument(arguments: &Value) -> Value {
+    let mut cloned = arguments.clone();
+    if let Some(map) = cloned.as_object_mut() {
+        map.remove("project");
+    }
+    cloned
+}
+
 fn failure(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
@@ -767,7 +929,8 @@ fn failure(id: Value, code: i32, message: &str) -> Value {
 fn filtered_tool_list(connection: &Connection) -> Vec<Value> {
     use velocity_rosen::tool_policy::{McpToolServer, ToolAccess, tool_access};
 
-    let all = tool_list();
+    let readable = connection.readable_projects();
+    let all = tool_list(&readable);
     let Some(role) = connection.role else {
         return all;
     };
@@ -806,7 +969,15 @@ fn filtered_tool_list(connection: &Connection) -> Vec<Value> {
     listed
 }
 
-fn tool_list() -> Vec<Value> {
+fn tool_list(readable: &[RegisteredProject]) -> Vec<Value> {
+    let readable_suffix = if readable.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " Readable projects: {}.",
+            format_readable_projects(readable)
+        )
+    };
     vec![
         tool(
             "graph_overlaps",
@@ -816,7 +987,9 @@ fn tool_list() -> Vec<Value> {
         ),
         tool(
             "graph_find",
-            "Rank symbols, files and subsystems for a name or a plain-language description. Each result: address, kind, name, file:lines, signature. [exact] marks the only record with exactly that name.",
+            &format!(
+                "Rank symbols, files and subsystems for a name or a plain-language description. Each result: address, kind, name, file:lines, signature. [exact] marks the only record with exactly that name. Pass project to query another registered project's graph at its current base.{readable_suffix}"
+            ),
             json!({
                 "query": {"type": "string", "description": "A name (Channel::open, plan_deletion) or words (\"approval record merge gate\")"},
                 // A range, not an integer enum: Gemini accepts `enum` only on strings and
@@ -824,17 +997,34 @@ fn tool_list() -> Vec<Value> {
                 "plane": {"type": "integer", "minimum": 1, "maximum": 3, "description": "1 symbols, 2 files, 3 subsystems"},
                 "kind": {"type": "string", "description": "fn, method, type, trait, alias, mod, macro, const, section, item, file or subsystem"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 30},
+                "project": {"type": "string", "description": "Optional registered Velocity project name (or owner/repo) to query at its current base instead of this workspace"},
             }),
             &["query"],
         ),
         tool(
             "graph_read",
-            "A file path or file address gives its symbol outline with line ranges. A symbol name, spec alias (§7, §3.1, F16) or address gives its signature, docs, location and links with provenance. Use source: true for source lines. Reports ambiguous, missing and stale lookups.",
+            &format!(
+                "A file path or file address gives its symbol outline with line ranges. A symbol name, spec alias (§7, §3.1, F16) or address gives its signature, docs, location and links with provenance. Use source: true for source lines. Reports ambiguous, missing and stale lookups. Pass project to query another registered project's graph at its current base.{readable_suffix}"
+            ),
             json!({
                 "target": {"type": "string", "description": "An address like 1.k3f9q, a name like Channel::open, a spec alias like §7, §3.1 or F16, or a path"},
                 "source": {"type": "boolean", "description": "Add the record's source lines, so no separate file read is needed"},
+                "project": {"type": "string", "description": "Optional registered Velocity project name (or owner/repo) to query at its current base instead of this workspace"},
             }),
             &["target"],
+        ),
+        tool(
+            "project_read",
+            &format!(
+                "Read a file from a registered Velocity project's base checkout (read-only). Refuses paths outside the checkout and files Rosen marks secret or .env.{readable_suffix}"
+            ),
+            json!({
+                "project": {"type": "string", "description": "Registered Velocity project name (or owner/repo) to read from"},
+                "path": {"type": "string", "description": "Repository-relative file path inside the project's base checkout"},
+                "offset": {"type": "integer", "minimum": 1, "description": "1-based starting line number (default 1)"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 400, "description": "Maximum number of lines to return (default 200)"},
+            }),
+            &["project", "path"],
         ),
         tool(
             "graph_spec",
@@ -900,6 +1090,7 @@ fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> 
         name,
         "graph_find"
             | "graph_read"
+            | "project_read"
             | "graph_spec"
             | "graph_impact"
             | "graph_run"
@@ -909,4 +1100,218 @@ fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> 
         tool["_meta"] = json!({"anthropic/alwaysLoad": true});
     }
     tool
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn send_requests(
+        root: &Path,
+        app_data: &Path,
+        requests: &[Value],
+    ) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+        let mut input = String::new();
+        for request in requests {
+            input.push_str(&request.to_string());
+            input.push('\n');
+        }
+        let mut output = Vec::new();
+        let cache = app_data.join("graph").join("1");
+        let backend = Backend::Local {
+            tools: Box::default(),
+            endpoint: None,
+        };
+        serve_connection(
+            root.to_path_buf(),
+            cache,
+            Some(app_data.to_path_buf()),
+            None,
+            backend,
+            None,
+            Some(velocity_rosen::tool_policy::ThreadRole::Builder),
+            true,
+            Cursor::new(input.into_bytes()),
+            &mut output,
+        )?;
+        let text = String::from_utf8(output)?;
+        let responses = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(serde_json::from_str::<Value>)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(responses)
+    }
+
+    #[test]
+    fn sibling_graph_and_project_read_work_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
+        // Risk (#600): agents on cross-project work must see readable sibling projects in
+        // tool descriptions, query sibling graphs via graph_find/graph_read, read base files
+        // via project_read, and never read paths outside the checkout or secret/.env files.
+        let base = std::env::temp_dir().join(format!(
+            "velocity-mcp-sibling-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let velocity_root = base.join("velocity");
+        let collapse_root = base.join("collapse.sh");
+        let app_data = base.join("app_data");
+        std::fs::create_dir_all(&velocity_root)?;
+        std::fs::create_dir_all(collapse_root.join("spec"))?;
+        std::fs::create_dir_all(collapse_root.join("server"))?;
+        std::fs::create_dir_all(app_data.join("projects"))?;
+
+        std::fs::write(velocity_root.join("README.md"), "# Velocity\n")?;
+        std::fs::write(
+            collapse_root.join("rosen.toml"),
+            "ignore = [\".env\", \"private.token\"]\n",
+        )?;
+        std::fs::write(
+            collapse_root.join("spec/C14-issues.md"),
+            "# C14 Issues\n\nRoutes live under `/api/repositories/{owner}/{name}/issues`.\n",
+        )?;
+        std::fs::write(
+            collapse_root.join("server/issues.go"),
+            "package server\n\nfunc RegisterIssueRoutes() string {\n\treturn \"/api/repositories/\"\n}\n",
+        )?;
+        std::fs::write(collapse_root.join(".env"), "API_KEY=secret\n")?;
+        std::fs::write(collapse_root.join("private.token"), "tok_secret\n")?;
+        std::fs::write(base.join("outside.txt"), "do not leak\n")?;
+
+        std::fs::write(app_data.join("state.json"), r#"{"project_ids":[1,2]}"#)?;
+        std::fs::write(
+            app_data.join("projects/1.json"),
+            json!({
+                "project": {
+                    "id": 1,
+                    "name": "velocity",
+                    "repository_path": velocity_root.display().to_string(),
+                    "default_branch": "master",
+                    "github_remote": "mESmaC/velocity",
+                    "version_control": "git"
+                }
+            })
+            .to_string(),
+        )?;
+        std::fs::write(
+            app_data.join("projects/2.json"),
+            json!({
+                "project": {
+                    "id": 2,
+                    "name": "collapse.sh",
+                    "repository_path": collapse_root.display().to_string(),
+                    "default_branch": "main",
+                    "github_remote": "mESmaC/collapse.sh",
+                    "version_control": "git"
+                }
+            })
+            .to_string(),
+        )?;
+
+        let responses = send_requests(
+            &velocity_root,
+            &app_data,
+            &[
+                json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}),
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "graph_find",
+                        "arguments": {"query": "RegisterIssueRoutes", "project": "collapse.sh"}
+                    }
+                }),
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "graph_read",
+                        "arguments": {"target": "RegisterIssueRoutes", "source": true, "project": "collapse.sh"}
+                    }
+                }),
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "project_read",
+                        "arguments": {"project": "collapse.sh", "path": "spec/C14-issues.md"}
+                    }
+                }),
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "project_read",
+                        "arguments": {"project": "collapse.sh", "path": ".env"}
+                    }
+                }),
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 6,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "project_read",
+                        "arguments": {"project": "collapse.sh", "path": "private.token"}
+                    }
+                }),
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "project_read",
+                        "arguments": {"project": "collapse.sh", "path": "../outside.txt"}
+                    }
+                }),
+            ],
+        )?;
+
+        let tools = responses[0]["result"]["tools"]
+            .as_array()
+            .ok_or("tools/list missing tools")?;
+        for tool_name in ["graph_find", "graph_read", "project_read"] {
+            let entry = tools
+                .iter()
+                .find(|entry| entry["name"] == tool_name)
+                .ok_or_else(|| format!("missing tool {tool_name}"))?;
+            let description = entry["description"].as_str().unwrap_or_default();
+            assert!(
+                description.contains("collapse.sh"),
+                "{tool_name} description should list readable projects: {description}"
+            );
+        }
+
+        let find_text = responses[1]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(find_text.contains("RegisterIssueRoutes"), "{find_text}");
+        assert!(find_text.contains("server/issues.go"), "{find_text}");
+
+        let read_text = responses[2]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(read_text.contains("/api/repositories/"), "{read_text}");
+
+        let file_text = responses[3]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            file_text.contains("/api/repositories/{owner}/{name}/issues"),
+            "{file_text}"
+        );
+
+        assert_eq!(responses[4]["result"]["isError"], json!(true));
+        assert_eq!(responses[5]["result"]["isError"], json!(true));
+        assert_eq!(responses[6]["result"]["isError"], json!(true));
+
+        let _ = std::fs::remove_dir_all(&base);
+        Ok(())
+    }
 }

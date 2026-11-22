@@ -289,15 +289,16 @@ fn airc_access(role: ThreadRole, tool: &str) -> ToolAccess {
 fn graph_access(role: ThreadRole, tool: &str) -> ToolAccess {
     match role {
         ThreadRole::Question => match tool {
-            "graph_find" | "graph_read" | "graph_impact" | "graph_spec" => ToolAccess::Eager,
+            "graph_find" | "graph_read" | "graph_impact" | "graph_spec" | "project_read" => {
+                ToolAccess::Eager
+            }
             "graph_grep" | "graph_glob" | "graph_run" => ToolAccess::Occasional,
             _ => ToolAccess::Forbidden,
         },
         ThreadRole::Builder | ThreadRole::Reviewer | ThreadRole::Scout | ThreadRole::FollowUp => {
             match tool {
-                "graph_find" | "graph_read" | "graph_impact" | "graph_overlaps" => {
-                    ToolAccess::Eager
-                }
+                "graph_find" | "graph_read" | "graph_impact" | "graph_overlaps"
+                | "project_read" => ToolAccess::Eager,
                 "graph_spec" | "graph_grep" | "graph_glob" | "graph_run" => ToolAccess::Occasional,
                 _ => ToolAccess::Forbidden,
             }
@@ -421,6 +422,14 @@ mod tests {
         );
         assert_eq!(
             tool_access(ThreadRole::Question, McpToolServer::Graph, "graph_find"),
+            ToolAccess::Eager
+        );
+        assert_eq!(
+            tool_access(ThreadRole::Question, McpToolServer::Graph, "project_read"),
+            ToolAccess::Eager
+        );
+        assert_eq!(
+            tool_access(ThreadRole::Builder, McpToolServer::Graph, "project_read"),
             ToolAccess::Eager
         );
         assert_eq!(
