@@ -197,7 +197,7 @@
       issue={row}
       {project}
       host={panel?.host ?? 'github'}
-      expanded={expanded.has(row.key)}
+      expanded={expanded.has(issueKey(row.repository, row.number))}
       {blocked}
       {send}
       report={(message) => (error = message)}

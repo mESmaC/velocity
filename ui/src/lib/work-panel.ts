@@ -64,43 +64,111 @@ function localDay(stamp: string | number | null) {
   };
 }
 
+function issueRowKey(
+  base: string,
+  item: WorkItem,
+  isCurrent: boolean,
+  used: Set<string>,
+) {
+  const suffix =
+    item.change ??
+    item.green_at ??
+    item.landed_at ??
+    item.claimed_at ??
+    (item.thread_identifier != null
+      ? `thread-${item.thread_identifier}`
+      : 'history');
+  let key = isCurrent ? base : `${base}@${suffix}`;
+  if (used.has(key)) {
+    let index = 2;
+    while (used.has(`${key}#${index}`)) index += 1;
+    key = `${key}#${index}`;
+  }
+  used.add(key);
+  return key;
+}
+
+function buildIssueRows(
+  items: WorkItem[],
+  panel: IssuePanelSnapshot | null,
+): WorkIssue[] {
+  const panelIssues = new Map<
+    string,
+    { repository: string; row: IssuePanelRow }
+  >();
+  if (panel?.repository) {
+    for (const row of panel.rows) {
+      panelIssues.set(issueKey(panel.repository, row.number), {
+        repository: panel.repository,
+        row,
+      });
+    }
+  }
+  const issueItems = new Map<string, WorkItem[]>();
+  for (const item of items) {
+    if (item.key.kind !== 'issue') continue;
+    const key = issueKey(item.key.repository, item.key.number);
+    const list = issueItems.get(key) ?? [];
+    list.push(item);
+    issueItems.set(key, list);
+  }
+  const issueKeys = new Set([...panelIssues.keys(), ...issueItems.keys()]);
+  const usedKeys = new Set<string>();
+  const rows: WorkIssue[] = [];
+  for (const baseKey of issueKeys) {
+    const live = panelIssues.get(baseKey);
+    const tracked = issueItems.get(baseKey);
+    if (!tracked?.length) {
+      if (live) {
+        usedKeys.add(baseKey);
+        rows.push({
+          kind: 'issue',
+          key: baseKey,
+          repository: live.repository,
+          number: live.row.number,
+          title: live.row.title,
+          row: live.row,
+        });
+      }
+      continue;
+    }
+    // Pair the live issue panel row with the active/latest WorkItem while keeping earlier
+    // completed items as separate historical rows so prior Green changes stay in Done (#640).
+    let currentIndex = -1;
+    for (let index = tracked.length - 1; index >= 0; index -= 1) {
+      if (tracked[index]?.status !== 'green') {
+        currentIndex = index;
+        break;
+      }
+    }
+    if (currentIndex === -1) currentIndex = tracked.length - 1;
+    for (let index = 0; index < tracked.length; index += 1) {
+      const item = tracked[index];
+      if (!item || item.key.kind !== 'issue') continue;
+      const isCurrent = index === currentIndex;
+      rows.push({
+        kind: 'issue',
+        key: issueRowKey(baseKey, item, isCurrent, usedKeys),
+        repository: item.key.repository,
+        number: item.key.number,
+        title: isCurrent ? (live?.row.title ?? item.title) : item.title,
+        row: isCurrent ? live?.row : undefined,
+        item,
+      });
+    }
+  }
+  return rows;
+}
+
 export function workGroups(
   tasks: LayoutSnapshot['tasks'],
   items: WorkItem[],
   panel: IssuePanelSnapshot | null,
 ) {
   const taskItems = new Map<string, WorkItem>();
-  const issues = new Map<string, WorkIssue>();
-  if (panel?.repository) {
-    for (const row of panel.rows) {
-      const key = issueKey(panel.repository, row.number);
-      issues.set(key, {
-        kind: 'issue',
-        key,
-        repository: panel.repository,
-        number: row.number,
-        title: row.title,
-        row,
-      });
-    }
-  }
   for (const item of items) {
     if (item.key.kind === 'task')
       taskItems.set(String(item.key.identifier), item);
-    if (item.key.kind === 'issue') {
-      const { repository, number } = item.key;
-      const key = issueKey(repository, number);
-      const previous = issues.get(key);
-      issues.set(key, {
-        kind: 'issue',
-        key,
-        repository,
-        number,
-        title: previous?.title ?? item.title,
-        row: previous?.row,
-        item,
-      });
-    }
   }
   const rows: WorkRow[] = [
     ...tasks.map((task): WorkTask => ({
@@ -109,7 +177,7 @@ export function workGroups(
       task,
       item: taskItems.get(task.identifier),
     })),
-    ...issues.values(),
+    ...buildIssueRows(items, panel),
   ];
   const questions: WorkIssue[] = [];
   const holds: WorkIssue[] = [];
