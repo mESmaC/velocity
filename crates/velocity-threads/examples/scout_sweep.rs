@@ -30,10 +30,10 @@ impl SweepHost for Host {
         let Ok(mut store) = self.0.lock() else {
             return false;
         };
-        let Ok(Some(events)) = store.update_scouts(project, change) else {
+        let Ok(Some(outcome)) = store.update_scouts(project, change) else {
             return false;
         };
-        for event in events {
+        for event in outcome.events {
             println!(
                 "feed  {} {} {:?} {}",
                 event.timestamp, event.actor, event.kind, event.message

@@ -3,7 +3,7 @@
 use crate::project_layout::{active_project, provider_color, read_model};
 use crate::projects::ProjectError;
 use crate::swarm_dialog::{SwarmModelCard, provider_model_name};
-use crate::{EffortLevel, PersistedState, ProjectItem, ProviderKind, SpeedMode, StateStore};
+use crate::{EffortLevel, ProjectItem, ProviderKind, SpeedMode, StateStore};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use velocity_core::duty::{
@@ -254,6 +254,13 @@ pub struct DutyMutationOutcome {
     pub event: DutyFeedEvent,
 }
 
+/// Outcome of applying a change to a project's Scouts role.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScoutUpdateOutcome {
+    pub changed: bool,
+    pub events: Vec<DutyFeedEvent>,
+}
+
 impl StateStore {
     pub fn duty_dialog_defaults(&self) -> DutyDialogDefaults {
         let settings = &self.state.settings;
@@ -290,9 +297,10 @@ impl StateStore {
         request: StartDutyRequest,
         timestamp: String,
     ) -> Result<DutyMutationOutcome, ProjectError> {
-        let mut next = self.state.clone();
+        let project_id = active_project(&self.state)
+            .ok_or(ProjectError::IndexOutOfRange)?
+            .id;
         let defaults = self.duty_dialog_defaults();
-        let project = active_project_mut(&mut next)?;
         let provider = request.provider.unwrap_or(defaults.provider);
         self.state.settings.ensure_new_work(provider)?;
         // A provider other than the default runs its own model, never the default's name.
@@ -307,10 +315,14 @@ impl StateStore {
                     provider_model_name(&self.state.settings, provider)
                 }
             });
-        let (identifier, event) =
-            apply_start_or_add(project, &request, provider, model_name, timestamp);
-        project.active_thread_id = Some(identifier);
-        self.commit_duty_state(next)?;
+        let (identifier, event) = self
+            .edit_project_in_place(project_id, |project| {
+                let (identifier, event) =
+                    apply_start_or_add(project, &request, provider, model_name, timestamp);
+                project.active_thread_id = Some(identifier);
+                (true, (identifier, event))
+            })?
+            .ok_or(ProjectError::IndexOutOfRange)?;
         layout.replace_data(read_model(self));
         layout.close_duty_dialog_and_select(identifier as usize);
         crate::build_gate::sync_layout(&self.state, layout);
@@ -327,17 +339,24 @@ impl StateStore {
         request: PauseDutyRequest,
         timestamp: String,
     ) -> Result<DutyMutationOutcome, ProjectError> {
-        let mut next = self.state.clone();
         let selected = layout.selected_thread();
-        let project = active_project_mut(&mut next)?;
+        let project = active_project(&self.state).ok_or(ProjectError::IndexOutOfRange)?;
+        let project_id = project.id;
         let target_index = resolve_duty_index(project, request.role, selected)
             .ok_or(ProjectError::IndexOutOfRange)?;
-        let item = &mut project.duty_roles[target_index];
-        let mut core_entry = item.to_core();
+        let mut core_entry = project.duty_roles[target_index].to_core();
         let event = duty::toggle_duty_pause(&mut core_entry, timestamp);
         let role = core_entry.role;
-        *item = DutyRoleItem::from_core(core_entry, self.state.settings.providers.default_provider);
-        self.commit_duty_state(next)?;
+        let updated =
+            DutyRoleItem::from_core(core_entry, self.state.settings.providers.default_provider);
+        self.edit_project_in_place(project_id, |project| {
+            let Some(item) = project.duty_roles.get_mut(target_index) else {
+                return (false, ());
+            };
+            *item = updated;
+            (true, ())
+        })?
+        .ok_or(ProjectError::IndexOutOfRange)?;
         layout.replace_data(read_model(self));
         crate::build_gate::sync_layout(&self.state, layout);
         Ok(DutyMutationOutcome {
@@ -356,19 +375,27 @@ impl StateStore {
         released: Option<u32>,
         timestamp: String,
     ) -> Result<DutyMutationOutcome, ProjectError> {
-        let mut next = self.state.clone();
-        let project = active_project_mut(&mut next)?;
-        let item = project
+        let project = active_project(&self.state).ok_or(ProjectError::IndexOutOfRange)?;
+        let project_id = project.id;
+        let role_index = project
             .duty_roles
-            .iter_mut()
-            .find(|item| item.role == request.role)
+            .iter()
+            .position(|item| item.role == request.role)
             .ok_or(ProjectError::IndexOutOfRange)?;
-        let mut core_entry = item.to_core();
+        let mut core_entry = project.duty_roles[role_index].to_core();
         let event =
             duty::dismiss_duty_agent(&mut core_entry, &request.nickname, released, timestamp)
                 .ok_or(ProjectError::IndexOutOfRange)?;
-        *item = DutyRoleItem::from_core(core_entry, self.state.settings.providers.default_provider);
-        self.commit_duty_state(next)?;
+        let updated =
+            DutyRoleItem::from_core(core_entry, self.state.settings.providers.default_provider);
+        self.edit_project_in_place(project_id, |project| {
+            let Some(item) = project.duty_roles.get_mut(role_index) else {
+                return (false, ());
+            };
+            *item = updated;
+            (true, ())
+        })?
+        .ok_or(ProjectError::IndexOutOfRange)?;
         layout.replace_data(read_model(self));
         crate::build_gate::sync_layout(&self.state, layout);
         Ok(DutyMutationOutcome {
@@ -386,23 +413,27 @@ impl StateStore {
         request: &StopDutyRequest,
         timestamp: &str,
     ) -> Result<StoppedDuty, ProjectError> {
-        let mut next = self.state.clone();
-        let project = active_project_mut(&mut next)?;
+        let project = active_project(&self.state).ok_or(ProjectError::IndexOutOfRange)?;
+        let project_id = project.id;
         let index = project
             .duty_roles
             .iter()
             .position(|item| item.role == request.role)
             .ok_or(ProjectError::IndexOutOfRange)?;
-        let removed = project.duty_roles.remove(index);
-        if project.active_thread_id == Some(removed.id) {
-            project.active_thread_id = None;
-        }
-        let nicknames: Vec<String> = removed
-            .agents
-            .into_iter()
-            .map(|agent| agent.nickname)
-            .collect();
-        self.commit_duty_state(next)?;
+        let nicknames = self
+            .edit_project_in_place(project_id, |project| {
+                let removed = project.duty_roles.remove(index);
+                if project.active_thread_id == Some(removed.id) {
+                    project.active_thread_id = None;
+                }
+                let nicknames: Vec<String> = removed
+                    .agents
+                    .into_iter()
+                    .map(|agent| agent.nickname)
+                    .collect();
+                (true, nicknames)
+            })?
+            .ok_or(ProjectError::IndexOutOfRange)?;
         layout.replace_data(read_model(self));
         crate::build_gate::sync_layout(&self.state, layout);
         let event = duty::stop_duty_event(request.role, nicknames.len(), timestamp);
@@ -427,27 +458,26 @@ impl StateStore {
             return Ok(None);
         };
         let target_id = u32::try_from(identifier).ok();
-        if !project
+        let Some(role_index) = project
             .duty_roles
             .iter()
-            .any(|duty| Some(duty.id) == target_id)
-        {
-            return Ok(None);
-        }
-        let mut next = self.state.clone();
-        let project = active_project_mut(&mut next)?;
-        let Some(item) = project
-            .duty_roles
-            .iter_mut()
-            .find(|duty| Some(duty.id) == target_id)
+            .position(|duty| Some(duty.id) == target_id)
         else {
             return Ok(None);
         };
-        let mut core_entry = item.to_core();
+        let project_id = project.id;
+        let mut core_entry = project.duty_roles[role_index].to_core();
         let event = duty::record_duty_instruction(&mut core_entry, prompt, timestamp);
         let role = core_entry.role;
-        *item = DutyRoleItem::from_core(core_entry, self.state.settings.providers.default_provider);
-        self.commit_duty_state(next)?;
+        let updated =
+            DutyRoleItem::from_core(core_entry, self.state.settings.providers.default_provider);
+        self.edit_project_in_place(project_id, |project| {
+            let Some(item) = project.duty_roles.get_mut(role_index) else {
+                return (false, ());
+            };
+            *item = updated;
+            (true, ())
+        })?;
         layout.replace_data(read_model(self));
         crate::build_gate::sync_layout(&self.state, layout);
         Ok(Some((role, event)))
@@ -486,21 +516,19 @@ impl StateStore {
     }
 
     /// Changes a project's Scouts role through `change`, which is given the feed's timestamp
-    /// and returns the feed events to post, and saves it. Returns the posted events, or `None`
-    /// when the project or its Scouts role is gone (deleted while a sweep ran).
+    /// and returns the feed events to post, and saves it. Returns whether the saved role
+    /// changed alongside any posted events, or `None` when the project or its Scouts role is
+    /// gone (deleted while a sweep ran).
     pub fn update_scouts(
         &mut self,
         project: u32,
         change: impl FnOnce(&mut DutyRoleEntry, &str) -> Vec<DutyFeedEvent>,
-    ) -> Result<Option<Vec<DutyFeedEvent>>, ProjectError> {
-        let mut next = self.state.clone();
-        let Some(project) = next.projects.iter_mut().find(|item| item.id == project) else {
-            return Ok(None);
-        };
-        let Some(saved) = project
-            .duty_roles
-            .iter_mut()
-            .find(|item| item.role == DutyRole::Scouts)
+    ) -> Result<Option<ScoutUpdateOutcome>, ProjectError> {
+        // Compute and compare against the immutable role first so a no-op tick never calls
+        // `SharedState::deref_mut` (`Arc::make_mut`) and never clones `PersistedState` (#670).
+        let Some(saved) = self
+            .project(project)
+            .and_then(|item| find_role(item, DutyRole::Scouts))
         else {
             return Ok(None);
         };
@@ -513,16 +541,26 @@ impl StateStore {
         let fallback = self.state.settings.providers.default_provider;
         let updated = DutyRoleItem::from_core(entry, fallback);
         if *saved == updated {
-            return Ok(Some(events));
+            return Ok(Some(ScoutUpdateOutcome {
+                changed: false,
+                events,
+            }));
         }
-        *saved = updated;
-        self.commit_duty_state(next)?;
-        Ok(Some(events))
-    }
-
-    fn commit_duty_state(&mut self, next: PersistedState) -> Result<(), ProjectError> {
-        self.store_snapshot(next)?;
-        Ok(())
+        self.edit_project_in_place(project, |item| {
+            let Some(saved) = item
+                .duty_roles
+                .iter_mut()
+                .find(|role| role.role == DutyRole::Scouts)
+            else {
+                return (false, ());
+            };
+            *saved = updated;
+            (true, ())
+        })?;
+        Ok(Some(ScoutUpdateOutcome {
+            changed: true,
+            events,
+        }))
     }
 }
 
@@ -557,15 +595,6 @@ fn duty_model_cards(
             })
         })
         .collect()
-}
-
-fn active_project_mut(state: &mut PersistedState) -> Result<&mut ProjectItem, ProjectError> {
-    let index =
-        usize::try_from(state.active_project_index).map_err(|_| ProjectError::IndexOutOfRange)?;
-    state
-        .projects
-        .get_mut(index)
-        .ok_or(ProjectError::IndexOutOfRange)
 }
 
 fn find_role(project: &ProjectItem, role: DutyRole) -> Option<&DutyRoleItem> {
@@ -661,6 +690,7 @@ pub fn clock_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PersistedState;
     use velocity_core::layout_view::ProviderColor;
 
     // A state written before role defaults must load, and edited defaults must survive restart.
@@ -839,6 +869,89 @@ mod tests {
             }),
             Some(SweepReason::GeneratedInputs)
         );
+        Ok(())
+    }
+
+    fn seed_scouts_store(
+        directory: &std::path::Path,
+    ) -> Result<StateStore, Box<dyn std::error::Error>> {
+        let _ignored = std::fs::remove_dir_all(directory);
+        let mut store = StateStore::load_or_default(directory)?;
+        let spec = DutyStartSpec {
+            role: DutyRole::Scouts,
+            agent_count: 1,
+            provider: ProviderColor::Claude,
+            model_name: "model".into(),
+            effort: None,
+            speed: None,
+            scout_rules: ScoutRuleSettings::default(),
+            repeat_unchanged: false,
+            timestamp: "00:00".into(),
+        };
+        let (mut entry, _) = duty::start_duty_entry(7, spec);
+        entry.review_swarm = Some(duty::ReviewSwarmCoverage::new(0, 0));
+        let mut project = ProjectItem::new(1, "One".into(), r"C:\project one".into());
+        project.duty_roles = vec![DutyRoleItem::from_core(entry, ProviderKind::Claude)];
+        let mut next = store.state().clone();
+        next.projects = vec![project];
+        store.store_snapshot(next)?;
+        store.defer_saves();
+        Ok(store)
+    }
+
+    // Risk (#670): steady-state 20-second review-swarm ticks call `update_scouts` with no
+    // change; cloning `PersistedState` or reporting `changed: true` would blow the store lock
+    // budget and trigger needless layout rebuilds.
+    #[test]
+    fn update_scouts_noop_avoids_cloning_and_real_updates_persist()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = std::env::temp_dir().join(format!("velocity-670-{}", std::process::id()));
+        let mut store = seed_scouts_store(&directory)?;
+        // `state` and `disk_state` share the same `Arc` right after a save.
+        let before_arc = store.state.arc();
+        let before_revision = store.state().revision;
+        assert_eq!(std::sync::Arc::strong_count(&before_arc), 3);
+
+        let noop = store
+            .update_scouts(1, |entry, _| {
+                entry.review_swarm = Some(duty::ReviewSwarmCoverage::new(0, 0));
+                Vec::new()
+            })?
+            .ok_or("missing scouts role")?;
+        assert!(!noop.changed);
+        assert!(noop.events.is_empty());
+        assert!(std::sync::Arc::ptr_eq(&before_arc, &store.state.arc()));
+        assert_eq!(store.state().revision, before_revision);
+        assert!(!store.has_unsaved_changes());
+
+        let updated = store
+            .update_scouts(1, |entry, timestamp| {
+                entry.review_swarm = Some(duty::ReviewSwarmCoverage::new(2, 42));
+                vec![DutyFeedEvent::new(
+                    timestamp,
+                    "scout-1",
+                    DutyEventKind::Wait,
+                    "queued 2".into(),
+                )]
+            })?
+            .ok_or("missing scouts role")?;
+        assert!(updated.changed);
+        assert_eq!(updated.events.len(), 1);
+        assert!(store.has_unsaved_changes());
+
+        let store = std::sync::Mutex::new(store);
+        assert!(crate::save_pending(&store)?);
+        let reloaded = StateStore::load_or_default(&directory)?;
+        let role = &reloaded.state().projects[0].duty_roles[0];
+        assert_eq!(
+            role.review_swarm,
+            Some(duty::ReviewSwarmCoverage::new(2, 42))
+        );
+        assert_eq!(
+            role.feed.last().map(|item| item.message.as_str()),
+            Some("queued 2")
+        );
+        std::fs::remove_dir_all(directory)?;
         Ok(())
     }
 }

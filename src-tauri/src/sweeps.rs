@@ -238,18 +238,21 @@ impl SweepHost for TauriSweepHost {
 impl TauriSweepHost {
     /// Saves, then republishes the window when the project is the one on screen.
     fn save(&self, project: u32, change: ScoutChange) -> Result<bool, String> {
-        let (events, refresh) = {
+        let (events, is_active, refresh) = {
             let store_state = self.0.state::<ManagedStateStore>();
             let mut store = lock(store_state.inner(), "persisted state")?;
-            let Some(events) = store
+            let Some(outcome) = store
                 .update_scouts(project, change)
                 .map_err(|error| error.to_string())?
             else {
                 return Ok(false);
             };
-            let refresh = (store.active_project().map(|item| item.id) == Some(project))
-                .then(|| store.layout_refresh());
-            (events, refresh)
+            if !outcome.changed && outcome.events.is_empty() {
+                return Ok(true);
+            }
+            let is_active = store.active_project().map(|item| item.id) == Some(project);
+            let refresh = (outcome.changed && is_active).then(|| store.layout_refresh());
+            (outcome.events, is_active, refresh)
         };
         if let Some(refresh) = refresh {
             let active_project = refresh.active_project;
@@ -264,7 +267,9 @@ impl TauriSweepHost {
                 layout.snapshot()
             };
             crate::layout::publish(&self.0, &snapshot, None)?;
-            crate::airc_events::record_scout_events(&self.0, project, &events);
+        }
+        crate::airc_events::record_scout_events(&self.0, project, &events);
+        if is_active {
             for event in events {
                 DutyEventPublished {
                     role: DutyRole::Scouts,
@@ -273,8 +278,6 @@ impl TauriSweepHost {
                 .emit(&self.0)
                 .map_err(|error| format!("Could not publish duty event: {error}"))?;
             }
-        } else {
-            crate::airc_events::record_scout_events(&self.0, project, &events);
         }
         Ok(true)
     }

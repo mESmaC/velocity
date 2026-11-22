@@ -209,19 +209,22 @@ impl TauriLandingHost {
         let (events, refresh) = {
             let store_state = self.0.state::<ManagedStateStore>();
             let mut store = lock(store_state.inner(), "persisted state")?;
-            let events = store
+            let outcome = store
                 .update_scouts(project, |_, timestamp| {
                     vec![DutyFeedEvent::new(timestamp, actor, kind, line.clone())]
                 })
                 .map_err(|error| error.to_string())?;
-            let Some(events) = events else {
+            let Some(outcome) = outcome else {
                 eprintln!("Rosen project {project}: {line}");
                 return Ok(());
             };
             if store.active_project().map(|item| item.id) != Some(project) {
                 return Ok(());
             }
-            (events, store.layout_refresh())
+            if !outcome.changed && outcome.events.is_empty() {
+                return Ok(());
+            }
+            (outcome.events, store.layout_refresh())
         };
         let active_project = refresh.active_project;
         let snapshot = {

@@ -143,7 +143,7 @@ fn publish_dispatch_warning(application: &AppHandle, project: u32, line: &str) -
             line.to_owned(),
         )]
     }) {
-        Ok(Some(events)) => events,
+        Ok(Some(outcome)) => outcome.events,
         Ok(None) | Err(_) => return active,
     };
     drop(store);
