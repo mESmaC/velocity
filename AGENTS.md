@@ -42,7 +42,7 @@ Velocity is a Rust + Tauri desktop IDE for running coding agents in parallel.
 
 ## Code and UI
 
-- `src-tauri/` handles Tauri commands and events. Put logic in domain crates. `velocity-core` is pure state and decisions, `velocity-store` persists them, `velocity-threads` starts and runs threads, and `velocity-acp` handles agent sessions. Use the crate manifests for the rest of the workspace layout.
+- `src-tauri/` handles Tauri commands and events. Put logic in domain crates. `velocity-core` is pure state and decisions, `velocity-store` persists them, `velocity-threads` starts and runs threads, `velocity-acp` handles agent sessions, `velocity-rosen` owns Rosen servers and workspaces, and `velocity-git` keeps workspace setup/inventory, `AGENTS.md`, Lean manifest helpers, and git import inspection. Use the crate manifests for the rest of the workspace layout.
 - Use pinned stable Rust, edition 2024. Use `thiserror` in crates and `anyhow` in Tauri. No `unsafe`, and no `unwrap()` or `expect()` outside `stress/`. Keep functions under 60 lines, use descriptive names without abbreviations and explain unclear decisions in comments.
 - Handle Windows drive letters, spaces, backslashes and long paths. Use the workspace's pinned `rosen-client` and `rosen-core` together. Use constructors across modules and add `#[serde(default)]` to new persisted fields. Keep algorithms that need proofs pure and synchronous.
 - Use the IPC names in §3.1. Document new commands and events in their feature's `spec/3.1-ipc/` file, one entry each. Place UI wrappers and re-exports in `ui/src/lib/ipc/<feature>.ts` and export from `ipc.ts`. Only IPC wrappers call `invoke` or `listen`. Generate command and event types with tauri-specta.
@@ -73,7 +73,6 @@ Keep this list aligned with `rosen.toml`. Sensitive changes take priority in rev
 
 - `rosen.toml` configures checks, merge rules and the mirror.
 - `crates/velocity-store/` owns persisted state.
-- `crates/velocity-git/src/lifecycle.rs` and `crates/velocity-git/src/merged_worktree.rs` guard worktree deletion.
 - `crates/velocity-airc/src/claims.rs` implements the claim lock.
 - `.github/workflows/`, `scripts/check.ps1` and `scripts/check-ui.mjs` run checks.
 

@@ -18,9 +18,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::command::git;
+use crate::command::{background_priority, git};
 use crate::manager::WorktreeError;
-use crate::ready_pool::background_priority;
 
 const TOOLCHAIN_FILE: &str = "lean-toolchain";
 const MANIFEST_FILE: &str = "lake-manifest.json";

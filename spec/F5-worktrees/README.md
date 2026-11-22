@@ -1,16 +1,11 @@
 <!-- split-spec: {"order":523,"kind":"markdown","indentation":0} -->
 ### F5 · Workspaces
 
-**Rosen workspaces (decided, #331, #407, #419).**
-Rosen (`github.com/mESmaC/rosen`) is Velocity's first-class version control.
-Each project's agents work in Rosen changes and workspaces after the project migrates.
-A Rosen project never falls back to git when its server or workspace creation fails (#407).
-Legacy projects migrate automatically at startup after their running threads finish.
-The Git workspace pool serves legacy projects while their migration is pending.
-Before creating or taking a git worktree or refilling its ready pool, a project Rosen has imported copies Rosen's landed history into its git repository and fast-forwards its default branch, including when there is no mirror.
-A newer fetched remote tip or local base is retained when it contains that landed history; an offline mirror does not prevent using Rosen's local base.
-If the base has diverged, the launch or pool refresh refuses with the conflicting commits and an explanation; it never resets the branch or discards uncommitted files.
-An existing ready slot catches up to the synchronized tip before a new thread takes it.
+**Rosen workspaces (decided, #331, #407, #418, #419).**
+Rosen (`github.com/mESmaC/rosen`) is Velocity's only version control.
+Each project's agents work in Rosen changes and workspaces.
+A project never creates or falls back to a git worktree or git branch when its server or workspace creation fails (#407, #418).
+Legacy git projects migrate automatically at startup (#419); new threads wait until migration finishes.
 
 <!-- split-spec links -->
 
@@ -29,7 +24,6 @@ Rule files:
 - [Pin bumps (#513)](rosen-pin-bump.md)
 - [Base CI (#507)](rosen-base-ci.md)
 - [Project health checks (#509)](project-health.md)
-- [Lifecycle (decided)](lifecycle.md)
 - [Path](path.md)
 - [Settings → Workspaces](settings-worktrees.md)
 - [Warm pool (speed)](warm-pool.md)

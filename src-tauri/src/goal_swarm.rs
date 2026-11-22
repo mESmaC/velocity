@@ -261,8 +261,8 @@ fn spawn_goal_slots(
 ) -> (usize, Vec<String>) {
     let mut started = 0;
     let mut refused = Vec::new();
-    // Agents take ready worktrees one by one instead of all checking out at once (F5).
-    crate::ready_pool::reserve(application, project_id, slots.len());
+    // Reserve Rosen's warm pool so goal swarm members take ready workspaces without racing (F5).
+    crate::rosen::reserve_pool_sync(application, project_id, slots.len());
     for slot in slots {
         if let Err(error) = velocity_rosen::memory::require_headroom() {
             refused.push(error);

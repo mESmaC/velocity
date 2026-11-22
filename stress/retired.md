@@ -14,3 +14,10 @@ Removed by the change for #426 (`Shrink velocity-github to issues and repository
 | --- | --- | --- |
 | `pr50-stale-observer.ps1` | A GitHub PR read finishing after F12 deleted its thread could checkpoint stale PR state onto a replacement thread that reused the ID. | Velocity no longer reads GitHub PRs or saves a PR record on threads, so no late read can write thread state. |
 | `pr64-follow-through-example.ps1` | Saving F9's issue association could break the F6 `follow_through` store example when every Cargo target is checked. | The PR follow-through example and the store API it called were removed with the PR code. |
+
+Removed by the change for #418 (`Remove git project mode: Rosen is the only version control`).
+
+| Script | Risk | Reason for retirement |
+| --- | --- | --- |
+| `pr39-worktree-safety.ps1` | Git worktree creation failures could report untyped path errors or roll back a pre-existing branch owned by another actor via `git branch -D`. | Velocity no longer creates git worktrees or git branches for threads; Rosen owns workspace and change creation. |
+| `pr50-unicode-worktree-cleanup.ps1` | F6 merged git worktree cleanup could conflate distinct Windows Unicode directory names and delete the wrong linked worktree. | Velocity no longer runs git worktree removal; Rosen owns workspace deletion under its R4 guard. |

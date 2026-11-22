@@ -778,12 +778,12 @@ fn launch_resumed_session(
     } else {
         match crate::rosen::prepare_resume(application, key.0, &thread, &mut agent, &mut setup) {
             Some(prepared) => prepared?,
-            None => velocity_git::verify_thread_worktree(
-                Path::new(&project.repository_path),
-                Path::new(path),
-                &thread.branch_name,
-            )
-            .map_err(|error| error.to_string())?,
+            None => {
+                return Err(
+                    "This thread has no Rosen workspace; finish migrating the project to Rosen before resuming."
+                        .into(),
+                );
+            }
         }
         setup.airc = crate::airc_access::for_thread(application, key, Path::new(path), &thread);
         crate::airc_claims::attach(application, key, &setup, &thread.branch_name)?;

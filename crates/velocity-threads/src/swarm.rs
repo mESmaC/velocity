@@ -66,7 +66,7 @@ pub fn plan_swarm_member(
         .active_project()
         .filter(|project| project.id == request.project_identifier)
         .ok_or_else(|| DispatchError::Invalid("The selected project changed".into()))?;
-    let (title, slug, prompt, issue) = member_work(project, request, repository, issues, item)?;
+    let (title, slug, prompt, issue) = member_work(project, repository, issues, item)?;
     // The member runs on its round-robin provider; everything else is the user's settings.
     // A provider you signed out of since the dialog was drawn is refused, never swapped.
     let mut settings = store.settings();
@@ -97,7 +97,6 @@ type MemberWork = (String, String, String, Option<ThreadIssue>);
 /// still open and has no agent.
 fn member_work(
     project: &ProjectItem,
-    request: &LaunchSwarmRequest,
     repository: &str,
     issues: &[OpenIssue],
     item: SwarmItem,
@@ -112,7 +111,7 @@ fn member_work(
                 .ok_or_else(|| {
                     DispatchError::Invalid(format!("Task {identifier} is no longer open"))
                 })?;
-            let prompt = task_prompt(task.id, &task.text, project.version_control);
+            let prompt = task_prompt(task.id, &task.text);
             (task.text.clone(), title_slug(&task.text), prompt, None)
         }
         SwarmItem::Issue(number) => {
@@ -122,12 +121,7 @@ fn member_work(
                 .ok_or_else(|| {
                     DispatchError::Invalid(format!("Issue #{number} is closed or has an agent"))
                 })?;
-            let prompt = issue_prompt(
-                repository,
-                issue,
-                request.close_issues,
-                project.version_control,
-            );
+            let prompt = issue_prompt(repository, issue);
             let owner = ThreadIssue::new(repository.into(), number);
             (
                 issue.title.clone(),
@@ -140,8 +134,6 @@ fn member_work(
     Ok(work)
 }
 
-const LIFECYCLE: &str = "You already have your own worktree and branch. Open a PR against the project's default branch and watch it until it merges: fix failed checks, answer every review comment, resolve addressed threads and re-request review. Never merge your own PR. Messages from the swarm arrive between your steps.";
-
 pub(crate) fn task_excerpt(identifier: u32, text: &str) -> String {
     velocity_core::text_budget::prompt_excerpt(
         text,
@@ -150,17 +142,9 @@ pub(crate) fn task_excerpt(identifier: u32, text: &str) -> String {
     )
 }
 
-fn task_prompt(
-    identifier: u32,
-    task: &str,
-    version_control: velocity_store::VersionControl,
-) -> String {
-    let delivery = if version_control == velocity_store::VersionControl::Rosen {
-        "Follow the Rosen workspace note Velocity gave you. Name the task in the snapshot."
-            .to_owned()
-    } else {
-        format!("Name the task in your PR description.\n\n{LIFECYCLE}")
-    };
+fn task_prompt(identifier: u32, task: &str) -> String {
+    let delivery =
+        "Follow the Rosen workspace note Velocity gave you. Name the task in the snapshot.";
     format!(
         "Your swarm item is Task List item #{identifier}:\n\n{}\n\nBuild it end to end. {}\n\n{delivery}",
         task_excerpt(identifier, task),
@@ -168,34 +152,15 @@ fn task_prompt(
     )
 }
 
-fn issue_prompt(
-    repository: &str,
-    issue: &OpenIssue,
-    close: bool,
-    version_control: velocity_store::VersionControl,
-) -> String {
+fn issue_prompt(repository: &str, issue: &OpenIssue) -> String {
     let scope = format!(
         "Your swarm item is issue {repository}#{}: {}. Read its description and evidence, then implement it end to end. {}",
         issue.number,
         issue.title,
         crate::task_spec::instructions(&[&issue.title])
     );
-    if version_control == velocity_store::VersionControl::Rosen {
-        return format!(
-            "{scope}\n\nhttps://github.com/{repository}/issues/{}\n\nFollow the Rosen workspace note Velocity gave you.",
-            issue.number
-        );
-    }
-    let link = if close {
-        format!("Write Fixes #{} in the PR description.", issue.number)
-    } else {
-        format!(
-            "Write Refs #{} in the PR description; leave the issue open.",
-            issue.number
-        )
-    };
     format!(
-        "{scope}\n\nRead it with `gh issue view {}`. Use issue_comment for starting work, findings that change the plan, and blockers. {link}\n\n{LIFECYCLE}",
+        "{scope}\n\nhttps://github.com/{repository}/issues/{}\n\nFollow the Rosen workspace note Velocity gave you.",
         issue.number
     )
 }

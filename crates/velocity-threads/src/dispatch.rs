@@ -202,12 +202,7 @@ pub fn plan_project_issue_dispatch(
         }
         .into());
     }
-    let prompt = dispatch_prompt(
-        repository,
-        issue,
-        accept_recommendation,
-        project.version_control,
-    )?;
+    let prompt = dispatch_prompt(repository, issue, accept_recommendation)?;
     let mut launch = crate::launch::plan_named_launch(
         project,
         &store.worktree_preferences(project),
@@ -230,7 +225,6 @@ fn dispatch_prompt(
     repository: &str,
     issue: &GitHubIssue,
     accept: bool,
-    version_control: velocity_store::VersionControl,
 ) -> Result<String, DispatchError> {
     let scope = if accept {
         let question = SpecQuestion::from_body(&issue.body);
@@ -244,11 +238,7 @@ fn dispatch_prompt(
                 "This question has no recommended answer to accept".into(),
             ));
         }
-        let delivery = if version_control == velocity_store::VersionControl::Rosen {
-            "Name the Rosen change after making that one-line edit."
-        } else {
-            "Open a small PR with the spec decision for the repository maintainers."
-        };
+        let delivery = "Name the Rosen change after making that one-line edit.";
         let recommendation = velocity_core::text_budget::prompt_excerpt(
             &question.recommendation,
             800,
@@ -265,23 +255,11 @@ fn dispatch_prompt(
             crate::task_spec::instructions(&[&issue.title, &issue.body])
         )
     };
-    Ok(issue_brief(&scope, repository, issue, version_control))
+    Ok(issue_brief(&scope, repository, issue))
 }
 
-fn issue_brief(
-    scope: &str,
-    repository: &str,
-    issue: &GitHubIssue,
-    version_control: velocity_store::VersionControl,
-) -> String {
-    let delivery = if version_control == velocity_store::VersionControl::Rosen {
-        "Read the issue discussion for evidence and any instructions for retrying after an empty turn. Follow the Rosen workspace note Velocity gave you. If there is no work to change, explain why and end your turn.".to_owned()
-    } else {
-        format!(
-            "Use issue_comment for starting work, findings that change the plan, and blockers.\n\nYou already have your own worktree and branch. Open a PR against the project's default branch with Fixes #{} in its description. Watch it until it merges, fix failed checks, answer every review comment, resolve addressed threads and re-request review. Never merge your own PR. Messages received while busy are queued.",
-            issue.number
-        )
-    };
+fn issue_brief(scope: &str, repository: &str, issue: &GitHubIssue) -> String {
+    let delivery = "Read the issue discussion for evidence and any instructions for retrying after an empty turn. Follow the Rosen workspace note Velocity gave you. If there is no work to change, explain why and end your turn.";
     let title = preview(&issue.title, 320);
     let header = format!(
         "Issue {repository}#{}: {title}\n{}\n\n",

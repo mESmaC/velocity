@@ -89,3 +89,24 @@ pub fn plan_setup_actions<Path: Copy>(
         (true, true, true) => Vec::from([create, cache, copy, command]),
     }
 }
+
+/// The environment that gives builds the shared compiler cache (F5): `RUSTC_WRAPPER=sccache`
+/// when sccache is installed and no wrapper is set already.
+pub fn compiler_cache_env() -> Vec<(String, String)> {
+    let wrapper_set = std::env::var_os("RUSTC_WRAPPER").is_some_and(|value| !value.is_empty());
+    if wrapper_set || find_on_path("sccache").is_none() {
+        return Vec::new();
+    }
+    Vec::from([("RUSTC_WRAPPER".to_owned(), "sccache".to_owned())])
+}
+
+fn find_on_path(program: &str) -> Option<std::path::PathBuf> {
+    let names: Vec<String> = if cfg!(windows) {
+        Vec::from([format!("{program}.exe"), format!("{program}.cmd")])
+    } else {
+        Vec::from([program.to_owned()])
+    };
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .flat_map(|folder| names.iter().map(move |name| folder.join(name)))
+        .find(|candidate| candidate.is_file())
+}

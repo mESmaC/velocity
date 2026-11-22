@@ -40,7 +40,6 @@ pub mod projects;
 pub mod proof_card;
 pub mod proofs_settings;
 pub mod queued_runs;
-pub mod ready_pool;
 pub mod release;
 pub mod reopened_land;
 pub mod review_diff;

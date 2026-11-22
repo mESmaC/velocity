@@ -58,8 +58,6 @@ sensitive = [
     "scripts/check.ps1",
     "scripts/check-ui.mjs",
     "crates/velocity-store/",
-    "crates/velocity-git/src/lifecycle.rs",
-    "crates/velocity-git/src/merged_worktree.rs",
     "crates/velocity-airc/src/claims.rs",
 ]
 collapse = "https://api.collapse.sh/mESmaC/velocity"

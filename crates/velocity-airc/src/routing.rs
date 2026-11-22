@@ -108,8 +108,8 @@ pub(crate) fn merge_touches(entry: &Entry, nick: &str, entries: &[Entry]) -> boo
         claim
             .files
             .iter()
-            .any(|file| velocity_git::landing::contested_path(file) && entry.files.contains(file))
-    }) || edited_merge(entry, nick, entries)
+            .any(|file| velocity_core::landing::contested_file(file) && entry.files.contains(file))
+    })
 }
 
 /// Generated overlap/share notices name whole nicks, never substring matches.
@@ -187,32 +187,4 @@ pub(crate) fn broken_for(entry: &Entry, nick: &str, entries: &[Entry]) -> bool {
         ])
         .output()
         .is_ok_and(|output| output.status.success())
-}
-
-fn edited_merge(entry: &Entry, nick: &str, entries: &[Entry]) -> bool {
-    let Some(head) = entry
-        .head
-        .as_deref()
-        .filter(|head| head.len() >= 7 && head.bytes().all(|byte| byte.is_ascii_hexdigit()))
-    else {
-        return false;
-    };
-    let Some(member) = entries
-        .iter()
-        .rev()
-        .find(|record| record.kind == "join" && record.nick == nick)
-        .map(|record| &record.member)
-    else {
-        return false;
-    };
-    let Some(checkout) = entries
-        .iter()
-        .rev()
-        .find(|record| &record.member == member && record.checkout.is_some())
-        .and_then(|record| record.checkout.as_ref())
-    else {
-        return false;
-    };
-    velocity_git::landing::edited_overlap(std::path::Path::new(checkout.workspace_path()), head)
-        .is_ok_and(|files| !files.is_empty())
 }

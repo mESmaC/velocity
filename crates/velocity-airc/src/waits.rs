@@ -386,7 +386,7 @@ impl Channel {
     }
 
     fn update_checkout(&self, member: &str) -> Result<(), Error> {
-        let checkout = self
+        let _checkout = self
             .snapshot()?
             .iter()
             .rev()
@@ -395,19 +395,9 @@ impl Channel {
             .ok_or_else(|| {
                 Error::Invalid("Runner did not register this thread's checkout".into())
             })?;
-        if Path::new(checkout.workspace_path()).join(".rosen").exists() {
-            // Rosen rebases stacked children when the parent lands. Velocity applies
-            // the pending head at the session's step boundary, never through git.
-            return Ok(());
-        }
-        velocity_git::continue_after_dependency(
-            Path::new(&checkout.repository),
-            Path::new(checkout.workspace_path()),
-            &checkout.branch,
-            &checkout.base,
-        )
-        .map(|_branch| ())
-        .map_err(|error| Error::Invalid(error.to_string()))
+        // Rosen rebases stacked children when the parent lands. Velocity applies
+        // the pending head at the session's step boundary, never through git (#418).
+        Ok(())
     }
 }
 

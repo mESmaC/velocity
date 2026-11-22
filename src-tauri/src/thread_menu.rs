@@ -10,11 +10,8 @@ use tauri_plugin_opener::OpenerExt;
 use velocity_core::layout_view::LayoutSnapshot;
 use velocity_core::thread_menu::{ThreadMenuAction, ThreadMenuEntry, ThreadMenuFacts, thread_menu};
 use velocity_store::ThreadItem;
-use velocity_store::deleted_worktrees::DeletedWorktree;
 use velocity_threads::deletion::{AGENT_EXIT_WAIT, UNDO_WINDOW};
-use velocity_threads::{
-    Deletion, DeletionPlan, PendingDeletions, StopOutcome, ThreadKey, plan_deletion,
-};
+use velocity_threads::{Deletion, PendingDeletions, StopOutcome, ThreadKey};
 
 use crate::state::ManagedStateStore;
 use crate::threads::{ManagedThreads, lock, report};
@@ -335,14 +332,13 @@ pub(crate) async fn land_thread(application: &AppHandle, key: ThreadKey) -> Vec<
         Err(error) => return Vec::from([error]),
     };
     let _action = action.lock_owned().await;
-    let (repository, thread) = match find_saved_thread(application, key) {
+    let (_repository, thread) = match find_saved_thread(application, key) {
         Ok(found) => found,
         // Already gone: nothing is left to delete.
         Err(_) => return Vec::new(),
     };
-    let plan = plan_deletion(&repository, &thread);
-    let stop = stop_agent(application, key).await;
-    let (kept, mut problems) = run_effects(plan, &thread, stop).await;
+    let _stop = stop_agent(application, key).await;
+    let mut problems = Vec::new();
     if let Err(error) =
         crate::browser::delete(application, key, thread.browser_location.as_deref()).await
     {
@@ -364,7 +360,7 @@ pub(crate) async fn land_thread(application: &AppHandle, key: ThreadKey) -> Vec<
     )
     .and_then(|mut store| {
         store
-            .remove_deleted_thread(key.0, key.1, kept)
+            .remove_deleted_thread(key.0, key.1, None)
             .map_err(|error| error.to_string())
     });
     match removed {
@@ -376,17 +372,7 @@ pub(crate) async fn land_thread(application: &AppHandle, key: ThreadKey) -> Vec<
     }
 }
 
-/// How the thread's agent took the stop.
-enum AgentStop {
-    Exited,
-    /// Its worktree is still being set up; the launch removes it once setup ends.
-    SettingUp,
-    /// It has not exited (or its exit was not confirmed) yet, so its worktree is left for
-    /// the background retry, which waits until it has.
-    StillRunning,
-}
-
-async fn stop_agent(application: &AppHandle, key: ThreadKey) -> AgentStop {
+async fn stop_agent(application: &AppHandle, key: ThreadKey) {
     application
         .state::<velocity_interview::Interviews>()
         .stop_agent(key);
@@ -395,70 +381,9 @@ async fn stop_agent(application: &AppHandle, key: ThreadKey) -> AgentStop {
         "thread sessions",
     )
     .map(|mut runtimes| runtimes.stop(key));
-    let outcome = match stopped {
-        Ok(StopOutcome::Stopping(ended)) => {
-            match tokio::time::timeout(AGENT_EXIT_WAIT, ended).await {
-                Ok(Ok(())) => AgentStop::Exited,
-                _ => AgentStop::StillRunning,
-            }
-        }
-        Ok(StopOutcome::SettingUp) => AgentStop::SettingUp,
-        Ok(StopOutcome::NotRunning) => AgentStop::Exited,
-        Err(_) => AgentStop::StillRunning,
-    };
-    let unconfirmed = lock(
-        application.state::<ManagedThreads>().inner(),
-        "thread sessions",
-    )
-    .map_or(true, |runtimes| runtimes.shutdown_failed(key));
-    match outcome {
-        AgentStop::Exited if unconfirmed => AgentStop::StillRunning,
-        outcome => outcome,
+    if let Ok(StopOutcome::Stopping(ended)) = stopped {
+        let _ = tokio::time::timeout(AGENT_EXIT_WAIT, ended).await;
     }
-}
-
-/// Removes the worktree and closes the PR off the async runtime. Returns the worktree when
-/// it is still on disk, to be retried, and what went wrong.
-async fn run_effects(
-    plan: DeletionPlan,
-    thread: &ThreadItem,
-    stop: AgentStop,
-) -> (Option<DeletedWorktree>, Vec<String>) {
-    let worktree = plan.remove_worktree.as_ref().and_then(|_| {
-        let path = thread.worktree_path.clone()?;
-        Some(DeletedWorktree::new(
-            thread.id,
-            path,
-            thread.branch_name.clone(),
-        ))
-    });
-    let worktree = match stop {
-        AgentStop::SettingUp => None,
-        _ => worktree,
-    };
-    let exited = matches!(stop, AgentStop::Exited);
-    let kept = worktree.clone();
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let mut problems = Vec::new();
-        let removed = match (&plan.remove_worktree, &kept) {
-            (Some(path), Some(_)) if exited => velocity_threads::deletion::remove_owned_worktree(
-                &plan.repository,
-                path,
-                &plan.branch,
-            )
-            .map_err(|error| error.to_string()),
-            (Some(_), Some(_)) => Err("its agent is still exiting".to_owned()),
-            _ => Ok(()),
-        };
-        if let Err(error) = &removed {
-            problems.push(format!(
-                "its workspace is kept until it can be removed ({error})"
-            ));
-        }
-        (removed.err().and(kept), problems)
-    })
-    .await;
-    outcome.unwrap_or_else(|error| (worktree, Vec::from([error.to_string()])))
 }
 
 /// The deletion's rows leave their hidden state (their records are gone, unless dropping

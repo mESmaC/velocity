@@ -1,6 +1,6 @@
 [package]
 name = "velocity-git"
-description = "Velocity's git and worktree manager"
+description = "Velocity's workspace setup, inventory and git import helpers"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,6 +16,5 @@ thiserror.workspace = true
 sysinfo.workspace = true
 velocity-core.workspace = true
 
-[target.'cfg(windows)'.dependencies]
-junction = "2.1.0"
+[target.'cfg(windows)'.dev-dependencies]
 tempfile = "3.27.0"

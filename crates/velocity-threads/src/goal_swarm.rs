@@ -16,14 +16,11 @@ use velocity_airc::waits::Checkout;
 use velocity_airc::{Channel, ClaimResult, Event};
 use velocity_core::goal_swarm::{GoalEventKind, GoalFeedEvent};
 use velocity_core::goal_swarm_choice::{
-    PostMergeDecision, decide_after_merge, open_flags_for_pool, piece_branch_slug,
+    PostMergeDecision, decide_after_merge, open_flags_for_pool,
 };
 use velocity_core::work_pool::{WorkKey, WorkPiece, WorkPool};
 use velocity_core::worktree_settings::WorktreePreferences;
-use velocity_git::{
-    WorktreeError, WorktreeSetupRequest, local_branch_exists, remove_untouched_worktree,
-    rename_worktree_branch,
-};
+use velocity_git::{WorktreeError, WorktreeSetupRequest};
 use velocity_store::goal_swarms::{CHOOSING_THREAD_TITLE, GoalAgentSlot};
 use velocity_store::threads::{NewThread, ThreadError};
 use velocity_store::{ProjectItem, Settings, StateStore};
@@ -54,8 +51,6 @@ pub enum GoalSwarmError {
     Channel(#[from] velocity_airc::Error),
     #[error(transparent)]
     Worktree(#[from] WorktreeError),
-    #[error(transparent)]
-    Cleanup(#[from] velocity_git::MergedWorktreeError),
 }
 
 /// Planned worktree and ACP process launch for one goal swarm slot.
@@ -135,10 +130,10 @@ pub fn plan_goal_member(
     let location = Location::new(project, worktrees);
     let repository = PathBuf::from(&project.repository_path);
     let leaf = unique_slug(&slot.nick, |candidate| {
-        nick_taken(project, &repository, &location, candidate)
+        nick_taken(project, &location, candidate)
     })
     .ok_or_else(|| LaunchError::NamesExhausted(slot.nick.clone()))?;
-    let worktree_path = member_workspace_path(project, &location, &leaf, &slot.nick)?;
+    let worktree_path = member_workspace_path(&location, &leaf, &slot.nick)?;
     let shared_target = location.project_root()?.join(SHARED_TARGET_FOLDER);
     let branch_name = format!("vel/{leaf}");
     // A provider you signed out of since the mix was chosen is refused, never swapped (F15).
@@ -298,57 +293,13 @@ pub fn goal_agent_prompt(
     project: &ProjectItem,
     piece: &WorkPiece,
     worktree_path: &Path,
-    branch_name: &str,
+    _branch_name: &str,
 ) -> String {
-    let prompt = if worktree_path.join(".rosen").exists() {
-        rosen_goal_prompt(slot, project, piece, worktree_path)
-    } else {
-        git_goal_prompt(slot, project, piece, worktree_path, branch_name)
-    };
+    let prompt = rosen_goal_prompt(slot, project, piece, worktree_path);
     velocity_core::text_budget::prompt_excerpt(
         &prompt,
         velocity_core::text_budget::PROMPT_BYTES,
         "\n[Context excerpt. Read the claimed task, issue or spec section for its full details.]",
-    )
-}
-
-fn git_goal_prompt(
-    slot: &GoalAgentSlot,
-    project: &ProjectItem,
-    piece: &WorkPiece,
-    worktree_path: &Path,
-    branch_name: &str,
-) -> String {
-    let default_branch = base_branch(project);
-    let piece_instructions = match &piece.key {
-        WorkKey::Task { identifier } => format!(
-            "Task List item #{identifier}: {}\nName this Task List item in your PR description.",
-            piece.title
-        ),
-        WorkKey::Issue { repository, number } => format!(
-            "GitHub issue {repository}#{number}: {}\nRead it first with `gh issue view {number}`, including its evidence, and write `Fixes #{number}` in your PR description. Use issue_comment for starting work, findings that change the plan, and blockers.",
-            piece.title
-        ),
-        WorkKey::Spec { section } => format!(
-            "SPEC.md section `{section}`: {}\nName this SPEC.md item in your PR description. Velocity records it as built when your PR merges; never edit SPEC.md just to tick its checkbox.",
-            piece.title
-        ),
-    };
-    let spec = piece_spec(piece);
-    format!(
-        "{}\n\n---\nVelocity goal swarm context (locked, SPEC.md F16):\n\
-         - Nick: `{}` in `#{}`\n\
-         - Worktree: `{}` on branch `{branch_name}` (removed automatically after your PR merges)\n\
-         - Claimed piece in AIRC: {piece_instructions}\n\
-         - Work-pool context: {}. Prior pushed work is optional; never use another thread's checkout.\n\
-         - Commit, push `{branch_name}`, open a PR against `{default_branch}`, and follow its checks and review: fix failed checks, answer every review comment, resolve addressed threads, and re-request review. Never merge your own PR.\n\
-         - Use the path filter in `airc_claims` to check file ownership. Settle overlaps and dependency waits in AIRC; first claim wins.\n\
-         - Implement and run the feature first; then write Lean proofs only if the feature is on the project's proof list in SPEC.md (Rule 8, F17).\n\n{spec}",
-        goal_excerpt(&slot.prompt),
-        slot.nick,
-        project.name,
-        worktree_path.display(),
-        piece.reference
     )
 }
 
@@ -491,10 +442,9 @@ impl ClaimContext<'_> {
         feed_events: &mut Vec<GoalFeedEvent>,
     ) -> Result<Option<ClaimedGoalWork>, GoalSwarmError> {
         let key = piece.key.claim_piece();
-        let Some((project, planned_branch)) = self.reserve_store_claim(piece, &key)? else {
+        let Some((project, final_branch)) = self.reserve_store_claim(piece, &key)? else {
             return Ok(None);
         };
-        let final_branch = self.settle_branch(&project, planned_branch)?;
         let change = project
             .threads
             .iter()
@@ -509,14 +459,9 @@ impl ClaimContext<'_> {
             &final_branch,
             change,
         )?;
-        let is_rosen = change.is_some();
-        let _ = if is_rosen {
-            self.channel
-                .claim_work_item(&self.member, &key, &piece.title)?
-        } else {
-            self.channel
-                .claim_piece(&self.member, &key, &piece.title, &final_branch, Vec::new())?
-        };
+        let _ = self
+            .channel
+            .claim_work_item(&self.member, &key, &piece.title)?;
         let suffix = match &piece.key {
             WorkKey::Issue { number, .. } => format!(" \u{00b7} #{number}"),
             _ => String::new(),
@@ -547,36 +492,6 @@ impl ClaimContext<'_> {
         }))
     }
 
-    fn settle_branch(
-        &self,
-        project: &ProjectItem,
-        planned: String,
-    ) -> Result<String, GoalSwarmError> {
-        if project
-            .threads
-            .iter()
-            .any(|thread| thread.id == self.thread_id && thread.rosen_change.is_some())
-        {
-            return Ok(planned);
-        }
-        match rename_worktree_branch(
-            Path::new(&project.repository_path),
-            self.initial_branch,
-            &planned,
-        ) {
-            Ok(()) => Ok(planned),
-            Err(_) => {
-                sync_fallback_branch(
-                    self.store,
-                    self.project_id,
-                    self.thread_id,
-                    self.initial_branch,
-                )?;
-                Ok(self.initial_branch.to_owned())
-            }
-        }
-    }
-
     fn reserve_store_claim(
         &self,
         piece: &WorkPiece,
@@ -590,15 +505,7 @@ impl ClaimContext<'_> {
             .project(self.project_id)
             .cloned()
             .ok_or(ThreadError::UnknownProject(self.project_id))?;
-        let rosen = project
-            .threads
-            .iter()
-            .any(|thread| thread.id == self.thread_id && thread.rosen_change.is_some());
-        let target_branch = if rosen {
-            self.initial_branch.to_owned()
-        } else {
-            unique_piece_branch(&project, piece, self.initial_branch)
-        };
+        let target_branch = self.initial_branch.to_owned();
         if let WorkKey::Issue { repository, number } = &piece.key
             && project.completed_goal_issues.iter().any(|issue| {
                 issue.number == *number && issue.repository.eq_ignore_ascii_case(repository)
@@ -655,18 +562,6 @@ impl ClaimContext<'_> {
         mut feed_events: Vec<GoalFeedEvent>,
     ) -> Result<ClaimPhaseOutcome, GoalSwarmError> {
         let _ = self.channel.leave(&self.member);
-        if !project
-            .threads
-            .iter()
-            .any(|thread| thread.id == self.thread_id && thread.rosen_change.is_some())
-        {
-            remove_untouched_worktree(
-                Path::new(&project.repository_path),
-                self.worktree_path,
-                self.initial_branch,
-                &base_branch(project),
-            )?;
-        }
         {
             let mut guard = self
                 .store
@@ -773,36 +668,6 @@ fn finish_keep_going_leave(
     })
 }
 
-fn unique_piece_branch(project: &ProjectItem, piece: &WorkPiece, current_branch: &str) -> String {
-    let wanted = piece_branch_slug(piece);
-    let repository = Path::new(&project.repository_path);
-    let slug = unique_slug(&wanted, |candidate| {
-        let branch = format!("vel/{candidate}");
-        branch != current_branch
-            && (project
-                .threads
-                .iter()
-                .any(|thread| thread.branch_name == branch)
-                || local_branch_exists(repository, &branch))
-    });
-    slug.map_or_else(|| current_branch.to_owned(), |slug| format!("vel/{slug}"))
-}
-
-fn sync_fallback_branch(
-    store: &Mutex<StateStore>,
-    project_id: u32,
-    thread_id: u32,
-    branch: &str,
-) -> Result<(), GoalSwarmError> {
-    store
-        .lock()
-        .map_err(|error| GoalSwarmError::LockPoisoned(error.to_string()))?
-        .update_thread(project_id, thread_id, |thread| {
-            thread.branch_name = branch.to_owned();
-        })?;
-    Ok(())
-}
-
 fn read_project(store: &Mutex<StateStore>, project_id: u32) -> Result<ProjectItem, GoalSwarmError> {
     store
         .lock()
@@ -864,32 +729,27 @@ fn record_feed(
     Ok(event)
 }
 
-fn nick_taken(project: &ProjectItem, repository: &Path, location: &Location, slug: &str) -> bool {
+fn nick_taken(project: &ProjectItem, location: &Location, slug: &str) -> bool {
     let branch = format!("vel/{slug}");
     let folder_taken = match location.job_worktree(&velocity_git::JobKind::Branch(slug.to_owned()))
     {
         Ok(path) => path.is_some_and(|path| {
             path.exists()
-                || (project.version_control == velocity_store::VersionControl::Rosen
-                    && path
-                        .parent()
-                        .is_some_and(|parent| parent.join(".rounds").join(slug).exists()))
+                || path
+                    .parent()
+                    .is_some_and(|parent| parent.join(".rounds").join(slug).exists())
         }),
         Err(WorktreeError::ReservedLeafName(_)) => true,
         Err(_) => false,
     };
     folder_taken
-        || project.threads.iter().any(|thread| {
-            (project.version_control == velocity_store::VersionControl::Rosen
-                || thread.state != velocity_store::ThreadState::Merged)
-                && thread.branch_name == branch
-        })
-        || (project.version_control == velocity_store::VersionControl::Git
-            && local_branch_exists(repository, &branch))
+        || project
+            .threads
+            .iter()
+            .any(|thread| thread.branch_name == branch)
 }
 
 fn member_workspace_path(
-    project: &ProjectItem,
     location: &Location,
     leaf: &str,
     nick: &str,
@@ -899,7 +759,7 @@ fn member_workspace_path(
         .ok_or(WorktreeError::EmptyLeafName)?;
     // A landed round can reopen after a build break. Never reuse its directory for
     // the next round, and keep the nick as the leaf so AIRC's identity stays stable.
-    if project.version_control == velocity_store::VersionControl::Rosen && leaf != nick {
+    if leaf != nick {
         Ok(path.with_file_name(".rounds").join(leaf).join(nick))
     } else {
         Ok(path)

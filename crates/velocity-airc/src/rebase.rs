@@ -1,9 +1,9 @@
-//! F6 targeted updates run at the receiving agent's next step, never mid-edit.
-use crate::{Channel, Error, Event};
+//! F6 targeted updates run through Rosen at the receiving agent's next step, never via git.
+use crate::{Channel, Error};
 use std::path::Path;
 
 impl Channel {
-    /// Build threads register their checkout before ACP starts. Other sessions inherit
+    /// Build threads register their workspace before ACP starts. Other sessions inherit
     /// the project's working directory, including duty agents and the spec interview.
     pub fn is_rosen_project(&self, member: &str) -> Result<bool, Error> {
         if self.remote.is_some() {
@@ -24,54 +24,11 @@ impl Channel {
         Ok(std::env::current_dir()?.join("rosen.toml").is_file())
     }
 
-    /// Only the launcher's registered checkout is updated, on whichever branch the
-    /// thread has checked out there; git preserves dirty work and conflicts. The agent
-    /// commits its current edits before invoking this tool.
-    pub fn rebase(&self, member: &str) -> Result<(), Error> {
-        if self.is_rosen_project(member)? {
-            return Err(Error::Invalid(
-                "Rosen applies rebases at step boundaries; airc_rebase is not needed on this project."
-                    .into(),
-            ));
-        }
-        let entries = self.read(0)?;
-        let checkout = entries
-            .iter()
-            .rev()
-            .find(|entry| entry.member == member && entry.checkout.is_some())
-            .and_then(|entry| entry.checkout.as_ref())
-            .ok_or_else(|| Error::Invalid("No registered build checkout".into()))?;
-        let nick = entries
-            .iter()
-            .rev()
-            .find(|entry| entry.member == member && entry.kind == "join")
-            .map(|entry| entry.nick.as_str())
-            .ok_or_else(|| Error::Invalid("Join first".into()))?;
-        let result = velocity_git::continue_after_dependency(
-            Path::new(&checkout.repository),
-            Path::new(checkout.workspace_path()),
-            &checkout.branch,
-            &checkout.base,
-        );
-        match result {
-            Ok(branch) => {
-                self.post_event(Event::new(
-                    "rebased",
-                    nick,
-                    &format!(
-                        "updated {branch} with {} without rewriting history",
-                        checkout.base
-                    ),
-                ))?;
-                Ok(())
-            }
-            Err(error) => {
-                self.post_event(
-                    Event::new("conflict", nick, &error.to_string())
-                        .addressed_to(vec![nick.into()]),
-                )?;
-                Err(Error::Invalid(error.to_string()))
-            }
-        }
+    /// Rosen applies rebases at step boundaries; git worktree rebases have been removed (#418).
+    pub fn rebase(&self, _member: &str) -> Result<(), Error> {
+        Err(Error::Invalid(
+            "Rosen applies rebases at step boundaries; airc_rebase is not needed on this project."
+                .into(),
+        ))
     }
 }

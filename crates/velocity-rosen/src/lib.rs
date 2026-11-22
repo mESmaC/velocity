@@ -2,8 +2,7 @@
 //!
 //! Velocity starts and owns one Rosen server per project, imports the project's git
 //! repository into it with GitHub as the mirror, and gives each agent a Rosen change and
-//! workspace in place of a git worktree. Git worktrees are used only when a project
-//! chooses git; Rosen failures retain a retryable launch.
+//! workspace. Rosen is the only version control; failures retain a retryable launch.
 
 pub mod after_land_switch;
 mod agent;
@@ -69,7 +68,6 @@ pub use events::{
     event_timestamps, regenerate_paths, revert_output,
 };
 pub use events::{IssueEvent, issue_event};
-pub use git_base::synchronize_git_base;
 pub use issue::{change_source_issue, issue_build_coverage, record_work_sources};
 pub use migration::{Migration, migration_event_cursor};
 pub use mirror::{MirrorLag, MirrorObservation, mirror_lag, mirror_remote, mirror_status};

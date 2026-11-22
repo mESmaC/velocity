@@ -1,8 +1,7 @@
 //! Every Rust stress harness in one binary (#499), so the suite builds them all at once in
 //! the root workspace. `harness/build.rs` makes each harness a module; this picks one by the
 //! name in `VELOCITY_STRESS_HARNESS` and runs its `main`. A variable rather than an argument
-//! lets each harness read its own arguments unchanged, and a harness that starts itself
-//! again (pr39-worktree-safety's `--child`) passes it on.
+//! lets each harness read its own arguments unchanged.
 
 use std::process::ExitCode;
 

@@ -76,13 +76,18 @@ impl StateStore {
         }
     }
 
-    /// Sets project `project`'s version control (F5). Only new threads take it: an open
-    /// thread keeps the folder, change or PR it started with until it lands.
+    /// Sets project `project`'s version control (F5). Switching to git is refused because
+    /// Rosen is the only version control (#418).
     pub fn set_version_control(
         &mut self,
         project: u32,
         choice: VersionControl,
     ) -> Result<(), StoreError> {
+        if choice == VersionControl::Git {
+            return Err(StoreError::WorktreeSetting(
+                "Rosen is the only version control; git project mode has been removed".into(),
+            ));
+        }
         self.try_edit_project(
             project,
             || StoreError::WorktreeSetting("Select a project to choose its version control".into()),

@@ -104,8 +104,8 @@ fn launch(application: &AppHandle, request: LaunchSwarmRequest) -> Result<Layout
     .open_swarm(&request, clock_timestamp())
     .map_err(|error| error.to_string())?;
     let assignments = swarm_assignments(application, &request, &issues)?;
-    // Members take ready worktrees one by one instead of all checking out at once (F5).
-    crate::ready_pool::reserve(application, request.project_identifier, request.items.len());
+    // Reserve Rosen's warm pool so swarm members take ready workspaces without racing (F5).
+    crate::rosen::reserve_pool_sync(application, request.project_identifier, request.items.len());
     let mut started = 0;
     let mut refused = Vec::new();
     for assignment in assignments {

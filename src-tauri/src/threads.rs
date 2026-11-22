@@ -767,8 +767,7 @@ fn folder_ready(
     wanted
 }
 
-/// The folder a new thread's agent works in: a Rosen workspace, or a git worktree when
-/// the project chooses git (F5). A failed Rosen launch never takes a git worktree.
+/// The folder a new thread's agent works in: always a Rosen workspace (F5, #418).
 #[derive(Clone)]
 struct ThreadFolder {
     path: PathBuf,
@@ -782,22 +781,18 @@ async fn take_folder(
     key: ThreadKey,
     plan: &mut LaunchPlan,
 ) -> Result<ThreadFolder, String> {
-    if crate::rosen::launch_pending(application, key)? {
-        let workspace = crate::rosen::take_workspace(application, key, &plan.worktree).await?;
-        plan.agent.env.extend(workspace.environment);
-        return Ok(ThreadFolder {
-            path: workspace.root,
-            branch_name: plan.worktree.branch_name.clone(),
-            failure: workspace.setup.err(),
-            rosen_change: Some(workspace.change),
-        });
+    if !crate::rosen::launch_pending(application, key)? {
+        return Err(
+            "This project must finish migrating to Rosen before starting new threads.".into(),
+        );
     }
-    let failure = take_worktree(application, key, plan).await.err();
+    let workspace = crate::rosen::take_workspace(application, key, &plan.worktree).await?;
+    plan.agent.env.extend(workspace.environment);
     Ok(ThreadFolder {
-        path: plan.worktree.worktree_path.clone(),
+        path: workspace.root,
         branch_name: plan.worktree.branch_name.clone(),
-        failure,
-        rosen_change: None,
+        failure: workspace.setup.err(),
+        rosen_change: Some(workspace.change),
     })
 }
 
@@ -819,7 +814,7 @@ async fn run_thread(
         }
     };
     let path = folder.path.display().to_string();
-    // A thread deleted while its worktree was being created starts no agent (F12).
+    // A thread deleted while its workspace was being created starts no agent (F12).
     if !folder_ready(&application, key, &folder, &path) {
         if let Some(change) = &folder.rosen_change {
             let abandoned =
@@ -828,7 +823,7 @@ async fn run_thread(
             return report(abandoned);
         }
         let _ = crate::airc_claims::release(&application, key);
-        return remove_deleted_worktree(plan.worktree.repository_root, folder.path).await;
+        return;
     }
     report(record_names(
         &application,
@@ -1035,79 +1030,29 @@ async fn take_goal_folder(
     key: ThreadKey,
     plan: &mut GoalMemberPlan,
 ) -> Result<ThreadFolder, String> {
-    if crate::rosen::launch_pending(application, key)? {
-        let workspace = crate::rosen::take_workspace(application, key, &plan.worktree).await?;
-        plan.agent.env.extend(workspace.environment);
-        return Ok(ThreadFolder {
-            path: workspace.root,
-            branch_name: plan.worktree.branch_name.clone(),
-            failure: workspace.setup.err(),
-            rosen_change: Some(workspace.change),
-        });
+    if !crate::rosen::launch_pending(application, key)? {
+        return Err(
+            "This project must finish migrating to Rosen before starting goal swarm agents.".into(),
+        );
     }
-    let pools = crate::ready_pool::pools(application);
-    let (path, branch, failure) =
-        setup_goal_worktree(application, pools, key.0, &plan.worktree).await;
+    let workspace = crate::rosen::take_workspace(application, key, &plan.worktree).await?;
+    plan.agent.env.extend(workspace.environment);
     Ok(ThreadFolder {
-        path,
-        branch_name: Some(branch),
-        failure,
-        rosen_change: None,
+        path: workspace.root,
+        branch_name: plan.worktree.branch_name.clone(),
+        failure: workspace.setup.err(),
+        rosen_change: Some(workspace.change),
     })
 }
 
 async fn discard_goal_folder(
     application: &AppHandle,
     key: ThreadKey,
-    plan: &GoalMemberPlan,
+    _plan: &GoalMemberPlan,
     folder: &ThreadFolder,
 ) {
     if let Some(change) = &folder.rosen_change {
         report(crate::rosen::abandon_unstarted(application, key.0, &folder.path, change).await);
-    } else if folder.path.exists() {
-        remove_deleted_worktree(plan.worktree.repository_root.clone(), folder.path.clone()).await;
-    }
-}
-
-/// The agent's worktree, from the warm pool when it has one ready (F5).
-async fn setup_goal_worktree(
-    application: &AppHandle,
-    pools: Option<velocity_threads::ReadyPools>,
-    project: u32,
-    request: &velocity_git::WorktreeSetupRequest,
-) -> (PathBuf, String, Option<String>) {
-    let mut owned = request.clone();
-    let application = application.clone();
-    let setup = move || {
-        let tip = synchronize_git_request(&application, project, &mut owned)?;
-        let mut ticket = pools.and_then(|pools| pools.take(project));
-        if let (Some(ticket), Some(tip)) = (&mut ticket, tip) {
-            ticket.ready.tip = Some(tip);
-        }
-        velocity_git::execute_pooled_worktree_setup(
-            &owned,
-            ticket.as_ref().map(|ticket| &ticket.ready),
-        )
-        .map_err(|error| error.to_string())
-    };
-    match tauri::async_runtime::spawn_blocking(setup).await {
-        Ok(Ok(outcome)) => (
-            outcome.worktree_path,
-            outcome
-                .branch_name
-                .unwrap_or_else(|| request.branch_name.clone().unwrap_or_default()),
-            None,
-        ),
-        Ok(Err(error)) => (
-            request.worktree_path.clone(),
-            request.branch_name.clone().unwrap_or_default(),
-            Some(error.to_string()),
-        ),
-        Err(error) => (
-            request.worktree_path.clone(),
-            request.branch_name.clone().unwrap_or_default(),
-            Some(error.to_string()),
-        ),
     }
 }
 
@@ -1681,51 +1626,6 @@ fn mark_worktree_ready(application: &AppHandle, key: ThreadKey, path: &str, fail
     .unwrap_or(false)
 }
 
-/// Takes a worktree with the names chosen at launch, using the warm pool when ready (F5).
-async fn take_worktree(
-    application: &AppHandle,
-    key: ThreadKey,
-    plan: &LaunchPlan,
-) -> Result<(), String> {
-    let mut request = plan.worktree.clone();
-    let pools = crate::ready_pool::pools(application);
-    let project = key.0;
-    let handle = application.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let tip = synchronize_git_request(&handle, project, &mut request)?;
-        // Held until the checkout is done: dropping it frees the slot for the next one.
-        let mut ticket = pools.and_then(|pools| pools.take(project));
-        if let (Some(ticket), Some(tip)) = (&mut ticket, tip) {
-            ticket.ready.tip = Some(tip);
-        }
-        velocity_git::execute_pooled_worktree_setup(
-            &request,
-            ticket.as_ref().map(|ticket| &ticket.ready),
-        )
-        .map(|_| ())
-        .map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| error.to_string())?
-}
-
-fn synchronize_git_request(
-    application: &AppHandle,
-    project: u32,
-    request: &mut velocity_git::WorktreeSetupRequest,
-) -> Result<Option<String>, String> {
-    let tip = crate::rosen::git_base(
-        application,
-        project,
-        &request.repository_root,
-        &request.base_ref,
-    )?;
-    if let Some(tip) = &tip {
-        request.base_ref = tip.clone();
-    }
-    Ok(tip)
-}
-
 /// Only the display title can change when the model answers (F4).
 async fn settle_title(
     application: &AppHandle,
@@ -2176,21 +2076,7 @@ fn save_thread(
     .map_err(|error| error.to_string())
 }
 
-/// The thread was deleted while its worktree was being created. Its deletion skipped the
-/// worktree because setup still held it, so it is removed here once setup is done (F12).
-/// Removes the worktree of a thread deleted during setup, under whatever name git left it.
-async fn remove_deleted_worktree(repository: PathBuf, worktree: PathBuf) {
-    let removed = tauri::async_runtime::spawn_blocking(move || {
-        velocity_threads::deletion::remove_worktree(&repository, &worktree)
-            .map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| error.to_string())
-    .and_then(|result| result);
-    report(removed);
-}
-
-/// The thread moves to `error` and keeps its worktree (§2.1, F5).
+/// The thread moves to `error` and keeps its workspace (§2.1, F5).
 pub(crate) fn fail(application: &AppHandle, key: ThreadKey, headline: &str, detail: &str) {
     if let Ok(mut runtimes) = lock(
         application.state::<ManagedThreads>().inner(),

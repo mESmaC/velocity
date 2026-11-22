@@ -11,6 +11,10 @@
 # script wrote. stress/harness/spliced.rs now takes the same five native items from
 # src-tauri/src/threads.rs when the binary is built, with the same unique-match check: if one
 # moved, this harness fails with "Native completion item changed". Assertions unchanged.
+# Updated for #418: git worktree creation (`execute_titled_worktree_setup`, `title_worktree_name`)
+# was removed when Rosen became the only version control; the harness now exercises the same
+# native `folder_ready` / `record_names` / `StateStore` / `ThreadRuntimes` completion path with
+# Rosen `ThreadFolder` workspaces and preserves every delayed-setup and ID-reuse assertion.
 $ErrorActionPreference='Stop'
 $repositoryRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $harnessRoot=Join-Path $repositoryRoot '.tools\pr14-deleted-setup'

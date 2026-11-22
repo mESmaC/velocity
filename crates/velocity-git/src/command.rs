@@ -24,3 +24,16 @@ pub(crate) fn hidden_command(program: impl AsRef<OsStr>) -> Command {
     }
     command
 }
+
+/// Below-normal priority and no console window for background toolchain setup (#276).
+#[cfg(windows)]
+#[allow(clippy::disallowed_methods)]
+pub(crate) fn background_priority(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+    command.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
+}
+
+#[cfg(not(windows))]
+pub(crate) fn background_priority(_command: &mut Command) {}

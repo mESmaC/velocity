@@ -230,7 +230,7 @@ pub(crate) fn uses_rosen(application: &AppHandle, project: u32) -> bool {
 }
 
 /// Whether Rosen still serves `project`: its choice, or a Rosen thread from before it
-/// switched to git (F5).
+/// migrated (F5).
 pub(crate) fn rosen_in_use(application: &AppHandle, project: u32) -> bool {
     lock(
         application.state::<ManagedStateStore>().inner(),
@@ -239,23 +239,6 @@ pub(crate) fn rosen_in_use(application: &AppHandle, project: u32) -> bool {
     .ok()
     .and_then(|store| store.project(project).map(ProjectItem::rosen_in_use))
     .unwrap_or(false)
-}
-
-/// Git launches and pool refreshes must carry forward lands even without a mirror.
-/// Runs on their blocking workers; projects Rosen never imported are unchanged.
-pub(crate) fn git_base(
-    application: &AppHandle,
-    project: u32,
-    repository: &Path,
-    branch: &str,
-) -> Result<Option<String>, String> {
-    let app_data = application
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    let server = ProjectServer::new(&app_data, project);
-    velocity_rosen::synchronize_git_base(&server, repository, branch)
-        .map_err(|error| error.to_string())
 }
 
 /// Whether the servers are stopped for an update or exit, and must not be started.
@@ -536,6 +519,16 @@ pub(crate) async fn reserve_pool(
         .map_err(|error| error.to_string())?;
     sizes.insert(project, wanted);
     Ok(())
+}
+
+/// Blocking wrapper for launch callers already running off the UI thread (F5 Swarm launches).
+pub(crate) fn reserve_pool_sync(application: &AppHandle, project: u32, count: usize) {
+    if !uses_rosen(application, project) {
+        return;
+    }
+    if let Err(error) = tauri::async_runtime::block_on(reserve_pool(application, project, count)) {
+        eprintln!("Rosen warm pool reservation: {error}");
+    }
 }
 
 /// The free bytes of the drive `folder` is on.

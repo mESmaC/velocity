@@ -5,13 +5,11 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 use velocity_acp::client::AgentLaunch;
-use velocity_core::thread_titles::title_slug;
 use velocity_core::worktree_settings::WorktreePreferences;
 use velocity_core::worktree_view::split_location;
 use velocity_git::{
-    JobKind, WorktreeError, WorktreeName, WorktreeSettings as GitWorktreeSettings,
-    WorktreeSetupRequest, local_branch_exists, resolve_project_worktree_root,
-    resolve_worktree_directory,
+    JobKind, WorktreeError, WorktreeSettings as GitWorktreeSettings, WorktreeSetupRequest,
+    resolve_project_worktree_root, resolve_worktree_directory,
 };
 use velocity_store::providers::ProviderUnavailable;
 use velocity_store::threads::{NewThread, ThreadModel};
@@ -178,55 +176,8 @@ pub struct LaunchPlan {
     pub worktree: WorktreeSetupRequest,
     pub agent: AgentLaunch,
     pub bypass_modes: Vec<String>,
-    /// The title model's request (F4), run while the worktree is checked out.
+    /// The title model's request (F4), run while the workspace is created.
     pub title: TitlePlan,
-    /// What naming the worktree from the title needs.
-    pub naming: WorktreeNaming,
-}
-
-/// The project and its Settings → Worktrees as they were at launch, so the title's branch
-/// and folder follow the same rules as the message slug's.
-#[derive(Clone)]
-pub struct WorktreeNaming {
-    project: ProjectItem,
-    worktrees: WorktreePreferences,
-}
-
-impl std::fmt::Debug for WorktreeNaming {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("WorktreeNaming")
-            .field("project", &self.project.id)
-            .finish_non_exhaustive()
-    }
-}
-
-/// The branch and folder a model title names (F4): `vel/<title-slug>`, made unique the way
-/// the message slug is. `None` when the names would not change or can't be planned (a path
-/// too long), and the provisional names stay.
-pub fn title_worktree_name(
-    naming: &WorktreeNaming,
-    current: &WorktreeSetupRequest,
-    title: &str,
-) -> Option<WorktreeName> {
-    let location = Location::new(&naming.project, &naming.worktrees);
-    let wanted = title_slug(title);
-    if current.branch_name.as_deref() == Some(format!("vel/{wanted}").as_str()) {
-        return None;
-    }
-    let slug = unique_slug(&wanted, |candidate| {
-        slug_taken(
-            &naming.project,
-            &current.repository_root,
-            &location,
-            candidate,
-        )
-    })?;
-    let worktree_path = location.worktree(&slug).ok()??;
-    Some(WorktreeName {
-        worktree_path,
-        branch_name: format!("vel/{slug}"),
-    })
 }
 
 /// Compatibility entry point for saved Settings snapshots (F5/F13).
@@ -313,7 +264,7 @@ fn plan_with_model(
     let location = Location::new(project, worktrees);
     let repository = PathBuf::from(&project.repository_path);
     let slug = unique_slug(requested_slug, |candidate| {
-        slug_taken(project, &repository, &location, candidate)
+        slug_taken(project, &location, candidate)
     })
     .ok_or_else(|| LaunchError::NamesExhausted(requested_slug.to_owned()))?;
     let worktree_path = location
@@ -353,10 +304,6 @@ fn plan_with_model(
             prompt,
             fallback_title(prompt),
         ),
-        naming: WorktreeNaming {
-            project: project.clone(),
-            worktrees: worktrees.clone(),
-        },
     })
 }
 
@@ -488,21 +435,8 @@ pub(crate) fn base_branch(project: &ProjectItem) -> String {
     }
 }
 
-/// Duty checkouts use the same landed history as build threads, including on a
-/// mirror-less project whose git pool is disabled. Call on a blocking worker.
-pub(crate) fn resolve_git_base(app_data: &Path, project: &ProjectItem) -> Result<String, String> {
-    let repository = Path::new(&project.repository_path);
-    let branch = base_branch(project);
-    let server = velocity_rosen::ProjectServer::new(app_data, project.id);
-    let synchronized = velocity_rosen::synchronize_git_base(&server, repository, &branch)
-        .map_err(|error| error.to_string())?;
-    synchronized
-        .or_else(|| velocity_git::sweep_base(repository, &branch).map(|(_, commit)| commit))
-        .ok_or_else(|| format!("Could not find the base branch `{branch}`"))
-}
-
-/// A slug is taken when a thread, a local branch or a folder already uses it (F5 Guards).
-fn slug_taken(project: &ProjectItem, repository: &Path, location: &Location, slug: &str) -> bool {
+/// A slug is taken when a thread or an existing folder already uses it (F5 Guards).
+fn slug_taken(project: &ProjectItem, location: &Location, slug: &str) -> bool {
     let branch = format!("vel/{slug}");
     let folder_taken = match location.worktree(slug) {
         Ok(path) => path.is_some_and(|path| path.exists()),
@@ -516,5 +450,4 @@ fn slug_taken(project: &ProjectItem, repository: &Path, location: &Location, slu
             .threads
             .iter()
             .any(|thread| thread.branch_name == branch)
-        || local_branch_exists(repository, &branch)
 }

@@ -109,7 +109,6 @@ pub async fn set_workspace_settings(
             .map_err(|error| error.to_string())?;
         let context = store.worktree_context();
         drop(store);
-        crate::ready_pool::wake(&application, project_identifier);
         Ok(preferences(&context, location_changed))
     })
     .await
