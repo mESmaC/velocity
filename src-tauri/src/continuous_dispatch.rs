@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 use velocity_core::project_health::BlockedDispatchIssue;
 use velocity_github::{
-    DependencyGraph, ExternalIssueState, GitHubIssue, IssueClient, IssueHost, IssueState,
-    REMOTE_PROGRESS_WINDOW_SECONDS,
+    DependencyGraph, ExternalIssueState, GitHubIssue, IssueClient, IssueComment, IssueHost,
+    IssueState, REMOTE_PROGRESS_WINDOW_SECONDS, classify_external_issue_state,
 };
 use velocity_store::continuous_dispatch::has_capacity as project_has_capacity;
 use velocity_store::continuous_dispatch::{
@@ -417,6 +417,54 @@ const GITHUB_BACKLOG_REFRESH: Duration = Duration::from_secs(30);
 /// How often continuous dispatch polls Collapse's no-wake edge issue cursor (#589).
 const COLLAPSE_CURSOR_REFRESH: Duration = Duration::from_secs(5);
 
+/// Unified per-issue comment cache `(updated_at, comments)` shared across
+/// `hold_external_issue`, `text_blockers`, and `load_attempt_comments` (#680).
+#[derive(Default)]
+struct IssueCommentCache {
+    entries: BTreeMap<u32, (String, Vec<IssueComment>)>,
+}
+
+impl IssueCommentCache {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(&self, issue: &GitHubIssue) -> Option<&[IssueComment]> {
+        self.entries
+            .get(&issue.number)
+            .filter(|(updated_at, _)| updated_at == &issue.updated_at)
+            .map(|(_, comments)| comments.as_slice())
+    }
+
+    fn bodies(&self, issue: &GitHubIssue) -> Option<Vec<String>> {
+        self.get(issue).map(|comments| {
+            comments
+                .iter()
+                .map(|comment| comment.body.clone())
+                .collect()
+        })
+    }
+
+    fn store(&mut self, issue: &GitHubIssue, comments: Vec<IssueComment>) {
+        self.entries
+            .insert(issue.number, (issue.updated_at.clone(), comments));
+    }
+
+    fn prune(&mut self, issues: &[GitHubIssue]) {
+        let current: BTreeMap<u32, &str> = issues
+            .iter()
+            .map(|issue| (issue.number, issue.updated_at.as_str()))
+            .collect();
+        self.entries.retain(|number, (updated_at, _)| {
+            current.get(number).is_some_and(|now| *now == updated_at)
+        });
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
 struct Reader {
     directory: String,
     host: IssueHost,
@@ -426,13 +474,43 @@ struct Reader {
     report_retry: BTreeMap<u32, Instant>,
     /// Issues whose retired dependency hold could not be converted, and when that failed.
     hold_retry: BTreeMap<u32, Instant>,
-    /// Cached comment bodies per attempted issue `(updated_at, comments)` for blocker-close retry (#617).
-    attempt_comments: BTreeMap<u32, (String, Vec<String>)>,
+    /// Unified per-issue comment cache `(updated_at, comments)` (#680).
+    issue_comments: IssueCommentCache,
     backlog: Backlog,
     overlap: overlap::Overlap,
     parked: parked::Parked,
     holds: holds::Holds,
     text_blockers: text_blockers::TextBlockers,
+}
+
+impl Reader {
+    /// Returns cached comments for `issue` at its current `updated_at`, fetching once on miss (#680).
+    fn load_issue_comments(
+        &mut self,
+        issue: &GitHubIssue,
+    ) -> Result<Vec<IssueComment>, velocity_github::GitHubCommandError> {
+        if let Some(cached) = self.issue_comments.get(issue) {
+            return Ok(cached.to_vec());
+        }
+        let Some(client) = self.client.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let comments = client.issue_comments(issue.number)?;
+        self.text_blockers.clear_comment_retry(issue.number);
+        self.issue_comments.store(issue, comments.clone());
+        Ok(comments)
+    }
+
+    fn load_comment_bodies(
+        &mut self,
+        issue: &GitHubIssue,
+    ) -> Result<Vec<String>, velocity_github::GitHubCommandError> {
+        Ok(self
+            .load_issue_comments(issue)?
+            .into_iter()
+            .map(|comment| comment.body)
+            .collect())
+    }
 }
 
 fn monitor(application: AppHandle) {
@@ -675,9 +753,6 @@ fn reconcile_attempts(
     if reader.backlog.error.is_some() || repository.is_empty() {
         return Ok(());
     }
-    reader
-        .attempt_comments
-        .retain(|number, _| attempted_numbers.contains(number));
     if attempted_numbers.is_empty() {
         return Ok(());
     }
@@ -832,26 +907,19 @@ fn load_attempt_comments(
     attempted_numbers: &HashSet<u32>,
 ) -> BTreeMap<u32, Vec<String>> {
     let mut map = BTreeMap::new();
-    let Some(client) = reader.client.as_ref() else {
+    if reader.client.is_none() {
         return map;
-    };
-    for issue in &reader.backlog.issues {
-        if !attempted_numbers.contains(&issue.number) {
-            continue;
-        }
-        let cached = reader
-            .attempt_comments
-            .get(&issue.number)
-            .filter(|(updated_at, _)| updated_at == &issue.updated_at)
-            .map(|(_, bodies)| bodies.clone());
-        if let Some(bodies) = cached {
-            map.insert(issue.number, bodies);
-            continue;
-        }
-        if let Ok(bodies) = client.read_comment_bodies(issue.number) {
-            reader
-                .attempt_comments
-                .insert(issue.number, (issue.updated_at.clone(), bodies.clone()));
+    }
+    let issues: Vec<GitHubIssue> = reader
+        .backlog
+        .issues
+        .iter()
+        .filter(|issue| attempted_numbers.contains(&issue.number))
+        .cloned()
+        .collect();
+    for issue in &issues {
+        if let Ok(bodies) = reader.load_comment_bodies(issue) {
+            reader.backlog.comments.insert(issue.number, bodies.clone());
             map.insert(issue.number, bodies);
         }
     }
@@ -1017,20 +1085,28 @@ fn try_start_issue(
 fn hold_external_issue(
     application: &AppHandle,
     identifier: u32,
-    reader: &Reader,
+    reader: &mut Reader,
     issue: &GitHubIssue,
 ) -> Result<bool, String> {
+    if reader.client.is_none() {
+        return Err("The dispatch issue source was removed".into());
+    }
+    let now = unix_seconds();
+    let comments = reader
+        .load_issue_comments(issue)
+        .map_err(|error| error.to_string())?;
     let client = reader
         .client
         .as_ref()
         .ok_or("The dispatch issue source was removed")?;
-    let now = unix_seconds();
     let identity = ThreadIssue::new(client.repository().into(), issue.number)
         .with_identity(issue.title.clone(), issue.host);
-    match client
-        .external_issue_state(issue.number, now)
-        .map_err(|error| error.to_string())?
-    {
+    match classify_external_issue_state(
+        issue.number,
+        &comments,
+        now,
+        REMOTE_PROGRESS_WINDOW_SECONDS,
+    ) {
         Some(ExternalIssueState::Landed { commit, landed_at }) => {
             if reopened_after(issue, landed_at) {
                 clear_stale_external_holds(application, identifier, issue.number)?;
@@ -1405,7 +1481,7 @@ fn reader<'a>(project: &ProjectItem, readers: &'a mut BTreeMap<u32, Reader>) -> 
         refreshed: None,
         report_retry: BTreeMap::new(),
         hold_retry: BTreeMap::new(),
-        attempt_comments: BTreeMap::new(),
+        issue_comments: IssueCommentCache::new(),
         backlog: Backlog::default(),
         overlap: overlap::Overlap::new(),
         parked: parked::Parked::new(),
@@ -1430,6 +1506,7 @@ fn read_issues(reader: &mut Reader) -> Result<Backlog, velocity_github::GitHubCo
             .is_some_and(|client| !client.is_current(directory))
     {
         reader.client = None;
+        reader.issue_comments.clear();
     }
     if reader.client.is_none() {
         reader.client = match (reader.host, reader.remote.as_deref()) {

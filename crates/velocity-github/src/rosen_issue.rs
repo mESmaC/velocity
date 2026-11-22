@@ -120,9 +120,11 @@ impl ParkedReview {
     }
 }
 
-struct IssueComment {
-    body: String,
-    created_at: String,
+/// One issue comment with its creation timestamp, oldest first (#680).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IssueComment {
+    pub body: String,
+    pub created_at: String,
 }
 
 impl IssueClient {
@@ -979,8 +981,8 @@ impl IssueClient {
             .collect())
     }
 
-    /// Oldest first.
-    fn issue_comments(&self, number: u32) -> Result<Vec<IssueComment>, GitHubCommandError> {
+    /// Reads all comments for `number` (body and creation timestamp), oldest first (#680).
+    pub fn issue_comments(&self, number: u32) -> Result<Vec<IssueComment>, GitHubCommandError> {
         if let IssueBackend::Collapse(collapse) = &self.backend {
             return Ok(collapse
                 .issue_comments(number)?
@@ -1252,7 +1254,7 @@ fn body_mentions_commit(body: &str, commit: &str) -> bool {
 
 /// Comments arrive oldest first. A land marker takes precedence over any later duplicate
 /// starting comment until a reopen, close or non-fixed review clears the land (#519).
-fn classify_external_issue_state(
+pub fn classify_external_issue_state(
     number: u32,
     comments: &[IssueComment],
     now: u64,

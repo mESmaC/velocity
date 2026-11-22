@@ -19,7 +19,8 @@ use velocity_threads::continuous_dispatch::{
 };
 
 use super::{
-    Backlog, Backlogs, COLLAPSE_CURSOR_REFRESH, GITHUB_BACKLOG_REFRESH, Reader, record_dependencies,
+    Backlog, Backlogs, COLLAPSE_CURSOR_REFRESH, GITHUB_BACKLOG_REFRESH, IssueCommentCache, Reader,
+    record_dependencies,
 };
 use crate::state::ManagedStateStore;
 use crate::threads::{lock, report};
@@ -34,8 +35,6 @@ const ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Default)]
 pub(super) struct TextBlockers {
-    /// Cached comment bodies keyed by issue number: `(updated_at, comments)`.
-    comments: BTreeMap<u32, (String, Vec<String>)>,
     /// Failed comment fetches keyed by issue number: `(updated_at, failed_at)`.
     comment_retry: BTreeMap<u32, (String, Instant)>,
     /// Failed native link attempts keyed by `(issue_number, blocker_key)`.
@@ -50,17 +49,8 @@ impl TextBlockers {
         Self::default()
     }
 
-    pub(super) fn cached_comments(&self, issue: &GitHubIssue) -> Option<Vec<String>> {
-        self.comments
-            .get(&issue.number)
-            .filter(|(updated_at, _)| updated_at == &issue.updated_at)
-            .map(|(_, bodies)| bodies.clone())
-    }
-
-    pub(super) fn store_comments(&mut self, issue: &GitHubIssue, bodies: Vec<String>) {
-        self.comment_retry.remove(&issue.number);
-        self.comments
-            .insert(issue.number, (issue.updated_at.clone(), bodies));
+    pub(super) fn clear_comment_retry(&mut self, number: u32) {
+        self.comment_retry.remove(&number);
     }
 
     fn comment_retry_active(&self, issue: &GitHubIssue) -> bool {
@@ -76,9 +66,6 @@ impl TextBlockers {
             .iter()
             .map(|issue| (issue.number, issue.updated_at.as_str()))
             .collect();
-        self.comments.retain(|number, (updated_at, _)| {
-            current.get(number).is_some_and(|now| *now == updated_at)
-        });
         self.comment_retry.retain(|number, (updated_at, _)| {
             current.get(number).is_some_and(|now| *now == updated_at)
         });
@@ -129,15 +116,7 @@ pub(super) fn load_issue_comments(
     reader: &mut Reader,
     issue: &GitHubIssue,
 ) -> Result<Vec<String>, GitHubCommandError> {
-    if let Some(cached) = reader.text_blockers.cached_comments(issue) {
-        reader.backlog.comments.insert(issue.number, cached.clone());
-        return Ok(cached);
-    }
-    let Some(client) = reader.client.as_ref() else {
-        return Ok(Vec::new());
-    };
-    let bodies = client.read_comment_bodies(issue.number)?;
-    reader.text_blockers.store_comments(issue, bodies.clone());
+    let bodies = reader.load_comment_bodies(issue)?;
     reader.backlog.comments.insert(issue.number, bodies.clone());
     Ok(bodies)
 }
@@ -152,6 +131,7 @@ pub(super) fn refresh(
     if reader.backlog.error.is_some() || reader.backlog.repository.is_empty() {
         return Ok(());
     }
+    reader.issue_comments.prune(&reader.backlog.issues);
     reader.text_blockers.prune(&reader.backlog.issues);
     sync_cached_comments_into_backlog(reader);
     prefetch_ready_comments(project, reader);
@@ -247,16 +227,16 @@ pub(super) fn extra_text_blockers_map(
 fn sync_cached_comments_into_backlog(reader: &mut Reader) {
     reader.backlog.comments.clear();
     for issue in &reader.backlog.issues {
-        if let Some(bodies) = reader.text_blockers.cached_comments(issue) {
+        if let Some(bodies) = reader.issue_comments.bodies(issue) {
             reader.backlog.comments.insert(issue.number, bodies);
         }
     }
 }
 
 fn prefetch_ready_comments(project: &ProjectItem, reader: &mut Reader) {
-    let Some(client) = reader.client.as_ref() else {
+    if reader.client.is_none() {
         return;
-    };
+    }
     let candidates: Vec<GitHubIssue> = reader
         .backlog
         .issues
@@ -266,6 +246,7 @@ fn prefetch_ready_comments(project: &ProjectItem, reader: &mut Reader) {
                 project,
                 &reader.backlog.repository,
                 issue,
+                &reader.issue_comments,
                 &reader.text_blockers,
             )
         })
@@ -273,9 +254,8 @@ fn prefetch_ready_comments(project: &ProjectItem, reader: &mut Reader) {
         .cloned()
         .collect();
     for issue in candidates {
-        match client.read_comment_bodies(issue.number) {
+        match reader.load_comment_bodies(&issue) {
             Ok(bodies) => {
-                reader.text_blockers.store_comments(&issue, bodies.clone());
                 reader.backlog.comments.insert(issue.number, bodies);
             }
             Err(_) => {
@@ -292,11 +272,12 @@ fn needs_comment_prefetch(
     project: &ProjectItem,
     repository: &str,
     issue: &GitHubIssue,
+    comments: &IssueCommentCache,
     state: &TextBlockers,
 ) -> bool {
     if issue.state != IssueState::Open
         || issue.has_open_blockers()
-        || state.cached_comments(issue).is_some()
+        || comments.get(issue).is_some()
         || state.comment_retry_active(issue)
     {
         return false;
