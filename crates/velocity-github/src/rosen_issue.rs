@@ -8,6 +8,7 @@ use velocity_core::issue_holds::{
 
 use crate::issue_dependencies::waits_line_for;
 use crate::issues::IssueBackend;
+use crate::repository_client::{Connection, RepositoryClient};
 use crate::{GitHubCommandError, GitHubIssue, IssueClient, IssueState};
 
 const READY_LABEL: &str = "ready-to-close";
@@ -126,6 +127,74 @@ pub struct IssueComment {
     pub body: String,
     pub created_at: String,
 }
+
+/// Issue identity, state, and labels read for Rosen follow-up synchronization (#739).
+/// Intentionally omits `blockedBy` / dependency fields and is never upserted into the
+/// shared open-issues cache so cached blocker metadata stays intact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RosenIssueSnapshot {
+    id: String,
+    number: u32,
+    title: String,
+    body: String,
+    url: String,
+    state: IssueState,
+    labels: Vec<String>,
+}
+
+impl RosenIssueSnapshot {
+    fn from_issue(issue: GitHubIssue) -> Self {
+        Self {
+            id: issue.id,
+            number: issue.number,
+            title: issue.title,
+            body: issue.body,
+            url: issue.url,
+            state: issue.state,
+            labels: issue.labels,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct LabelNameNode {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct CommentBodyNode {
+    body: String,
+}
+
+#[derive(Deserialize)]
+struct CombinedRosenIssueNode {
+    id: String,
+    number: u32,
+    title: String,
+    body: String,
+    url: String,
+    state: IssueState,
+    labels: Connection<Option<LabelNameNode>>,
+    comments: Connection<Option<CommentBodyNode>>,
+}
+
+const COMBINED_ROSEN_ISSUE_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!) {
+  repository(owner:$owner,name:$name) { issue(number:$number) {
+    id number title body url state
+    labels(first:100) { nodes { name } pageInfo { hasNextPage endCursor } }
+    comments(first:100) { nodes { body } pageInfo { hasNextPage endCursor } } } } }";
+
+const ISSUE_LABEL_NAMES_PAGE_QUERY: &str =
+    "query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
+      repository(owner:$owner,name:$name) { issue(number:$number) {
+        labels(first:100,after:$cursor) { nodes { name }
+          pageInfo { hasNextPage endCursor } } } } }";
+
+const ISSUE_COMMENT_BODIES_PAGE_QUERY: &str =
+    "query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
+      repository(owner:$owner,name:$name) { issue(number:$number) {
+        comments(first:100,after:$cursor) { nodes { body }
+          pageInfo { hasNextPage endCursor } } } } }";
 
 impl IssueClient {
     pub const NO_CHANGE_LABEL: &str = "no-change";
@@ -559,8 +628,7 @@ impl IssueClient {
         let body = format!("{message}\n\n<!-- velocity-rosen-sequence:{sequence} -->");
         let marker = format!("<!-- velocity-rosen-issue:{kind}:{commit} -->");
         let landed_marker = format!("<!-- velocity-rosen-issue:landed:{commit} -->");
-        let issue = self.read_issue(number)?;
-        let comments = self.issue_comment_bodies(number)?;
+        let (issue, comments) = self.read_rosen_issue_with_comments(number)?;
         let already_linked = comments.iter().any(|existing| {
             comment_matches_marker(existing, &marker)
                 || comment_matches_marker(existing, &landed_marker)
@@ -841,6 +909,25 @@ impl IssueClient {
             }))
     }
 
+    /// Reads issue identity, state, labels, and all comment bodies needed by Rosen follow-up
+    /// actions (#739). On GitHub this fetches the issue and the first 100 comments in one
+    /// GraphQL query without unused dependency fields, only paginating when `hasNextPage` is true.
+    fn read_rosen_issue_with_comments(
+        &self,
+        number: u32,
+    ) -> Result<(RosenIssueSnapshot, Vec<String>), GitHubCommandError> {
+        match &self.backend {
+            IssueBackend::Collapse(_) => {
+                let issue = self.read_issue(number)?;
+                let comments = self.issue_comment_bodies(number)?;
+                Ok((RosenIssueSnapshot::from_issue(issue), comments))
+            }
+            IssueBackend::GitHub(transport) => {
+                read_github_rosen_issue_with_comments(transport, number)
+            }
+        }
+    }
+
     /// The marker makes a retry after an ambiguous mutation response reuse its comment.
     /// Comment first, state second: a failure can never lose the evidence on a closed issue.
     fn sync_rosen_issue(
@@ -850,14 +937,13 @@ impl IssueClient {
         body: &str,
         state: Option<IssueState>,
     ) -> Result<(), GitHubCommandError> {
-        let issue = self.read_issue(number)?;
-        let comments = self.issue_comment_bodies(number)?;
+        let (issue, comments) = self.read_rosen_issue_with_comments(number)?;
         self.sync_loaded_rosen_issue(&issue, &comments, marker, body, state)
     }
 
     fn sync_loaded_rosen_issue(
         &self,
-        issue: &GitHubIssue,
+        issue: &RosenIssueSnapshot,
         comments: &[String],
         marker: &str,
         body: &str,
@@ -1193,7 +1279,7 @@ fn comment_matches_marker(body: &str, marker: &str) -> bool {
 /// Skips a close when the issue is already closed and an existing close comment covers
 /// the same commit (#550).
 fn already_closed_for_commit(
-    issue: &GitHubIssue,
+    issue: &RosenIssueSnapshot,
     state: Option<IssueState>,
     marker: &str,
     comments: &[String],
@@ -1386,4 +1472,116 @@ fn issue_has_label(issue: &GitHubIssue, name: &str) -> bool {
         .labels
         .iter()
         .any(|label| label.eq_ignore_ascii_case(name))
+}
+
+fn read_github_rosen_issue_with_comments(
+    transport: &RepositoryClient,
+    number: u32,
+) -> Result<(RosenIssueSnapshot, Vec<String>), GitHubCommandError> {
+    let variables = transport.variables(number);
+    let raw: CombinedRosenIssueNode = transport.graphql_at(
+        COMBINED_ROSEN_ISSUE_QUERY,
+        variables.clone(),
+        "/data/repository/issue",
+    )?;
+    let labels = transport
+        .complete_connection(
+            ISSUE_LABEL_NAMES_PAGE_QUERY,
+            variables.clone(),
+            "/data/repository/issue/labels",
+            raw.labels,
+        )?
+        .into_iter()
+        .flatten()
+        .map(|label| label.name)
+        .collect();
+    let comments = transport
+        .complete_connection(
+            ISSUE_COMMENT_BODIES_PAGE_QUERY,
+            variables,
+            "/data/repository/issue/comments",
+            raw.comments,
+        )?
+        .into_iter()
+        .flatten()
+        .map(|comment| comment.body)
+        .collect();
+    Ok((
+        RosenIssueSnapshot {
+            id: raw.id,
+            number: raw.number,
+            title: raw.title,
+            body: raw.body,
+            url: raw.url,
+            state: raw.state,
+            labels,
+        },
+        comments,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Risk (#739): follow_rosen_issue_checked and sync_rosen_issue must fetch issue identity,
+    // state, labels, and the first page of comments in one GraphQL query without unused
+    // dependency fields so Rosen follow-up actions do not breach the gh_rate budget.
+    #[test]
+    fn combined_rosen_issue_query_omits_dependencies_and_decodes_snapshot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert!(COMBINED_ROSEN_ISSUE_QUERY.contains("id number title body url state"));
+        assert!(COMBINED_ROSEN_ISSUE_QUERY.contains("labels(first:100)"));
+        assert!(COMBINED_ROSEN_ISSUE_QUERY.contains("comments(first:100)"));
+        assert!(COMBINED_ROSEN_ISSUE_QUERY.contains("pageInfo { hasNextPage endCursor }"));
+        assert!(!COMBINED_ROSEN_ISSUE_QUERY.contains("blockedBy"));
+        assert!(!COMBINED_ROSEN_ISSUE_QUERY.contains("issueDependenciesSummary"));
+
+        let payload = json!({
+            "id": "I_kwDO123",
+            "number": 739,
+            "title": "Combine read_issue and issue_comment_bodies",
+            "body": "Issue body",
+            "url": "https://github.com/mESmaC/velocity/issues/739",
+            "state": "OPEN",
+            "labels": {
+                "nodes": [{"name": "ready-to-close"}, null],
+                "pageInfo": {"hasNextPage": false, "endCursor": null}
+            },
+            "comments": {
+                "nodes": [{"body": "First comment"}, null, {"body": "Second comment"}],
+                "pageInfo": {"hasNextPage": false, "endCursor": "cursor-1"}
+            }
+        });
+        let raw: CombinedRosenIssueNode = serde_json::from_value(payload)?;
+        let labels: Vec<String> = raw
+            .labels
+            .into_nodes()
+            .into_iter()
+            .flatten()
+            .map(|label| label.name)
+            .collect();
+        let comments: Vec<String> = raw
+            .comments
+            .into_nodes()
+            .into_iter()
+            .flatten()
+            .map(|comment| comment.body)
+            .collect();
+        let snapshot = RosenIssueSnapshot {
+            id: raw.id,
+            number: raw.number,
+            title: raw.title,
+            body: raw.body,
+            url: raw.url,
+            state: raw.state,
+            labels,
+        };
+        assert_eq!(snapshot.id, "I_kwDO123");
+        assert_eq!(snapshot.number, 739);
+        assert_eq!(snapshot.state, IssueState::Open);
+        assert_eq!(snapshot.labels, vec!["ready-to-close"]);
+        assert_eq!(comments, vec!["First comment", "Second comment"]);
+        Ok(())
+    }
 }
