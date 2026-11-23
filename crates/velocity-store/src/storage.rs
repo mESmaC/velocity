@@ -56,6 +56,8 @@ struct ProjectActiveFile {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct ProjectSettledFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u32>,
     #[serde(default)]
     pub threads: Vec<ThreadItem>,
 }
@@ -151,13 +153,10 @@ fn read_split_project_readonly(
         return Ok(project);
     }
     let settled_path = project_settled_path(directory, project_id);
-    let settled_threads = match fs::read(&settled_path) {
-        Ok(bytes) => {
-            let settled_file: ProjectSettledFile = serde_json::from_slice(&bytes)
-                .map_err(|source| StoreError::SerializeSnapshot { source })?;
-            settled_file.threads
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+    let settled_file = match fs::read(&settled_path) {
+        Ok(bytes) => serde_json::from_slice::<ProjectSettledFile>(&bytes)
+            .map_err(|source| StoreError::SerializeSnapshot { source })?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ProjectSettledFile::default(),
         Err(source) => {
             return Err(StoreError::ReadSnapshot {
                 path: settled_path.display().to_string(),
@@ -165,8 +164,13 @@ fn read_split_project_readonly(
             });
         }
     };
-    project.threads =
-        reassemble_threads(project.threads, settled_threads, &active_file.thread_order);
+    let settled_wins = settled_is_newer(settled_file.revision, active_file.revision);
+    project.threads = reassemble_threads(
+        project.threads,
+        settled_file.threads,
+        &active_file.thread_order,
+        settled_wins,
+    );
     Ok(project)
 }
 
@@ -310,14 +314,14 @@ fn active_file_from_project(project: &ProjectItem, revision: u32) -> ProjectActi
     }
 }
 
-fn settled_file_from_project(project: &ProjectItem) -> ProjectSettledFile {
+fn settled_file_from_project(project: &ProjectItem, revision: Option<u32>) -> ProjectSettledFile {
     let threads = project
         .threads
         .iter()
         .filter(|thread| is_settled_state(thread.state))
         .map(archive_settled_thread)
         .collect();
-    ProjectSettledFile { threads }
+    ProjectSettledFile { revision, threads }
 }
 
 fn strip_transcript(thread: &ThreadItem) -> ThreadItem {
@@ -342,6 +346,23 @@ fn write_root_file(directory: &Path, state: &PersistedState) -> Result<(), Store
     write_atomic_bytes(&partial, &destination, &bytes)
 }
 
+fn write_settled_file(
+    directory: &Path,
+    project_id: u32,
+    settled: &ProjectSettledFile,
+) -> Result<(), StoreError> {
+    let settled_path = project_settled_path(directory, project_id);
+    let partial_path = project_settled_partial_path(directory, project_id);
+    if settled.threads.is_empty() {
+        let _ignored = fs::remove_file(&partial_path);
+        let _ignored = fs::remove_file(&settled_path);
+        return Ok(());
+    }
+    let settled_bytes =
+        serde_json::to_vec(settled).map_err(|source| StoreError::SerializeSnapshot { source })?;
+    write_atomic_bytes(&partial_path, &settled_path, &settled_bytes)
+}
+
 fn write_project_files(
     directory: &Path,
     project: &ProjectItem,
@@ -355,28 +376,15 @@ fn write_project_files(
         &project_active_path(directory, project.id),
         &active_bytes,
     )?;
-    let settled = settled_file_from_project(project);
-    let settled_path = project_settled_path(directory, project.id);
-    if settled.threads.is_empty() {
-        let _ignored = fs::remove_file(&settled_path);
-        let _ignored = fs::remove_file(project_settled_partial_path(directory, project.id));
-    } else {
-        let settled_bytes = serde_json::to_vec(&settled)
-            .map_err(|source| StoreError::SerializeSnapshot { source })?;
-        write_atomic_bytes(
-            &project_settled_partial_path(directory, project.id),
-            &settled_path,
-            &settled_bytes,
-        )?;
-    }
-    Ok(())
+    let settled = settled_file_from_project(project, Some(revision));
+    write_settled_file(directory, project.id, &settled)
 }
 
 fn remove_project_files(directory: &Path, project_id: u32) {
-    let _ignored = fs::remove_file(project_active_path(directory, project_id));
     let _ignored = fs::remove_file(project_active_partial_path(directory, project_id));
-    let _ignored = fs::remove_file(project_settled_path(directory, project_id));
+    let _ignored = fs::remove_file(project_active_path(directory, project_id));
     let _ignored = fs::remove_file(project_settled_partial_path(directory, project_id));
+    let _ignored = fs::remove_file(project_settled_path(directory, project_id));
     let _ignored = fs::remove_dir(extended_windows_path(&directory.join(PROJECTS_DIR_NAME)));
 }
 
@@ -524,6 +532,44 @@ fn migrate_legacy_root(directory: &Path, root: RootStateFile) -> Result<LoadedSt
     })
 }
 
+fn load_settled_file(directory: &Path, project_id: u32) -> Result<ProjectSettledFile, StoreError> {
+    let settled_path = project_settled_path(directory, project_id);
+    recover_partial_json::<ProjectSettledFile>(
+        &project_settled_partial_path(directory, project_id),
+        &settled_path,
+    )?;
+    if !settled_path.exists() {
+        return Ok(ProjectSettledFile::default());
+    }
+    let settled_bytes = fs::read(&settled_path).map_err(|source| StoreError::ReadSnapshot {
+        path: settled_path.display().to_string(),
+        source,
+    })?;
+    serde_json::from_slice(&settled_bytes)
+        .map_err(|source| StoreError::SerializeSnapshot { source })
+}
+
+fn reconcile_overlapping_project_files(
+    directory: &Path,
+    project: &ProjectItem,
+    revision: u32,
+    settled_wins: bool,
+) -> Result<(), StoreError> {
+    if settled_wins {
+        let active = active_file_from_project(project, revision);
+        let active_bytes = serde_json::to_vec(&active)
+            .map_err(|source| StoreError::SerializeSnapshot { source })?;
+        write_atomic_bytes(
+            &project_active_partial_path(directory, project.id),
+            &project_active_path(directory, project.id),
+            &active_bytes,
+        )
+    } else {
+        let settled = settled_file_from_project(project, Some(revision));
+        write_settled_file(directory, project.id, &settled)
+    }
+}
+
 fn load_split_project(
     directory: &Path,
     project_id: u32,
@@ -540,25 +586,27 @@ fn load_split_project(
     })?;
     let active_file: ProjectActiveFile = serde_json::from_slice(&bytes)
         .map_err(|source| StoreError::SerializeSnapshot { source })?;
-    let settled_path = project_settled_path(directory, project_id);
-    recover_partial_json::<ProjectSettledFile>(
-        &project_settled_partial_path(directory, project_id),
-        &settled_path,
-    )?;
-    let settled_threads = if settled_path.exists() {
-        let settled_bytes = fs::read(&settled_path).map_err(|source| StoreError::ReadSnapshot {
-            path: settled_path.display().to_string(),
-            source,
-        })?;
-        let settled_file: ProjectSettledFile = serde_json::from_slice(&settled_bytes)
-            .map_err(|source| StoreError::SerializeSnapshot { source })?;
-        settled_file.threads
-    } else {
-        Vec::new()
+    let settled_file = load_settled_file(directory, project_id)?;
+    let settled_wins = settled_is_newer(settled_file.revision, active_file.revision);
+    let effective_revision = match settled_file.revision {
+        Some(revision) if settled_wins => revision,
+        _ => active_file.revision,
     };
     let mut project = active_file.project;
-    let mut active_threads = project.threads;
-    for thread in &mut active_threads {
+    let active_threads = std::mem::take(&mut project.threads);
+    let has_overlap = active_threads
+        .iter()
+        .any(|active| settled_file.threads.iter().any(|s| s.id == active.id));
+    project.threads = reassemble_threads(
+        active_threads,
+        settled_file.threads,
+        &active_file.thread_order,
+        settled_wins,
+    );
+    if has_overlap {
+        reconcile_overlapping_project_files(directory, &project, effective_revision, settled_wins)?;
+    }
+    for thread in &mut project.threads {
         if thread.transcript.is_empty()
             && !is_settled_state(thread.state)
             && let Some(loaded) =
@@ -568,19 +616,29 @@ fn load_split_project(
             persisted_transcripts.insert((project_id, thread.id), loaded);
         }
     }
-    project.threads =
-        reassemble_threads(active_threads, settled_threads, &active_file.thread_order);
-    Ok((project, active_file.revision))
+    Ok((project, effective_revision))
+}
+
+fn settled_is_newer(settled_revision: Option<u32>, active_revision: u32) -> bool {
+    settled_revision.is_some_and(|revision| (revision.wrapping_sub(active_revision) as i32) > 0)
 }
 
 fn reassemble_threads(
     active: Vec<ThreadItem>,
     settled: Vec<ThreadItem>,
     order: &[u32],
+    settled_wins_duplicates: bool,
 ) -> Vec<ThreadItem> {
     let mut by_id: BTreeMap<u32, ThreadItem> = BTreeMap::new();
-    for thread in active.into_iter().chain(settled) {
-        by_id.insert(thread.id, thread);
+    let ordered_sources = if settled_wins_duplicates {
+        [active, settled]
+    } else {
+        [settled, active]
+    };
+    for source in ordered_sources {
+        for thread in source {
+            by_id.insert(thread.id, thread);
+        }
     }
     let mut ordered = Vec::with_capacity(by_id.len());
     for id in order {
@@ -682,27 +740,58 @@ fn write_changed_project(
     current: &ProjectItem,
     revision: u32,
 ) -> Result<(), StoreError> {
-    let settled_changed = previous.is_none_or(|prev| !settled_threads_equal(prev, current));
-    if settled_changed {
-        let settled = settled_file_from_project(current);
-        let settled_path = project_settled_path(directory, current.id);
-        if settled.threads.is_empty() {
-            let _ignored = fs::remove_file(&settled_path);
-            let _ignored = fs::remove_file(project_settled_partial_path(directory, current.id));
-        } else {
-            let settled_bytes = serde_json::to_vec(&settled)
-                .map_err(|source| StoreError::SerializeSnapshot { source })?;
-            write_atomic_bytes(
-                &project_settled_partial_path(directory, current.id),
-                &settled_path,
-                &settled_bytes,
-            )?;
-        }
-    }
+    write_changed_project_with_hook(directory, previous, current, revision, &mut |_| Ok(()))
+}
+
+fn reopened_settled_threads(
+    previous: Option<&ProjectItem>,
+    current: &ProjectItem,
+) -> Vec<ThreadItem> {
+    let Some(previous) = previous else {
+        return Vec::new();
+    };
+    let current_active_ids: BTreeSet<u32> = current
+        .threads
+        .iter()
+        .filter(|thread| !is_settled_state(thread.state))
+        .map(|thread| thread.id)
+        .collect();
+    previous
+        .threads
+        .iter()
+        .filter(|thread| is_settled_state(thread.state) && current_active_ids.contains(&thread.id))
+        .map(archive_settled_thread)
+        .collect()
+}
+
+fn has_newly_settled_threads(previous: Option<&ProjectItem>, current: &ProjectItem) -> bool {
+    let Some(previous) = previous else {
+        return current
+            .threads
+            .iter()
+            .any(|thread| is_settled_state(thread.state));
+    };
+    let previous_active_ids: BTreeSet<u32> = previous
+        .threads
+        .iter()
+        .filter(|thread| !is_settled_state(thread.state))
+        .map(|thread| thread.id)
+        .collect();
+    current
+        .threads
+        .iter()
+        .any(|thread| is_settled_state(thread.state) && previous_active_ids.contains(&thread.id))
+}
+
+fn serialized_active_if_changed(
+    previous: Option<&ProjectItem>,
+    current: &ProjectItem,
+    revision: u32,
+) -> Result<Option<Vec<u8>>, StoreError> {
     let active_file = active_file_from_project(current, revision);
     let active_bytes = serde_json::to_vec(&active_file)
         .map_err(|source| StoreError::SerializeSnapshot { source })?;
-    let active_changed = match previous {
+    let changed = match previous {
         None => true,
         Some(prev) => {
             // Compare with the same revision so a transcript-only update doesn't rewrite
@@ -713,12 +802,89 @@ fn write_changed_project(
             prev_bytes != active_bytes
         }
     };
-    if active_changed {
+    Ok(changed.then_some(active_bytes))
+}
+
+fn write_pre_active_settled(
+    directory: &Path,
+    project_id: u32,
+    final_settled: &ProjectSettledFile,
+    newly_settled: bool,
+    reopened: Vec<ThreadItem>,
+) -> Result<Option<bool>, StoreError> {
+    if !newly_settled {
+        return Ok(None);
+    }
+    if reopened.is_empty() {
+        write_settled_file(directory, project_id, final_settled)?;
+        return Ok(Some(true));
+    }
+    let mut bridge = final_settled.clone();
+    bridge.revision = None;
+    bridge.threads.extend(reopened);
+    write_settled_file(directory, project_id, &bridge)?;
+    Ok(Some(false))
+}
+
+/// Writes `projects/<id>.json` and `projects/<id>.settled.json` with copy-before-delete
+/// ordering so no thread can vanish across an interrupted save boundary (#701).
+fn write_changed_project_with_hook(
+    directory: &Path,
+    previous: Option<&ProjectItem>,
+    current: &ProjectItem,
+    revision: u32,
+    on_after_write: &mut impl FnMut(usize) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    let settled_changed = previous.is_none_or(|prev| !settled_threads_equal(prev, current));
+    let active_bytes = serialized_active_if_changed(previous, current, revision)?;
+    let settled = settled_changed.then(|| settled_file_from_project(current, Some(revision)));
+    let reopened = if settled_changed {
+        reopened_settled_threads(previous, current)
+    } else {
+        Vec::new()
+    };
+    let newly_settled = settled_changed && has_newly_settled_threads(previous, current);
+    let mut completed_writes = 0usize;
+
+    // Copy-before-delete across the active/settled split: write settled before active when
+    // active threads settle (using a revision-less bridge archive if other settled threads
+    // reopen in the same save), and write active before pruning/removing settled otherwise.
+    let wrote_final_settled = match settled.as_ref() {
+        Some(final_settled) => {
+            match write_pre_active_settled(
+                directory,
+                current.id,
+                final_settled,
+                newly_settled,
+                reopened,
+            )? {
+                Some(is_final) => {
+                    completed_writes += 1;
+                    on_after_write(completed_writes)?;
+                    is_final
+                }
+                None => false,
+            }
+        }
+        None => false,
+    };
+
+    if let Some(bytes) = active_bytes {
         write_atomic_bytes(
             &project_active_partial_path(directory, current.id),
             &project_active_path(directory, current.id),
-            &active_bytes,
+            &bytes,
         )?;
+        completed_writes += 1;
+        on_after_write(completed_writes)?;
+    }
+
+    if let Some(ref final_settled) = settled
+        && !wrote_final_settled
+    {
+        write_settled_file(directory, current.id, final_settled)?;
+        completed_writes += 1;
+        on_after_write(completed_writes)?;
     }
     Ok(())
 }
@@ -831,6 +997,220 @@ mod tests {
 
         let _ignored = fs::remove_dir_all(&split_dir);
         let _ignored = fs::remove_dir_all(&legacy_dir);
+        Ok(())
+    }
+
+    fn simulated_interrupt() -> StoreError {
+        StoreError::WritePartial {
+            path: "simulated-interrupt".into(),
+            source: std::io::Error::other("simulated interrupt"),
+        }
+    }
+
+    fn thread_with_transcript(id: u32, title: &str, state: ThreadState) -> ThreadItem {
+        let mut thread = ThreadItem::new(id, title.into());
+        thread.state = state;
+        thread.transcript = Arc::new(vec![
+            velocity_core::thread_view_model::TranscriptBlock::UserMessage {
+                text: format!("Prompt for thread {id}"),
+                queued: false,
+            },
+        ]);
+        thread
+    }
+
+    fn seed_project_store(
+        tag: &str,
+        threads: Vec<ThreadItem>,
+    ) -> Result<(PathBuf, ProjectItem, u32), Box<dyn std::error::Error>> {
+        let directory = temp_store_dir(tag)?;
+        let mut store = StateStore::load_or_default(&directory)?;
+        let mut next = store.state().clone();
+        let mut project = ProjectItem::new(1, "Velocity".into(), r"C:\velocity".into());
+        project.threads = threads;
+        next.projects.push(project);
+        store.store_snapshot(next)?;
+        let saved = store.project(1).ok_or("missing seeded project")?.clone();
+        let revision = store.state().revision;
+        Ok((directory, saved, revision))
+    }
+
+    // Risk (#701, #552, SPEC §2.2, F6): an interrupted save while reopening a settled
+    // thread must never leave the thread missing from both project files; restart and
+    // read-only snapshots must recover the reopened thread with its transcript and
+    // reconcile stale settled rows so later deletes cannot resurrect them.
+    #[test]
+    fn interrupted_reopen_preserves_thread_across_every_write_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, previous, prev_rev) = seed_project_store(
+            "reopen-crash",
+            vec![thread_with_transcript(7, "Reverted", ThreadState::Merged)],
+        )?;
+        assert!(project_settled_path(&directory, 1).exists());
+
+        let mut reopened = previous.clone();
+        reopened.threads[0].state = ThreadState::Working;
+        let result = write_changed_project_with_hook(
+            &directory,
+            Some(&previous),
+            &reopened,
+            prev_rev.wrapping_add(1),
+            &mut |step| {
+                if step == 1 {
+                    return Err(simulated_interrupt());
+                }
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        // Step 1 replaced the active file first; the old settled file is still intact.
+        assert!(project_settled_path(&directory, 1).exists());
+
+        let readonly =
+            read_project_snapshot(&directory, 1, true)?.ok_or("missing readonly snapshot")?;
+        assert_eq!(readonly.threads.len(), 1);
+        assert_eq!(readonly.threads[0].id, 7);
+        assert_eq!(readonly.threads[0].state, ThreadState::Working);
+
+        // Restart recovers the reopened thread + transcript and cleans up stale settled file.
+        let mut recovered = StateStore::load_or_default(&directory)?;
+        assert!(!project_settled_path(&directory, 1).exists());
+        let thread = &recovered
+            .project(1)
+            .ok_or("missing recovered project")?
+            .threads[0];
+        assert_eq!(thread.id, 7);
+        assert_eq!(thread.state, ThreadState::Working);
+        assert_eq!(thread.transcript.len(), 1);
+
+        // Deleting the recovered thread must not resurrect the stale settled row on next start.
+        let mut deleted = recovered.state().clone();
+        deleted.projects[0].threads.clear();
+        recovered.store_snapshot(deleted)?;
+        let after_delete = StateStore::load_or_default(&directory)?;
+        assert!(
+            after_delete
+                .project(1)
+                .ok_or("missing project")?
+                .threads
+                .is_empty()
+        );
+
+        let _ignored = fs::remove_dir_all(&directory);
+        Ok(())
+    }
+
+    // Risk (#701, #552): an interrupted save while settling an active thread must write the
+    // settled archive before removing the row from the active file and reconcile the stale
+    // active copy on restart without regressing revision.
+    #[test]
+    fn interrupted_settle_preserves_thread_across_every_write_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, previous, prev_rev) = seed_project_store(
+            "settle-crash",
+            vec![thread_with_transcript(7, "Landing", ThreadState::Working)],
+        )?;
+        assert!(!project_settled_path(&directory, 1).exists());
+
+        let mut settled = previous.clone();
+        settled.threads[0].state = ThreadState::Merged;
+        let next_rev = prev_rev.wrapping_add(1);
+        let result = write_changed_project_with_hook(
+            &directory,
+            Some(&previous),
+            &settled,
+            next_rev,
+            &mut |step| {
+                if step == 1 {
+                    return Err(simulated_interrupt());
+                }
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+
+        let readonly =
+            read_project_snapshot(&directory, 1, true)?.ok_or("missing readonly snapshot")?;
+        assert_eq!(readonly.threads.len(), 1);
+        assert_eq!(readonly.threads[0].id, 7);
+        assert_eq!(readonly.threads[0].state, ThreadState::Merged);
+
+        let recovered = StateStore::load_or_default(&directory)?;
+        assert_eq!(recovered.state().revision, next_rev);
+        let thread = &recovered
+            .project(1)
+            .ok_or("missing recovered project")?
+            .threads[0];
+        assert_eq!(thread.id, 7);
+        assert_eq!(thread.state, ThreadState::Merged);
+        // Active file was reconciled to drop the stale active copy.
+        let active_only =
+            read_project_snapshot(&directory, 1, false)?.ok_or("missing active snapshot")?;
+        assert!(active_only.threads.is_empty());
+
+        let _ignored = fs::remove_dir_all(&directory);
+        Ok(())
+    }
+
+    // Risk (#701, #552): a deferred save batch that simultaneously reopens one settled
+    // thread and settles another active thread must preserve both rows at every write step.
+    #[test]
+    fn interrupted_simultaneous_reopen_and_settle_preserves_both_threads()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for interrupt_after in [1usize, 2] {
+            let (directory, previous, prev_rev) = seed_project_store(
+                &format!("both-crash-{interrupt_after}"),
+                vec![
+                    thread_with_transcript(7, "Reverted", ThreadState::Merged),
+                    thread_with_transcript(8, "Landing", ThreadState::Working),
+                ],
+            )?;
+            let mut next = previous.clone();
+            next.threads[0].state = ThreadState::Working;
+            next.threads[1].state = ThreadState::Merged;
+            let result = write_changed_project_with_hook(
+                &directory,
+                Some(&previous),
+                &next,
+                prev_rev.wrapping_add(1),
+                &mut |step| {
+                    if step == interrupt_after {
+                        return Err(simulated_interrupt());
+                    }
+                    Ok(())
+                },
+            );
+            assert!(result.is_err());
+
+            let expected = if interrupt_after == 1 {
+                [(7, ThreadState::Merged), (8, ThreadState::Working)]
+            } else {
+                [(7, ThreadState::Working), (8, ThreadState::Merged)]
+            };
+            let readonly =
+                read_project_snapshot(&directory, 1, true)?.ok_or("missing readonly snapshot")?;
+            let readonly_states: Vec<(u32, ThreadState)> = readonly
+                .threads
+                .iter()
+                .map(|thread| (thread.id, thread.state))
+                .collect();
+            assert_eq!(readonly_states, expected);
+
+            let recovered = StateStore::load_or_default(&directory)?;
+            let threads = &recovered.project(1).ok_or("missing project")?.threads;
+            let recovered_states: Vec<(u32, ThreadState)> = threads
+                .iter()
+                .map(|thread| (thread.id, thread.state))
+                .collect();
+            assert_eq!(recovered_states, expected);
+            let active_thread = threads
+                .iter()
+                .find(|thread| thread.state == ThreadState::Working)
+                .ok_or("missing active thread")?;
+            assert_eq!(active_thread.transcript.len(), 1);
+
+            let _ignored = fs::remove_dir_all(&directory);
+        }
         Ok(())
     }
 }
