@@ -19,8 +19,8 @@ use velocity_store::goal_swarm_view::goal_claims_board;
 use velocity_store::goal_swarms::{GoalAgentSlot, LaunchGoalSwarmRequest};
 use velocity_store::rosen::RosenProgress;
 use velocity_store::{
-    EffortLevel, PersistedState, ProjectItem, ProviderKind, SpeedMode, StateStore, TaskAttribution,
-    TaskItem, TaskState, ThreadState,
+    EffortLevel, PersistedState, ProjectItem, ProviderKind, SpeedMode, StateStore, StoreLock,
+    TaskAttribution, TaskItem, TaskState, ThreadState,
 };
 use velocity_threads::goal_swarm::{
     ClaimPhaseOutcome, KeepGoingOutcome, choose_and_claim_with, evaluate_keep_going,
@@ -63,7 +63,7 @@ async fn run(root: &Path) -> Outcome {
 }
 
 async fn scenario(root: &Path, server: &ProjectServer) -> Outcome {
-    let store = Mutex::new(seed_store(root)?);
+    let store = StoreLock::new(seed_store(root)?);
     let channel = Channel::open(&root.join("app"), "1")?;
     let (swarm, mut members) = launch_three(&store, server).await?;
     claim_together(&store, &channel, &members)?;
@@ -236,7 +236,7 @@ fn claim_together(store: &Mutex<StateStore>, channel: &Channel, members: &[Membe
 }
 
 async fn stack_member(
-    store: &Mutex<StateStore>,
+    store: &StoreLock,
     server: &ProjectServer,
     channel: &Channel,
     members: &mut [Member],

@@ -939,7 +939,7 @@ mod tests {
         assert_eq!(updated.events.len(), 1);
         assert!(store.has_unsaved_changes());
 
-        let store = std::sync::Mutex::new(store);
+        let store = crate::StoreLock::new(store);
         assert!(crate::save_pending(&store)?);
         let reloaded = StateStore::load_or_default(&directory)?;
         let role = &reloaded.state().projects[0].duty_roles[0];

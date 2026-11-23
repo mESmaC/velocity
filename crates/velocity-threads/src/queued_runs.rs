@@ -86,7 +86,7 @@ fn persist_thread_change(
             .update_thread(key.0, key.1, change)
             .map_err(|error| error.to_string())?;
     }
-    velocity_store::save_pending(store.as_mutex())
+    velocity_store::save_pending(store)
         .map_err(|error| format!("Could not flush persisted state: {error}"))?;
     Ok(())
 }

@@ -9,14 +9,14 @@
 //! writes every change immediately before returning and rolls back in-memory edits on error.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
 use velocity_core::thread_view_model::SharedBlocks;
 
 use crate::storage;
 use crate::transcripts::{self, is_settled_state};
-use crate::{PersistedState, ProjectItem, StateStore, StoreError};
+use crate::{PersistedState, ProjectItem, StateStore, StoreError, StoreLock};
 
 struct TranscriptDelta {
     pending: BTreeMap<(u32, u32), SharedBlocks>,
@@ -389,9 +389,8 @@ struct SaveBatch {
     previous_transcripts: BTreeMap<(u32, u32), SharedBlocks>,
 }
 
-fn take_save_batch(store: &Mutex<StateStore>, lock_time: &mut Duration) -> Option<SaveBatch> {
+fn take_save_batch(store: &StoreLock, lock_time: &mut Duration) -> Option<SaveBatch> {
     let mut guard = store.lock().unwrap_or_else(PoisonError::into_inner);
-    let hold_started = Instant::now();
     let batch = guard.has_unsaved_changes().then(|| {
         let pending = std::mem::take(&mut guard.pending_transcripts);
         let deleted = std::mem::take(&mut guard.deleted_transcripts);
@@ -413,19 +412,17 @@ fn take_save_batch(store: &Mutex<StateStore>, lock_time: &mut Duration) -> Optio
             previous_transcripts,
         }
     });
-    drop(guard);
-    *lock_time += hold_started.elapsed();
+    *lock_time += guard.finish();
     batch
 }
 
 fn restore_failed_batch(
-    store: &Mutex<StateStore>,
+    store: &StoreLock,
     pending: BTreeMap<(u32, u32), SharedBlocks>,
     deleted: BTreeSet<(u32, u32)>,
     lock_time: &mut Duration,
 ) {
     let mut guard = store.lock().unwrap_or_else(PoisonError::into_inner);
-    let hold_started = Instant::now();
     for (key, blocks) in pending {
         guard.pending_transcripts.entry(key).or_insert(blocks);
     }
@@ -434,19 +431,17 @@ fn restore_failed_batch(
             guard.deleted_transcripts.insert(key);
         }
     }
-    drop(guard);
-    *lock_time += hold_started.elapsed();
+    *lock_time += guard.finish();
 }
 
 fn finish_save_batch(
-    store: &Mutex<StateStore>,
+    store: &StoreLock,
     current: Arc<PersistedState>,
     pending: BTreeMap<(u32, u32), SharedBlocks>,
     deleted: BTreeSet<(u32, u32)>,
     lock_time: &mut Duration,
 ) {
     let mut guard = store.lock().unwrap_or_else(PoisonError::into_inner);
-    let hold_started = Instant::now();
     guard.disk_revision = current.revision;
     guard.disk_state = current;
     for (key, blocks) in pending {
@@ -459,25 +454,24 @@ fn finish_save_batch(
     for key in deleted {
         guard.persisted_transcripts.remove(&key);
     }
-    drop(guard);
-    *lock_time += hold_started.elapsed();
+    *lock_time += guard.finish();
 }
 
 /// Writes the store's latest revision incrementally to disk if anything changed. The store
 /// lock is held only for O(1) `Arc::clone` / map swaps and to record completion, never while
-/// serializing or writing. Safe to call from several threads: writes are serialized and each
-/// one writes the newest state.
-pub fn save_pending(store: &Mutex<StateStore>) -> Result<bool, StoreError> {
+/// serializing or writing. Every store lock acquisition (including idle polls) records
+/// per-caller wait and hold metrics after releasing the mutex, alongside the per-save
+/// aggregate (#694). Safe to call from several threads: writes are serialized and each one
+/// writes the newest state.
+pub fn save_pending(store: &StoreLock) -> Result<bool, StoreError> {
     let save_started = Instant::now();
     let mut lock_time = Duration::ZERO;
     let write_lock = {
         let guard = store.lock().unwrap_or_else(PoisonError::into_inner);
-        let hold_started = Instant::now();
         let result = guard
             .has_unsaved_changes()
             .then(|| Arc::clone(&guard.write_lock));
-        drop(guard);
-        lock_time += hold_started.elapsed();
+        lock_time += guard.finish();
         let Some(write_lock) = result else {
             return Ok(false);
         };
@@ -536,7 +530,7 @@ mod tests {
                 .is_empty()
         );
 
-        let store = Mutex::new(store);
+        let store = StoreLock::new(store);
         assert!(save_pending(&store)?);
         assert!(!save_pending(&store)?);
         let loaded = StateStore::load_or_default(&directory)?;
@@ -612,7 +606,7 @@ mod tests {
         })?;
         let state_mtime_before =
             std::fs::metadata(directory.join(crate::STATE_FILE_NAME))?.modified()?;
-        let store = Mutex::new(store);
+        let store = StoreLock::new(store);
         let start = Instant::now();
         assert!(save_pending(&store)?);
         let elapsed = start.elapsed();
@@ -639,6 +633,90 @@ mod tests {
         assert_eq!(active_reloaded.transcript.len(), 2);
         assert_eq!(reloaded.thread_transcript(1, 42).len(), 2);
 
+        std::fs::remove_dir_all(&directory)?;
+        Ok(())
+    }
+
+    fn save_behind_acquisitions(snap: &velocity_core::performance::PerformanceDiagnostics) -> u32 {
+        snap.store_locks
+            .iter()
+            .filter(|row| row.caller.starts_with("src/save_behind.rs:"))
+            .map(|row| row.acquisitions)
+            .sum()
+    }
+
+    fn save_behind_caller_count(
+        snap: &velocity_core::performance::PerformanceDiagnostics,
+    ) -> usize {
+        snap.store_locks
+            .iter()
+            .filter(|row| row.caller.starts_with("src/save_behind.rs:"))
+            .count()
+    }
+
+    // Risk (#694, #557): background saver lock acquisitions (including contended idle polls)
+    // must record per-caller wait and hold telemetry while preserving the per-save aggregate.
+    #[test]
+    fn save_pending_records_store_lock_metrics_for_idle_polls_and_saves()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-694-{unique}"));
+        let _ignored = std::fs::remove_dir_all(&directory);
+        let mut raw_store = StateStore::load_or_default(&directory)?;
+        raw_store.defer_saves();
+        let store = Arc::new(StoreLock::new(raw_store));
+
+        let before_idle = velocity_core::performance::snapshot();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let holder_store = Arc::clone(&store);
+        let holder = std::thread::spawn(move || -> Result<(), String> {
+            let _guard = holder_store
+                .as_mutex()
+                .lock()
+                .map_err(|_| String::from("store mutex poisoned"))?;
+            let _ = locked_tx.send(());
+            std::thread::sleep(Duration::from_millis(35));
+            Ok(())
+        });
+        locked_rx.recv()?;
+        let idle_saved = save_pending(&store)?;
+        holder.join().map_err(|_| "lock holder panicked")??;
+        assert!(!idle_saved);
+
+        let after_idle = velocity_core::performance::snapshot();
+        assert!(save_behind_acquisitions(&after_idle) > save_behind_acquisitions(&before_idle));
+        assert!(
+            after_idle
+                .store_locks
+                .iter()
+                .any(|row| row.caller.starts_with("src/save_behind.rs:") && row.max_wait_ms >= 10)
+        );
+
+        {
+            let mut guard = store
+                .as_mutex()
+                .lock()
+                .map_err(|_| "store mutex poisoned")?;
+            let mut next = guard.state().clone();
+            next.projects
+                .push(ProjectItem::new(1, "Metrics".into(), "C:\\metrics".into()));
+            guard.store_snapshot(next)?;
+        }
+        assert!(save_pending(&store)?);
+        let after_save = velocity_core::performance::snapshot();
+        assert!(after_save.saves.count > after_idle.saves.count);
+        assert!(save_behind_caller_count(&after_save) >= 3);
+
+        let mut restore_lock_time = Duration::ZERO;
+        restore_failed_batch(
+            &store,
+            BTreeMap::new(),
+            BTreeSet::new(),
+            &mut restore_lock_time,
+        );
+        assert!(save_behind_caller_count(&velocity_core::performance::snapshot()) >= 4);
         std::fs::remove_dir_all(&directory)?;
         Ok(())
     }

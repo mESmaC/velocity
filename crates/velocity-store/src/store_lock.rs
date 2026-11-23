@@ -36,8 +36,7 @@ impl StoreLock {
         }
     }
 
-    /// Exposes the underlying mutex for subsystems that measure their own lock spans (such as
-    /// background saves in `save_behind`) or expect `&Mutex<StateStore>`.
+    /// Exposes the underlying mutex for callers that still expect `&Mutex<StateStore>`.
     pub fn as_mutex(&self) -> &Mutex<StateStore> {
         &self.0
     }
@@ -57,7 +56,7 @@ impl Deref for StoreLock {
 /// before `meter` records the hold duration or logs a budget breach.
 pub struct StoreGuard<'a> {
     guard: MutexGuard<'a, StateStore>,
-    _meter: HoldMeter,
+    meter: HoldMeter,
 }
 
 impl<'a> StoreGuard<'a> {
@@ -68,12 +67,24 @@ impl<'a> StoreGuard<'a> {
     ) -> Self {
         Self {
             guard,
-            _meter: HoldMeter {
+            meter: HoldMeter {
                 caller,
                 wait,
                 acquired_at: Instant::now(),
+                recorded: false,
             },
         }
+    }
+
+    /// Releases the store mutex, records per-caller wait and hold telemetry after unlock, and
+    /// returns the measured hold duration (excluding telemetry overhead) for callers that also
+    /// accumulate aggregate lock time (#694).
+    pub(crate) fn finish(self) -> Duration {
+        let Self { guard, mut meter } = self;
+        drop(guard);
+        let hold = meter.acquired_at.elapsed();
+        meter.record(hold);
+        hold
     }
 }
 
@@ -95,14 +106,24 @@ struct HoldMeter {
     caller: &'static Location<'static>,
     wait: Duration,
     acquired_at: Instant,
+    recorded: bool,
+}
+
+impl HoldMeter {
+    fn record(&mut self, hold: Duration) {
+        if self.recorded {
+            return;
+        }
+        self.recorded = true;
+        velocity_core::performance::record_store_lock(self.caller, self.wait, hold);
+    }
 }
 
 impl Drop for HoldMeter {
     fn drop(&mut self) {
-        velocity_core::performance::record_store_lock(
-            self.caller,
-            self.wait,
-            self.acquired_at.elapsed(),
-        );
+        if !self.recorded {
+            let hold = self.acquired_at.elapsed();
+            self.record(hold);
+        }
     }
 }

@@ -196,7 +196,7 @@ pub fn save_now(application: &AppHandle) -> Result<(), String> {
     let Some(store) = application.try_state::<ManagedStateStore>() else {
         return Ok(());
     };
-    velocity_store::save_pending(store.inner().as_mutex())
+    velocity_store::save_pending(store.inner())
         .map(|_| ())
         .map_err(|error| format!("Could not save state: {error}"))
 }
