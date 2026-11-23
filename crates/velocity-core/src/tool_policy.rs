@@ -266,9 +266,9 @@ fn airc_access(role: ThreadRole, tool: &str) -> ToolAccess {
                 ToolAccess::Eager
             }
             "airc_claim" | "airc_share" | "airc_release" | "read_events" | "read_messages"
-            | "send_message" | "list_nicks" | "task_list" | "issue_create" | "fleet_stats" => {
-                ToolAccess::Occasional
-            }
+            | "send_message" | "list_nicks" | "task_list" | "fleet_stats" => ToolAccess::Occasional,
+            // F7: scouts file findings only through scout MCP tools (`scout_file` /
+            // `improvement_scout_file`), never direct AIRC `issue_create` (#688).
             _ => ToolAccess::Forbidden,
         },
         ThreadRole::FollowUp => match tool {
@@ -554,6 +554,20 @@ mod tests {
         assert_eq!(
             browser_attachment(ThreadRole::Reviewer, true),
             BrowserAttachment::Omitted
+        );
+    }
+
+    #[test]
+    fn scout_role_forbids_direct_airc_issue_create() {
+        // Risk (#688): F7 requires scouts to file findings only through scout MCP tools
+        // (`scout_file`), never direct AIRC `issue_create`, while keeping `issue_read` eager.
+        assert_eq!(
+            tool_access(ThreadRole::Scout, McpToolServer::Airc, "issue_create"),
+            ToolAccess::Forbidden
+        );
+        assert_eq!(
+            tool_access(ThreadRole::Scout, McpToolServer::Airc, "issue_read"),
+            ToolAccess::Eager
         );
     }
 }

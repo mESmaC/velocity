@@ -137,16 +137,33 @@ fn instructions(
     rosen: bool,
     continuous_dispatch: bool,
     has_issue_tools: bool,
+    role: Option<ThreadRole>,
 ) -> String {
+    let allows_issue_create =
+        role.is_none_or(|role| tool_access(role, McpToolServer::Airc, "issue_create").is_allowed());
     let task_rule = if continuous_dispatch {
         "Continuous dispatch started this thread. Use task_add, task_update and task_delete without waiting for a user request. Record concrete follow-up work and split work into actionable tasks. Velocity marks your assigned task done when your change lands, so leave it assigned while you work."
     } else {
         "Use task_add, task_update and task_delete only when the user explicitly asks you to add, change or remove Task List items. Otherwise file issues."
     };
-    let issue_rule = if has_issue_tools {
-        " Use issue_read to inspect any issue in this project's repository (or pass repository as owner/name for configured Velocity projects and blocked_by dependencies) and issue_create to file spec questions, contradictions or findings on this project's repository (or pass repository as owner/name for another project registered in Velocity, which also links the filed or matching issue as blocked_by on your held issue)."
+    let issue_rule = match (has_issue_tools, allows_issue_create, role) {
+        (true, true, _) => {
+            " Use issue_read to inspect any issue in this project's repository (or pass repository as owner/name for configured Velocity projects and blocked_by dependencies) and issue_create to file spec questions, contradictions or findings on this project's repository (or pass repository as owner/name for another project registered in Velocity, which also links the filed or matching issue as blocked_by on your held issue)."
+        }
+        (true, false, Some(ThreadRole::Scout)) => {
+            " Use issue_read to inspect any issue in this project's repository (or pass repository as owner/name for configured Velocity projects and blocked_by dependencies). Scouts file findings only through the scout MCP tools (such as scout_file), never direct AIRC issue_create."
+        }
+        (true, false, _) => {
+            " Use issue_read to inspect any issue in this project's repository (or pass repository as owner/name for configured Velocity projects and blocked_by dependencies)."
+        }
+        (false, _, _) => "",
+    };
+    let project_issue_rule = if allows_issue_create {
+        "use issue_create instead"
+    } else if role == Some(ThreadRole::Scout) {
+        "use the scout MCP tools (such as scout_file) instead"
     } else {
-        ""
+        "do not use velocity_issue"
     };
     let claim_rule = if rosen {
         "Check work-item ownership with airc_claims using the candidate task or piece as the task filter; Velocity records AIRC work-item identity for each thread. Rosen owns path claims on this project: claim code paths BEFORE editing with `rosen claim --exclusive <paths>` (or the `rosen` MCP `claim` tool with `exclusive: true`), where the first claim wins; plain `rosen claim <paths>` notices are for registration lists and generated files. Record deliberate overlaps with `rosen share <paths>`, park on held paths with the `wait` tool on the `rosen` MCP server, and release paths with `rosen release <paths>`."
@@ -154,7 +171,7 @@ fn instructions(
         "Check ownership with airc_claims using the candidate task or piece as the task filter. Call airc_claim with the task, branch and every file BEFORE editing, and with piece set to the work item's identity (task:<id>, issue:<number> or spec:<section>) when it has one; on refusal the holder is named, so check the next candidate. Extend your existing task claim to add files. Record airc_share or a dependency wait before editing an overlapping file."
     };
     format!(
-        "You joined this project's AIRC channel as {nick}. {claim_rule} Messages require named recipients and an intent. Log readers (read_feed, read_events, read_ledger) return newest first (up to 50), filter by query or after/before sequence, return next_before for older matches, and read oversized entries by sequence with offset. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview.{issue_rule} Use append_ledger with velocity_issue only to report a problem in the Velocity IDE/tooling running your session (its worktrees, AIRC, duty tools, agent shells, build queue, code graph or desktop app), which Velocity files on mESmaC/velocity regardless of which project you are in; for issues on this project's repository (including when this project is mESmaC/velocity), use issue_create instead. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue and is filed on mESmaC/rosen; a discovery about Collapse (mESmaC/collapse.sh) uses collapse_issue and is filed on mESmaC/collapse.sh. Use at most one ledger issue field. Whenever something costs you more than about five minutes or a large amount of output without being a bug, log a one-line discovery via append_ledger with kind=\"friction\" (what happened, rough cost_minutes or cost_tokens, and tool_or_step) or kind=\"tool_request\" (tool_name, would_do, would_replace, saving_per_use), targeting velocity_issue, rosen_issue or collapse_issue; also log one before naming the change if anything did, and skip it when nothing went wrong. Search read_ledger with ledger discovery and the problem's terms before reporting it. An issue that waits on other issues names them in blocked_by, which records GitHub issue dependencies; never hold it with a label."
+        "You joined this project's AIRC channel as {nick}. {claim_rule} Messages require named recipients and an intent. Log readers (read_feed, read_events, read_ledger) return newest first (up to 50), filter by query or after/before sequence, return next_before for older matches, and read oversized entries by sequence with offset. task_list reads the project Task List at any time. {task_rule} Task List changes never edit SPEC.md or start an interview.{issue_rule} Use append_ledger with velocity_issue only to report a problem in the Velocity IDE/tooling running your session (its worktrees, AIRC, duty tools, agent shells, build queue, code graph or desktop app), which Velocity files on mESmaC/velocity regardless of which project you are in; for issues on this project's repository (including when this project is mESmaC/velocity), {project_issue_rule}. A discovery about Rosen itself (its server, workspaces, durability, claims, rebases or landing) uses rosen_issue and is filed on mESmaC/rosen; a discovery about Collapse (mESmaC/collapse.sh) uses collapse_issue and is filed on mESmaC/collapse.sh. Use at most one ledger issue field. Whenever something costs you more than about five minutes or a large amount of output without being a bug, log a one-line discovery via append_ledger with kind=\"friction\" (what happened, rough cost_minutes or cost_tokens, and tool_or_step) or kind=\"tool_request\" (tool_name, would_do, would_replace, saving_per_use), targeting velocity_issue, rosen_issue or collapse_issue; also log one before naming the change if anything did, and skip it when nothing went wrong. Search read_ledger with ledger discovery and the problem's terms before reporting it. An issue that waits on other issues names them in blocked_by, which records GitHub issue dependencies; never hold it with a label."
     )
 }
 
@@ -261,6 +278,7 @@ fn initialize_session(
             rosen,
             options.continuous_dispatch,
             options.issue_handler.is_some(),
+            options.role,
         ),
     }))
 }
@@ -1406,6 +1424,167 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    fn run_mcp_with_options(
+        channel: &Channel,
+        member: &str,
+        nick: &str,
+        options: ToolOptions<'_>,
+        requests: &[Value],
+    ) -> Result<Vec<Value>, Error> {
+        let input = requests
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        struct BufWrite(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl Write for BufWrite {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                let mut guard = self
+                    .0
+                    .lock()
+                    .map_err(|error| std::io::Error::other(error.to_string()))?;
+                guard.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        serve_with_options(
+            channel,
+            member,
+            nick,
+            Cursor::new(input),
+            BufWrite(output.clone()),
+            options,
+        )?;
+        let bytes = output
+            .lock()
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .clone();
+        let text = String::from_utf8(bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+        text.lines()
+            .map(|line| serde_json::from_str(line).map_err(Error::from))
+            .collect()
+    }
+
+    // Risk (#688): F7 requires scouts to file findings only through scout MCP tools (`scout_file`),
+    // so Scout AIRC sessions (eager and lazy) must omit and refuse `issue_create` while keeping
+    // `issue_read` available.
+    #[test]
+    fn scout_role_omits_and_refuses_issue_create_on_eager_and_lazy_sessions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "velocity-airc-scout-688-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let channel = Channel::open(&root, "1")?;
+        let created = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let created_clone = created.clone();
+        let handler = move |request: crate::IssueRequest<'_>| -> Result<Value, Error> {
+            match request {
+                crate::IssueRequest::Read(read) => Ok(json!({"number": read.issue})),
+                crate::IssueRequest::Create(_) => {
+                    created_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(json!({"outcome": "filed", "number": 999}))
+                }
+                crate::IssueRequest::Update(_) => Err(Error::Invalid("unexpected update".into())),
+            }
+        };
+        assert_scout_eager_blocks_issue_create(&channel, &handler)?;
+        assert_scout_lazy_blocks_issue_create(&channel, &handler)?;
+        assert_eq!(created.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    fn assert_scout_eager_blocks_issue_create(
+        channel: &Channel,
+        handler: &IssueHandler<'_>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let create_args = json!({"title": "Bypass", "body": "Unverified finding"});
+        let replies = run_mcp_with_options(
+            channel,
+            "duty-scout-1",
+            "scout-1",
+            ToolOptions::new(false, Some(handler), None).with_role(ThreadRole::Scout, false),
+            &[
+                json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+                json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"issue_create","arguments":create_args}}),
+                json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"issue_read","arguments":{"issue":688}}}),
+            ],
+        )?;
+        let join_text = replies[0]["result"]["instructions"].as_str().unwrap_or("");
+        assert!(join_text.contains("scout_file"));
+        assert!(!join_text.contains("use issue_create instead"));
+        let names: Vec<&str> = replies[1]["result"]["tools"]
+            .as_array()
+            .ok_or("missing eager scout tools")?
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(names.contains(&"issue_read"));
+        assert!(!names.contains(&"issue_create"));
+        assert_eq!(replies[2]["result"]["isError"], json!(true));
+        assert_eq!(replies[3]["result"]["isError"], json!(false));
+        Ok(())
+    }
+
+    fn assert_scout_lazy_blocks_issue_create(
+        channel: &Channel,
+        handler: &IssueHandler<'_>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let create_args = json!({"title": "Bypass", "body": "Unverified finding"});
+        let replies = run_mcp_with_options(
+            channel,
+            "duty-scout-2",
+            "scout-2",
+            ToolOptions::new(false, Some(handler), None).with_role(ThreadRole::Scout, true),
+            &[
+                json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+                json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":LOADER_TOOL,"arguments":{"action":"list"}}}),
+                json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":LOADER_TOOL,"arguments":{"action":"call","tool":"issue_create","arguments":create_args}}}),
+                json!({"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}}),
+            ],
+        )?;
+        let loader_desc = replies[1]["result"]["tools"]
+            .as_array()
+            .ok_or("missing lazy scout tools")?
+            .iter()
+            .find(|tool| tool["name"] == LOADER_TOOL)
+            .and_then(|tool| tool["description"].as_str())
+            .ok_or("missing airc_tools loader")?;
+        assert!(!loader_desc.contains("issue_create"));
+        let loaded_text = replies[2]["result"]["content"][0]["text"]
+            .as_str()
+            .ok_or("missing loader list output")?;
+        assert!(!loaded_text.contains("\"issue_create\""));
+        let call_reply = replies
+            .iter()
+            .find(|reply| reply["id"] == json!(4))
+            .ok_or("missing loader call reply")?;
+        assert_eq!(call_reply["result"]["isError"], json!(true));
+        let post_list = replies
+            .iter()
+            .find(|reply| reply["id"] == json!(5))
+            .ok_or("missing post-load tools/list")?;
+        let post_names: Vec<&str> = post_list["result"]["tools"]
+            .as_array()
+            .ok_or("missing post-load tools")?
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(post_names.contains(&"issue_read"));
+        assert!(!post_names.contains(&"issue_create"));
         Ok(())
     }
 }
