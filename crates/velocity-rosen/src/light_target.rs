@@ -1,27 +1,36 @@
 //! Keeps pooled light-run Cargo target folders free of stale local crate fingerprints
-//! when different workspaces of a project take turns building into them (#527, #682).
+//! when different workspaces of a project take turns building into them (#527, #682, #737).
 //!
 //! Cargo hashes workspace members by workspace-relative path and checks source mtimes
 //! against the fingerprint's timestamp, so a newer build from Workspace A causes
 //! Workspace B (whose edited or untouched sources have older mtimes) to silently link
 //! Workspace A's compiled crate. While holding `.velocity-light-run.lock`, we record
-//! which workspace last built into that target folder and drop `.fingerprint/<pkg>-*` and
-//! `build/<pkg>-*` for local packages whenever the workspace changes, keeping registry
-//! and git dependency artifacts warm.
+//! which workspace last built into that target folder (along with its Rosen parent tree
+//! and touched local packages when known). Switching workspaces on the same base with
+//! unchanged manifests/lockfiles invalidates only `touched(previous) ∪ touched(incoming)`,
+//! letting Cargo recompile downstream dependents while keeping untouched upstream crates
+//! and build scripts warm; any base mismatch, manifest/lockfile edit, or unknown scope
+//! falls back to invalidating all local packages while keeping registry and git
+//! dependency artifacts warm.
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
-use serde::Deserialize;
+use rosen_client::Endpoint;
+use rosen_client::protocol::DiffRequest;
+use rosen_client::snapshot::WorkspaceMarker;
+use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, Value};
+use velocity_core::preflight::{WorkspaceCrate, normalize_path, owning_crate};
 
 const LAST_WORKSPACE_MARKER: &str = ".velocity-last-workspace";
 const FINGERPRINT_HASH_LENGTH: usize = 16;
 const MAX_FALLBACK_SCAN_DEPTH: usize = 2;
 const MAX_GLOB_SCAN_DEPTH: usize = 3;
+const SCOPE_INSPECT_TIMEOUT: Duration = Duration::from_secs(5);
 const SKIPPED_SCAN_FOLDERS: &[&str] = &[".git", ".rosen", "node_modules", "proofs", "target"];
 
 #[derive(Deserialize)]
@@ -30,14 +39,170 @@ struct RosenWorkspaceRecord {
     change: Option<String>,
 }
 
+/// Scoped Rosen change metadata for a workspace using a pooled light-run target (#737).
+///
+/// When both the previous target occupant and the incoming workspace share the same
+/// Rosen parent tree (`base`), neither touched Cargo manifests/lockfiles/build config,
+/// and both have known touched local packages, [`prepare_with_scope`] only needs to
+/// invalidate `touched_packages(previous) ∪ touched_packages(incoming)`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceScope {
+    /// Rosen parent tree ID (`diff.from`) that `touched_packages` is relative to.
+    pub base: String,
+    /// Local Cargo package names modified in this change relative to `base`.
+    #[serde(default)]
+    pub touched_packages: BTreeSet<String>,
+    /// True when Cargo manifests, lockfiles, toolchain/Cargo config, or unowned Rust
+    /// build inputs changed relative to `base`, forcing full local-crate invalidation.
+    #[serde(default)]
+    pub manifests_changed: bool,
+}
+
+impl WorkspaceScope {
+    /// Whether this scope can participate in narrowed invalidation on a matching base.
+    pub fn is_scoped_eligible(&self) -> bool {
+        !self.base.trim().is_empty() && !self.manifests_changed
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct LastWorkspaceRecord {
+    identity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scope: Option<WorkspaceScope>,
+}
+
+/// Builds a [`WorkspaceScope`] from a Rosen change's parent tree (`diff.from`), changed
+/// repository-relative paths, and discovered workspace crates (#737).
+///
+/// Returns `None` when `base` is empty or no workspace crates were discovered (for example
+/// nested non-root Cargo layouts), causing callers to fall back to full invalidation.
+pub fn scope_from_changed_paths(
+    base: &str,
+    changed_paths: &[&str],
+    crates: &[WorkspaceCrate],
+) -> Option<WorkspaceScope> {
+    let base = base.trim();
+    if base.is_empty() || crates.is_empty() {
+        return None;
+    }
+    let mut touched_packages = BTreeSet::new();
+    let mut manifests_changed = false;
+    for raw_path in changed_paths {
+        let path = normalize_path(raw_path);
+        if is_workspace_build_input(&path) {
+            manifests_changed = true;
+        }
+        if let Some(owner) = owning_crate(&path, crates) {
+            touched_packages.insert(owner.name.clone());
+        } else if path.ends_with(".rs") {
+            manifests_changed = true;
+        }
+    }
+    Some(WorkspaceScope {
+        base: base.to_owned(),
+        touched_packages,
+        manifests_changed,
+    })
+}
+
+fn is_workspace_build_input(path: &str) -> bool {
+    let file_name = path.rsplit('/').next().unwrap_or(path);
+    matches!(
+        file_name,
+        "Cargo.toml"
+            | "Cargo.lock"
+            | "rust-toolchain"
+            | "rust-toolchain.toml"
+            | "clippy.toml"
+            | ".clippy.toml"
+            | "rosen.toml"
+    ) || path == ".cargo"
+        || path.starts_with(".cargo/")
+        || path.contains("/.cargo/")
+        || path.starts_with("proofs/fixtures/")
+        || path == "ui/src/lib/theme/tokens.css"
+}
+
+/// Flushes local workspace edits and derives a [`WorkspaceScope`] from Rosen's diff
+/// against the change's parent tree (#737). Returns `None` for non-Rosen workspaces,
+/// workspaces with unreadable files or a pending server rebase, or on any Rosen/timeout
+/// error so callers safely fall back to full local-crate invalidation.
+pub async fn inspect_workspace_scope(endpoint: &str, worktree: &Path) -> Option<WorkspaceScope> {
+    tokio::time::timeout(
+        SCOPE_INSPECT_TIMEOUT,
+        inspect_workspace_scope_inner(endpoint, worktree),
+    )
+    .await
+    .ok()
+    .flatten()
+}
+
+async fn inspect_workspace_scope_inner(endpoint: &str, worktree: &Path) -> Option<WorkspaceScope> {
+    let marker = WorkspaceMarker::read(worktree).ok()?;
+    let change = marker.change.to_string();
+    let client = crate::connection::requests(&Endpoint::new(endpoint))
+        .await
+        .ok()?;
+    let report = client.snapshot_workspace(worktree, None).await.ok()?;
+    if !report.unreadable.is_empty() {
+        return None;
+    }
+    let diff = client
+        .diff(DiffRequest {
+            to: Some(change),
+            context: Some(0),
+            ..DiffRequest::default()
+        })
+        .await
+        .ok()?;
+    if report.tree != diff.to {
+        return None;
+    }
+    let (crates, _) = crate::preflight::discover_workspace_crates(worktree);
+    let changed_paths: Vec<&str> = diff.files.iter().map(|file| file.path.as_str()).collect();
+    scope_from_changed_paths(&diff.from.to_string(), &changed_paths, &crates)
+}
+
+/// Blocking wrapper for CLI shims (`cargo check -p` / `rosen run --`) to resolve a
+/// workspace's Rosen change scope (#737).
+pub(crate) fn inspect_workspace_scope_blocking(
+    endpoint: &str,
+    worktree: &Path,
+) -> Option<WorkspaceScope> {
+    if !worktree.join(".rosen").join("workspace.json").is_file() {
+        return None;
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    runtime.block_on(inspect_workspace_scope(endpoint, worktree))
+}
+
 /// Ensures `target` holds no local-crate fingerprints or build-script outputs from a
-/// different workspace. The caller must already hold `.velocity-light-run.lock`.
+/// different workspace, falling back to full local-crate invalidation.
+#[cfg(test)]
 pub(crate) fn prepare(target: &Path, workspace_root: &Path, directory: &Path) -> io::Result<()> {
+    prepare_with_scope(target, workspace_root, directory, None)
+}
+
+/// Ensures `target` holds no stale local-crate fingerprints or build-script outputs from
+/// a different workspace (#527, #737). The caller must already hold `.velocity-light-run.lock`.
+pub(crate) fn prepare_with_scope(
+    target: &Path,
+    workspace_root: &Path,
+    directory: &Path,
+    scope: Option<&WorkspaceScope>,
+) -> io::Result<()> {
     let identity = workspace_identity(workspace_root);
+    let incoming_scope = scope.filter(|item| !item.base.trim().is_empty());
     let marker = target.join(LAST_WORKSPACE_MARKER);
-    if std::fs::read_to_string(&marker).ok().as_deref() == Some(identity.as_str()) {
-        touch_marker(&marker);
-        return Ok(());
+    let previous = read_last_workspace(&marker);
+    if let Some(previous) = previous.as_ref()
+        && previous.identity == identity
+    {
+        return update_same_workspace_marker(&marker, previous, incoming_scope);
     }
     // Clear the marker before invalidating so an interrupted cleanup never leaves the
     // target directory appearing fresh for any workspace on the next run. Overwriting in
@@ -46,13 +211,124 @@ pub(crate) fn prepare(target: &Path, workspace_root: &Path, directory: &Path) ->
     if marker.exists() {
         std::fs::write(&marker, "")?;
     }
+    if let Some(packages) = scoped_invalidation_packages(
+        previous.as_ref().and_then(|record| record.scope.as_ref()),
+        incoming_scope,
+    ) {
+        if !packages.is_empty() {
+            invalidate_packages(target, &packages)?;
+        }
+        std::fs::create_dir_all(target)?;
+        return write_last_workspace(
+            &marker,
+            &LastWorkspaceRecord {
+                identity,
+                scope: incoming_scope.cloned(),
+            },
+        );
+    }
     let packages = collect_local_packages(workspace_root, directory);
     if packages.is_empty() {
         return Ok(());
     }
     invalidate_packages(target, &packages)?;
     std::fs::create_dir_all(target)?;
-    std::fs::write(&marker, identity)
+    write_last_workspace(
+        &marker,
+        &LastWorkspaceRecord {
+            identity,
+            scope: incoming_scope.cloned(),
+        },
+    )
+}
+
+fn update_same_workspace_marker(
+    marker: &Path,
+    previous: &LastWorkspaceRecord,
+    incoming_scope: Option<&WorkspaceScope>,
+) -> io::Result<()> {
+    let merged_scope = merge_same_workspace_scope(previous.scope.as_ref(), incoming_scope);
+    if merged_scope == previous.scope {
+        touch_marker(marker);
+        return Ok(());
+    }
+    write_last_workspace(
+        marker,
+        &LastWorkspaceRecord {
+            identity: previous.identity.clone(),
+            scope: merged_scope,
+        },
+    )
+}
+
+/// Keeps the union of touched packages across consecutive runs in the same workspace on
+/// the same base, or clears the scope if the base moved, manifests changed, or either run
+/// lacked scope metadata (forcing full invalidation on the next workspace switch).
+fn merge_same_workspace_scope(
+    previous: Option<&WorkspaceScope>,
+    incoming: Option<&WorkspaceScope>,
+) -> Option<WorkspaceScope> {
+    let (Some(previous), Some(incoming)) = (previous, incoming) else {
+        return None;
+    };
+    if !previous.is_scoped_eligible()
+        || !incoming.is_scoped_eligible()
+        || previous.base != incoming.base
+    {
+        return None;
+    }
+    let mut touched_packages = previous.touched_packages.clone();
+    touched_packages.extend(incoming.touched_packages.iter().cloned());
+    Some(WorkspaceScope {
+        base: previous.base.clone(),
+        touched_packages,
+        manifests_changed: false,
+    })
+}
+
+fn scoped_invalidation_packages(
+    previous: Option<&WorkspaceScope>,
+    incoming: Option<&WorkspaceScope>,
+) -> Option<HashSet<String>> {
+    let (Some(previous), Some(incoming)) = (previous, incoming) else {
+        return None;
+    };
+    if !previous.is_scoped_eligible()
+        || !incoming.is_scoped_eligible()
+        || previous.base != incoming.base
+    {
+        return None;
+    }
+    Some(
+        previous
+            .touched_packages
+            .iter()
+            .chain(incoming.touched_packages.iter())
+            .cloned()
+            .collect(),
+    )
+}
+
+fn read_last_workspace(marker: &Path) -> Option<LastWorkspaceRecord> {
+    let contents = std::fs::read_to_string(marker).ok()?;
+    if contents.trim().is_empty() {
+        return None;
+    }
+    if let Ok(record) = serde_json::from_str::<LastWorkspaceRecord>(&contents)
+        && !record.identity.trim().is_empty()
+    {
+        return Some(record);
+    }
+    // Legacy plain-text marker written by older Velocity versions or tests (#527, #682).
+    Some(LastWorkspaceRecord {
+        identity: contents,
+        scope: None,
+    })
+}
+
+fn write_last_workspace(marker: &Path, record: &LastWorkspaceRecord) -> io::Result<()> {
+    let serialized = serde_json::to_string(record).map_err(io::Error::other)?;
+    std::fs::write(marker, serialized)
 }
 
 /// Orders candidate target directories for `workspace_identity` (#682):
@@ -85,16 +361,13 @@ enum TargetSlotKind {
 
 fn inspect_target(target: &Path, workspace_identity: &str) -> TargetSlotKind {
     let marker = target.join(LAST_WORKSPACE_MARKER);
-    let Ok(contents) = std::fs::read_to_string(&marker) else {
+    let Some(record) = read_last_workspace(&marker) else {
         return TargetSlotKind::Unclaimed;
     };
-    if contents.trim().is_empty() {
-        return TargetSlotKind::Unclaimed;
-    }
     let modified = std::fs::metadata(&marker)
         .ok()
         .and_then(|metadata| metadata.modified().ok());
-    if contents == workspace_identity {
+    if record.identity == workspace_identity {
         TargetSlotKind::AffinityMatch(modified)
     } else {
         TargetSlotKind::OtherWorkspace(modified)
@@ -689,5 +962,309 @@ edition = "2024"
             vec![target_1, target_0]
         );
         Ok(())
+    }
+
+    fn make_scope(base: &str, touched: &[&str], manifests_changed: bool) -> super::WorkspaceScope {
+        super::WorkspaceScope {
+            base: base.to_owned(),
+            touched_packages: touched.iter().map(|&name| name.to_owned()).collect(),
+            manifests_changed,
+        }
+    }
+
+    // Risk (#737): switching workspaces on the same Rosen base with unchanged manifests
+    // must invalidate only `touched(previous) ∪ touched(incoming)` so untouched upstream
+    // crates and build scripts stay warm while touched crates are rebuilt cleanly.
+    #[test]
+    fn same_base_switch_invalidates_only_union_of_touched_packages() -> Result<(), Box<dyn Error>> {
+        let scratch = tempdir()?;
+        let workspace_a = scratch.path().join("issue-a");
+        let workspace_b = scratch.path().join("issue-b");
+        let target = scratch.path().join(".velocity-agent-target");
+        seed_workspace(&workspace_a, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")?;
+        seed_workspace(&workspace_b, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")?;
+
+        let base = "1111111111111111111111111111111111111111";
+        let scope_a = make_scope(base, &["demo-core"], false);
+        let scope_b = make_scope(base, &["demo-extra"], false);
+
+        super::prepare_with_scope(&target, &workspace_a, &workspace_a, Some(&scope_a))?;
+        seed_target_entry(&target, "debug/.fingerprint/demo-core-0a78db7edc06e08a")?;
+        seed_target_entry(&target, "debug/build/demo-core-0a78db7edc06e08a")?;
+        seed_target_entry(&target, "debug/.fingerprint/demo-extra-1111222233334444")?;
+        seed_target_entry(&target, "debug/build/demo-extra-1111222233334444")?;
+        seed_target_entry(
+            &target,
+            "debug/.fingerprint/demo-untouched-5555666677778888",
+        )?;
+        seed_target_entry(&target, "debug/build/demo-untouched-5555666677778888")?;
+        seed_target_entry(&target, "debug/.fingerprint/serde-53fb7d8c4a37260a")?;
+
+        super::prepare_with_scope(&target, &workspace_b, &workspace_b, Some(&scope_b))?;
+        for removed in [
+            "debug/.fingerprint/demo-core-0a78db7edc06e08a",
+            "debug/build/demo-core-0a78db7edc06e08a",
+            "debug/.fingerprint/demo-extra-1111222233334444",
+            "debug/build/demo-extra-1111222233334444",
+        ] {
+            assert!(
+                !target.join(removed).exists(),
+                "should invalidate: {removed}"
+            );
+        }
+        for kept in [
+            "debug/.fingerprint/demo-untouched-5555666677778888",
+            "debug/build/demo-untouched-5555666677778888",
+            "debug/.fingerprint/serde-53fb7d8c4a37260a",
+        ] {
+            assert!(target.join(kept).is_dir(), "should stay warm: {kept}");
+        }
+        Ok(())
+    }
+
+    // Risk (#737): edits added or reverted across consecutive runs in the same workspace
+    // must keep the union of touched packages in the marker so a later workspace switch
+    // never inherits stale artifacts from an earlier run in the previous workspace.
+    #[test]
+    fn same_workspace_runs_accumulate_touched_packages_across_edits() -> Result<(), Box<dyn Error>>
+    {
+        let scratch = tempdir()?;
+        let workspace_a = scratch.path().join("issue-a");
+        let workspace_b = scratch.path().join("issue-b");
+        let target = scratch.path().join(".velocity-agent-target");
+        seed_workspace(&workspace_a, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")?;
+        seed_workspace(&workspace_b, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")?;
+
+        let base = "1111111111111111111111111111111111111111";
+        super::prepare_with_scope(
+            &target,
+            &workspace_a,
+            &workspace_a,
+            Some(&make_scope(base, &["demo-core"], false)),
+        )?;
+        seed_target_entry(&target, "debug/.fingerprint/demo-core-0a78db7edc06e08a")?;
+        seed_target_entry(&target, "debug/.fingerprint/demo-extra-1111222233334444")?;
+        seed_target_entry(
+            &target,
+            "debug/.fingerprint/demo-untouched-5555666677778888",
+        )?;
+
+        // Second run in A also touches demo-extra; third run reverts demo-extra.
+        super::prepare_with_scope(
+            &target,
+            &workspace_a,
+            &workspace_a,
+            Some(&make_scope(base, &["demo-core", "demo-extra"], false)),
+        )?;
+        super::prepare_with_scope(
+            &target,
+            &workspace_a,
+            &workspace_a,
+            Some(&make_scope(base, &["demo-core"], false)),
+        )?;
+        assert!(
+            target
+                .join("debug/.fingerprint/demo-extra-1111222233334444")
+                .is_dir()
+        );
+
+        // Switching to B on the same base must still invalidate demo-extra.
+        super::prepare_with_scope(
+            &target,
+            &workspace_b,
+            &workspace_b,
+            Some(&make_scope(base, &[], false)),
+        )?;
+        assert!(
+            !target
+                .join("debug/.fingerprint/demo-core-0a78db7edc06e08a")
+                .exists()
+        );
+        assert!(
+            !target
+                .join("debug/.fingerprint/demo-extra-1111222233334444")
+                .exists()
+        );
+        assert!(
+            target
+                .join("debug/.fingerprint/demo-untouched-5555666677778888")
+                .is_dir()
+        );
+        Ok(())
+    }
+
+    // Risk (#737): a base change or manifest/lockfile edit on either the previous or incoming
+    // workspace must fall back to invalidating every local package to preserve soundness.
+    #[test]
+    fn base_change_or_manifest_edit_falls_back_to_full_invalidation() -> Result<(), Box<dyn Error>>
+    {
+        let scratch = tempdir()?;
+        let workspace_a = scratch.path().join("issue-a");
+        let workspace_b = scratch.path().join("issue-b");
+        let workspace_c = scratch.path().join("issue-c");
+        let target = scratch.path().join(".velocity-agent-target");
+        seed_workspace(&workspace_a, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")?;
+        seed_workspace(&workspace_b, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")?;
+        seed_workspace(&workspace_c, "cccccccccccccccccccccccccccccccc")?;
+
+        let base_1 = "1111111111111111111111111111111111111111";
+        let base_2 = "2222222222222222222222222222222222222222";
+        let extra = "debug/.fingerprint/demo-extra-1111222233334444";
+
+        // Different base falls back to full invalidation, then records the new base.
+        super::prepare_with_scope(
+            &target,
+            &workspace_a,
+            &workspace_a,
+            Some(&make_scope(base_1, &["demo-core"], false)),
+        )?;
+        seed_target_entry(&target, extra)?;
+        super::prepare_with_scope(
+            &target,
+            &workspace_b,
+            &workspace_b,
+            Some(&make_scope(base_2, &["demo-core"], false)),
+        )?;
+        assert!(!target.join(extra).exists());
+
+        // Incoming manifest change falls back to full invalidation and marks target ineligible.
+        seed_target_entry(&target, extra)?;
+        super::prepare_with_scope(
+            &target,
+            &workspace_c,
+            &workspace_c,
+            Some(&make_scope(base_2, &["demo-core"], true)),
+        )?;
+        assert!(!target.join(extra).exists());
+
+        // Subsequent switch away from a manifest-changed workspace also does full invalidation.
+        seed_target_entry(&target, extra)?;
+        super::prepare_with_scope(
+            &target,
+            &workspace_b,
+            &workspace_b,
+            Some(&make_scope(base_2, &["demo-core"], false)),
+        )?;
+        assert!(!target.join(extra).exists());
+        Ok(())
+    }
+
+    // Risk (#737): a same-workspace base move, unknown scope, or legacy plain-text marker
+    // must clear scoped eligibility and fall back to full local-crate invalidation.
+    #[test]
+    fn same_workspace_rebase_unknown_or_legacy_marker_falls_back_to_full_invalidation()
+    -> Result<(), Box<dyn Error>> {
+        let scratch = tempdir()?;
+        let workspace_a = scratch.path().join("issue-a");
+        let workspace_b = scratch.path().join("issue-b");
+        let target = scratch.path().join(".velocity-agent-target");
+        seed_workspace(&workspace_a, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")?;
+        seed_workspace(&workspace_b, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")?;
+
+        let base_1 = "1111111111111111111111111111111111111111";
+        let base_2 = "2222222222222222222222222222222222222222";
+        let extra = "debug/.fingerprint/demo-extra-1111222233334444";
+
+        // Same workspace moving base clears its scope so the next switch invalidates all.
+        super::prepare_with_scope(
+            &target,
+            &workspace_b,
+            &workspace_b,
+            Some(&make_scope(base_2, &["demo-core"], false)),
+        )?;
+        seed_target_entry(&target, extra)?;
+        super::prepare_with_scope(
+            &target,
+            &workspace_b,
+            &workspace_b,
+            Some(&make_scope(base_1, &["demo-core"], false)),
+        )?;
+        assert!(target.join(extra).is_dir());
+        super::prepare_with_scope(
+            &target,
+            &workspace_a,
+            &workspace_a,
+            Some(&make_scope(base_1, &["demo-core"], false)),
+        )?;
+        assert!(!target.join(extra).exists());
+
+        // Unknown incoming scope falls back to full invalidation.
+        seed_target_entry(&target, extra)?;
+        super::prepare_with_scope(&target, &workspace_b, &workspace_b, None)?;
+        assert!(!target.join(extra).exists());
+
+        // Legacy plain-text marker written by older builds falls back to full invalidation.
+        write_file(
+            &target.join(LAST_WORKSPACE_MARKER),
+            &super::workspace_identity(&workspace_a),
+        )?;
+        seed_target_entry(&target, extra)?;
+        super::prepare_with_scope(
+            &target,
+            &workspace_b,
+            &workspace_b,
+            Some(&make_scope(base_1, &["demo-core"], false)),
+        )?;
+        assert!(!target.join(extra).exists());
+        Ok(())
+    }
+
+    // Risk (#737): misclassifying manifest, lockfile, Cargo config, or unowned Rust edits as
+    // crate-scoped would leave stale local artifacts across workspace switches.
+    #[test]
+    fn scope_from_changed_paths_maps_crates_and_detects_workspace_inputs() {
+        use velocity_core::preflight::WorkspaceCrate;
+
+        let crates = vec![
+            WorkspaceCrate {
+                name: "demo-core".into(),
+                directory: "crates/demo-core".into(),
+                edition: "2024".into(),
+            },
+            WorkspaceCrate {
+                name: "demo-app".into(),
+                directory: "src-tauri".into(),
+                edition: "2024".into(),
+            },
+        ];
+
+        let scoped = super::scope_from_changed_paths(
+            "abc123",
+            &[
+                "crates/demo-core/src/lib.rs",
+                "ui/src/App.svelte",
+                "spec/note.md",
+            ],
+            &crates,
+        );
+        assert_eq!(scoped, Some(make_scope("abc123", &["demo-core"], false)));
+
+        for wide_input in [
+            "Cargo.toml",
+            "crates/demo-core/Cargo.toml",
+            "Cargo.lock",
+            ".cargo/config.toml",
+            "rust-toolchain.toml",
+            "clippy.toml",
+            "rosen.toml",
+            "proofs/fixtures/claim-lock.tsv",
+            "ui/src/lib/theme/tokens.css",
+            "outside/src/lib.rs",
+        ] {
+            let scope = super::scope_from_changed_paths("abc123", &[wide_input], &crates);
+            assert!(
+                scope.as_ref().is_some_and(|item| item.manifests_changed),
+                "expected manifests_changed for {wide_input}: {scope:?}"
+            );
+        }
+
+        assert!(
+            super::scope_from_changed_paths("", &["crates/demo-core/src/lib.rs"], &crates)
+                .is_none()
+        );
+        assert!(
+            super::scope_from_changed_paths("abc123", &["crates/demo-core/src/lib.rs"], &[])
+                .is_none()
+        );
     }
 }

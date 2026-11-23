@@ -361,6 +361,17 @@ impl QueuedRun {
         stop: &CancellationToken,
         sink: &RunStatusSink,
     ) -> Result<QueuedTurn, QueuedTurnError> {
+        let workspace_scope = if matches!(policy, AgentRun::RustCheck | AgentRun::Bindings) {
+            match launch.env_value("ROSEN_ENDPOINT") {
+                Some(endpoint) => tokio::select! {
+                    scope = velocity_rosen::light_target::inspect_workspace_scope(endpoint, worktree) => scope,
+                    () = stop.cancelled() => return Err(QueuedTurnError::Cancelled),
+                },
+                None => None,
+            }
+        } else {
+            None
+        };
         let class = self.command.run_class();
         let worktree = worktree.to_owned();
         let directory = directory.to_owned();
@@ -378,6 +389,7 @@ impl QueuedRun {
                 command_line: &command_line,
                 queue_override: queue_override.as_deref(),
                 timeout: DEFAULT_WAIT_TIMEOUT,
+                workspace_scope: workspace_scope.as_ref(),
             };
             acquire_with_ticket(
                 &request,

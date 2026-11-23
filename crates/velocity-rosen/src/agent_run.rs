@@ -601,7 +601,7 @@ fn execute_generator_light(
     passthrough: &[String],
 ) -> io::Result<ExitStatus> {
     let targets = light_targets(workspace_root);
-    let turn = light_turn(&targets, workspace_root, workspace_root)?;
+    let turn = light_turn(&targets, workspace_root, workspace_root, None)?;
     let target = turn.target();
     match execution {
         GeneratorExecution::Direct {
@@ -803,8 +803,11 @@ fn run_light(
         .ancestors()
         .find(|path| path.join(".rosen").exists() || path.join(".git").exists())
         .unwrap_or(&directory);
+    let scope = cli_endpoint_for_run(rosen_arguments).and_then(|endpoint| {
+        crate::light_target::inspect_workspace_scope_blocking(&endpoint, root)
+    });
     let targets = light_targets(root);
-    let turn = light_turn(&targets, root, &directory)?;
+    let turn = light_turn(&targets, root, &directory, scope.as_ref())?;
     light_command(rosen, rosen_arguments, program, turn.target(), passthrough)?
         .args(arguments)
         .status()
@@ -822,7 +825,7 @@ pub(crate) fn light_output(
     let rosen = crate::server::program_folder("rosen")
         .map(|folder| folder.join(executable_file("rosen")))
         .ok_or_else(|| io::Error::other("the rosen program was not found"))?;
-    let turn = light_turn(targets, directory, directory)?;
+    let turn = light_turn(targets, directory, directory, None)?;
     let passthrough = in_process_passthrough();
     light_command(
         &rosen,
@@ -856,6 +859,7 @@ fn light_turn(
     targets: &[PathBuf],
     workspace_root: &Path,
     directory: &Path,
+    scope: Option<&crate::light_target::WorkspaceScope>,
 ) -> io::Result<LightTurn> {
     let started = Instant::now();
     let identity = crate::light_target::workspace_identity(workspace_root);
@@ -865,7 +869,7 @@ fn light_turn(
         lock_light_target_with_timeout(targets, &identity, started, DEFAULT_WAIT_TIMEOUT)?;
     let slot = light_slot(started, DEFAULT_WAIT_TIMEOUT)?;
     wait_for_memory(started, DEFAULT_WAIT_TIMEOUT)?;
-    crate::light_target::prepare(&target, workspace_root, directory)?;
+    crate::light_target::prepare_with_scope(&target, workspace_root, directory, scope)?;
     Ok(LightTurn {
         _project: project,
         _slot: slot,

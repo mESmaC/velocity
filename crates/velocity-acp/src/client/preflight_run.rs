@@ -23,6 +23,7 @@ use velocity_core::rosen_checker::{
 };
 use velocity_rosen::agent_run::{AgentRun, toolchain_path_from};
 use velocity_rosen::landing::LandRefusal;
+use velocity_rosen::light_target::{WorkspaceScope, scope_from_changed_paths};
 use velocity_rosen::preflight::{
     PreflightSnapshot, RecordOutcome, discover_workspace_crates, inspect, record_outcome,
 };
@@ -280,7 +281,10 @@ impl StepRunner<'_> {
         }
         steps.extend(self.check_ui(&check_plan).await?);
         steps.extend(self.check_lockfiles(&check_plan).await?);
-        steps.extend(self.check_rust_and_bindings(&check_plan).await?);
+        steps.extend(
+            self.check_rust_and_bindings(snapshot, &context, &check_plan)
+                .await?,
+        );
         Ok(steps)
     }
 
@@ -446,6 +450,8 @@ impl StepRunner<'_> {
 
     async fn check_rust_and_bindings(
         &mut self,
+        snapshot: &PreflightSnapshot,
+        context: &PreflightContext,
         check_plan: &PreflightPlan,
     ) -> Result<Vec<StepOutcome>, Cancelled> {
         if !check_plan.needs_light_rust_turn() {
@@ -454,8 +460,9 @@ impl StepRunner<'_> {
                 "no touched Rust crates",
             )]);
         }
+        let workspace_scope = light_target_scope(snapshot, context);
         let wait_started = Instant::now();
-        let turn = match self.acquire_light_turn().await {
+        let turn = match self.acquire_light_turn(workspace_scope).await {
             Ok(turn) => {
                 let waited = u64::try_from(wait_started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 self.queue_wait_ms = self.queue_wait_ms.saturating_add(waited);
@@ -542,7 +549,10 @@ impl StepRunner<'_> {
         .await
     }
 
-    async fn acquire_light_turn(&self) -> Result<QueuedTurn, QueuedTurnError> {
+    async fn acquire_light_turn(
+        &self,
+        workspace_scope: Option<WorkspaceScope>,
+    ) -> Result<QueuedTurn, QueuedTurnError> {
         let worktree = self.worktree.to_owned();
         let directory = self.worktree.to_owned();
         let queue_override = self.launch.env_value(QUEUE_ENV).map(PathBuf::from);
@@ -556,6 +566,7 @@ impl StepRunner<'_> {
                 command_line: "preflight rust checks",
                 queue_override: queue_override.as_deref(),
                 timeout: DEFAULT_WAIT_TIMEOUT,
+                workspace_scope: workspace_scope.as_ref(),
             };
             acquire(&request, move || stop.is_cancelled())
         })
@@ -888,6 +899,25 @@ fn collect_symbol_names(
             output.push(format!("{path}::{name}"));
         }
     }
+}
+
+fn light_target_scope(
+    snapshot: &PreflightSnapshot,
+    context: &PreflightContext,
+) -> Option<WorkspaceScope> {
+    if !snapshot.unreadable.is_empty() || snapshot.workspace_tree != snapshot.diff_tree {
+        return None;
+    }
+    let changed_paths: Vec<&str> = snapshot
+        .files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect();
+    scope_from_changed_paths(
+        &snapshot.parent_tree.to_string(),
+        &changed_paths,
+        &context.crates,
+    )
 }
 
 fn build_context(worktree: &Path) -> PreflightContext {

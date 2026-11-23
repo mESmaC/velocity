@@ -27,7 +27,7 @@ pub mod integration;
 mod issue;
 pub mod landing;
 pub mod lean_cache;
-mod light_target;
+pub mod light_target;
 pub mod machine_dispatch;
 pub mod machines;
 pub mod mcp_filter;

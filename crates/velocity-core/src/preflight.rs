@@ -153,7 +153,7 @@ pub fn normalize_path(path: &str) -> String {
         .to_owned()
 }
 
-fn owning_crate<'a>(path: &str, crates: &'a [WorkspaceCrate]) -> Option<&'a WorkspaceCrate> {
+pub fn owning_crate<'a>(path: &str, crates: &'a [WorkspaceCrate]) -> Option<&'a WorkspaceCrate> {
     crates
         .iter()
         .filter(|item| path_in_directory(path, &item.directory))

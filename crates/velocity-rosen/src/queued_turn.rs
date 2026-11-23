@@ -58,6 +58,9 @@ pub struct QueuedTurnRequest<'a> {
     pub command_line: &'a str,
     pub queue_override: Option<&'a Path>,
     pub timeout: Duration,
+    /// Optional Rosen change scope used to narrow light-target fingerprint invalidation
+    /// when switching workspaces on the same base (#737).
+    pub workspace_scope: Option<&'a crate::light_target::WorkspaceScope>,
 }
 
 /// Live handle to an ordinary run's waiting ticket in Rosen's machine run queue (#665).
@@ -516,6 +519,7 @@ pub fn acquire_with_ticket(
             &queue,
             request.worktree,
             request.directory,
+            request.workspace_scope,
             request.timeout,
             &cancelled,
             &on_wait,
@@ -611,6 +615,7 @@ fn acquire_light(
     queue: &RunQueue,
     worktree: &Path,
     directory: &Path,
+    workspace_scope: Option<&crate::light_target::WorkspaceScope>,
     timeout: Duration,
     cancelled: &impl Fn() -> bool,
     on_wait: &impl Fn(&str),
@@ -651,7 +656,7 @@ fn acquire_light(
         "waiting for 3.0 GiB memory headroom above Rosen's reserve",
         || Ok(queue.memory_headroom().fits(LIGHT_MEMORY).then_some(())),
     )?;
-    crate::light_target::prepare(&target, worktree, directory)?;
+    crate::light_target::prepare_with_scope(&target, worktree, directory, workspace_scope)?;
     Ok(QueuedTurn::Light {
         _project: project,
         _slot: slot,
@@ -766,6 +771,7 @@ mod tests {
             command_line: "npm run check",
             queue_override: Some(queue_dir.path()),
             timeout: Duration::from_millis(80),
+            workspace_scope: None,
         };
         let result = acquire(&request, || false);
         drop(holder);

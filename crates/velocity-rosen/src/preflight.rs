@@ -46,6 +46,10 @@ pub struct PreflightSnapshot {
     pub head: ObjectId,
     pub workspace_tree: ObjectId,
     pub base: ObjectId,
+    /// Parent tree (`diff.from`) that `files` is computed against (#737).
+    pub parent_tree: ObjectId,
+    /// Target tree (`diff.to`) returned by Rosen's diff (#737).
+    pub diff_tree: ObjectId,
     pub review_mode: ReviewMode,
     pub pre_land_check_set: String,
     pub data_dir: Option<PathBuf>,
@@ -115,6 +119,8 @@ pub async fn inspect(endpoint: &str, worktree: &Path) -> Result<PreflightSnapsho
     } else {
         client.project_config(Some(land_check.base)).await?
     };
+    let parent_tree = diff.from;
+    let diff_tree = diff.to;
     let files = diff
         .files
         .into_iter()
@@ -128,6 +134,8 @@ pub async fn inspect(endpoint: &str, worktree: &Path) -> Result<PreflightSnapsho
         head: land_check.head,
         workspace_tree: report.tree,
         base: land_check.base,
+        parent_tree,
+        diff_tree,
         review_mode: config.config.review,
         pre_land_check_set: config.config.checks.pre_land.name,
         data_dir: local_data_dir(&status.data_dir),
