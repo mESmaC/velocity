@@ -60,7 +60,14 @@ pub struct LayoutState {
     /// Lightweight sidebar summaries `(titling_model, running_subagents)` updated without
     /// cloning background threads' transcripts (#553).
     live_summaries: BTreeMap<(u32, usize), (Option<String>, usize)>,
+    /// Highest store revision at which a full project projection was applied (#554).
     store_revision: Option<u32>,
+    /// Highest store revision applied per thread row in the active project when a single-row
+    /// update ran ahead of `store_revision` (#699).
+    thread_store_revisions: BTreeMap<usize, u32>,
+    /// Highest store revision at which `project_spec_locked` was updated from the store for the
+    /// active project (#699).
+    spec_locked_revision: Option<u32>,
     /// Highest store revision at which a project switch restored view selection (#698).
     restored_store_revision: Option<u32>,
     revision: u32,
@@ -180,6 +187,8 @@ impl Default for LayoutState {
             live: BTreeMap::new(),
             live_summaries: BTreeMap::new(),
             store_revision: None,
+            thread_store_revisions: BTreeMap::new(),
+            spec_locked_revision: None,
             restored_store_revision: None,
             revision: 0,
             transcript_revision: 0,
@@ -271,6 +280,8 @@ impl LayoutState {
     ) {
         if self.data.project_identifier != data.project_identifier {
             self.workspace_count = None;
+            self.thread_store_revisions.clear();
+            self.spec_locked_revision = None;
         }
         self.data = data;
         self.reset_project_view(selected_thread, search);
@@ -357,19 +368,79 @@ impl LayoutState {
         Self::revision_is_stale(self.store_revision, revision)
     }
 
+    fn thread_revision_is_stale(&self, identifier: usize, revision: u32) -> bool {
+        self.store_revision_is_stale(revision)
+            || Self::revision_is_stale(
+                self.thread_store_revisions.get(&identifier).copied(),
+                revision,
+            )
+    }
+
+    fn apply_store_spec_locked(&mut self, revision: u32, spec_locked: Option<bool>) {
+        if !Self::revision_is_stale(self.spec_locked_revision, revision) {
+            self.spec_locked_revision = Some(revision);
+            self.set_project_spec_locked(spec_locked);
+        }
+    }
+
+    fn retain_newer_thread_entries(&self, revision: u32, data: &mut LayoutData) {
+        if self.data.project_identifier != data.project_identifier
+            || self.thread_store_revisions.is_empty()
+        {
+            return;
+        }
+        for (&identifier, &row_revision) in &self.thread_store_revisions {
+            if !Self::revision_is_stale(Some(row_revision), revision) {
+                continue;
+            }
+            let Some(existing) = self
+                .data
+                .threads
+                .iter()
+                .find(|thread| thread.policy.identifier == identifier)
+            else {
+                continue;
+            };
+            let Some(incoming) = data
+                .threads
+                .iter_mut()
+                .find(|thread| thread.policy.identifier == identifier)
+            else {
+                continue;
+            };
+            let mut preserved = existing.clone();
+            if preserved.policy.group == ThreadGroup::Settled
+                && let (Some(incoming_detail), Some(preserved_detail)) =
+                    (&incoming.detail, &mut preserved.detail)
+                && preserved_detail.blocks.is_empty()
+                && !incoming_detail.blocks.is_empty()
+            {
+                preserved_detail.blocks = std::sync::Arc::clone(&incoming_detail.blocks);
+            }
+            *incoming = preserved;
+        }
+    }
+
+    fn prune_thread_store_revisions(&mut self, revision: u32) {
+        self.thread_store_revisions
+            .retain(|_, row_revision| Self::revision_is_stale(Some(*row_revision), revision));
+    }
+
     /// Applies store data extracted outside the layout lock, skipping stale revisions (#554).
     pub fn apply_store_data(
         &mut self,
         revision: u32,
-        data: LayoutData,
+        mut data: LayoutData,
         spec_locked: Option<bool>,
     ) -> bool {
         if self.store_revision_is_stale(revision) {
             return false;
         }
+        self.retain_newer_thread_entries(revision, &mut data);
         self.store_revision = Some(revision);
         self.replace_data(data);
-        self.set_project_spec_locked(spec_locked);
+        self.prune_thread_store_revisions(revision);
+        self.apply_store_spec_locked(revision, spec_locked);
         true
     }
 
@@ -381,7 +452,7 @@ impl LayoutState {
     pub fn restore_store_project(
         &mut self,
         revision: u32,
-        data: LayoutData,
+        mut data: LayoutData,
         selected_thread: Option<usize>,
         search: String,
         spec_locked: Option<bool>,
@@ -398,10 +469,12 @@ impl LayoutState {
             self.reset_project_view(selected_thread, search);
             return true;
         }
+        self.retain_newer_thread_entries(revision, &mut data);
         self.store_revision = Some(revision);
         self.restored_store_revision = Some(revision);
         self.restore_project(data, selected_thread, search);
-        self.set_project_spec_locked(spec_locked);
+        self.prune_thread_store_revisions(revision);
+        self.apply_store_spec_locked(revision, spec_locked);
         true
     }
 
@@ -435,7 +508,9 @@ impl LayoutState {
         }
     }
 
-    /// Replaces one thread row in place without rebuilding the rest of the sidebar (#554).
+    /// Replaces one thread row in place without rebuilding the rest of the sidebar (#554, #699).
+    /// Tracks revisions per row instead of advancing the whole-project `store_revision`, so a
+    /// higher-revision row update never drops an independent row's pending update.
     /// Returns `false` when the thread is missing or changed group/membership so the caller
     /// can fall back to a full refresh.
     pub fn replace_thread_entry(
@@ -445,14 +520,17 @@ impl LayoutState {
         mut entry: ThreadEntry,
         spec_locked: Option<bool>,
     ) -> bool {
-        if self.data.project_identifier != Some(project) || self.store_revision_is_stale(revision) {
+        let identifier = entry.policy.identifier;
+        if self.data.project_identifier != Some(project)
+            || self.thread_revision_is_stale(identifier, revision)
+        {
             return true;
         }
         let Some(existing) = self
             .data
             .threads
             .iter_mut()
-            .find(|thread| thread.policy.identifier == entry.policy.identifier)
+            .find(|thread| thread.policy.identifier == identifier)
         else {
             return false;
         };
@@ -463,14 +541,20 @@ impl LayoutState {
         }
         entry.policy.hidden = existing.policy.hidden;
         entry.policy.matches_search = existing.policy.matches_search;
-        if let (Some(previous), Some(next)) = (&existing.detail, &mut entry.detail)
-            && next.rosen_change.is_some()
-        {
-            next.show_work = previous.show_work;
+        if let (Some(previous), Some(next)) = (&existing.detail, &mut entry.detail) {
+            if next.rosen_change.is_some() {
+                next.show_work = previous.show_work;
+            }
+            if entry.policy.group == ThreadGroup::Settled
+                && next.blocks.is_empty()
+                && !previous.blocks.is_empty()
+            {
+                next.blocks = std::sync::Arc::clone(&previous.blocks);
+            }
         }
         *existing = entry;
-        self.store_revision = Some(revision);
-        self.set_project_spec_locked(spec_locked);
+        self.thread_store_revisions.insert(identifier, revision);
+        self.apply_store_spec_locked(revision, spec_locked);
         self.follow_selected_view();
         self.changed();
         true
@@ -483,6 +567,8 @@ impl LayoutState {
         self.retain_hydrated_settled_blocks(&mut data);
         if self.data.project_identifier != data.project_identifier {
             self.workspace_count = None;
+            self.thread_store_revisions.clear();
+            self.spec_locked_revision = None;
         }
         self.data = data;
         self.hide_pending_rows();
@@ -2797,5 +2883,143 @@ mod tests {
         assert_eq!(snapshot.project_identifier, Some(2));
         assert_eq!(snapshot.selected_thread, None);
         assert_eq!(snapshot.composer_text, "newer beta draft");
+    }
+
+    fn row_metadata(state: &LayoutState, identifier: usize) -> Option<String> {
+        state
+            .snapshot()
+            .groups
+            .into_iter()
+            .flat_map(|group| group.rows.into_iter())
+            .find(|row| row.identifier == identifier)
+            .map(|row| row.metadata)
+    }
+
+    // Risk (#699): concurrent single-row updates in the same project can arrive out of
+    // revision order (B at 11 before A at 10). Advancing a project-wide watermark on B's
+    // row write drops A's independent update while older data for the same row must stay
+    // suppressed.
+    #[test]
+    fn concurrent_streamed_rows_apply_independently_and_suppress_stale_same_row() {
+        let mut state = LayoutState::default();
+        let initial = project_data(
+            1,
+            "Velocity",
+            vec![
+                thread_row(10, ThreadGroup::Working, "Thread A", "idle"),
+                thread_row(20, ThreadGroup::Working, "Thread B", "idle"),
+            ],
+            crate::work_pool::WorkStatus::Claimed,
+        );
+        assert!(state.apply_store_data(9, initial, Some(true)));
+
+        // B at revision 11 applies before A at revision 10: both rows must become current.
+        assert!(state.replace_thread_entry(
+            1,
+            11,
+            thread_row(20, ThreadGroup::Working, "Thread B", "executing"),
+            Some(true),
+        ));
+        assert!(state.replace_thread_entry(
+            1,
+            10,
+            thread_row(10, ThreadGroup::Working, "Thread A", "thinking"),
+            Some(true),
+        ));
+        assert_eq!(row_metadata(&state, 10).as_deref(), Some("thinking"));
+        assert_eq!(row_metadata(&state, 20).as_deref(), Some("executing"));
+
+        // Older updates for the same row remain suppressed.
+        assert!(state.replace_thread_entry(
+            1,
+            10,
+            thread_row(20, ThreadGroup::Working, "Thread B", "stale-b"),
+            Some(true),
+        ));
+        assert!(state.replace_thread_entry(
+            1,
+            9,
+            thread_row(10, ThreadGroup::Working, "Thread A", "stale-a"),
+            Some(true),
+        ));
+        assert_eq!(row_metadata(&state, 10).as_deref(), Some("thinking"));
+        assert_eq!(row_metadata(&state, 20).as_deref(), Some("executing"));
+
+        // A full refresh at revision 12 supersedes older per-row revisions.
+        let refreshed = project_data(
+            1,
+            "Velocity",
+            vec![
+                thread_row(10, ThreadGroup::Working, "Thread A", "rev-12-a"),
+                thread_row(20, ThreadGroup::Working, "Thread B", "rev-12-b"),
+            ],
+            crate::work_pool::WorkStatus::InChange,
+        );
+        assert!(state.apply_store_data(12, refreshed, Some(true)));
+        assert!(state.replace_thread_entry(
+            1,
+            11,
+            thread_row(20, ThreadGroup::Working, "Thread B", "stale-after-full"),
+            Some(true),
+        ));
+        assert_eq!(row_metadata(&state, 10).as_deref(), Some("rev-12-a"));
+        assert_eq!(row_metadata(&state, 20).as_deref(), Some("rev-12-b"));
+    }
+
+    // Risk (#699): when row B applies at revision 11 ahead of revision 10 updates, a group
+    // transition for row A at revision 10 must still trigger the full-refresh fallback, and
+    // an out-of-order full refresh at revision 10 must apply project-wide changes without
+    // regressing row B or `spec_locked` from revision 11.
+    #[test]
+    fn higher_row_revision_preserves_fallback_and_survives_older_full_refresh() {
+        let mut state = LayoutState::default();
+        let initial = project_data(
+            1,
+            "Velocity",
+            vec![
+                thread_row(10, ThreadGroup::Working, "Thread A", "thinking"),
+                thread_row(20, ThreadGroup::Working, "Thread B", "idle"),
+            ],
+            crate::work_pool::WorkStatus::Claimed,
+        );
+        assert!(state.apply_store_data(9, initial, Some(false)));
+
+        assert!(state.replace_thread_entry(
+            1,
+            11,
+            thread_row(20, ThreadGroup::Working, "Thread B", "executing"),
+            Some(true),
+        ));
+        // A group transition at revision 10 must request the full refresh fallback.
+        assert!(!state.replace_thread_entry(
+            1,
+            10,
+            thread_row(10, ThreadGroup::Review, "Thread A", "named"),
+            Some(false),
+        ));
+
+        // An older full refresh at revision 10 still updates A and project work while keeping
+        // B's revision-11 row and revision-11 `spec_locked`.
+        let rev_10_full = project_data(
+            1,
+            "Velocity",
+            vec![
+                thread_row(10, ThreadGroup::Review, "Thread A", "named"),
+                thread_row(20, ThreadGroup::Working, "Thread B", "idle"),
+            ],
+            crate::work_pool::WorkStatus::InChange,
+        );
+        assert!(state.apply_store_data(10, rev_10_full, Some(false)));
+
+        let snapshot = state.snapshot();
+        assert!(snapshot.build_allowed);
+        let work_status = snapshot
+            .rosen_work
+            .as_ref()
+            .and_then(|work| work.items.first())
+            .map(|item| item.status);
+        assert_eq!(work_status, Some(crate::work_pool::WorkStatus::InChange));
+        assert_eq!(row_metadata(&state, 10).as_deref(), Some("named"));
+        assert_eq!(row_metadata(&state, 20).as_deref(), Some("executing"));
     }
 }
