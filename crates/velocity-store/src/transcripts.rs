@@ -68,7 +68,8 @@ fn partial_transcript_path(directory: &Path, project: u32, thread: u32) -> PathB
 
 /// Reads a thread's transcript from `transcripts/<project>/<thread>.jsonl`.
 /// Returns an empty `SharedBlocks` when no file exists. Tolerates a truncated final line
-/// after an abrupt crash so earlier blocks are preserved.
+/// (including a cut inside a multibyte UTF-8 character) after an abrupt crash so earlier
+/// blocks are preserved.
 pub fn read_transcript(
     directory: &Path,
     project: u32,
@@ -86,7 +87,9 @@ pub(crate) fn read_transcript_persisted(
     let path = transcript_path(directory, project, thread);
     let partial = partial_transcript_path(directory, project, thread);
     recover_partial_transcript(&partial, &path)?;
-    let contents = match fs::read_to_string(&path) {
+    // Read raw bytes so a torn multibyte UTF-8 sequence on a trailing line is discarded
+    // per line instead of failing whole-file UTF-8 decoding at startup (#702).
+    let contents = match fs::read(&path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(None);
@@ -137,15 +140,25 @@ fn all_lines_valid_blocks(contents: &str) -> bool {
         .all(|line| serde_json::from_str::<TranscriptBlock>(line).is_ok())
 }
 
-fn parse_jsonl_blocks(path: &Path, contents: &str) -> (Vec<TranscriptBlock>, bool) {
+fn is_blank_jsonl_line(line: &[u8]) -> bool {
+    std::str::from_utf8(line).is_ok_and(|text| text.trim().is_empty())
+}
+
+fn parse_jsonl_line(line: &[u8]) -> Result<TranscriptBlock, String> {
+    let text = std::str::from_utf8(line).map_err(|error| error.to_string())?;
+    serde_json::from_str::<TranscriptBlock>(text).map_err(|error| error.to_string())
+}
+
+fn parse_jsonl_blocks(path: &Path, contents: &[u8]) -> (Vec<TranscriptBlock>, bool) {
     let mut blocks = Vec::new();
     let mut all_valid = true;
-    let lines: Vec<&str> = contents
-        .lines()
-        .filter(|line| !line.trim().is_empty())
+    let lines: Vec<&[u8]> = contents
+        .split(|&byte| byte == b'\n')
+        .map(|line| line.strip_suffix(b"\r").unwrap_or(line))
+        .filter(|line| !is_blank_jsonl_line(line))
         .collect();
     for (index, line) in lines.iter().enumerate() {
-        match serde_json::from_str::<TranscriptBlock>(line) {
+        match parse_jsonl_line(line) {
             Ok(block) => blocks.push(block),
             Err(error) => {
                 all_valid = false;
@@ -162,7 +175,7 @@ fn parse_jsonl_blocks(path: &Path, contents: &str) -> (Vec<TranscriptBlock>, boo
             }
         }
     }
-    let clean = all_valid && (contents.is_empty() || contents.ends_with('\n'));
+    let clean = all_valid && (contents.is_empty() || contents.ends_with(b"\n"));
     (blocks, clean)
 }
 
@@ -470,4 +483,155 @@ pub(crate) fn hydrated_thread_ids(project: &ProjectItem, selected: Option<usize>
         current_id = previous;
     }
     ids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{StateStore, StoreLock, ThreadItem, save_pending};
+
+    fn temp_transcript_dir(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-transcripts-{tag}-{unique}"));
+        let _ignored = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory)?;
+        Ok(directory)
+    }
+
+    fn agent_block(text: &str) -> TranscriptBlock {
+        TranscriptBlock::AgentMessage {
+            paragraphs: vec![text.into()],
+        }
+    }
+
+    fn torn_utf8_fragment() -> Vec<u8> {
+        let mut fragment = br#"{"AgentMessage":{"paragraphs":[""#.to_vec();
+        fragment.extend_from_slice(&"é".as_bytes()[..1]);
+        fragment
+    }
+
+    fn append_thread_block(
+        store: &StoreLock,
+        thread_id: u32,
+        text: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut guard = store
+            .as_mutex()
+            .lock()
+            .map_err(|_| "store mutex poisoned")?;
+        guard.update_thread(1, thread_id, |thread| {
+            Arc::make_mut(&mut thread.transcript).push(agent_block(text));
+        })?;
+        Ok(())
+    }
+
+    // Risk (#702, #552, SPEC §2.2 and §3.2): a transcript append interrupted inside a
+    // multibyte UTF-8 character must not prevent store startup, must preserve all earlier
+    // complete blocks, and must keep subsequent appends independently readable.
+    #[test]
+    fn torn_utf8_tail_allows_store_restart_and_subsequent_appends()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = temp_transcript_dir("torn-utf8-restart")?;
+        let mut initial_store = StateStore::load_or_default(&directory)?;
+        let mut next = initial_store.state().clone();
+        let mut project = ProjectItem::new(1, "Recovery".into(), r"C:\recovery".into());
+        let mut thread = ThreadItem::new(7, "Active".into());
+        thread.state = ThreadState::Working;
+        thread.transcript = Arc::new(vec![agent_block("previously saved")]);
+        project.threads = vec![thread];
+        next.projects.push(project);
+        initial_store.store_snapshot(next)?;
+
+        let path = transcript_path(&directory, 1, 7);
+        let mut bytes = fs::read(&path)?;
+        bytes.extend_from_slice(&torn_utf8_fragment());
+        fs::write(&path, &bytes)?;
+        let utf8_error = fs::read_to_string(&path)
+            .err()
+            .ok_or("expected whole-file UTF-8 read to fail on torn byte")?;
+        assert_eq!(utf8_error.kind(), std::io::ErrorKind::InvalidData);
+
+        let inspected = read_transcript_persisted(&directory, 1, 7)?
+            .ok_or("expected first complete block to be recovered")?;
+        assert_eq!(inspected.confirmed_bytes, None);
+
+        let mut recovered = StateStore::load_or_default(&directory)?;
+        assert_eq!(
+            recovered.thread_transcript(1, 7).as_slice(),
+            &[agent_block("previously saved")]
+        );
+        recovered.defer_saves();
+        let store = StoreLock::new(recovered);
+        append_thread_block(&store, 7, "after recovery café")?;
+        assert!(save_pending(&store)?);
+        assert!(fs::read_to_string(&path)?.ends_with('\n'));
+
+        append_thread_block(&store, 7, "fast append after heal")?;
+        assert!(save_pending(&store)?);
+        let reloaded = StateStore::load_or_default(&directory)?;
+        assert_eq!(
+            reloaded.thread_transcript(1, 7).as_slice(),
+            &[
+                agent_block("previously saved"),
+                agent_block("after recovery café"),
+                agent_block("fast append after heal"),
+            ]
+        );
+        fs::remove_dir_all(&directory)?;
+        Ok(())
+    }
+
+    // Risk (#702, #552): invalid UTF-8 on the only line or between complete lines must
+    // still allow reading intact blocks and healing the file on the next write.
+    #[test]
+    fn torn_utf8_only_line_and_middle_line_preserve_readable_records()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = temp_transcript_dir("torn-utf8-lines")?;
+        let only_torn_path = transcript_path(&directory, 1, 8);
+        if let Some(parent) = only_torn_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let torn_fragment = torn_utf8_fragment();
+        fs::write(&only_torn_path, &torn_fragment)?;
+        assert!(read_transcript_persisted(&directory, 1, 8)?.is_none());
+        assert!(read_transcript(&directory, 1, 8)?.is_empty());
+
+        let first = Arc::new(vec![agent_block("fresh after torn first line")]);
+        write_transcript(&directory, 1, 8, None, &first)?;
+        assert_eq!(
+            read_transcript(&directory, 1, 8)?.as_slice(),
+            first.as_slice()
+        );
+
+        let middle_torn_path = transcript_path(&directory, 1, 9);
+        let mut mixed = serialize_jsonl(&[agent_block("before")])?;
+        mixed.extend_from_slice(&torn_fragment);
+        mixed.push(b'\n');
+        mixed.extend_from_slice(&serialize_jsonl(&[agent_block("after")])?);
+        fs::write(&middle_torn_path, &mixed)?;
+
+        let loaded = read_transcript_persisted(&directory, 1, 9)?
+            .ok_or("expected intact records around invalid UTF-8 line")?;
+        assert_eq!(loaded.confirmed_bytes, None);
+        assert_eq!(
+            loaded.blocks.as_slice(),
+            &[agent_block("before"), agent_block("after")]
+        );
+        let updated = Arc::new(vec![
+            agent_block("before"),
+            agent_block("after"),
+            agent_block("appended cleanly"),
+        ]);
+        let healed = write_transcript_persisted(&directory, 1, 9, Some(&loaded), &updated)?
+            .ok_or("expected confirmed persisted transcript after atomic rewrite")?;
+        assert!(healed.confirmed_bytes.is_some());
+        assert_eq!(
+            read_transcript(&directory, 1, 9)?.as_slice(),
+            updated.as_slice()
+        );
+        fs::remove_dir_all(&directory)?;
+        Ok(())
+    }
 }
