@@ -20,7 +20,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use velocity_core::thread_view_model::SharedBlocks;
 
-use crate::transcripts::{self, is_settled_state};
+use crate::transcripts::{self, PersistedTranscript, is_settled_state};
 use crate::{
     PARTIAL_STATE_FILE_NAME, PersistedState, ProjectItem, STATE_FILE_NAME, Settings, StoreError,
     ThreadItem, extended_windows_path, replace_with_retry,
@@ -172,8 +172,26 @@ fn read_split_project_readonly(
 
 pub(crate) struct LoadedState {
     pub state: PersistedState,
-    pub persisted_transcripts: BTreeMap<(u32, u32), SharedBlocks>,
+    pub persisted_transcripts: BTreeMap<(u32, u32), PersistedTranscript>,
     pub recovered_corrupt_snapshot: Option<PathBuf>,
+}
+
+/// Failure from [`write_incremental_snapshot`] together with any transcripts that
+/// already landed on disk and the transcript whose write failed (#700).
+pub(crate) struct SnapshotWriteFailure {
+    pub error: StoreError,
+    pub written_transcripts: BTreeMap<(u32, u32), Option<PersistedTranscript>>,
+    pub failed_transcript: Option<(u32, u32)>,
+}
+
+impl From<StoreError> for SnapshotWriteFailure {
+    fn from(error: StoreError) -> Self {
+        Self {
+            error,
+            written_transcripts: BTreeMap::new(),
+            failed_transcript: None,
+        }
+    }
 }
 
 fn project_active_path(directory: &Path, project_id: u32) -> PathBuf {
@@ -461,7 +479,7 @@ fn migrate_legacy_root(directory: &Path, root: RootStateFile) -> Result<LoadedSt
     for project in &mut projects {
         for thread in &mut project.threads {
             if !thread.transcript.is_empty() {
-                transcripts::write_transcript(
+                let persisted = transcripts::write_transcript_persisted(
                     directory,
                     project.id,
                     thread.id,
@@ -471,14 +489,14 @@ fn migrate_legacy_root(directory: &Path, root: RootStateFile) -> Result<LoadedSt
                 if is_settled_state(thread.state) {
                     thread.transcript = SharedBlocks::default();
                     thread.queued_run_history.clear();
-                } else {
-                    persisted_transcripts
-                        .insert((project.id, thread.id), Arc::clone(&thread.transcript));
+                } else if let Some(persisted) = persisted {
+                    persisted_transcripts.insert((project.id, thread.id), persisted);
                 }
             } else if !is_settled_state(thread.state) {
-                let loaded = transcripts::read_transcript(directory, project.id, thread.id)?;
-                if !loaded.is_empty() {
-                    thread.transcript = Arc::clone(&loaded);
+                if let Some(loaded) =
+                    transcripts::read_transcript_persisted(directory, project.id, thread.id)?
+                {
+                    thread.transcript = Arc::clone(&loaded.blocks);
                     persisted_transcripts.insert((project.id, thread.id), loaded);
                 }
             } else {
@@ -509,7 +527,7 @@ fn migrate_legacy_root(directory: &Path, root: RootStateFile) -> Result<LoadedSt
 fn load_split_project(
     directory: &Path,
     project_id: u32,
-    persisted_transcripts: &mut BTreeMap<(u32, u32), SharedBlocks>,
+    persisted_transcripts: &mut BTreeMap<(u32, u32), PersistedTranscript>,
 ) -> Result<(ProjectItem, u32), StoreError> {
     let active_path = project_active_path(directory, project_id);
     recover_partial_json::<ProjectActiveFile>(
@@ -541,12 +559,13 @@ fn load_split_project(
     let mut project = active_file.project;
     let mut active_threads = project.threads;
     for thread in &mut active_threads {
-        if thread.transcript.is_empty() && !is_settled_state(thread.state) {
-            let loaded = transcripts::read_transcript(directory, project_id, thread.id)?;
-            if !loaded.is_empty() {
-                thread.transcript = Arc::clone(&loaded);
-                persisted_transcripts.insert((project_id, thread.id), loaded);
-            }
+        if thread.transcript.is_empty()
+            && !is_settled_state(thread.state)
+            && let Some(loaded) =
+                transcripts::read_transcript_persisted(directory, project_id, thread.id)?
+        {
+            thread.transcript = Arc::clone(&loaded.blocks);
+            persisted_transcripts.insert((project_id, thread.id), loaded);
         }
     }
     project.threads =
@@ -610,15 +629,15 @@ fn settled_threads_equal(previous: &ProjectItem, current: &ProjectItem) -> bool 
 }
 
 /// Incrementally writes only the root/project/settled/transcript files that actually
-/// changed between `previous` and `current` (#552).
+/// changed between `previous` and `current` (#552, #700).
 pub(crate) fn write_incremental_snapshot(
     directory: &Path,
     previous: &PersistedState,
     current: &PersistedState,
     pending_transcripts: &BTreeMap<(u32, u32), SharedBlocks>,
     deleted_transcripts: &BTreeSet<(u32, u32)>,
-    previous_transcripts: &BTreeMap<(u32, u32), SharedBlocks>,
-) -> Result<(), StoreError> {
+    previous_transcripts: &BTreeMap<(u32, u32), PersistedTranscript>,
+) -> Result<BTreeMap<(u32, u32), Option<PersistedTranscript>>, SnapshotWriteFailure> {
     let root_changed = root_metadata_changed(previous, current);
     let mut newly_created_projects = Vec::new();
     for project in &current.projects {
@@ -638,7 +657,7 @@ pub(crate) fn write_incremental_snapshot(
         for project_id in newly_created_projects {
             remove_project_files(directory, project_id);
         }
-        return Err(error);
+        return Err(error.into());
     }
     for previous_project in &previous.projects {
         if !current
@@ -649,19 +668,12 @@ pub(crate) fn write_incremental_snapshot(
             remove_project_files(directory, previous_project.id);
         }
     }
-    for (&(project_id, thread_id), blocks) in pending_transcripts {
-        transcripts::write_transcript(
-            directory,
-            project_id,
-            thread_id,
-            previous_transcripts.get(&(project_id, thread_id)),
-            blocks,
-        )?;
-    }
+    let written_transcripts =
+        write_pending_transcripts(directory, pending_transcripts, previous_transcripts)?;
     for &(project_id, thread_id) in deleted_transcripts {
         transcripts::remove_transcript(directory, project_id, thread_id);
     }
-    Ok(())
+    Ok(written_transcripts)
 }
 
 fn write_changed_project(
@@ -709,6 +721,35 @@ fn write_changed_project(
         )?;
     }
     Ok(())
+}
+
+fn write_pending_transcripts(
+    directory: &Path,
+    pending_transcripts: &BTreeMap<(u32, u32), SharedBlocks>,
+    previous_transcripts: &BTreeMap<(u32, u32), PersistedTranscript>,
+) -> Result<BTreeMap<(u32, u32), Option<PersistedTranscript>>, SnapshotWriteFailure> {
+    let mut written_transcripts = BTreeMap::new();
+    for (&key, blocks) in pending_transcripts {
+        let (project_id, thread_id) = key;
+        let persisted = match transcripts::write_transcript_persisted(
+            directory,
+            project_id,
+            thread_id,
+            previous_transcripts.get(&key),
+            blocks,
+        ) {
+            Ok(persisted) => persisted,
+            Err(error) => {
+                return Err(SnapshotWriteFailure {
+                    error,
+                    written_transcripts,
+                    failed_transcript: Some(key),
+                });
+            }
+        };
+        written_transcripts.insert(key, persisted);
+    }
+    Ok(written_transcripts)
 }
 
 #[cfg(test)]

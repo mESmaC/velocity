@@ -21,6 +21,26 @@ pub const TRANSCRIPTS_DIR_NAME: &str = "transcripts";
 /// Maximum number of settled-thread transcripts retained in memory at once.
 const SETTLED_CACHE_CAPACITY: usize = 4;
 
+/// Confirmed on-disk transcript state used to decide whether appending a new
+/// suffix is safe without duplicating or corrupting existing JSONL lines (#700).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PersistedTranscript {
+    pub blocks: SharedBlocks,
+    /// Exact byte length of `transcripts/<project>/<thread>.jsonl` when every
+    /// line on disk cleanly matches `blocks` and ends with `\n`. `None` forces
+    /// an atomic rewrite on the next write.
+    pub confirmed_bytes: Option<u64>,
+}
+
+impl PersistedTranscript {
+    pub(crate) fn unconfirmed(blocks: SharedBlocks) -> Self {
+        Self {
+            blocks,
+            confirmed_bytes: None,
+        }
+    }
+}
+
 /// Whether `state` is a settled terminal state whose transcript is archived out of live state.
 pub fn is_settled_state(state: ThreadState) -> bool {
     matches!(state, ThreadState::Merged | ThreadState::Done)
@@ -54,13 +74,22 @@ pub fn read_transcript(
     project: u32,
     thread: u32,
 ) -> Result<SharedBlocks, StoreError> {
+    Ok(read_transcript_persisted(directory, project, thread)?
+        .map_or_else(SharedBlocks::default, |loaded| loaded.blocks))
+}
+
+pub(crate) fn read_transcript_persisted(
+    directory: &Path,
+    project: u32,
+    thread: u32,
+) -> Result<Option<PersistedTranscript>, StoreError> {
     let path = transcript_path(directory, project, thread);
     let partial = partial_transcript_path(directory, project, thread);
     recover_partial_transcript(&partial, &path)?;
     let contents = match fs::read_to_string(&path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(SharedBlocks::default());
+            return Ok(None);
         }
         Err(source) => {
             return Err(StoreError::ReadSnapshot {
@@ -69,7 +98,14 @@ pub fn read_transcript(
             });
         }
     };
-    Ok(Arc::new(parse_jsonl_blocks(&path, &contents)))
+    let (blocks, clean) = parse_jsonl_blocks(&path, &contents);
+    if blocks.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(PersistedTranscript {
+        blocks: Arc::new(blocks),
+        confirmed_bytes: clean.then_some(contents.len() as u64),
+    }))
 }
 
 fn recover_partial_transcript(partial: &Path, destination: &Path) -> Result<(), StoreError> {
@@ -101,8 +137,9 @@ fn all_lines_valid_blocks(contents: &str) -> bool {
         .all(|line| serde_json::from_str::<TranscriptBlock>(line).is_ok())
 }
 
-fn parse_jsonl_blocks(path: &Path, contents: &str) -> Vec<TranscriptBlock> {
+fn parse_jsonl_blocks(path: &Path, contents: &str) -> (Vec<TranscriptBlock>, bool) {
     let mut blocks = Vec::new();
+    let mut all_valid = true;
     let lines: Vec<&str> = contents
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -111,6 +148,7 @@ fn parse_jsonl_blocks(path: &Path, contents: &str) -> Vec<TranscriptBlock> {
         match serde_json::from_str::<TranscriptBlock>(line) {
             Ok(block) => blocks.push(block),
             Err(error) => {
+                all_valid = false;
                 let is_last = index + 1 == lines.len();
                 eprintln!(
                     "Ignoring unreadable transcript line {} in '{}' ({error}){}",
@@ -124,13 +162,14 @@ fn parse_jsonl_blocks(path: &Path, contents: &str) -> Vec<TranscriptBlock> {
             }
         }
     }
-    blocks
+    let clean = all_valid && (contents.is_empty() || contents.ends_with('\n'));
+    (blocks, clean)
 }
 
 /// Persists `current` to `transcripts/<project>/<thread>.jsonl`.
-/// Appends only newly arrived blocks when `previous` is an exact prefix and the file exists;
-/// otherwise writes atomically via a `.partial` file. Never creates directories for empty
-/// transcripts.
+/// Rewrites atomically via a `.partial` file when no confirmed byte length is known,
+/// so direct callers remain retry-safe even with a stale prefix (#700). Never creates
+/// directories for empty transcripts.
 pub fn write_transcript(
     directory: &Path,
     project: u32,
@@ -138,14 +177,30 @@ pub fn write_transcript(
     previous: Option<&SharedBlocks>,
     current: &SharedBlocks,
 ) -> Result<(), StoreError> {
-    if previous
-        .is_some_and(|prev| Arc::ptr_eq(prev, current) || prev.as_slice() == current.as_slice())
+    let tracked = previous.map(|blocks| PersistedTranscript::unconfirmed(Arc::clone(blocks)));
+    write_transcript_persisted(directory, project, thread, tracked.as_ref(), current)?;
+    Ok(())
+}
+
+/// Persists `current` to `transcripts/<project>/<thread>.jsonl`, returning the confirmed
+/// on-disk transcript state. Appends only newly arrived blocks when `previous` is an exact
+/// prefix and the file on disk still matches `previous.confirmed_bytes`; otherwise writes
+/// atomically via a `.partial` file (#700).
+pub(crate) fn write_transcript_persisted(
+    directory: &Path,
+    project: u32,
+    thread: u32,
+    previous: Option<&PersistedTranscript>,
+    current: &SharedBlocks,
+) -> Result<Option<PersistedTranscript>, StoreError> {
+    if let Some(prev) = previous
+        && (Arc::ptr_eq(&prev.blocks, current) || prev.blocks.as_slice() == current.as_slice())
     {
-        return Ok(());
+        return Ok((!current.is_empty()).then(|| prev.clone()));
     }
     if current.is_empty() {
         remove_transcript(directory, project, thread);
-        return Ok(());
+        return Ok(None);
     }
     let path = transcript_path(directory, project, thread);
     if let Some(parent) = path.parent() {
@@ -155,14 +210,23 @@ pub fn write_transcript(
         })?;
     }
     if let Some(prev) = previous
-        && !prev.is_empty()
-        && current.len() > prev.len()
-        && current[..prev.len()] == prev[..]
-        && path.exists()
+        && let Some(expected_bytes) = prev.confirmed_bytes
+        && !prev.blocks.is_empty()
+        && current.len() > prev.blocks.len()
+        && current[..prev.blocks.len()] == prev.blocks[..]
+        && fs::metadata(&path).is_ok_and(|meta| meta.is_file() && meta.len() == expected_bytes)
     {
-        return append_blocks(&path, &current[prev.len()..]);
+        let appended_bytes = append_blocks(&path, &current[prev.blocks.len()..])?;
+        return Ok(Some(PersistedTranscript {
+            blocks: Arc::clone(current),
+            confirmed_bytes: expected_bytes.checked_add(appended_bytes),
+        }));
     }
-    rewrite_transcript_atomic(directory, project, thread, &path, current)
+    let written_bytes = rewrite_transcript_atomic(directory, project, thread, &path, current)?;
+    Ok(Some(PersistedTranscript {
+        blocks: Arc::clone(current),
+        confirmed_bytes: Some(written_bytes),
+    }))
 }
 
 fn serialize_jsonl(blocks: &[TranscriptBlock]) -> Result<Vec<u8>, StoreError> {
@@ -175,7 +239,7 @@ fn serialize_jsonl(blocks: &[TranscriptBlock]) -> Result<Vec<u8>, StoreError> {
     Ok(buffer)
 }
 
-fn append_blocks(path: &Path, added: &[TranscriptBlock]) -> Result<(), StoreError> {
+fn append_blocks(path: &Path, added: &[TranscriptBlock]) -> Result<u64, StoreError> {
     let bytes = serialize_jsonl(added)?;
     let mut file = OpenOptions::new()
         .append(true)
@@ -192,7 +256,8 @@ fn append_blocks(path: &Path, added: &[TranscriptBlock]) -> Result<(), StoreErro
     file.flush().map_err(|source| StoreError::SyncPartial {
         path: path.display().to_string(),
         source,
-    })
+    })?;
+    Ok(bytes.len() as u64)
 }
 
 fn rewrite_transcript_atomic(
@@ -201,7 +266,7 @@ fn rewrite_transcript_atomic(
     thread: u32,
     destination: &Path,
     blocks: &[TranscriptBlock],
-) -> Result<(), StoreError> {
+) -> Result<u64, StoreError> {
     let bytes = serialize_jsonl(blocks)?;
     let partial = partial_transcript_path(directory, project, thread);
     let mut file = File::create(&partial).map_err(|source| StoreError::WritePartial {
@@ -222,7 +287,8 @@ fn rewrite_transcript_atomic(
         partial: partial.display().to_string(),
         destination: destination.display().to_string(),
         source,
-    })
+    })?;
+    Ok(bytes.len() as u64)
 }
 
 /// Removes a deleted thread's transcript file and prunes empty transcript parent folders.

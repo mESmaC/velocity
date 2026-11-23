@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use velocity_core::thread_view_model::SharedBlocks;
 
 use crate::storage;
-use crate::transcripts::{self, is_settled_state};
+use crate::transcripts::{self, PersistedTranscript, is_settled_state};
 use crate::{PersistedState, ProjectItem, StateStore, StoreError, StoreLock};
 
 struct TranscriptDelta {
@@ -50,11 +50,11 @@ impl StateStore {
         next.revision = self.state.revision.wrapping_add(1);
         let delta = self.prepare_transcript_delta(&mut next);
         if !self.deferred_saves {
-            self.write_delta_immediately(&next, &delta)?;
+            let written = self.write_delta_immediately(&next, &delta)?;
             self.state.replace(next);
             self.disk_state = self.state.arc();
             self.disk_revision = self.state.revision;
-            self.apply_persisted_delta(delta);
+            self.apply_persisted_delta(delta, written);
             return Ok(());
         }
         self.apply_deferred_delta(delta);
@@ -74,37 +74,50 @@ impl StateStore {
             self.apply_deferred_delta(delta);
             return Ok(());
         }
-        if delta.needs_state_adjustment() {
+        let written = if delta.needs_state_adjustment() {
             let mut next = self.state.clone();
             Self::apply_state_transcript_adjustments(&mut next, &delta);
-            if let Err(error) = self.write_delta_immediately(&next, &delta) {
-                self.state.revision = previous_revision;
-                return Err(error);
+            match self.write_delta_immediately(&next, &delta) {
+                Ok(written) => {
+                    self.state.replace(next);
+                    written
+                }
+                Err(error) => {
+                    self.state.revision = previous_revision;
+                    return Err(error);
+                }
             }
-            self.state.replace(next);
-        } else if let Err(error) = self.write_delta_immediately(&self.state, &delta) {
-            self.state.revision = previous_revision;
-            return Err(error);
-        }
+        } else {
+            let current = self.state.arc();
+            match self.write_delta_immediately(&current, &delta) {
+                Ok(written) => written,
+                Err(error) => {
+                    self.state.revision = previous_revision;
+                    return Err(error);
+                }
+            }
+        };
         self.disk_state = self.state.arc();
         self.disk_revision = self.state.revision;
-        self.apply_persisted_delta(delta);
+        self.apply_persisted_delta(delta, written);
         Ok(())
     }
 
     /// Flushes the current in-memory state immediately (used by `save_if_changed`).
     pub(crate) fn flush_immediate(&mut self) -> Result<(), StoreError> {
         let delta = self.collect_transcript_delta(&self.state);
-        if delta.needs_state_adjustment() {
+        let written = if delta.needs_state_adjustment() {
             let mut next = self.state.clone();
             Self::apply_state_transcript_adjustments(&mut next, &delta);
-            self.write_delta_immediately(&next, &delta)?;
+            let written = self.write_delta_immediately(&next, &delta)?;
             self.state.replace(next);
+            written
         } else {
-            self.write_delta_immediately(&self.state, &delta)?;
-        }
+            let current = self.state.arc();
+            self.write_delta_immediately(&current, &delta)?
+        };
         self.disk_state = self.state.arc();
-        self.apply_persisted_delta(delta);
+        self.apply_persisted_delta(delta, written);
         Ok(())
     }
 
@@ -194,10 +207,11 @@ impl StateStore {
                     continue;
                 }
                 if !thread.transcript.is_empty() {
-                    let known = self
-                        .pending_transcripts
-                        .get(&key)
-                        .or_else(|| self.persisted_transcripts.get(&key));
+                    let known = self.pending_transcripts.get(&key).or_else(|| {
+                        self.persisted_transcripts
+                            .get(&key)
+                            .map(|entry| &entry.blocks)
+                    });
                     let changed = known.is_none_or(|prev| {
                         !Arc::ptr_eq(prev, &thread.transcript)
                             && prev.as_slice() != thread.transcript.as_slice()
@@ -303,10 +317,10 @@ impl StateStore {
     }
 
     fn write_delta_immediately(
-        &self,
+        &mut self,
         next: &PersistedState,
         delta: &TranscriptDelta,
-    ) -> Result<(), StoreError> {
+    ) -> Result<BTreeMap<(u32, u32), Option<PersistedTranscript>>, StoreError> {
         let mut pending = self.pending_transcripts.clone();
         for (key, blocks) in &delta.pending {
             pending.insert(*key, Arc::clone(blocks));
@@ -319,19 +333,60 @@ impl StateStore {
         for key in delta.pending.keys() {
             deleted.remove(key);
         }
-        storage::write_incremental_snapshot(
+        match storage::write_incremental_snapshot(
             &self.directory,
             &self.disk_state,
             next,
             &pending,
             &deleted,
             &self.persisted_transcripts,
-        )
+        ) {
+            Ok(written) => Ok(written),
+            Err(failure) => {
+                self.apply_written_transcripts(failure.written_transcripts);
+                if let Some(key) = failure.failed_transcript {
+                    self.persisted_transcripts.remove(&key);
+                }
+                Err(failure.error)
+            }
+        }
+    }
+
+    fn apply_written_transcripts(
+        &mut self,
+        written: BTreeMap<(u32, u32), Option<PersistedTranscript>>,
+    ) {
+        for (key, persisted) in written {
+            let same_as_queued = match (&persisted, self.pending_transcripts.get(&key)) {
+                (Some(entry), Some(queued)) => {
+                    Arc::ptr_eq(queued, &entry.blocks)
+                        || queued.as_slice() == entry.blocks.as_slice()
+                }
+                (None, Some(queued)) => queued.is_empty(),
+                _ => false,
+            };
+            if same_as_queued {
+                self.pending_transcripts.remove(&key);
+            }
+            match persisted {
+                Some(entry)
+                    if !self.deleted_transcripts.contains(&key)
+                        && !self.is_settled_in_state(key)
+                        && !entry.blocks.is_empty() =>
+                {
+                    self.persisted_transcripts.insert(key, entry);
+                }
+                _ => {
+                    self.persisted_transcripts.remove(&key);
+                }
+            }
+        }
     }
 
     fn apply_deferred_delta(&mut self, delta: TranscriptDelta) {
         for (key, blocks) in delta.reopened {
-            self.persisted_transcripts.insert(key, blocks);
+            self.persisted_transcripts
+                .insert(key, PersistedTranscript::unconfirmed(blocks));
             self.settled_transcripts.remove(key);
         }
         for (key, blocks) in delta.pending {
@@ -348,25 +403,24 @@ impl StateStore {
         }
     }
 
-    fn apply_persisted_delta(&mut self, delta: TranscriptDelta) {
+    fn apply_persisted_delta(
+        &mut self,
+        delta: TranscriptDelta,
+        written: BTreeMap<(u32, u32), Option<PersistedTranscript>>,
+    ) {
         let existing_pending = std::mem::take(&mut self.pending_transcripts);
         let existing_deleted = std::mem::take(&mut self.deleted_transcripts);
         for (key, blocks) in delta.reopened {
-            self.persisted_transcripts.insert(key, blocks);
+            self.persisted_transcripts
+                .insert(key, PersistedTranscript::unconfirmed(blocks));
             self.settled_transcripts.remove(key);
         }
         for (key, blocks) in existing_pending.into_iter().chain(delta.pending) {
-            if self.is_settled_in_state(key) {
-                self.persisted_transcripts.remove(&key);
-                if !blocks.is_empty() {
-                    self.settled_transcripts.insert(key, blocks);
-                }
-            } else if blocks.is_empty() {
-                self.persisted_transcripts.remove(&key);
-            } else {
-                self.persisted_transcripts.insert(key, blocks);
+            if self.is_settled_in_state(key) && !blocks.is_empty() {
+                self.settled_transcripts.insert(key, blocks);
             }
         }
+        self.apply_written_transcripts(written);
         for key in existing_deleted.into_iter().chain(delta.deleted) {
             self.persisted_transcripts.remove(&key);
             self.settled_transcripts.remove(key);
@@ -386,7 +440,7 @@ struct SaveBatch {
     current: Arc<PersistedState>,
     pending: BTreeMap<(u32, u32), SharedBlocks>,
     deleted: BTreeSet<(u32, u32)>,
-    previous_transcripts: BTreeMap<(u32, u32), SharedBlocks>,
+    previous_transcripts: BTreeMap<(u32, u32), PersistedTranscript>,
 }
 
 fn take_save_batch(store: &StoreLock, lock_time: &mut Duration) -> Option<SaveBatch> {
@@ -400,7 +454,7 @@ fn take_save_batch(store: &StoreLock, lock_time: &mut Duration) -> Option<SaveBa
                 guard
                     .persisted_transcripts
                     .get(key)
-                    .map(|blocks| (*key, Arc::clone(blocks)))
+                    .map(|entry| (*key, entry.clone()))
             })
             .collect();
         SaveBatch {
@@ -418,13 +472,24 @@ fn take_save_batch(store: &StoreLock, lock_time: &mut Duration) -> Option<SaveBa
 
 fn restore_failed_batch(
     store: &StoreLock,
-    pending: BTreeMap<(u32, u32), SharedBlocks>,
+    mut pending: BTreeMap<(u32, u32), SharedBlocks>,
     deleted: BTreeSet<(u32, u32)>,
+    written: BTreeMap<(u32, u32), Option<PersistedTranscript>>,
+    failed_transcript: Option<(u32, u32)>,
     lock_time: &mut Duration,
 ) {
     let mut guard = store.lock().unwrap_or_else(PoisonError::into_inner);
+    for key in written.keys() {
+        pending.remove(key);
+    }
+    guard.apply_written_transcripts(written);
+    if let Some(key) = failed_transcript {
+        guard.persisted_transcripts.remove(&key);
+    }
     for (key, blocks) in pending {
-        guard.pending_transcripts.entry(key).or_insert(blocks);
+        if !guard.deleted_transcripts.contains(&key) {
+            guard.pending_transcripts.entry(key).or_insert(blocks);
+        }
     }
     for key in deleted {
         if !guard.pending_transcripts.contains_key(&key) {
@@ -437,20 +502,14 @@ fn restore_failed_batch(
 fn finish_save_batch(
     store: &StoreLock,
     current: Arc<PersistedState>,
-    pending: BTreeMap<(u32, u32), SharedBlocks>,
+    written: BTreeMap<(u32, u32), Option<PersistedTranscript>>,
     deleted: BTreeSet<(u32, u32)>,
     lock_time: &mut Duration,
 ) {
     let mut guard = store.lock().unwrap_or_else(PoisonError::into_inner);
     guard.disk_revision = current.revision;
     guard.disk_state = current;
-    for (key, blocks) in pending {
-        if guard.is_settled_in_state(key) || blocks.is_empty() {
-            guard.persisted_transcripts.remove(&key);
-        } else {
-            guard.persisted_transcripts.insert(key, blocks);
-        }
-    }
+    guard.apply_written_transcripts(written);
     for key in deleted {
         guard.persisted_transcripts.remove(&key);
     }
@@ -481,7 +540,7 @@ pub fn save_pending(store: &StoreLock) -> Result<bool, StoreError> {
     let Some(batch) = take_save_batch(store, &mut lock_time) else {
         return Ok(false);
     };
-    if let Err(error) = storage::write_incremental_snapshot(
+    let written = match storage::write_incremental_snapshot(
         &batch.directory,
         &batch.previous,
         &batch.current,
@@ -489,17 +548,21 @@ pub fn save_pending(store: &StoreLock) -> Result<bool, StoreError> {
         &batch.deleted,
         &batch.previous_transcripts,
     ) {
-        restore_failed_batch(store, batch.pending, batch.deleted, &mut lock_time);
-        velocity_core::performance::record_save(save_started.elapsed(), lock_time);
-        return Err(error);
-    }
-    finish_save_batch(
-        store,
-        batch.current,
-        batch.pending,
-        batch.deleted,
-        &mut lock_time,
-    );
+        Ok(written) => written,
+        Err(failure) => {
+            restore_failed_batch(
+                store,
+                batch.pending,
+                batch.deleted,
+                failure.written_transcripts,
+                failure.failed_transcript,
+                &mut lock_time,
+            );
+            velocity_core::performance::record_save(save_started.elapsed(), lock_time);
+            return Err(failure.error);
+        }
+    };
+    finish_save_batch(store, batch.current, written, batch.deleted, &mut lock_time);
     velocity_core::performance::record_save(save_started.elapsed(), lock_time);
     Ok(true)
 }
@@ -714,9 +777,106 @@ mod tests {
             &store,
             BTreeMap::new(),
             BTreeSet::new(),
+            BTreeMap::new(),
+            None,
             &mut restore_lock_time,
         );
         assert!(save_behind_caller_count(&velocity_core::performance::snapshot()) >= 4);
+        std::fs::remove_dir_all(&directory)?;
+        Ok(())
+    }
+
+    fn working_thread(id: u32, prompt: &str) -> ThreadItem {
+        let mut thread = ThreadItem::new(id, format!("Thread {id}"));
+        thread.state = ThreadState::Working;
+        thread.transcript = Arc::new(vec![TranscriptBlock::UserMessage {
+            text: prompt.into(),
+            queued: false,
+        }]);
+        thread
+    }
+
+    fn append_agent_reply(
+        store: &StoreLock,
+        thread_id: u32,
+        text: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut guard = store
+            .as_mutex()
+            .lock()
+            .map_err(|_| "store mutex poisoned")?;
+        guard.update_thread(1, thread_id, |thread| {
+            Arc::make_mut(&mut thread.transcript).push(TranscriptBlock::AgentMessage {
+                paragraphs: vec![text.into()],
+            });
+        })?;
+        Ok(())
+    }
+
+    // Risk (#700, #552, SPEC §2.2): if an earlier thread's transcript appends cleanly in
+    // a save batch and a later thread's transcript fails, retrying the batch must not
+    // append the first thread's new block a second time, and subsequent blocks on the
+    // first thread must still append cleanly.
+    #[test]
+    fn retrying_partial_save_batch_does_not_duplicate_transcript_blocks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-700-{unique}"));
+        let _ignored = std::fs::remove_dir_all(&directory);
+        let mut raw_store = StateStore::load_or_default(&directory)?;
+        raw_store.defer_saves();
+        let mut next = raw_store.state().clone();
+        let mut project = ProjectItem::new(1, "Retry".into(), r"C:\retry".into());
+        project.threads = vec![working_thread(1, "prior 1"), working_thread(2, "prior 2")];
+        next.projects.push(project);
+        raw_store.store_snapshot(next)?;
+
+        let store = StoreLock::new(raw_store);
+        assert!(save_pending(&store)?);
+        append_agent_reply(&store, 1, "new 1")?;
+        append_agent_reply(&store, 2, "new 2")?;
+
+        // Force thread 2's transcript write to fail after thread 1's append succeeds.
+        let path_two = transcripts::transcript_path(&directory, 1, 2);
+        let original_two = std::fs::read(&path_two)?;
+        std::fs::remove_file(&path_two)?;
+        std::fs::create_dir(&path_two)?;
+        assert!(save_pending(&store).is_err());
+
+        // Restore thread 2's prior file and retry the failed batch.
+        std::fs::remove_dir(&path_two)?;
+        std::fs::write(&path_two, &original_two)?;
+        assert_eq!(transcripts::read_transcript(&directory, 1, 1)?.len(), 2);
+        assert!(save_pending(&store)?);
+
+        let reloaded = StateStore::load_or_default(&directory)?;
+        let expected_one = vec![
+            TranscriptBlock::UserMessage {
+                text: "prior 1".into(),
+                queued: false,
+            },
+            TranscriptBlock::AgentMessage {
+                paragraphs: vec!["new 1".into()],
+            },
+        ];
+        let expected_two = vec![
+            TranscriptBlock::UserMessage {
+                text: "prior 2".into(),
+                queued: false,
+            },
+            TranscriptBlock::AgentMessage {
+                paragraphs: vec!["new 2".into()],
+            },
+        ];
+        assert_eq!(reloaded.thread_transcript(1, 1).as_slice(), expected_one);
+        assert_eq!(reloaded.thread_transcript(1, 2).as_slice(), expected_two);
+
+        // A further block on thread 1 after recovery still appends cleanly once.
+        append_agent_reply(&store, 1, "follow-up 1")?;
+        assert!(save_pending(&store)?);
+        assert_eq!(transcripts::read_transcript(&directory, 1, 1)?.len(), 3);
         std::fs::remove_dir_all(&directory)?;
         Ok(())
     }

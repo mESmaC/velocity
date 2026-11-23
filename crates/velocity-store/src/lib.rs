@@ -1856,7 +1856,7 @@ pub struct StateStore {
     /// Held while a background save writes, so writes happen in revision order.
     write_lock: Arc<Mutex<()>>,
     /// Last transcript confirmed written to `transcripts/<project>/<thread>.jsonl`.
-    persisted_transcripts: BTreeMap<(u32, u32), velocity_core::thread_view_model::SharedBlocks>,
+    persisted_transcripts: BTreeMap<(u32, u32), transcripts::PersistedTranscript>,
     /// Transcript updates waiting to be written to `transcripts/<project>/<thread>.jsonl`.
     pending_transcripts: BTreeMap<(u32, u32), velocity_core::thread_view_model::SharedBlocks>,
     /// Deleted threads whose transcript files should be removed from disk.
