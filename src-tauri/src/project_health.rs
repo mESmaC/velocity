@@ -13,8 +13,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use velocity_core::base_ci::{
-    BaseCiSource, BaseCiState, CommitOrder, OpenRepair, RepairThreadState,
-    format_ci_repair_action_for_source,
+    BaseCi, BaseCiSource, BaseCiState, CommitOrder, OpenRepair, RepairCandidate, RepairThreadState,
+    format_ci_repair_action_for_source, matching_base_ci_failure, repair_health_failing_commit,
+    select_ci_repair_index,
 };
 use velocity_core::collapse::{
     COLLAPSE_ISSUES_NOT_IMPORTED_SIGNAL, ForwarderState, IssueHost,
@@ -2737,14 +2738,17 @@ async fn check_base_red(
     if let Some(ci) = &project.base_ci
         && ci.state == BaseCiState::Failed
     {
-        let open = selected_ci_repair(application, project, server, ci.commit.as_deref()).await;
-        let repair_thread = open
+        let selected = selected_ci_repair(application, project, server, ci).await;
+        let open = selected.as_ref().map(|item| &item.repair);
+        let repair_failing_commit = selected
             .as_ref()
+            .and_then(|item| item.failing_commit.as_deref());
+        let repair_thread = open
             .filter(|repair| repair.thread_state != RepairThreadState::Deleted)
             .map(|repair| repair.thread);
         let action = format_ci_repair_action_for_source(
-            open.as_ref(),
-            ci.commit.as_deref(),
+            open,
+            repair_failing_commit,
             project.spec_locked,
             ci.source,
         );
@@ -2838,18 +2842,20 @@ async fn check_integration_red(
     )
 }
 
-async fn selected_ci_repair(
-    application: &AppHandle,
-    project: &ProjectItem,
-    server: &ProjectServer,
-    failing_commit: Option<&str>,
-) -> Option<OpenRepair> {
-    let repair = project
+struct SelectedCiRepair {
+    repair: OpenRepair,
+    failing_commit: Option<String>,
+}
+
+fn repair_candidates(project: &ProjectItem) -> Vec<RepairCandidate<'_>> {
+    project
         .ci_repairs
         .iter()
-        .rev()
-        .find(|candidate| {
-            candidate.landed_commit.is_none()
+        .map(|candidate| RepairCandidate {
+            workflow_key: candidate.workflow_key.as_deref().unwrap_or(""),
+            workflow: &candidate.workflow,
+            job: &candidate.job,
+            active: candidate.landed_commit.is_none()
                 && project.threads.iter().any(|thread| {
                     thread.id == candidate.thread
                         && matches!(
@@ -2859,9 +2865,20 @@ async fn selected_ci_repair(
                                 | ThreadState::Working
                                 | ThreadState::Review
                         )
-                })
+                }),
         })
-        .or_else(|| project.ci_repairs.last())?;
+        .collect()
+}
+
+async fn selected_ci_repair(
+    application: &AppHandle,
+    project: &ProjectItem,
+    server: &ProjectServer,
+    ci: &BaseCi,
+) -> Option<SelectedCiRepair> {
+    let candidates = repair_candidates(project);
+    let index = select_ci_repair_index(&candidates, ci)?;
+    let repair = project.ci_repairs.get(index)?;
     let thread = project
         .threads
         .iter()
@@ -2877,23 +2894,33 @@ async fn selected_ci_repair(
         crate::base_ci::resolve_repair_landed_commit(application, Some(server), repair, thread)
             .await;
     let thread_state = crate::base_ci::repair_thread_state(thread, landed_commit.as_deref(), live);
-    let commit_order = match (landed_commit.as_deref(), failing_commit) {
+    let matched = matching_base_ci_failure(
+        ci,
+        repair.workflow_key.as_deref().unwrap_or(""),
+        &repair.workflow,
+        &repair.job,
+    );
+    let failing_commit = repair_health_failing_commit(thread_state, matched).map(str::to_owned);
+    let commit_order = match (landed_commit.as_deref(), failing_commit.as_deref()) {
         (Some(landed), Some(failing)) => {
             crate::base_ci::resolve_commit_order(application, Some(server), landed, failing).await
         }
         _ => CommitOrder::Unknown,
     };
-    Some(OpenRepair {
-        workflow_key: repair.workflow_key.clone().unwrap_or_default(),
-        workflow: repair.workflow.clone(),
-        job: repair.job.clone(),
-        commit: repair.commit.clone(),
-        run: repair.run,
-        thread: repair.thread,
-        landed_commit,
-        signature: repair.signature.clone(),
-        thread_state,
-        commit_order,
+    Some(SelectedCiRepair {
+        repair: OpenRepair {
+            workflow_key: repair.workflow_key.clone().unwrap_or_default(),
+            workflow: repair.workflow.clone(),
+            job: repair.job.clone(),
+            commit: repair.commit.clone(),
+            run: repair.run,
+            thread: repair.thread,
+            landed_commit,
+            signature: repair.signature.clone(),
+            thread_state,
+            commit_order,
+        },
+        failing_commit,
     })
 }
 

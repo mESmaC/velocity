@@ -250,7 +250,7 @@ impl StateStore {
 
 #[cfg(test)]
 mod tests {
-    use velocity_core::base_ci::{BaseCi, BaseCiState, FailedJob, Failure};
+    use velocity_core::base_ci::{BaseCi, BaseCiFailure, BaseCiState, FailedJob, Failure};
 
     use crate::threads::NewThread;
     use crate::{ProjectItem, StateStore};
@@ -296,6 +296,14 @@ mod tests {
             state: BaseCiState::Failed,
             commit: Some(failure.commit.clone()),
             failing: vec!["Build · test (macos-latest)".into()],
+            failures: vec![BaseCiFailure {
+                workflow_key: "Build".into(),
+                workflow: "Build".into(),
+                job: "test (macos-latest)".into(),
+                commit: failure.commit.clone(),
+                run: failure.run,
+                waiting: false,
+            }],
             running: false,
         };
         assert!(store.save_base_ci(1, Some(failing.clone()))?);

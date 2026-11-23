@@ -71,6 +71,41 @@ pub fn effective_base_ci_source(
     saved_ci_source.unwrap_or(BaseCiSource::GitHub)
 }
 
+/// One failing workflow job persisted on [`BaseCi`] so project health pairs each open
+/// repair with its own workflow and job's failing commit (#697).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BaseCiFailure {
+    /// Stable workflow identity key (#653). Empty falls back to `workflow`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub workflow_key: String,
+    /// Workflow display name, commit status context, or `<app> · <check>`.
+    #[serde(default)]
+    pub workflow: String,
+    /// Failing job name (or [`WHOLE_RUN`]).
+    #[serde(default)]
+    pub job: String,
+    /// Base commit of this job's newest failing run.
+    #[serde(default)]
+    pub commit: String,
+    /// GitHub run ID or Rosen session ID of this failing run (0 for statuses or check runs).
+    #[serde(default)]
+    pub run: u64,
+    /// Whether a newer run of the same workflow already has this job queued or running (#587).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub waiting: bool,
+}
+
+impl BaseCiFailure {
+    /// Stable workflow identity key, falling back to the display name when unset (#653).
+    pub fn identity(&self) -> &str {
+        effective_workflow_key(&self.workflow_key, &self.workflow)
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// The CI state of a project's base on its GitHub mirror or Rosen per-platform post-land
 /// checks, kept with the project so it shows at startup before the next read (#507, #591).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +121,11 @@ pub struct BaseCi {
     /// The failing jobs as `<workflow> · <job>`.
     #[serde(default)]
     pub failing: Vec<String>,
+    /// Per-job failing run details corresponding to `failing` (#697). Saved state and backend
+    /// health only; the frontend reads `failing` and `commit`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "bindings", specta(skip))]
+    pub failures: Vec<BaseCiFailure>,
     /// A newer run is queued or in progress, as after a fix lands.
     #[serde(default)]
     pub running: bool,
@@ -1567,6 +1607,150 @@ fn short_sha(commit: &str) -> &str {
     }
 }
 
+/// The failure record inside [`BaseCi`] paired with one open CI repair (#697).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchedBaseCiFailure<'a> {
+    /// Base commit of this repair's own workflow and job failure.
+    pub commit: &'a str,
+    /// True when a newer run of the same workflow already has this job queued or running (#587).
+    pub waiting: bool,
+}
+
+/// Minimal repair metadata used to choose which open repair project health displays (#697).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RepairCandidate<'a> {
+    pub workflow_key: &'a str,
+    pub workflow: &'a str,
+    pub job: &'a str,
+    pub active: bool,
+}
+
+/// Pairs one open CI repair with its own workflow/job failure inside `ci`, mirroring the
+/// poller's `matching_repair_failure` and `repair_is_waiting` rules (#697).
+///
+/// Never returns another workflow's failing commit. When `ci.failures` is empty (a legacy
+/// `BaseCi` persisted before #697), falls back to `ci.commit` only when `ci.failing` names
+/// this repair's job alone.
+pub fn matching_base_ci_failure<'a>(
+    ci: &'a BaseCi,
+    workflow_key: &str,
+    workflow: &str,
+    job: &str,
+) -> Option<MatchedBaseCiFailure<'a>> {
+    if ci.failures.is_empty() {
+        let label = job_label(workflow, job);
+        if ci.failing.len() == 1 && ci.failing[0] == label {
+            return ci
+                .commit
+                .as_deref()
+                .map(str::trim)
+                .filter(|commit| !commit.is_empty())
+                .map(|commit| MatchedBaseCiFailure {
+                    commit,
+                    waiting: false,
+                });
+        }
+        return None;
+    }
+    let matches_workflow = |entry: &&BaseCiFailure| {
+        workflow_matches_repair(workflow_key, workflow, entry.identity(), &entry.workflow)
+    };
+    let matched = ci
+        .failures
+        .iter()
+        .filter(|entry| matches_workflow(entry) && entry.job == job && entry.waiting)
+        .max_by_key(|entry| entry.run)
+        .or_else(|| {
+            ci.failures
+                .iter()
+                .filter(|entry| matches_workflow(entry) && entry.job == job && !entry.waiting)
+                .max_by_key(|entry| entry.run)
+        })
+        .or_else(|| {
+            ci.failures
+                .iter()
+                .filter(|entry| matches_workflow(entry) && !entry.waiting)
+                .max_by_key(|entry| entry.run)
+        })?;
+    let commit = matched.commit.trim();
+    (!commit.is_empty()).then_some(MatchedBaseCiFailure {
+        commit,
+        waiting: matched.waiting,
+    })
+}
+
+/// Returns the failing commit project health should compare and display for one repair (#697).
+///
+/// For a landed repair whose matching job already has a newer run queued or in progress,
+/// returns `None` so health reports waiting for CI instead of claiming a replacement is queued.
+pub fn repair_health_failing_commit<'a>(
+    thread_state: RepairThreadState,
+    matched: Option<MatchedBaseCiFailure<'a>>,
+) -> Option<&'a str> {
+    let matched = matched?;
+    if matched.waiting && thread_state == RepairThreadState::Landed {
+        return None;
+    }
+    Some(matched.commit)
+}
+
+/// Picks the open repair index project health should pair with `ci` (#697).
+///
+/// Prefers the newest active repair whose workflow/job currently fails in `ci`, then the
+/// newest active repair overall, then the newest repair matching a current failure in `ci`,
+/// and finally the newest repair overall.
+pub fn select_ci_repair_index(candidates: &[RepairCandidate<'_>], ci: &BaseCi) -> Option<usize> {
+    let matches_ci = |candidate: &RepairCandidate<'_>| {
+        matching_base_ci_failure(
+            ci,
+            candidate.workflow_key,
+            candidate.workflow,
+            candidate.job,
+        )
+        .is_some()
+    };
+    candidates
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, candidate)| candidate.active && matches_ci(candidate))
+        .or_else(|| {
+            candidates
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, candidate)| candidate.active)
+        })
+        .or_else(|| {
+            candidates
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, candidate)| matches_ci(candidate))
+        })
+        .map(|(index, _)| index)
+        .or_else(|| candidates.len().checked_sub(1))
+}
+
+fn base_ci_failures(active: &[Failure], waiting: &[Failure]) -> Vec<BaseCiFailure> {
+    let mut entries = Vec::new();
+    for (failures, is_waiting) in [(active, false), (waiting, true)] {
+        for failure in failures {
+            for job in &failure.jobs {
+                entries.push(BaseCiFailure {
+                    workflow_key: failure.identity().to_owned(),
+                    workflow: failure.workflow.clone(),
+                    job: job.job.clone(),
+                    commit: failure.commit.clone(),
+                    run: failure.run,
+                    waiting: is_waiting,
+                });
+            }
+        }
+    }
+    entries
+}
+
 /// What the project shows. A failure decides before a running check does: the base stays
 /// failing until the workflow's next run finishes green.
 pub fn view(verdict: &Verdict, failures: &[Failure]) -> BaseCi {
@@ -1593,6 +1777,7 @@ pub fn view(verdict: &Verdict, failures: &[Failure]) -> BaseCi {
         state,
         commit: verdict.commit.clone(),
         failing,
+        failures: base_ci_failures(failures, &[]),
         running: verdict.running,
     }
 }
@@ -1625,6 +1810,7 @@ pub fn view_for_verdict(verdict: &JobVerdict) -> BaseCi {
         state,
         commit: verdict.commit.clone(),
         failing,
+        failures: base_ci_failures(&verdict.active_failures, &verdict.waiting_failures),
         running: verdict.running,
     }
 }
@@ -1860,6 +2046,7 @@ fn build_rosen_base_view(snapshot: &RosenBaseSnapshot, verdict: &JobVerdict) -> 
         state,
         commit,
         failing,
+        failures: base_ci_failures(&verdict.active_failures, &verdict.waiting_failures),
         running: verdict.running,
     }
 }
@@ -3389,6 +3576,201 @@ test collapse_link::collapse_link_and_unlink_round_trip_with_live_server has bee
                 run: 101,
                 has_newer_workflow_run: false,
             }]
+        );
+    }
+
+    // Risk (#697): project health must pair a selected repair with its own workflow/job
+    // failing commit rather than project-wide `BaseCi::commit`, so another workflow's newer
+    // red commit never causes health to claim a queued replacement while the poller waits.
+    #[test]
+    fn health_pairs_repair_with_its_own_workflow_and_job_failure() {
+        let c1 = "1111111111111111111111111111111111111111";
+        let c2 = "2222222222222222222222222222222222222222";
+        let c3 = "3333333333333333333333333333333333333333";
+        let c4 = "4444444444444444444444444444444444444444";
+
+        // 1. Exact two-workflow #697 fixture: Build landed at c3 but its latest failed run is
+        // still c2; Docs failed later at c4 with its same-error repair already terminal.
+        let build_run = BaseRun {
+            workflow_key: "workflow:1".into(),
+            commit: c2.into(),
+            ..run("Build", 10, RunState::Failed)
+        };
+        let docs_run = BaseRun {
+            workflow_key: "workflow:2".into(),
+            commit: c4.into(),
+            ..run("Docs", 20, RunState::Failed)
+        };
+        let mut jobs = BTreeMap::new();
+        jobs.insert(10, vec![RunJob::Failed(failed_job("test"))]);
+        jobs.insert(20, vec![RunJob::Failed(failed_job("lint"))]);
+        let verdict = evaluate_jobs(&[build_run.clone(), docs_run.clone()], &jobs);
+        let view = view_for_verdict(&verdict);
+        assert_eq!(view.commit.as_deref(), Some(c4));
+        assert_eq!(view.failures.len(), 2);
+
+        let candidates = [
+            RepairCandidate {
+                workflow_key: "workflow:2",
+                workflow: "Docs",
+                job: "lint",
+                active: false,
+            },
+            RepairCandidate {
+                workflow_key: "workflow:1",
+                workflow: "Build",
+                job: "test",
+                active: false,
+            },
+        ];
+        assert_eq!(select_ci_repair_index(&candidates, &view), Some(1));
+        let matched = matching_base_ci_failure(&view, "workflow:1", "Build", "test");
+        assert_eq!(
+            matched,
+            Some(MatchedBaseCiFailure {
+                commit: c2,
+                waiting: false,
+            })
+        );
+        let failing_commit = repair_health_failing_commit(RepairThreadState::Landed, matched);
+        assert_eq!(failing_commit, Some(c2));
+
+        let build_repair = OpenRepair {
+            workflow_key: "workflow:1".into(),
+            workflow: "Build".into(),
+            job: "test".into(),
+            commit: c2.into(),
+            run: 10,
+            thread: 12,
+            landed_commit: Some(c3.into()),
+            thread_state: RepairThreadState::Landed,
+            commit_order: CommitOrder::BeforeLand,
+            ..OpenRepair::default()
+        };
+        let docs_repair = OpenRepair {
+            workflow_key: "workflow:2".into(),
+            workflow: "Docs".into(),
+            job: "lint".into(),
+            commit: c1.into(),
+            run: 5,
+            thread: 11,
+            thread_state: RepairThreadState::Error,
+            ..OpenRepair::default()
+        };
+        let poller_plan = plan_for_verdict(&[docs_repair, build_repair.clone()], &verdict);
+        assert!(poller_plan.superseded.is_empty());
+        assert!(poller_plan.start.is_empty());
+
+        let action = format_ci_repair_action(Some(&build_repair), failing_commit, true);
+        assert!(
+            action.contains("waiting for CI on 333333333333"),
+            "{action}"
+        );
+        assert!(!action.contains("new fix-forward queued"), "{action}");
+
+        // 2. Once Build itself fails at c4 (after c3), health matches c4 and reports the
+        // queued replacement, matching the poller.
+        let build_after_land = BaseRun {
+            workflow_key: "workflow:1".into(),
+            commit: c4.into(),
+            ..run("Build", 30, RunState::Failed)
+        };
+        jobs.insert(30, vec![RunJob::Failed(failed_job("test"))]);
+        let after_verdict = evaluate_jobs(&[build_run, docs_run, build_after_land.clone()], &jobs);
+        let after_view = view_for_verdict(&after_verdict);
+        let after_matched = matching_base_ci_failure(&after_view, "workflow:1", "Build", "test");
+        assert_eq!(
+            after_matched,
+            Some(MatchedBaseCiFailure {
+                commit: c4,
+                waiting: false,
+            })
+        );
+        let after_repair = OpenRepair {
+            commit_order: CommitOrder::AtOrAfterLand,
+            ..build_repair.clone()
+        };
+        let after_plan = plan_for_verdict(std::slice::from_ref(&after_repair), &after_verdict);
+        assert_eq!(after_plan.superseded.len(), 1);
+        let after_action = format_ci_repair_action(
+            Some(&after_repair),
+            repair_health_failing_commit(RepairThreadState::Landed, after_matched),
+            true,
+        );
+        assert!(
+            after_action.contains("latest failure 444444444444 is newer than its land"),
+            "{after_action}"
+        );
+        assert!(
+            after_action.contains("new fix-forward queued"),
+            "{after_action}"
+        );
+
+        // 3. When a newer Build run is already running `test`, the poller waits and health
+        // must also report waiting for CI rather than queuing a replacement.
+        let build_running = BaseRun {
+            workflow_key: "workflow:1".into(),
+            commit: c4.into(),
+            ..run("Build", 31, RunState::Running)
+        };
+        jobs.insert(31, vec![RunJob::Running("test".into())]);
+        let waiting_verdict = evaluate_jobs(&[build_after_land, build_running], &jobs);
+        let waiting_view = view_for_verdict(&waiting_verdict);
+        let waiting_matched =
+            matching_base_ci_failure(&waiting_view, "workflow:1", "Build", "test");
+        assert_eq!(
+            waiting_matched,
+            Some(MatchedBaseCiFailure {
+                commit: c4,
+                waiting: true,
+            })
+        );
+        assert!(
+            plan_for_verdict(std::slice::from_ref(&after_repair), &waiting_verdict)
+                .superseded
+                .is_empty()
+        );
+        let waiting_commit =
+            repair_health_failing_commit(RepairThreadState::Landed, waiting_matched);
+        assert_eq!(waiting_commit, None);
+        let waiting_repair = OpenRepair {
+            commit_order: CommitOrder::Unknown,
+            ..build_repair
+        };
+        let waiting_action = format_ci_repair_action(Some(&waiting_repair), waiting_commit, true);
+        assert!(
+            waiting_action.contains("waiting for CI"),
+            "{waiting_action}"
+        );
+        assert!(
+            !waiting_action.contains("new fix-forward queued"),
+            "{waiting_action}"
+        );
+
+        // 4. Legacy BaseCi without `failures` never guesses across multiple failing jobs, and
+        // only falls back to `ci.commit` when the single failing entry matches the repair.
+        let legacy_multi = BaseCi {
+            source: BaseCiSource::GitHub,
+            state: BaseCiState::Failed,
+            commit: Some(c4.into()),
+            failing: vec!["Build · test".into(), "Docs · lint".into()],
+            failures: Vec::new(),
+            running: false,
+        };
+        assert_eq!(
+            matching_base_ci_failure(&legacy_multi, "workflow:1", "Build", "test"),
+            None
+        );
+        let legacy_single = BaseCi {
+            failing: vec!["Build · test".into()],
+            ..legacy_multi
+        };
+        assert_eq!(
+            matching_base_ci_failure(&legacy_single, "workflow:1", "Build", "test"),
+            Some(MatchedBaseCiFailure {
+                commit: c4,
+                waiting: false,
+            })
         );
     }
 }

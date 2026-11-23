@@ -783,6 +783,7 @@ mod tests {
                 commit: Some("a".repeat(40)),
                 failing: Vec::new(),
                 running: false,
+                ..BaseCi::default()
             }),
         )?;
 
@@ -879,6 +880,7 @@ mod tests {
                 commit: None,
                 failing: vec!["ci".into()],
                 running: false,
+                ..BaseCi::default()
             }),
         )?;
         assert!(store.backfill_collapse_issue_host(1, "mESmaC/velocity")?);
