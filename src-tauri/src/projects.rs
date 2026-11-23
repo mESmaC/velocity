@@ -62,34 +62,38 @@ pub async fn switch_project(window: Window, identifier: u32) -> Result<LayoutSna
                 .map_err(|error| error.to_string())?
         };
         switched.refresh.hydrate_from_disk();
-        let snapshot = {
+        let (snapshot, applied) = {
             let layout = window.state::<MainLayout>();
             let mut layout = layout.lock().map_err(|error| error.to_string())?;
-            layout.restore_store_project(
+            let applied = layout.restore_store_project(
                 switched.refresh.revision,
                 switched.refresh.data,
                 switched.selected_thread,
                 switched.search,
                 switched.refresh.spec_locked,
             );
-            velocity_interview::overlay_live_for_project(
-                window.state::<velocity_interview::Interviews>().inner(),
-                switched.refresh.active_project,
-                &mut layout,
-            );
-            layout.snapshot()
+            if applied {
+                velocity_interview::overlay_live_for_project(
+                    window.state::<velocity_interview::Interviews>().inner(),
+                    switched.refresh.active_project,
+                    &mut layout,
+                );
+            }
+            (layout.snapshot(), applied)
         };
-        crate::layout::publish(&window, &snapshot, None)?;
-        publish_selection(&window, switched.projects, switched.selection)?;
-        crate::skills::recheck_suggestions(
-            window.app_handle(),
-            identifier,
-            crate::skills::SuggestionCheck::Opened,
-        );
-        crate::project_health::recheck_collapse_import_if_unchecked(
-            window.app_handle(),
-            identifier,
-        );
+        if applied {
+            crate::layout::publish(&window, &snapshot, None)?;
+            publish_selection(&window, switched.projects, switched.selection)?;
+            crate::skills::recheck_suggestions(
+                window.app_handle(),
+                identifier,
+                crate::skills::SuggestionCheck::Opened,
+            );
+            crate::project_health::recheck_collapse_import_if_unchecked(
+                window.app_handle(),
+                identifier,
+            );
+        }
         Ok(snapshot)
     })
     .await

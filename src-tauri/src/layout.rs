@@ -398,7 +398,7 @@ type DispatchSnapshot = (
 );
 
 /// Hydrates any uncached settled transcripts outside both locks, restores the switched
-/// project into `MainLayout`, overlays live interviews, and snapshots (#554, #669).
+/// project into `MainLayout`, overlays live interviews, and snapshots (#554, #669, #698).
 pub(crate) fn apply_project_switch(
     application: &AppHandle,
     mut switched: velocity_store::projects::ProjectSwitchData,
@@ -408,22 +408,24 @@ pub(crate) fn apply_project_switch(
     let mut state = layout
         .lock()
         .map_err(|error| format!("Could not update main-window state: {error}"))?;
-    state.restore_store_project(
+    let applied = state.restore_store_project(
         switched.refresh.revision,
         switched.refresh.data,
         switched.selected_thread,
         switched.search,
         switched.refresh.spec_locked,
     );
-    velocity_interview::overlay_live_for_project(
-        application.state::<Interviews>().inner(),
-        switched.refresh.active_project,
-        &mut state,
-    );
+    if applied {
+        velocity_interview::overlay_live_for_project(
+            application.state::<Interviews>().inner(),
+            switched.refresh.active_project,
+            &mut state,
+        );
+    }
     Ok((
         state.snapshot(),
         state.selected_thread_key(),
-        Some((switched.projects, switched.selection)),
+        applied.then_some((switched.projects, switched.selection)),
     ))
 }
 

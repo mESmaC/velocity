@@ -171,7 +171,7 @@ impl StateStore {
         let current_search = layout.search_query().to_owned();
         let mut switched = self.select_project(requested, &current_search)?;
         switched.refresh.hydrate_from_disk();
-        layout.restore_store_project(
+        let _ = layout.restore_store_project(
             switched.refresh.revision,
             switched.refresh.data,
             switched.selected_thread,
@@ -433,15 +433,68 @@ mod tests {
         );
 
         switched.refresh.hydrate_from_disk();
-        layout.restore_store_project(
+        assert!(layout.restore_store_project(
             switched.refresh.revision,
             switched.refresh.data,
             switched.selected_thread,
             switched.search,
             switched.refresh.spec_locked,
-        );
+        ));
         assert_eq!(layout.snapshot().project_identifier, Some(2));
         assert!(layout.has_thread_blocks(5));
+
+        std::fs::remove_dir_all(&directory)?;
+        Ok(())
+    }
+
+    // Risk (#698): releasing ManagedStateStore before restoring MainLayout allows a newer
+    // refresh for the newly active project to apply first; the delayed switch restore must
+    // keep the newer projection while still resetting transient input and restoring selection.
+    #[test]
+    fn delayed_project_switch_after_intervening_refresh_keeps_newer_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-698-{unique}"));
+        let _ignored = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory)?;
+        seed_two_projects_with_settled_threads(&directory)?;
+
+        let mut store = StateStore::load_or_default(&directory)?;
+        let mut layout = LayoutState::default();
+        store.restore_project_layout(&mut layout);
+        layout.apply(LayoutAction::SidebarSearch("alpha filter".into()));
+        layout.apply(LayoutAction::ComposerText("alpha draft".into()));
+
+        let mut switched = store.select_project(2, "")?;
+        switched.refresh.hydrate_from_disk();
+
+        let _ = store.add_task(2, "Newer Beta task".into())?;
+        let mut newer_refresh = store.layout_refresh();
+        newer_refresh.hydrate_from_disk();
+        assert!(newer_refresh.apply(&mut layout));
+
+        assert!(layout.restore_store_project(
+            switched.refresh.revision,
+            switched.refresh.data,
+            switched.selected_thread,
+            switched.search,
+            switched.refresh.spec_locked,
+        ));
+
+        let snapshot = layout.snapshot();
+        assert_eq!(snapshot.project_identifier, Some(2));
+        assert_eq!(snapshot.selected_thread, Some(5));
+        assert_eq!(snapshot.search, "");
+        assert_eq!(snapshot.composer_text, "");
+        assert!(layout.has_thread_blocks(5));
+        assert!(
+            snapshot
+                .tasks
+                .iter()
+                .any(|task| task.title == "Newer Beta task")
+        );
 
         std::fs::remove_dir_all(&directory)?;
         Ok(())

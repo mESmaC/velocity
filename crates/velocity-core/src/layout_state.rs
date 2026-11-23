@@ -61,6 +61,8 @@ pub struct LayoutState {
     /// cloning background threads' transcripts (#553).
     live_summaries: BTreeMap<(u32, usize), (Option<String>, usize)>,
     store_revision: Option<u32>,
+    /// Highest store revision at which a project switch restored view selection (#698).
+    restored_store_revision: Option<u32>,
     revision: u32,
     /// Monotonic revision of the active thread's transcript blocks for delta sync (#553).
     transcript_revision: u32,
@@ -178,6 +180,7 @@ impl Default for LayoutState {
             live: BTreeMap::new(),
             live_summaries: BTreeMap::new(),
             store_revision: None,
+            restored_store_revision: None,
             revision: 0,
             transcript_revision: 0,
             view: NavigationView::Home,
@@ -270,6 +273,10 @@ impl LayoutState {
             self.workspace_count = None;
         }
         self.data = data;
+        self.reset_project_view(selected_thread, search);
+    }
+
+    fn reset_project_view(&mut self, selected_thread: Option<usize>, search: String) {
         self.hide_pending_rows();
         self.search = search;
         self.palette_open = false;
@@ -342,9 +349,12 @@ impl LayoutState {
         }
     }
 
+    fn revision_is_stale(current: Option<u32>, revision: u32) -> bool {
+        current.is_some_and(|current| (current.wrapping_sub(revision) as i32) > 0)
+    }
+
     fn store_revision_is_stale(&self, revision: u32) -> bool {
-        self.store_revision
-            .is_some_and(|current| (current.wrapping_sub(revision) as i32) > 0)
+        Self::revision_is_stale(self.store_revision, revision)
     }
 
     /// Applies store data extracted outside the layout lock, skipping stale revisions (#554).
@@ -363,7 +373,11 @@ impl LayoutState {
         true
     }
 
-    /// Restores a switched project from data extracted before releasing the store lock (#554).
+    /// Restores a switched project from data extracted before releasing the store lock (#554, #698).
+    /// When a newer store revision has already arrived for the same project, preserves that newer
+    /// projection and `spec_locked` while still resetting transient state and applying the switch's
+    /// saved thread selection. Returns `false` if a newer switch or a newer projection for another
+    /// project has already superseded this switch.
     pub fn restore_store_project(
         &mut self,
         revision: u32,
@@ -371,10 +385,54 @@ impl LayoutState {
         selected_thread: Option<usize>,
         search: String,
         spec_locked: Option<bool>,
-    ) {
+    ) -> bool {
+        if Self::revision_is_stale(self.restored_store_revision, revision) {
+            return false;
+        }
+        if self.store_revision_is_stale(revision) {
+            if self.data.project_identifier != data.project_identifier {
+                return false;
+            }
+            self.restored_store_revision = Some(revision);
+            self.merge_hydrated_settled_blocks(&data);
+            self.reset_project_view(selected_thread, search);
+            return true;
+        }
         self.store_revision = Some(revision);
+        self.restored_store_revision = Some(revision);
         self.restore_project(data, selected_thread, search);
         self.set_project_spec_locked(spec_locked);
+        true
+    }
+
+    fn merge_hydrated_settled_blocks(&mut self, source: &LayoutData) {
+        if self.data.project_identifier != source.project_identifier {
+            return;
+        }
+        for entry in &mut self.data.threads {
+            if entry.policy.group != ThreadGroup::Settled {
+                continue;
+            }
+            let Some(detail) = &mut entry.detail else {
+                continue;
+            };
+            if !detail.blocks.is_empty() {
+                continue;
+            }
+            if let Some(blocks) = source
+                .threads
+                .iter()
+                .find(|candidate| {
+                    candidate.policy.identifier == entry.policy.identifier
+                        && candidate.policy.group == ThreadGroup::Settled
+                })
+                .and_then(|candidate| candidate.detail.as_ref())
+                .filter(|candidate| !candidate.blocks.is_empty())
+                .map(|candidate| std::sync::Arc::clone(&candidate.blocks))
+            {
+                detail.blocks = blocks;
+            }
+        }
     }
 
     /// Replaces one thread row in place without rebuilding the rest of the sidebar (#554).
@@ -2563,5 +2621,181 @@ mod tests {
         assert!(state.apply(alt_digit(1)).is_none());
         assert_eq!(state.snapshot().view, NavigationView::Thread);
         assert_eq!(state.snapshot().selected_thread, Some(10));
+    }
+
+    fn work_item(number: u32, status: crate::work_pool::WorkStatus) -> crate::work_pool::WorkItem {
+        crate::work_pool::WorkItem {
+            key: crate::work_pool::WorkKey::issue("owner/repo", number),
+            title: format!("Issue {number}"),
+            thread_identifier: Some(5),
+            change: Some("chg123".into()),
+            status,
+            claimed_at: None,
+            updated_at: None,
+            landed_at: None,
+            green_at: None,
+            reverted_at: None,
+            landed_commit: None,
+            revert_reason: None,
+        }
+    }
+
+    fn project_data(
+        project: u32,
+        name: &str,
+        threads: Vec<ThreadEntry>,
+        status: crate::work_pool::WorkStatus,
+    ) -> LayoutData {
+        LayoutData {
+            project_identifier: Some(project),
+            project_name: name.into(),
+            threads,
+            rosen_work: Some(RosenWorkView {
+                items: vec![work_item(698, status)],
+                expanded_issues: Vec::new(),
+            }),
+            ..LayoutData::default()
+        }
+    }
+
+    fn thread_row(id: usize, group: ThreadGroup, title: &str, meta: &str) -> ThreadEntry {
+        ThreadEntry::new(
+            layout::LayoutRow::new(id, group),
+            title.into(),
+            meta.into(),
+            NavigationView::Thread,
+        )
+    }
+
+    // Risk (#698): a delayed project switch can restore an older store revision after a
+    // Rosen event has already published a newer projection for the newly active project.
+    #[test]
+    fn delayed_project_switch_preserves_newer_same_project_projection() {
+        let mut state = LayoutState::default();
+        let project_a = project_data(
+            1,
+            "Alpha",
+            vec![thread_row(1, ThreadGroup::Working, "Alpha", "thinking")],
+            crate::work_pool::WorkStatus::Claimed,
+        );
+        assert!(state.restore_store_project(9, project_a, Some(1), String::new(), Some(true)));
+        state.apply(LayoutAction::SidebarSearch("stale query".into()));
+        state.apply(LayoutAction::ComposerText("draft for alpha".into()));
+        state.apply(LayoutAction::TaskText("task for alpha".into()));
+        state.apply(LayoutAction::Request(LayoutIntent::Navigation(
+            NavigationIntent::Palette,
+        )));
+
+        let project_b_rev_10 = project_data(
+            2,
+            "Beta",
+            vec![thread_row(5, ThreadGroup::Working, "Beta", "editing")],
+            crate::work_pool::WorkStatus::Claimed,
+        );
+        let project_b_rev_11 = project_data(
+            2,
+            "Beta",
+            vec![
+                thread_row(5, ThreadGroup::Review, "Beta", "named"),
+                thread_row(6, ThreadGroup::Working, "Newer", "thinking"),
+            ],
+            crate::work_pool::WorkStatus::Landed,
+        );
+
+        assert!(state.apply_store_data(11, project_b_rev_11, Some(true)));
+        assert!(state.restore_store_project(
+            10,
+            project_b_rev_10.clone(),
+            Some(5),
+            String::new(),
+            Some(false),
+        ));
+
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.project_identifier, Some(2));
+        assert_eq!(snapshot.selected_thread, Some(5));
+        assert_eq!(snapshot.view, NavigationView::Thread);
+        assert_eq!(
+            (
+                snapshot.search.as_str(),
+                snapshot.composer_text.as_str(),
+                snapshot.task_text.as_str(),
+                snapshot.palette_open,
+                snapshot.build_allowed,
+            ),
+            ("", "", "", false, true)
+        );
+        let work_status = snapshot
+            .rosen_work
+            .as_ref()
+            .and_then(|work| work.items.first())
+            .map(|item| item.status);
+        assert_eq!(work_status, Some(crate::work_pool::WorkStatus::Landed));
+        let rows: Vec<_> = snapshot
+            .groups
+            .iter()
+            .flat_map(|group| group.rows.iter())
+            .map(|row| (row.identifier, row.group))
+            .collect();
+        assert!(rows.contains(&(5, ThreadGroup::Review)));
+        assert!(rows.contains(&(6, ThreadGroup::Working)));
+        assert!(!state.apply_store_data(10, project_b_rev_10, Some(false)));
+    }
+
+    // Risk (#698): a delayed project switch superseded by a newer switch to another project
+    // (or a later switch back to the same project) must not overwrite newer state or inputs.
+    #[test]
+    fn superseded_project_switch_is_ignored() {
+        let mut state = LayoutState::default();
+        let project_b = project_data(
+            2,
+            "Beta",
+            vec![ThreadEntry::new(
+                layout::LayoutRow::new(5, ThreadGroup::Working),
+                "Beta thread".into(),
+                "editing".into(),
+                NavigationView::Thread,
+            )],
+            crate::work_pool::WorkStatus::Claimed,
+        );
+        let project_c = project_data(
+            3,
+            "Gamma",
+            vec![ThreadEntry::new(
+                layout::LayoutRow::new(9, ThreadGroup::Working),
+                "Gamma thread".into(),
+                "thinking".into(),
+                NavigationView::Thread,
+            )],
+            crate::work_pool::WorkStatus::InChange,
+        );
+
+        assert!(state.restore_store_project(11, project_c, Some(9), String::new(), Some(true)));
+        state.apply(LayoutAction::ComposerText("gamma draft".into()));
+        assert!(!state.restore_store_project(
+            10,
+            project_b.clone(),
+            Some(5),
+            String::new(),
+            Some(false),
+        ));
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.project_identifier, Some(3));
+        assert_eq!(snapshot.selected_thread, Some(9));
+        assert_eq!(snapshot.composer_text, "gamma draft");
+
+        assert!(state.restore_store_project(
+            12,
+            project_b.clone(),
+            None,
+            String::new(),
+            Some(true),
+        ));
+        state.apply(LayoutAction::ComposerText("newer beta draft".into()));
+        assert!(!state.restore_store_project(10, project_b, Some(5), String::new(), Some(false)));
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.project_identifier, Some(2));
+        assert_eq!(snapshot.selected_thread, None);
+        assert_eq!(snapshot.composer_text, "newer beta draft");
     }
 }
