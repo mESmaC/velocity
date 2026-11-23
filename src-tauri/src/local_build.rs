@@ -822,6 +822,7 @@ fn begin_restart(
         if state.busy() {
             return BeginRestart::Busy;
         }
+        state.record_relation(&build.commit, relation);
         match state.install_decision(&build.commit, relation, confirmed, rollback) {
             InstallDecision::Allow => {
                 state.phase = LocalBuildPhase::Restarting(build.commit.clone());

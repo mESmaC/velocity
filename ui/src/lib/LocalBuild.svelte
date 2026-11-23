@@ -37,7 +37,7 @@
   const cancelConfirm = () => void localBuildCommands.cancelRestart();
 </script>
 
-{#if build && (build.restart || build.previous || build.status || build.waiting_label)}
+{#if build && (build.restart || build.unverified_restart || build.previous || build.status || build.waiting_label)}
   <div
     class="local-build"
     role="group"
@@ -58,6 +58,13 @@
       >{/if}
     {#if build.restart}{@const offer = build.restart}<button
         class="mini primary"
+        title={offer.title}
+        disabled={build.busy}
+        onclick={() => restart(offer, false)}>{offer.label}</button
+      >{/if}
+    {#if build.unverified_restart}{@const offer =
+        build.unverified_restart}<button
+        class="mini ghost"
         title={offer.title}
         disabled={build.busy}
         onclick={() => restart(offer, false)}>{offer.label}</button

@@ -701,6 +701,14 @@ impl LocalBuildState {
         self.relations = relations;
     }
 
+    /// Updates a single commit's verified relation when a live check yields a definitive
+    /// result (never overwriting a verified relation with `Unknown`) (#692).
+    pub fn record_relation(&mut self, commit: &str, relation: CommitRelation) {
+        if relation != CommitRelation::Unknown {
+            self.relations.insert(commit.to_owned(), relation);
+        }
+    }
+
     /// The commit to build now, given the project's last green commit and its verified
     /// ancestry against the running build (#551): only a commit that strictly descends
     /// from the running build's commit, is not built yet and whose build hasn't failed.
@@ -842,6 +850,19 @@ impl LocalBuildState {
             .unwrap_or(CommitRelation::Unknown)
     }
 
+    /// Whether `commit` should be offered as an explicit confirmation-first action (#692).
+    /// Shown only when ancestry is unknown—either immediately because the running copy
+    /// carries no commit metadata, or once Rosen has checked and returned `Unknown`.
+    /// Never shown before an initial ancestry check on a copy with a known commit, and
+    /// never shown for verified descendants, ancestors, diverged or same commits.
+    fn needs_unverified_offer(&self, commit: &str) -> bool {
+        if self.relation_of(commit) != CommitRelation::Unknown {
+            return false;
+        }
+        self.running_commit.is_none()
+            || matches!(self.relations.get(commit), Some(CommitRelation::Unknown))
+    }
+
     /// Builds made on the release this copy runs, newest first, skipping any commit marked
     /// failed (#609). After a published update the older builds may hold less than the
     /// running copy, so they are no longer offered.
@@ -872,6 +893,10 @@ pub struct LocalBuildView {
     /// "Restart into <commit>": the newest build, only when it strictly descends from the
     /// running build's commit.
     pub restart: Option<LocalBuildOffer>,
+    /// "Confirm restart into <commit>": the newest kept build on the running release when
+    /// the running build's commit or ancestry could not be verified, opening the explicit
+    /// confirmation prompt without presenting it as a verified descendant restart (#692).
+    pub unverified_restart: Option<LocalBuildOffer>,
     /// "Restart into previous": the build before the one this copy runs.
     pub previous: Option<LocalBuildOffer>,
     /// Confirmation prompt when installing a build whose ancestry could not be verified.
@@ -897,6 +922,7 @@ impl Default for LocalBuildView {
     fn default() -> Self {
         Self {
             restart: None,
+            unverified_restart: None,
             previous: None,
             confirm: None,
             status: String::new(),
@@ -926,35 +952,14 @@ impl LocalBuildState {
         let mut builds = self.same_base_builds();
         let newest = builds.next();
         let running_newest = newest.is_some_and(|build| self.runs(&build.commit));
-        let restart = newest
-            .filter(|build| self.relation_of(&build.commit) == CommitRelation::Descendant)
-            .map(|build| {
-                let short = short_commit(&build.commit);
-                LocalBuildOffer {
-                    commit: build.commit.clone(),
-                    label: format!("Restart into {short}"),
-                    title: format!(
-                        "Restart Velocity into its local build of {short}, built {}. {RESTART_NOTE}",
-                        built_clock(build.built_at)
-                    ),
-                }
-            });
+        let restart = newest.and_then(|build| self.restart_offer(build));
+        let unverified_restart = newest.and_then(|build| self.unverified_restart_offer(build));
         let previous = builds
             .next()
             .filter(|build| {
                 running_newest && newest.is_some_and(|current| current.commit != build.commit)
             })
-            .map(|build| {
-                let short = short_commit(&build.commit);
-                LocalBuildOffer {
-                    commit: build.commit.clone(),
-                    label: "Restart into previous".to_owned(),
-                    title: format!(
-                        "Go back to the local build of {short}, built {}. {RESTART_NOTE}",
-                        built_clock(build.built_at)
-                    ),
-                }
-            });
+            .map(previous_offer);
         let confirm = match &self.phase {
             LocalBuildPhase::ConfirmRestart(prompt) => Some(prompt.clone()),
             _ => None,
@@ -962,6 +967,7 @@ impl LocalBuildState {
         let (status, detail, failed) = self.status();
         LocalBuildView {
             restart,
+            unverified_restart,
             previous,
             confirm,
             status,
@@ -973,6 +979,36 @@ impl LocalBuildState {
             waiting_detail: self.waiting_detail.clone(),
             auto_restart: self.auto_restart,
         }
+    }
+
+    fn restart_offer(&self, build: &LocalBuild) -> Option<LocalBuildOffer> {
+        (self.relation_of(&build.commit) == CommitRelation::Descendant).then(|| {
+            let short = short_commit(&build.commit);
+            LocalBuildOffer {
+                commit: build.commit.clone(),
+                label: format!("Restart into {short}"),
+                title: format!(
+                    "Restart Velocity into its local build of {short}, built {}. {RESTART_NOTE}",
+                    built_clock(build.built_at)
+                ),
+            }
+        })
+    }
+
+    fn unverified_restart_offer(&self, build: &LocalBuild) -> Option<LocalBuildOffer> {
+        self.needs_unverified_offer(&build.commit).then(|| {
+            let short = short_commit(&build.commit);
+            LocalBuildOffer {
+                commit: build.commit.clone(),
+                label: format!("Confirm restart into {short}"),
+                title: format!(
+                    "Review and confirm restarting Velocity into local build {short} (built {}): \
+                     ancestry against {} could not be verified. {RESTART_NOTE}",
+                    built_clock(build.built_at),
+                    self.running_commit_label()
+                ),
+            }
+        })
     }
 
     fn status(&self) -> (String, String, bool) {
@@ -999,6 +1035,18 @@ impl LocalBuildState {
             ),
             (LocalBuildPhase::Idle, None) => plain(String::new()),
         }
+    }
+}
+
+fn previous_offer(build: &LocalBuild) -> LocalBuildOffer {
+    let short = short_commit(&build.commit);
+    LocalBuildOffer {
+        commit: build.commit.clone(),
+        label: "Restart into previous".to_owned(),
+        title: format!(
+            "Go back to the local build of {short}, built {}. {RESTART_NOTE}",
+            built_clock(build.built_at)
+        ),
     }
 }
 
@@ -1088,19 +1136,58 @@ mod tests {
             Some(newer.clone())
         );
 
+        // Before an initial ancestry check on a copy with a known commit, neither offer shows.
+        assert!(state.view().restart.is_none());
+        assert!(state.view().unverified_restart.is_none());
+
         state.set_relations(BTreeMap::from([(older.clone(), CommitRelation::Ancestor)]));
         assert!(state.view().restart.is_none());
+        assert!(state.view().unverified_restart.is_none());
         assert!(matches!(
             state.install_decision(&older, CommitRelation::Ancestor, true, false),
             InstallDecision::Refuse(message)
                 if message.contains("4a126a1") && message.contains("954c50a")
         ));
 
+        // When Rosen explicitly reports Unknown for a known running commit, only the
+        // confirmation-first offer appears (never an ordinary restart or auto-restart).
+        state.set_relations(BTreeMap::from([(older.clone(), CommitRelation::Unknown)]));
+        assert!(state.view().restart.is_none());
+        assert!(state.newest_descendant_commit().is_none());
+        assert!(matches!(
+            state.view().unverified_restart,
+            Some(ref offer)
+                if offer.commit == older
+                    && offer.label == "Confirm restart into 4a126a1"
+                    && offer.title.contains("954c50a")
+        ));
+
+        // Risk (#692): a legacy running release without commit metadata still needs a
+        // title-bar path to request the confirmation dialog naming both commits, while
+        // preserving strict descendant gating on automatic builds, auto-restarts and
+        // ordinary verified restart offers.
         let unknown = LocalBuildState::new("0.1.0-beta.19", None, vec![older_build], None);
         assert_eq!(unknown.running_commit(), None);
-        assert!(unknown.view().restart.is_none());
+        assert_eq!(unknown.wanted(Some(&newer), CommitRelation::Unknown), None);
+        assert_eq!(unknown.newest_descendant_commit(), None);
+        assert_eq!(
+            unknown.should_auto_restart(true, true, None, Instant::now()),
+            None
+        );
+        let unknown_view = unknown.view();
+        assert!(unknown_view.restart.is_none());
         assert!(matches!(
-            unknown.install_decision(&older, CommitRelation::Unknown, false, false),
+            unknown_view.unverified_restart,
+            Some(ref offer)
+                if offer.commit == older
+                    && offer.label == "Confirm restart into 4a126a1"
+                    && offer.title.contains("unknown (0.1.0-beta.19)")
+        ));
+        let Some(unverified) = unknown_view.unverified_restart else {
+            panic!("legacy running release must expose confirmation-first local build offer");
+        };
+        assert!(matches!(
+            unknown.install_decision(&unverified.commit, CommitRelation::Unknown, false, false),
             InstallDecision::Confirm(prompt)
                 if prompt.running_commit.contains("unknown")
                     && prompt.running_commit.contains("0.1.0-beta.19")
@@ -1109,7 +1196,7 @@ mod tests {
                     && prompt.message.contains("4a126a1")
         ));
         assert_eq!(
-            unknown.install_decision(&older, CommitRelation::Unknown, true, false),
+            unknown.install_decision(&unverified.commit, CommitRelation::Unknown, true, false),
             InstallDecision::Allow
         );
     }

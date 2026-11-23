@@ -3380,6 +3380,12 @@ export type LocalBuildView_Deserialize = {
 	 *  running build's commit.
 	 */
 	restart?: LocalBuildOffer | null,
+	/**
+	 *  "Confirm restart into <commit>": the newest kept build on the running release when
+	 *  the running build's commit or ancestry could not be verified, opening the explicit
+	 *  confirmation prompt without presenting it as a verified descendant restart (#692).
+	 */
+	unverified_restart?: LocalBuildOffer | null,
 	/**  "Restart into previous": the build before the one this copy runs. */
 	previous?: LocalBuildOffer | null,
 	/**  Confirmation prompt when installing a build whose ancestry could not be verified. */
@@ -3411,6 +3417,12 @@ export type LocalBuildView_Serialize = {
 	 *  running build's commit.
 	 */
 	restart: LocalBuildOffer | null,
+	/**
+	 *  "Confirm restart into <commit>": the newest kept build on the running release when
+	 *  the running build's commit or ancestry could not be verified, opening the explicit
+	 *  confirmation prompt without presenting it as a verified descendant restart (#692).
+	 */
+	unverified_restart: LocalBuildOffer | null,
 	/**  "Restart into previous": the build before the one this copy runs. */
 	previous: LocalBuildOffer | null,
 	/**  Confirmation prompt when installing a build whose ancestry could not be verified. */

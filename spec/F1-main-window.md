@@ -34,7 +34,7 @@ There are two views of the same work, switched from the title bar or with `B`:
     The update check therefore still offers the next published release, and never the one a local build already contains.
   - The newest two builds are kept in `local-builds` in the app data folder, one folder per commit, with the executable, the setup and a record.
   - **Restart into `<commit>`** shows only when the newest build strictly descends from the running copy.
-    Installing never replaces Velocity with an ancestor of the running build; if the running build's commit or ancestry is unknown, Velocity asks first and names both commits.
+    Installing never replaces Velocity with an ancestor of the running build; when the running build's commit or the newest kept build's ancestry is unknown, the title bar shows **Confirm restart into `<commit>`** instead of an ordinary restart offer so the user can open the confirmation prompt naming both commits (#692).
     **Restart into previous** shows while the running copy is the newest build and the build before it is kept, as an explicit rollback.
     Either one saves state, stops the Rosen servers and any previous copy's process trees or helper children, moves the running copy to a unique `<name>.old-<unix-ms>`, puts the new executable in place and starts it, as a portable update does, so stopped turns continue by themselves (§3.2 Resume after a restart) (#605).
     On start, Velocity stops orphaned `velocity-app.exe` child helpers (graph-project, MCP servers) whose parent Velocity process is gone and removes every unlocked `.old*` copy (#605).
