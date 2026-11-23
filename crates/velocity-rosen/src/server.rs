@@ -86,11 +86,7 @@ impl ProjectServer {
         let endpoint = if cfg!(windows) {
             Endpoint::new(name)
         } else {
-            let socket_dir = if folder_backed {
-                std::env::temp_dir()
-            } else {
-                data_dir.clone()
-            };
+            let socket_dir = socket_folder(&data_dir, folder_backed);
             Endpoint::new(socket_dir.join(format!("{name}.sock")).to_string_lossy())
         };
         Self {
@@ -620,4 +616,33 @@ pub(crate) fn program_folder(program: &str) -> Option<PathBuf> {
 
 pub(crate) fn executable(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// The folder for a server's socket, which Rosen refuses unless only this user can write
+/// it. On Linux the shared `/tmp` and a group-writable data folder (Ubuntu's umask 0002)
+/// both fail that, so the socket goes in the user's runtime folder (`/run/user/<uid>`), in
+/// a subfolder Rosen's bind creates owner-only.
+#[cfg(target_os = "linux")]
+fn socket_folder(_data_dir: &Path, _folder_backed: bool) -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|runtime| runtime.is_absolute())
+        .map(|runtime| runtime.join("velocity-rosen"))
+        .unwrap_or_else(|| {
+            let user = std::env::var("USER")
+                .ok()
+                .filter(|user| !user.is_empty())
+                .unwrap_or_else(|| "default".into());
+            std::env::temp_dir().join(format!("velocity-rosen-{user}"))
+        })
+}
+
+/// macOS gives each user a private temporary folder, which keeps socket paths short.
+#[cfg(not(target_os = "linux"))]
+fn socket_folder(data_dir: &Path, folder_backed: bool) -> PathBuf {
+    if folder_backed {
+        std::env::temp_dir()
+    } else {
+        data_dir.to_path_buf()
+    }
 }
