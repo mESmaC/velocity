@@ -7,9 +7,13 @@
 //! in `state.json`, never passed to agents, and redacted from all captured
 //! command output before reporting or starting a fix-forward thread.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+use crate::base_ci::{JobPlatformOutcome, JobState, RunState, job_label};
+use crate::project_health::short_commit;
 
 /// Prefix for deploy secret targets in Windows Credential Manager (#594).
 pub const DEPLOY_SECRET_PREFIX: &str = "velocity/deploy";
@@ -19,6 +23,12 @@ pub const REDACTED: &str = "[REDACTED]";
 
 /// Marker included in a `skipped` deploy result when required secrets are missing.
 pub const MISSING_SECRETS_PREFIX: &str = "Missing deploy secret(s) in Windows Credential Manager:";
+
+/// Default deploy target platform for hosted Fly and Cloudflare targets (#685).
+pub const DEFAULT_HOSTED_DEPLOY_PLATFORM: &str = "linux";
+
+/// Marker included in a `skipped` deploy result when a commit is skipped by platform gating (#685).
+pub const PLATFORM_GATE_SKIP_PREFIX: &str = "[Velocity] Deploy skipped by platform gate:";
 
 /// Well-known deploy secret name satisfied by a local `flyctl` login (#604).
 pub const FLY_API_TOKEN: &str = "FLY_API_TOKEN";
@@ -674,4 +684,782 @@ pub struct ProjectDeploySettings {
     pub secrets: Vec<DeploySecretStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_error: Option<String>,
+}
+
+/// Normalizes a deploy target platform string (`linux`, `windows`, `macos`, optional `-<arch>`).
+/// Returns `None` for empty strings or `"any"` / `"none"` (#685).
+pub fn normalize_deploy_platform(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.chars().any(|c| c.is_whitespace() || c.is_control())
+        || trimmed.eq_ignore_ascii_case("any")
+        || trimmed.eq_ignore_ascii_case("none")
+    {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let (raw_os, raw_arch) = match lower.split_once('-') {
+        Some((os, arch)) => (os, Some(arch)),
+        None => (lower.as_str(), None),
+    };
+    let Some(os) = normalize_os_name(raw_os) else {
+        return Some(lower);
+    };
+    match raw_arch.and_then(normalize_arch_name) {
+        Some(arch) => Some(format!("{os}-{arch}")),
+        None => Some(os.to_owned()),
+    }
+}
+
+fn normalize_os_name(raw: &str) -> Option<&'static str> {
+    match raw {
+        "linux" | "ubuntu" | "debian" | "alpine" => Some("linux"),
+        "windows" | "win" | "win32" | "win64" => Some("windows"),
+        "macos" | "darwin" | "osx" => Some("macos"),
+        _ => None,
+    }
+}
+
+fn normalize_arch_name(raw: &str) -> Option<&'static str> {
+    match raw {
+        "x86_64" | "amd64" | "x64" | "intel" => Some("x86_64"),
+        "arm64" | "aarch64" | "arm" => Some("arm64"),
+        _ => None,
+    }
+}
+
+fn split_platform(normalized: &str) -> (&str, Option<&str>) {
+    match normalized.split_once('-') {
+        Some((os, arch)) => (os, Some(arch)),
+        None => (normalized, None),
+    }
+}
+
+/// Whether `candidate` (a checker or CI runner platform) satisfies `target` (#685).
+pub fn platform_matches_target(candidate: &str, target: &str) -> bool {
+    let (Some(candidate), Some(target)) = (
+        normalize_deploy_platform(candidate),
+        normalize_deploy_platform(target),
+    ) else {
+        return false;
+    };
+    let (cand_os, cand_arch) = split_platform(&candidate);
+    let (target_os, target_arch) = split_platform(&target);
+    cand_os == target_os && (target_arch.is_none() || cand_arch == target_arch)
+}
+
+/// Returns true when a `[deploy.<step>]` targets Fly or Cloudflare (#685).
+pub fn is_fly_or_cloudflare_target(command: &str, paths: &[String], secrets: &[String]) -> bool {
+    if secrets.iter().any(|secret| {
+        secret.eq_ignore_ascii_case(FLY_API_TOKEN)
+            || secret.eq_ignore_ascii_case(CLOUDFLARE_API_TOKEN)
+    }) {
+        return true;
+    }
+    if command
+        .split(|c: char| c.is_whitespace() || matches!(c, '/' | '\\' | '\'' | '"' | '=' | ':'))
+        .any(|token| {
+            matches!(
+                token.to_ascii_lowercase().as_str(),
+                "fly"
+                    | "flyctl"
+                    | "fly.py"
+                    | "fly.toml"
+                    | "wrangler"
+                    | "cloudflare"
+                    | "cloudflare.py"
+            )
+        })
+    {
+        return true;
+    }
+    paths.iter().any(|path| {
+        path.split(['/', '\\']).any(|segment| {
+            matches!(
+                segment.to_ascii_lowercase().as_str(),
+                "fly.toml"
+                    | "fly.py"
+                    | "wrangler.toml"
+                    | "wrangler.json"
+                    | "wrangler.jsonc"
+                    | "cloudflare.py"
+            )
+        })
+    })
+}
+
+/// Resolves the deploy target platform that must be green before executing a step (#685).
+///
+/// Uses `[deploy.<step>].platform` when configured (allowing `"any"`/`"none"` to disable
+/// gating), and otherwise defaults to `"linux"` for Fly and Cloudflare targets.
+pub fn resolve_deploy_target_platform(
+    configured_platform: Option<&str>,
+    command: &str,
+    paths: &[String],
+    secrets: &[String],
+) -> Option<String> {
+    if let Some(raw) = configured_platform.map(str::trim).filter(|s| !s.is_empty()) {
+        return normalize_deploy_platform(raw);
+    }
+    is_fly_or_cloudflare_target(command, paths, secrets)
+        .then(|| DEFAULT_HOSTED_DEPLOY_PLATFORM.to_owned())
+}
+
+/// Infers a platform (`linux`, `windows`, `macos`, optional `-<arch>`) from GitHub Actions
+/// runner labels, falling back to the job/status display name when labels are absent (#685).
+pub fn infer_ci_job_platform(job_name: &str, labels: &[String]) -> Option<String> {
+    infer_platform_from_tokens(labels.iter().map(String::as_str))
+        .or_else(|| infer_platform_from_text(job_name))
+}
+
+fn infer_platform_from_tokens<'a>(tokens: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut os: Option<&'static str> = None;
+    let mut arch: Option<&'static str> = None;
+    for raw in tokens {
+        let lower = raw.trim().to_ascii_lowercase();
+        if lower.is_empty() {
+            continue;
+        }
+        if os.is_none() {
+            os = os_from_label(&lower);
+        }
+        if arch.is_none() {
+            arch = arch_from_label(&lower);
+        }
+    }
+    let os = os?;
+    Some(match arch {
+        Some(arch) => format!("{os}-{arch}"),
+        None => os.to_owned(),
+    })
+}
+
+fn infer_platform_from_text(text: &str) -> Option<String> {
+    let tokens = text.split(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '-' | '_' | '.'));
+    infer_platform_from_tokens(tokens)
+}
+
+fn os_from_label(lower: &str) -> Option<&'static str> {
+    if lower == "linux"
+        || lower == "ubuntu"
+        || lower.starts_with("ubuntu-")
+        || lower.starts_with("linux-")
+        || lower.starts_with("debian")
+        || lower.starts_with("alpine")
+    {
+        return Some("linux");
+    }
+    if lower == "windows" || lower == "win32" || lower == "win64" || lower.starts_with("windows-") {
+        return Some("windows");
+    }
+    if lower == "macos" || lower == "darwin" || lower == "osx" || lower.starts_with("macos-") {
+        return Some("macos");
+    }
+    None
+}
+
+fn arch_from_label(lower: &str) -> Option<&'static str> {
+    if lower == "arm64"
+        || lower == "aarch64"
+        || lower.ends_with("-arm64")
+        || lower.ends_with("-aarch64")
+        || lower.ends_with("-arm")
+    {
+        return Some("arm64");
+    }
+    if lower == "x86_64"
+        || lower == "x64"
+        || lower == "amd64"
+        || lower.ends_with("-x86_64")
+        || lower.ends_with("-x64")
+        || lower.ends_with("-amd64")
+        || lower.ends_with("-intel")
+    {
+        return Some("x86_64");
+    }
+    None
+}
+
+/// Returns true when a GitHub CI job or status covers `target_platform` (#685).
+pub fn ci_job_matches_target_platform(
+    job_name: &str,
+    labels: &[String],
+    target_platform: &str,
+) -> bool {
+    infer_ci_job_platform(job_name, labels)
+        .is_some_and(|inferred| platform_matches_target(&inferred, target_platform))
+}
+
+/// One GitHub Actions run, commit status, or standalone check run with per-job runner labels
+/// for deploy platform gating (#685).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubRunPlatformSnapshot {
+    pub workflow_key: String,
+    pub workflow: String,
+    pub run: u64,
+    pub commit: String,
+    pub state: RunState,
+    pub jobs: Vec<JobPlatformOutcome>,
+}
+
+/// Verification status of one commit on a deploy step's target platform (#685).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlatformCommitStatus {
+    /// Confirmed green on the target platform.
+    Green { source: String },
+    /// Failed on the target platform; never deploy this commit.
+    Failed { reasons: Vec<String> },
+    /// Still queued or running on the target platform; hold the deploy.
+    Pending { jobs: Vec<String> },
+    /// Neither a post-land checker nor a base CI job has reported a result for this commit.
+    NoResult,
+}
+
+/// Evaluates GitHub base CI runs on `commit` for `target_platform` (#685).
+///
+/// Every matching job on `commit` is decided by the newest run of its workflow in which it
+/// has a non-`Undecided` outcome. Any failing matching job yields `Failed`; any running
+/// matching job (or running workflow whose jobs have not appeared yet) yields `Pending`;
+/// at least one passing matching job with no failures or pending jobs yields `Green`.
+pub fn evaluate_github_platform_status(
+    runs: &[GitHubRunPlatformSnapshot],
+    commit: &str,
+    target_platform: &str,
+) -> PlatformCommitStatus {
+    let mut by_workflow: BTreeMap<&str, Vec<&GitHubRunPlatformSnapshot>> = BTreeMap::new();
+    let mut failed = Vec::new();
+    let mut pending = Vec::new();
+    let mut passed = Vec::new();
+    for run in runs
+        .iter()
+        .filter(|run| run.commit.trim().eq_ignore_ascii_case(commit.trim()))
+    {
+        if run.run == 0 {
+            record_status_platform_outcome(
+                run,
+                target_platform,
+                &mut failed,
+                &mut pending,
+                &mut passed,
+            );
+        } else {
+            let key = if run.workflow_key.trim().is_empty() {
+                run.workflow.as_str()
+            } else {
+                run.workflow_key.as_str()
+            };
+            by_workflow.entry(key).or_default().push(run);
+        }
+    }
+    for mut workflow_runs in by_workflow.into_values() {
+        workflow_runs.sort_by_key(|run| std::cmp::Reverse(run.run));
+        evaluate_workflow_platform_runs(
+            &workflow_runs,
+            target_platform,
+            &mut failed,
+            &mut pending,
+            &mut passed,
+        );
+    }
+    finalize_platform_status(failed, pending, passed)
+}
+
+fn record_status_platform_outcome(
+    run: &GitHubRunPlatformSnapshot,
+    target_platform: &str,
+    failed: &mut Vec<String>,
+    pending: &mut Vec<String>,
+    passed: &mut Vec<String>,
+) {
+    if !ci_job_matches_target_platform(&run.workflow, &[], target_platform) {
+        return;
+    }
+    match run.state {
+        RunState::Failed => failed.push(run.workflow.clone()),
+        RunState::Running => pending.push(run.workflow.clone()),
+        RunState::Passed => passed.push(run.workflow.clone()),
+        RunState::Undecided => {}
+    }
+}
+
+fn evaluate_workflow_platform_runs(
+    newest_first: &[&GitHubRunPlatformSnapshot],
+    target_platform: &str,
+    failed: &mut Vec<String>,
+    pending: &mut Vec<String>,
+    passed: &mut Vec<String>,
+) {
+    let Some(newest) = newest_first.first().copied() else {
+        return;
+    };
+    let mut matching_names: Vec<String> = Vec::new();
+    for run in newest_first {
+        for job in &run.jobs {
+            if ci_job_matches_target_platform(&job.job, &job.labels, target_platform)
+                && !matching_names.iter().any(|existing| existing == &job.job)
+            {
+                matching_names.push(job.job.clone());
+            }
+        }
+    }
+    if matching_names.is_empty() {
+        if newest.state == RunState::Running && newest.jobs.is_empty() {
+            pending.push(newest.workflow.clone());
+        }
+        return;
+    }
+    for job_name in matching_names {
+        let state = newest_job_state_on_commit(newest_first, &job_name);
+        let label = job_label(&newest.workflow, &job_name);
+        match state {
+            Some(JobState::Failed) => failed.push(label),
+            Some(JobState::Running) => pending.push(label),
+            Some(JobState::Passed) => passed.push(label),
+            Some(JobState::Undecided) | None => {}
+        }
+    }
+}
+
+fn newest_job_state_on_commit(
+    newest_first: &[&GitHubRunPlatformSnapshot],
+    job_name: &str,
+) -> Option<JobState> {
+    for run in newest_first {
+        let mut saw_passed = false;
+        let mut saw_running = false;
+        for job in run.jobs.iter().filter(|entry| entry.job == job_name) {
+            match job.state {
+                JobState::Failed => return Some(JobState::Failed),
+                JobState::Running => saw_running = true,
+                JobState::Passed => saw_passed = true,
+                JobState::Undecided => {}
+            }
+        }
+        if saw_running {
+            return Some(JobState::Running);
+        }
+        if saw_passed {
+            return Some(JobState::Passed);
+        }
+    }
+    None
+}
+
+fn finalize_platform_status(
+    failed: Vec<String>,
+    pending: Vec<String>,
+    passed: Vec<String>,
+) -> PlatformCommitStatus {
+    if !failed.is_empty() {
+        return PlatformCommitStatus::Failed { reasons: failed };
+    }
+    if !pending.is_empty() {
+        return PlatformCommitStatus::Pending { jobs: pending };
+    }
+    if !passed.is_empty() {
+        return PlatformCommitStatus::Green {
+            source: format!("base CI ({})", passed.join(", ")),
+        };
+    }
+    PlatformCommitStatus::NoResult
+}
+
+/// Combines Rosen post-land checker status and GitHub base CI status for one commit and
+/// target platform (#685).
+///
+/// Any failure or pending base CI job on the target platform holds the deploy; otherwise
+/// either a passing post-land checker on that platform or passing base CI jobs count as green.
+pub fn evaluate_platform_commit_status(
+    rosen_status: PlatformCommitStatus,
+    github_status: PlatformCommitStatus,
+) -> PlatformCommitStatus {
+    if matches!(github_status, PlatformCommitStatus::Failed { .. }) {
+        return github_status;
+    }
+    if matches!(rosen_status, PlatformCommitStatus::Failed { .. }) {
+        return rosen_status;
+    }
+    if matches!(github_status, PlatformCommitStatus::Pending { .. }) {
+        return github_status;
+    }
+    if matches!(rosen_status, PlatformCommitStatus::Green { .. }) {
+        return rosen_status;
+    }
+    if matches!(github_status, PlatformCommitStatus::Green { .. }) {
+        return github_status;
+    }
+    if matches!(rosen_status, PlatformCommitStatus::Pending { .. }) {
+        return rosen_status;
+    }
+    PlatformCommitStatus::NoResult
+}
+
+/// Decision for a due `[deploy.<step>]` run against its target platform gate (#685).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeployGateDecision {
+    /// Target platform is green for this commit (and no newer pending commit is already green).
+    Run,
+    /// Hold this deploy run without executing it until the target platform resolves.
+    Wait,
+    /// Skip this commit in Rosen because it failed on the target platform and a newer
+    /// pending run is waiting behind it.
+    SkipRed { reason: String },
+    /// Skip this commit in Rosen because a newer pending commit for the same step is
+    /// already green (or already has CI running while this older commit has no result).
+    SkipSuperseded {
+        newer_commit: String,
+        reason: String,
+    },
+}
+
+/// Decides whether to run, wait, or skip a due deploy run (#685).
+pub fn decide_deploy_gate(
+    step: &str,
+    commit: &str,
+    target_platform: &str,
+    current_status: &PlatformCommitStatus,
+    newer_same_step: Option<(&str, &PlatformCommitStatus)>,
+    has_other_pending: bool,
+) -> DeployGateDecision {
+    let current_short = short_commit(commit);
+    if let Some((newer_commit, PlatformCommitStatus::Green { .. })) = newer_same_step {
+        return DeployGateDecision::SkipSuperseded {
+            newer_commit: newer_commit.to_owned(),
+            reason: format!(
+                "{PLATFORM_GATE_SKIP_PREFIX} `{step}` at {current_short} superseded by green {target_platform} commit {}",
+                short_commit(newer_commit)
+            ),
+        };
+    }
+    match current_status {
+        PlatformCommitStatus::Green { .. } => DeployGateDecision::Run,
+        PlatformCommitStatus::Failed { reasons } => {
+            if newer_same_step.is_some() || has_other_pending {
+                DeployGateDecision::SkipRed {
+                    reason: format!(
+                        "{PLATFORM_GATE_SKIP_PREFIX} `{step}` at {current_short} failed on {target_platform} ({})",
+                        reasons.join(", ")
+                    ),
+                }
+            } else {
+                DeployGateDecision::Wait
+            }
+        }
+        PlatformCommitStatus::NoResult => {
+            if let Some((newer_commit, newer_status)) = newer_same_step
+                && matches!(
+                    newer_status,
+                    PlatformCommitStatus::Pending { .. } | PlatformCommitStatus::Failed { .. }
+                )
+            {
+                return DeployGateDecision::SkipSuperseded {
+                    newer_commit: newer_commit.to_owned(),
+                    reason: format!(
+                        "{PLATFORM_GATE_SKIP_PREFIX} `{step}` at {current_short} had no {target_platform} result; advancing to {}",
+                        short_commit(newer_commit)
+                    ),
+                };
+            }
+            DeployGateDecision::Wait
+        }
+        PlatformCommitStatus::Pending { .. } => DeployGateDecision::Wait,
+    }
+}
+
+/// Formats Project Health `(signal, action, detail)` for a deploy step waiting on its
+/// target platform (#685).
+pub fn format_deploy_waiting_health(
+    step: &str,
+    target_platform: &str,
+    commit: &str,
+    status: &PlatformCommitStatus,
+) -> (String, String, Option<String>) {
+    let short = short_commit(commit);
+    match status {
+        PlatformCommitStatus::NoResult => (
+            format!("deploy {step} waiting: no {target_platform} result for {short}"),
+            format!("Waiting for a {target_platform} post-land checker or passing base CI job"),
+            None,
+        ),
+        PlatformCommitStatus::Pending { jobs } => (
+            format!("deploy {step} waiting: no {target_platform} result for {short}"),
+            format!("Waiting for {target_platform} base CI to finish"),
+            (!jobs.is_empty()).then(|| format!("Pending: {}", jobs.join(", "))),
+        ),
+        PlatformCommitStatus::Failed { reasons } => (
+            format!("deploy {step} held: {target_platform} failed for {short}"),
+            format!("Holding deploy until a newer commit is green on {target_platform}"),
+            (!reasons.is_empty()).then(|| reasons.join(", ")),
+        ),
+        PlatformCommitStatus::Green { source } => (
+            format!("Deploy `{step}` ready on {target_platform} at {short}"),
+            format!("Green via {source}"),
+            None,
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ci_run(
+        workflow: &str,
+        run: u64,
+        commit: &str,
+        state: RunState,
+        jobs: Vec<(&str, JobState, &[&str])>,
+    ) -> GitHubRunPlatformSnapshot {
+        GitHubRunPlatformSnapshot {
+            workflow_key: format!("workflow:{workflow}"),
+            workflow: workflow.to_owned(),
+            run,
+            commit: commit.to_owned(),
+            state,
+            jobs: jobs
+                .into_iter()
+                .map(|(job, state, labels)| JobPlatformOutcome {
+                    job: job.to_owned(),
+                    state,
+                    labels: labels.iter().map(|label| (*label).to_owned()).collect(),
+                })
+                .collect(),
+        }
+    }
+
+    // Risk (#685): Fly and Cloudflare deploy steps without an explicit `platform` must default
+    // to `linux`, while an explicit `platform` overrides the default and non-hosted steps stay
+    // unconstrained unless configured.
+    #[test]
+    fn resolve_deploy_target_platform_defaults_hosted_targets_to_linux() {
+        assert_eq!(
+            resolve_deploy_target_platform(
+                None,
+                "python -B ops/release.py",
+                &["server/**".into(), "ops/fly.toml".into()],
+                &["FLY_API_TOKEN".into()],
+            ),
+            Some("linux".to_owned())
+        );
+        assert_eq!(
+            resolve_deploy_target_platform(
+                None,
+                "python -B ops/edge.py",
+                &["ops/cloudflare.py".into()],
+                &["CLOUDFLARE_API_TOKEN".into()],
+            ),
+            Some("linux".to_owned())
+        );
+        assert_eq!(
+            resolve_deploy_target_platform(
+                Some("windows"),
+                "python -B ops/release.py",
+                &["ops/fly.toml".into()],
+                &["FLY_API_TOKEN".into()],
+            ),
+            Some("windows".to_owned())
+        );
+        assert_eq!(
+            resolve_deploy_target_platform(
+                Some("any"),
+                "python -B ops/release.py",
+                &["ops/fly.toml".into()],
+                &["FLY_API_TOKEN".into()],
+            ),
+            None
+        );
+        assert_eq!(
+            resolve_deploy_target_platform(None, "echo done", &["docs/**".into()], &[]),
+            None
+        );
+    }
+
+    // Risk (#685): a collapse.sh commit that passes on Windows and fails on `ubuntu-latest`
+    // must never deploy; it waits while red and is skipped once a Linux-green fix lands so
+    // only the fix commit deploys.
+    #[test]
+    fn windows_green_linux_red_commit_waits_and_skips_for_linux_green_fix() {
+        let broken = "5249658aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let fix = "9999999bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+        // 1. Immediately after Windows post-land green: no Linux checker and no Linux CI result.
+        let no_linux = evaluate_platform_commit_status(
+            PlatformCommitStatus::NoResult,
+            evaluate_github_platform_status(&[], broken, "linux"),
+        );
+        assert_eq!(no_linux, PlatformCommitStatus::NoResult);
+        let (signal, _, _) = format_deploy_waiting_health("server", "linux", broken, &no_linux);
+        assert_eq!(
+            signal,
+            "deploy server waiting: no linux result for 5249658aaaaa"
+        );
+        assert_eq!(
+            decide_deploy_gate("server", broken, "linux", &no_linux, None, false),
+            DeployGateDecision::Wait
+        );
+
+        // 2. GitHub CI reports Windows green, Linux red on `broken`.
+        let runs_after_fail = vec![ci_run(
+            "CI",
+            101,
+            broken,
+            RunState::Failed,
+            vec![
+                (
+                    "Server (windows-latest)",
+                    JobState::Passed,
+                    &["windows-latest"],
+                ),
+                (
+                    "Server (ubuntu-latest)",
+                    JobState::Failed,
+                    &["ubuntu-latest"],
+                ),
+                (
+                    "Web (check, test, build)",
+                    JobState::Passed,
+                    &["ubuntu-latest"],
+                ),
+            ],
+        )];
+        let broken_status = evaluate_platform_commit_status(
+            PlatformCommitStatus::NoResult,
+            evaluate_github_platform_status(&runs_after_fail, broken, "linux"),
+        );
+        assert_eq!(
+            broken_status,
+            PlatformCommitStatus::Failed {
+                reasons: vec!["CI · Server (ubuntu-latest)".to_owned()]
+            }
+        );
+        // Without a newer commit yet, `broken` stays held (never deployed).
+        assert_eq!(
+            decide_deploy_gate("server", broken, "linux", &broken_status, None, false),
+            DeployGateDecision::Wait
+        );
+
+        // 3. Fix-forward lands and `ubuntu-latest` is still running: `broken` is skipped so
+        // Rosen advances to `fix`, and `fix` waits while Linux CI is pending.
+        let runs_fix_pending = vec![
+            runs_after_fail[0].clone(),
+            ci_run(
+                "CI",
+                102,
+                fix,
+                RunState::Running,
+                vec![
+                    (
+                        "Server (windows-latest)",
+                        JobState::Passed,
+                        &["windows-latest"],
+                    ),
+                    (
+                        "Server (ubuntu-latest)",
+                        JobState::Running,
+                        &["ubuntu-latest"],
+                    ),
+                    (
+                        "Web (check, test, build)",
+                        JobState::Passed,
+                        &["ubuntu-latest"],
+                    ),
+                ],
+            ),
+        ];
+        let fix_pending = evaluate_platform_commit_status(
+            PlatformCommitStatus::NoResult,
+            evaluate_github_platform_status(&runs_fix_pending, fix, "linux"),
+        );
+        assert_eq!(
+            fix_pending,
+            PlatformCommitStatus::Pending {
+                jobs: vec!["CI · Server (ubuntu-latest)".to_owned()]
+            }
+        );
+        assert!(matches!(
+            decide_deploy_gate(
+                "server",
+                broken,
+                "linux",
+                &broken_status,
+                Some((fix, &fix_pending)),
+                true,
+            ),
+            DeployGateDecision::SkipRed { .. }
+        ));
+        assert_eq!(
+            decide_deploy_gate("server", fix, "linux", &fix_pending, None, false),
+            DeployGateDecision::Wait
+        );
+
+        // 4. `fix` turns green on all Linux jobs: `fix` deploys automatically even if
+        // Windows CI were still running.
+        let runs_fix_green = vec![
+            runs_after_fail[0].clone(),
+            ci_run(
+                "CI",
+                102,
+                fix,
+                RunState::Running,
+                vec![
+                    (
+                        "Server (windows-latest)",
+                        JobState::Running,
+                        &["windows-latest"],
+                    ),
+                    (
+                        "Server (ubuntu-latest)",
+                        JobState::Passed,
+                        &["ubuntu-latest"],
+                    ),
+                    (
+                        "Web (check, test, build)",
+                        JobState::Passed,
+                        &["ubuntu-latest"],
+                    ),
+                    (
+                        "Server image (build, git HTTP backend, graph indexer)",
+                        JobState::Passed,
+                        &["ubuntu-latest"],
+                    ),
+                ],
+            ),
+        ];
+        let fix_green = evaluate_platform_commit_status(
+            PlatformCommitStatus::NoResult,
+            evaluate_github_platform_status(&runs_fix_green, fix, "linux"),
+        );
+        assert!(matches!(fix_green, PlatformCommitStatus::Green { .. }));
+        assert_eq!(
+            decide_deploy_gate("server", fix, "linux", &fix_green, None, false),
+            DeployGateDecision::Run
+        );
+    }
+
+    // Risk (#685): a passing Rosen post-land checker on the deploy target platform must count
+    // as green when GitHub CI is absent, while failing base CI on that platform still blocks.
+    #[test]
+    fn rosen_platform_checker_counts_as_green_unless_base_ci_failed_or_pending() {
+        let rosen_green = PlatformCommitStatus::Green {
+            source: "Rosen post-land (linux)".to_owned(),
+        };
+        assert_eq!(
+            evaluate_platform_commit_status(rosen_green.clone(), PlatformCommitStatus::NoResult),
+            rosen_green
+        );
+        let ci_failed = PlatformCommitStatus::Failed {
+            reasons: vec!["CI · Server image".to_owned()],
+        };
+        assert_eq!(
+            evaluate_platform_commit_status(rosen_green.clone(), ci_failed.clone()),
+            ci_failed
+        );
+        let ci_pending = PlatformCommitStatus::Pending {
+            jobs: vec!["CI · Server (ubuntu-latest)".to_owned()],
+        };
+        assert_eq!(
+            evaluate_platform_commit_status(rosen_green, ci_pending.clone()),
+            ci_pending
+        );
+    }
 }

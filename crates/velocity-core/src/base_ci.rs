@@ -184,6 +184,15 @@ pub enum RunJob {
     Undecided(String),
 }
 
+/// Observed GitHub Actions job outcome with its runner labels for platform deploy gating (#685).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JobPlatformOutcome {
+    pub job: String,
+    pub state: JobState,
+    /// Runner labels from GitHub Actions (for example `["ubuntu-latest"]`).
+    pub labels: Vec<String>,
+}
+
 impl RunJob {
     pub fn name(&self) -> &str {
         match self {
@@ -806,11 +815,28 @@ pub struct JobVerdict {
 /// finished (#587): each workflow's newest failed run, plus up to
 /// `max_running_per_workflow` running runs newer than its newest decided run.
 pub fn runs_to_inspect(runs: &[BaseRun], max_running_per_workflow: usize) -> Vec<u64> {
+    runs_to_inspect_for_commits(runs, max_running_per_workflow, false, &BTreeSet::new())
+}
+
+/// Like [`runs_to_inspect`], optionally also inspecting each workflow's newest passing run
+/// and any run matching `commits` so platform-gated deploys can read runner labels (#685).
+pub fn runs_to_inspect_for_commits(
+    runs: &[BaseRun],
+    max_running_per_workflow: usize,
+    include_newest_passed: bool,
+    commits: &BTreeSet<String>,
+) -> Vec<u64> {
     let mut by_workflow: BTreeMap<&str, Vec<&BaseRun>> = BTreeMap::new();
     for run in runs.iter().filter(|run| run.run != 0) {
         by_workflow.entry(run.identity()).or_default().push(run);
     }
     let mut selected = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut push_unique = |run_id: u64| {
+        if seen.insert(run_id) {
+            selected.push(run_id);
+        }
+    };
     for mut workflow_runs in by_workflow.into_values() {
         workflow_runs.sort_by_key(|run| std::cmp::Reverse(run.run));
         let newest_decided = workflow_runs
@@ -826,10 +852,28 @@ pub fn runs_to_inspect(runs: &[BaseRun], max_running_per_workflow: usize) -> Vec
             })
             .take(max_running_per_workflow)
         {
-            selected.push(run.run);
+            push_unique(run.run);
         }
         if let Some(failed) = newest_decided.filter(|run| run.state == RunState::Failed) {
-            selected.push(failed.run);
+            push_unique(failed.run);
+        }
+        if include_newest_passed
+            && let Some(passed) = workflow_runs
+                .iter()
+                .copied()
+                .find(|run| run.state == RunState::Passed)
+        {
+            push_unique(passed.run);
+        }
+        if !commits.is_empty() {
+            for run in &workflow_runs {
+                if commits
+                    .iter()
+                    .any(|commit| commit.eq_ignore_ascii_case(run.commit.trim()))
+                {
+                    push_unique(run.run);
+                }
+            }
         }
     }
     selected

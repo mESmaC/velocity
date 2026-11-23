@@ -5,6 +5,7 @@
 //! stripping denied inherited environment variables, captured solely in memory
 //! (never written to disk logs), and redacted before returning.
 
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, Stdio};
@@ -12,15 +13,22 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rosen_client::protocol::{
-    DeployRecord, DeployStatus, ErrorCode, Event, EventKind, SubmitDeployResult,
+    CheckKind, DeployRecord, DeployStatus, ErrorCode, Event, EventKind, ReadAnswer, ReadRequest,
+    SubmitDeployResult,
 };
 use rosen_client::run_queue::{self, RunClass, RunQueue};
+use rosen_core::project_config::CONFIG_PATH;
 use rosen_core::{AgentId, Platform};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use toml_edit::{DocumentMut, Item};
 use velocity_core::agent_env::is_denied_name;
-use velocity_core::deploy::{DeployRunState, DeployStepSummary, redact_secret_pairs};
+use velocity_core::deploy::{
+    DeployRunState, DeployStepSummary, PlatformCommitStatus, platform_matches_target,
+    redact_secret_pairs,
+};
 
 use crate::checker::{self, Priority};
+use crate::post_land::{self, CommitAncestry};
 use crate::{ProjectServer, RosenError};
 
 pub use rosen_client::protocol::DeployStatus as RosenDeployStatus;
@@ -49,6 +57,8 @@ pub struct DeployDue {
     pub paths: Vec<String>,
     pub secrets: Vec<String>,
     pub platforms: Vec<String>,
+    /// Optional deploy target platform (`[deploy.<step>].platform`, #685) when supplied by Rosen.
+    pub target_platform: Option<String>,
 }
 
 /// A recorded `deploy_result` event from Rosen's event stream.
@@ -107,6 +117,10 @@ pub fn parse_deploy_due(event: &Event) -> Option<DeployDue> {
         paths: json_string_array(detail.get("paths")),
         secrets: json_string_array(detail.get("secrets")),
         platforms: json_string_array(detail.get("platforms")),
+        target_platform: detail
+            .get("platform")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned),
     })
 }
 
@@ -225,19 +239,187 @@ pub fn cleanup_deploy_staging(folder: &Path) -> Result<(), RosenError> {
     crate::checkout::remove_staging_if_present(folder)
 }
 
+/// Reads `[deploy.<step>].platform` entries from the in-force `rosen.toml` text (#685).
+///
+/// The pinned Rosen `ProjectConfig` does not yet carry a singular `platform` field on
+/// `DeployStep`, so Velocity reads it directly from the file Rosen reports in force
+/// (like `[ci] dispatchable` in `workflow_policy.rs`) until Rosen's schema adds it.
+pub async fn deploy_step_platforms(
+    server: &ProjectServer,
+) -> Result<BTreeMap<String, String>, RosenError> {
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let record = client.project_config(None).await?;
+    let Some(source) = record.source else {
+        return Ok(BTreeMap::new());
+    };
+    let request = ReadRequest {
+        at: Some(source.to_string()),
+        path: CONFIG_PATH.to_owned(),
+    };
+    let text = match client.read_file(request).await {
+        Ok(ReadAnswer::File { data, .. }) => String::from_utf8_lossy(&data).into_owned(),
+        Ok(ReadAnswer::Directory { .. }) => return Ok(BTreeMap::new()),
+        Err(rosen_client::Error::Server(error)) if error.code == ErrorCode::NotFound => {
+            return Ok(BTreeMap::new());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    Ok(parse_deploy_step_platforms(&text))
+}
+
+/// Parses `[deploy.<step>].platform` string values from `rosen.toml` text (#685).
+pub fn parse_deploy_step_platforms(config: &str) -> BTreeMap<String, String> {
+    let Ok(document) = config.parse::<DocumentMut>() else {
+        return BTreeMap::new();
+    };
+    let Some(deploy) = document.get("deploy").and_then(Item::as_table_like) else {
+        return BTreeMap::new();
+    };
+    let mut platforms = BTreeMap::new();
+    for (step, item) in deploy.iter() {
+        if let Some(value) = item
+            .as_table_like()
+            .and_then(|table| table.get("platform"))
+            .and_then(Item::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            platforms.insert(step.to_owned(), value.to_owned());
+        }
+    }
+    platforms
+}
+
+/// Evaluates whether Rosen's own post-land checkers verify `commit` on `target_platform` (#685).
+pub async fn rosen_platform_commit_status(
+    server: &ProjectServer,
+    commit: &str,
+    target_platform: &str,
+) -> Result<PlatformCommitStatus, RosenError> {
+    let client = crate::connection::requests(server.endpoint()).await?;
+    let status = match client.post_land_status().await {
+        Ok(status) => status,
+        Err(rosen_client::Error::Server(error)) if error.code == ErrorCode::UnknownRequest => {
+            return Ok(PlatformCommitStatus::NoResult);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let failures = client.post_land_failures(None).await.unwrap_or_default();
+    let matching_platform = status
+        .platforms
+        .iter()
+        .find(|entry| platform_matches_target(&entry.platform, target_platform));
+    let platform_green = matching_platform
+        .and_then(|entry| entry.last_green.as_ref())
+        .map(|cp| cp.commit.to_string());
+    if let Some(failed) = matching_rosen_platform_failure(
+        server,
+        &failures,
+        commit,
+        target_platform,
+        platform_green.as_deref(),
+    )
+    .await?
+    {
+        return Ok(failed);
+    }
+    if let Some(entry) = matching_platform {
+        if let Some(green) = entry.last_green.as_ref()
+            && commit_covered_by(server, commit, &green.commit.to_string()).await?
+        {
+            return Ok(PlatformCommitStatus::Green {
+                source: format!("Rosen post-land ({})", entry.platform),
+            });
+        }
+        return Ok(PlatformCommitStatus::NoResult);
+    }
+    // Single-platform projects omit `[checks.post_land].platforms`, so `last_green` covers
+    // this host's own platform only (never a different deploy target like Linux from Windows).
+    if status.platforms.is_empty() {
+        let host = Platform::host();
+        if platform_matches_target(host.as_str(), target_platform)
+            && let Some(green) = status.last_green.as_ref()
+            && commit_covered_by(server, commit, &green.commit.to_string()).await?
+        {
+            return Ok(PlatformCommitStatus::Green {
+                source: format!("Rosen post-land ({})", host.as_str()),
+            });
+        }
+    }
+    Ok(PlatformCommitStatus::NoResult)
+}
+
+async fn matching_rosen_platform_failure(
+    server: &ProjectServer,
+    failures: &[rosen_client::protocol::PostLandFailure],
+    commit: &str,
+    target_platform: &str,
+    platform_green: Option<&str>,
+) -> Result<Option<PlatformCommitStatus>, RosenError> {
+    for failure in failures.iter().filter(|entry| {
+        entry.revert.is_none()
+            && entry.kind == CheckKind::Test
+            && entry
+                .platform
+                .as_deref()
+                .is_some_and(|platform| platform_matches_target(platform, target_platform))
+    }) {
+        let failure_commit = failure.commit.to_string();
+        let covered_by_green = match platform_green {
+            Some(green) => commit_covered_by(server, &failure_commit, green).await?,
+            None => false,
+        };
+        if !covered_by_green && commit_covered_by(server, &failure_commit, commit).await? {
+            let label = failure
+                .platform
+                .as_deref()
+                .map(Platform::display_label)
+                .unwrap_or_else(|| target_platform.to_owned());
+            return Ok(Some(PlatformCommitStatus::Failed {
+                reasons: vec![format!("Rosen post-land · {label}")],
+            }));
+        }
+    }
+    Ok(None)
+}
+
+async fn commit_covered_by(
+    server: &ProjectServer,
+    ancestor: &str,
+    descendant: &str,
+) -> Result<bool, RosenError> {
+    if ancestor.eq_ignore_ascii_case(descendant) {
+        return Ok(true);
+    }
+    Ok(matches!(
+        post_land::compare_commits(server, ancestor, descendant).await?,
+        CommitAncestry::Same | CommitAncestry::Descendant
+    ))
+}
+
 /// Reads currently `running` deploy rows from Rosen's `metadata.sqlite` (read-only)
 /// so Velocity resumes in-flight deploys after a restart (#594).
 pub fn running_deploys(server: &ProjectServer) -> Result<Vec<DeployDue>, RosenError> {
+    deploys_in_state(server, "running")
+}
+
+/// Reads currently `pending` deploy rows from Rosen's `metadata.sqlite` (read-only) so
+/// Velocity can tell whether a newer commit or step is waiting behind a held deploy (#685).
+pub fn pending_deploys(server: &ProjectServer) -> Result<Vec<DeployDue>, RosenError> {
+    deploys_in_state(server, "pending")
+}
+
+fn deploys_in_state(server: &ProjectServer, state: &str) -> Result<Vec<DeployDue>, RosenError> {
     let Some(connection) = open_deploy_db(server)? else {
         return Ok(Vec::new());
     };
     let mut statement = connection.prepare(
         "SELECT id, step, commit_id, from_commit, command, paths, secrets, platforms
          FROM deploy_runs
-         WHERE state = 'running'
+         WHERE state = ?1
          ORDER BY green_seq ASC, step_index ASC, id ASC",
     )?;
-    let rows = statement.query_map([], |row| {
+    let rows = statement.query_map([state], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
@@ -261,6 +443,7 @@ pub fn running_deploys(server: &ProjectServer) -> Result<Vec<DeployDue>, RosenEr
             paths: parse_json_strings(&paths),
             secrets: parse_json_strings(&secrets),
             platforms: parse_json_strings(&platforms),
+            target_platform: None,
         });
     }
     Ok(due)
@@ -570,4 +753,35 @@ fn tail_utf8(text: &str, max_bytes: usize) -> String {
     }
     let start = text.ceil_char_boundary(text.len().saturating_sub(max_bytes));
     text[start..].to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_deploy_step_platforms;
+
+    // Risk (#685): `[deploy.<step>].platform` must be read from `rosen.toml` even before
+    // Rosen's own `DeployStep` struct adds the field, while ignoring steps without `platform`.
+    #[test]
+    fn parse_deploy_step_platforms_reads_configured_target_platforms() {
+        let toml = r#"
+review = "after-land"
+
+[deploy.server]
+command = "python -B ops/release.py"
+platform = "linux"
+secrets = ["FLY_API_TOKEN"]
+
+[deploy.edge]
+command = "python -B ops/edge.py"
+secrets = ["CLOUDFLARE_API_TOKEN"]
+
+[deploy.desktop]
+command = "python -B ops/package.py"
+platform = "windows"
+"#;
+        let parsed = parse_deploy_step_platforms(toml);
+        assert_eq!(parsed.get("server").map(String::as_str), Some("linux"));
+        assert_eq!(parsed.get("edge"), None);
+        assert_eq!(parsed.get("desktop").map(String::as_str), Some("windows"));
+    }
 }

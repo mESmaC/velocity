@@ -8,26 +8,29 @@
 //! before posting `deploy_result`, recording activity/health, or starting a
 //! fix-forward repair thread.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Manager};
 use velocity_core::deploy::{
-    CliScopeFailure, DeployRunState, DeploySecretSource, DeploySecretStatus, DeployStepSummary,
-    ProjectDeploySettings, deploy_checkout_folder_name, deploy_step_position,
-    detect_cli_scope_error, extract_secret_sources_line, format_deploy_duration,
-    format_deploy_failure_tail, format_deploy_result_output, format_secret_sources,
-    missing_secrets_output_with_notes, secret_target, summarize_deploy_error, summarize_output,
+    CliScopeFailure, DeployGateDecision, DeployRunState, DeploySecretSource, DeploySecretStatus,
+    DeployStepSummary, GitHubRunPlatformSnapshot, PlatformCommitStatus, ProjectDeploySettings,
+    decide_deploy_gate, deploy_checkout_folder_name, deploy_step_position, detect_cli_scope_error,
+    evaluate_github_platform_status, evaluate_platform_commit_status, extract_secret_sources_line,
+    format_deploy_duration, format_deploy_failure_tail, format_deploy_result_output,
+    format_deploy_waiting_health, format_secret_sources, missing_secrets_output_with_notes,
+    resolve_deploy_target_platform, secret_target, summarize_deploy_error, summarize_output,
     validate_secret_name,
 };
 use velocity_core::duty::DutyEventKind;
 use velocity_core::project_health::short_commit;
 use velocity_rosen::deploy::{
     DeployCommandOutcome, DeployDue, MAX_REPORTED_BYTES, RosenDeployStatus, cleanup_deploy_staging,
-    deploy_run_state, deploy_steps, parse_deploy_due, parse_deploy_result, platform_matches_host,
-    run_deploy_command, running_deploys, submit_deploy_result,
+    deploy_run_state, deploy_step_platforms, deploy_steps, parse_deploy_due, parse_deploy_result,
+    pending_deploys, platform_matches_host, rosen_platform_commit_status, run_deploy_command,
+    running_deploys, submit_deploy_result,
 };
 use velocity_rosen::deploy_cli::{
     CliSecretLookup, load_cli_fallback_secret, probe_cli_fallback_source,
@@ -56,6 +59,15 @@ pub(crate) struct PendingSetupRetry {
     pub(crate) failed_at_ms: u64,
 }
 
+/// Deploy step held until its target platform (for example `linux`) turns green (#685).
+#[derive(Clone, Debug)]
+pub(crate) struct WaitingPlatformDeploy {
+    pub(crate) due: DeployDue,
+    pub(crate) target_platform: String,
+    pub(crate) status: PlatformCommitStatus,
+    pub(crate) updated_at_ms: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SetupRetryDecision {
     RetryOnNextPass,
@@ -69,16 +81,27 @@ struct ProjectDeployQueue {
     pending: Vec<DeployDue>,
     pending_retries: BTreeMap<(String, String), PendingSetupRetry>,
     retried_once: HashSet<(String, String)>,
+    waiting_platform: BTreeMap<String, WaitingPlatformDeploy>,
+    has_platform_gated_steps: bool,
 }
 
 #[derive(Default)]
 pub struct ManagedDeployRunner {
     projects: Mutex<BTreeMap<u32, ProjectDeployQueue>>,
+    github_ci: Mutex<BTreeMap<u32, Vec<GitHubRunPlatformSnapshot>>>,
 }
 
 impl ManagedDeployRunner {
     fn lock_projects(&self) -> std::sync::MutexGuard<'_, BTreeMap<u32, ProjectDeployQueue>> {
         self.projects
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn lock_github_ci(
+        &self,
+    ) -> std::sync::MutexGuard<'_, BTreeMap<u32, Vec<GitHubRunPlatformSnapshot>>> {
+        self.github_ci
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -95,6 +118,10 @@ impl ManagedDeployRunner {
                 || queue.pending.iter().any(|item| item.id == due.id)
                 || queue
                     .pending_retries
+                    .values()
+                    .any(|item| item.due.id == due.id)
+                || queue
+                    .waiting_platform
                     .values()
                     .any(|item| item.due.id == due.id);
             if !duplicate {
@@ -221,6 +248,141 @@ impl ManagedDeployRunner {
             .cloned()
     }
 
+    fn record_waiting_platform(
+        &self,
+        project: u32,
+        due: &DeployDue,
+        target_platform: &str,
+        status: PlatformCommitStatus,
+    ) -> (WaitingPlatformDeploy, bool, bool) {
+        let mut projects = self.lock_projects();
+        let queue = projects.entry(project).or_default();
+        queue.has_platform_gated_steps = true;
+        let previous = queue.waiting_platform.get(&due.step);
+        let newly_parked = previous.is_none_or(|existing| existing.due.id != due.id);
+        let status_changed = previous.is_none_or(|existing| {
+            existing.due.id != due.id
+                || existing.target_platform != target_platform
+                || existing.status != status
+        });
+        let entry = WaitingPlatformDeploy {
+            due: due.clone(),
+            target_platform: target_platform.to_owned(),
+            status,
+            updated_at_ms: unix_millis(),
+        };
+        queue
+            .waiting_platform
+            .insert(due.step.clone(), entry.clone());
+        (entry, newly_parked, status_changed)
+    }
+
+    fn clear_waiting_platform(&self, project: u32, step: &str, commit: Option<&str>) {
+        if let Some(queue) = self.lock_projects().get_mut(&project) {
+            let remove = queue.waiting_platform.get(step).is_some_and(|entry| {
+                commit.is_none_or(|expected| entry.due.commit.eq_ignore_ascii_case(expected))
+            });
+            if remove {
+                queue.waiting_platform.remove(step);
+            }
+        }
+    }
+
+    fn schedule_waiting_recheck(&self, project: u32) -> bool {
+        let mut projects = self.lock_projects();
+        let Some(queue) = projects.get_mut(&project) else {
+            return false;
+        };
+        if queue.waiting_platform.is_empty() {
+            return false;
+        }
+        let waiting: Vec<DeployDue> = queue
+            .waiting_platform
+            .values()
+            .map(|entry| entry.due.clone())
+            .collect();
+        let mut added = false;
+        for due in waiting {
+            let duplicate =
+                queue.running == Some(due.id) || queue.pending.iter().any(|item| item.id == due.id);
+            if !duplicate {
+                queue.pending.push(due);
+                added = true;
+            }
+        }
+        if !added {
+            return false;
+        }
+        queue.pending.sort_by_key(|item| item.id);
+        if queue.worker_active {
+            false
+        } else {
+            queue.worker_active = true;
+            true
+        }
+    }
+
+    fn waiting_platform_for(
+        &self,
+        project: u32,
+        step: &str,
+        commit: &str,
+    ) -> Option<WaitingPlatformDeploy> {
+        self.lock_projects()
+            .get(&project)?
+            .waiting_platform
+            .get(step)
+            .filter(|entry| entry.due.commit.eq_ignore_ascii_case(commit))
+            .cloned()
+    }
+
+    fn waiting_platforms(&self, project: u32) -> Vec<WaitingPlatformDeploy> {
+        self.lock_projects()
+            .get(&project)
+            .map(|queue| queue.waiting_platform.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn has_any_waiting(&self) -> bool {
+        self.lock_projects()
+            .values()
+            .any(|queue| !queue.waiting_platform.is_empty())
+    }
+
+    fn mark_project_gated(&self, project: u32) {
+        self.lock_projects()
+            .entry(project)
+            .or_default()
+            .has_platform_gated_steps = true;
+    }
+
+    fn github_watch_targets(&self, project: u32) -> (bool, BTreeSet<String>) {
+        let projects = self.lock_projects();
+        let Some(queue) = projects.get(&project) else {
+            return (false, BTreeSet::new());
+        };
+        let mut commits = BTreeSet::new();
+        for entry in queue.waiting_platform.values() {
+            commits.insert(entry.due.commit.clone());
+        }
+        for due in &queue.pending {
+            commits.insert(due.commit.clone());
+        }
+        let include_passed = queue.has_platform_gated_steps || !commits.is_empty();
+        (include_passed, commits)
+    }
+
+    fn set_github_ci_snapshot(&self, project: u32, runs: Vec<GitHubRunPlatformSnapshot>) {
+        self.lock_github_ci().insert(project, runs);
+    }
+
+    fn github_ci_snapshot(&self, project: u32) -> Vec<GitHubRunPlatformSnapshot> {
+        self.lock_github_ci()
+            .get(&project)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     fn has_active_work(&self) -> bool {
         self.lock_projects().values().any(|queue| {
             queue.worker_active || queue.running.is_some() || !queue.pending.is_empty()
@@ -296,6 +458,7 @@ pub(crate) fn on_deploy_result(application: &AppHandle, project: u32, event: &Pr
     };
     if let Some(runner) = application.try_state::<ManagedDeployRunner>() {
         runner.clear_step_retries(project, &result.step, &result.commit);
+        runner.clear_waiting_platform(project, &result.step, Some(&result.commit));
     }
     if result.status == RosenDeployStatus::Passed {
         close_repairs(application, project, &result.step);
@@ -367,6 +530,75 @@ pub(crate) fn pending_setup_retry(
     application
         .try_state::<ManagedDeployRunner>()?
         .pending_retry_for(project, step, commit)
+}
+
+/// Records the latest GitHub CI runs + job runner labels for `project` and re-evaluates any
+/// deploy step waiting on a target platform (#685).
+pub(crate) fn update_github_ci_snapshot(
+    application: &AppHandle,
+    project: u32,
+    runs: Vec<GitHubRunPlatformSnapshot>,
+) {
+    let Some(runner) = application.try_state::<ManagedDeployRunner>() else {
+        return;
+    };
+    runner.set_github_ci_snapshot(project, runs);
+    if runner.schedule_waiting_recheck(project) {
+        spawn_project_worker(application, project);
+    }
+}
+
+/// Re-evaluates any deploy step waiting on a target platform (for example after a Rosen
+/// post-land green checkpoint or new land arrives) (#685).
+pub(crate) fn recheck_waiting(application: &AppHandle, project: u32) {
+    let Some(runner) = application.try_state::<ManagedDeployRunner>() else {
+        return;
+    };
+    if runner.schedule_waiting_recheck(project) {
+        spawn_project_worker(application, project);
+    }
+}
+
+/// True while any project has a deploy step waiting on target-platform verification (#685).
+pub(crate) fn has_waiting_deploys(application: &AppHandle) -> bool {
+    application
+        .try_state::<ManagedDeployRunner>()
+        .is_some_and(|runner| runner.has_any_waiting())
+}
+
+/// Returns `(include_newest_passed, watched_commits)` for GitHub base CI polling (#685).
+pub(crate) fn github_ci_watch_targets(
+    application: &AppHandle,
+    project: u32,
+) -> (bool, BTreeSet<String>) {
+    application
+        .try_state::<ManagedDeployRunner>()
+        .map_or((false, BTreeSet::new()), |runner| {
+            runner.github_watch_targets(project)
+        })
+}
+
+/// Returns the platform-waiting state for `(project, step, commit)` when held (#685).
+pub(crate) fn waiting_platform_deploy(
+    application: &AppHandle,
+    project: u32,
+    step: &str,
+    commit: &str,
+) -> Option<WaitingPlatformDeploy> {
+    application
+        .try_state::<ManagedDeployRunner>()?
+        .waiting_platform_for(project, step, commit)
+}
+
+/// Returns all deploy steps currently held waiting on target-platform verification (#685).
+pub(crate) fn waiting_platform_deploys(
+    application: &AppHandle,
+    project: u32,
+) -> Vec<WaitingPlatformDeploy> {
+    application
+        .try_state::<ManagedDeployRunner>()
+        .map(|runner| runner.waiting_platforms(project))
+        .unwrap_or_default()
 }
 
 fn enqueue_deploys(application: &AppHandle, project: u32, dues: Vec<DeployDue>) {
@@ -449,6 +681,12 @@ async fn execute_due(application: &AppHandle, project: u32, due: DeployDue) {
         return;
     };
     if !is_run_still_active(&server, due.id).await {
+        if let Some(runner) = application.try_state::<ManagedDeployRunner>() {
+            runner.clear_waiting_platform(project, &due.step, Some(&due.commit));
+        }
+        return;
+    }
+    if !check_target_platform_gate(application, &server, project, &due).await {
         return;
     }
     let loaded = match load_step_secrets(&landing.project.name, project, &due.secrets).await {
@@ -489,6 +727,172 @@ async fn execute_due(application: &AppHandle, project: u32, due: DeployDue) {
         outcome,
     )
     .await;
+}
+
+/// Enforces `[deploy.<step>].platform` (defaulting Fly/Cloudflare targets to `linux`) (#685).
+/// Returns `true` only when the commit is green on the target platform and ready to deploy.
+async fn check_target_platform_gate(
+    application: &AppHandle,
+    server: &ProjectServer,
+    project: u32,
+    due: &DeployDue,
+) -> bool {
+    let Some(target_platform) = resolve_step_target_platform(server, due).await else {
+        if let Some(runner) = application.try_state::<ManagedDeployRunner>() {
+            runner.clear_waiting_platform(project, &due.step, Some(&due.commit));
+        }
+        return true;
+    };
+    if let Some(runner) = application.try_state::<ManagedDeployRunner>() {
+        runner.mark_project_gated(project);
+    }
+    let current_status =
+        evaluate_commit_platform(application, server, project, &due.commit, &target_platform).await;
+    let (newer_same_step_status, has_other_pending) =
+        inspect_pending_behind(application, server, project, due, &target_platform).await;
+    let decision = decide_deploy_gate(
+        &due.step,
+        &due.commit,
+        &target_platform,
+        &current_status,
+        newer_same_step_status
+            .as_ref()
+            .map(|(commit, status)| (commit.as_str(), status)),
+        has_other_pending,
+    );
+    apply_platform_gate_decision(
+        application,
+        server,
+        project,
+        due,
+        &target_platform,
+        current_status,
+        decision,
+    )
+    .await
+}
+
+async fn resolve_step_target_platform(server: &ProjectServer, due: &DeployDue) -> Option<String> {
+    let configured = match due.target_platform.as_deref() {
+        Some(raw) => Some(raw.to_owned()),
+        None => deploy_step_platforms(server)
+            .await
+            .ok()
+            .and_then(|map| map.get(&due.step).cloned()),
+    };
+    resolve_deploy_target_platform(
+        configured.as_deref(),
+        &due.command,
+        &due.paths,
+        &due.secrets,
+    )
+}
+
+async fn inspect_pending_behind(
+    application: &AppHandle,
+    server: &ProjectServer,
+    project: u32,
+    due: &DeployDue,
+    target_platform: &str,
+) -> (Option<(String, PlatformCommitStatus)>, bool) {
+    let reading = server.clone();
+    let pending = tauri::async_runtime::spawn_blocking(move || pending_deploys(&reading))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    let has_other_pending = pending.iter().any(|candidate| candidate.id != due.id);
+    let newer_same_step = pending
+        .iter()
+        .filter(|candidate| candidate.step == due.step && candidate.id > due.id)
+        .max_by_key(|candidate| candidate.id);
+    let newer_status = match newer_same_step {
+        Some(newer) => Some((
+            newer.commit.clone(),
+            evaluate_commit_platform(application, server, project, &newer.commit, target_platform)
+                .await,
+        )),
+        None => None,
+    };
+    (newer_status, has_other_pending)
+}
+
+async fn evaluate_commit_platform(
+    application: &AppHandle,
+    server: &ProjectServer,
+    project: u32,
+    commit: &str,
+    target_platform: &str,
+) -> PlatformCommitStatus {
+    let rosen_status = rosen_platform_commit_status(server, commit, target_platform)
+        .await
+        .unwrap_or(PlatformCommitStatus::NoResult);
+    let github_runs = application
+        .try_state::<ManagedDeployRunner>()
+        .map(|runner| runner.github_ci_snapshot(project))
+        .unwrap_or_default();
+    let github_status = evaluate_github_platform_status(&github_runs, commit, target_platform);
+    evaluate_platform_commit_status(rosen_status, github_status)
+}
+
+async fn apply_platform_gate_decision(
+    application: &AppHandle,
+    server: &ProjectServer,
+    project: u32,
+    due: &DeployDue,
+    target_platform: &str,
+    current_status: PlatformCommitStatus,
+    decision: DeployGateDecision,
+) -> bool {
+    match decision {
+        DeployGateDecision::Run => {
+            if let Some(runner) = application.try_state::<ManagedDeployRunner>() {
+                runner.clear_waiting_platform(project, &due.step, Some(&due.commit));
+            }
+            true
+        }
+        DeployGateDecision::Wait => {
+            let Some(runner) = application.try_state::<ManagedDeployRunner>() else {
+                return false;
+            };
+            let (entry, newly_parked, status_changed) =
+                runner.record_waiting_platform(project, due, target_platform, current_status);
+            if status_changed {
+                let (signal, action, detail) = format_deploy_waiting_health(
+                    &entry.due.step,
+                    &entry.target_platform,
+                    &entry.due.commit,
+                    &entry.status,
+                );
+                let note = match detail.as_deref() {
+                    Some(detail) => format!("{signal} ({action}; {detail})"),
+                    None => format!("{signal} ({action})"),
+                };
+                crate::diagnostics::record(SOURCE, &format!("Project {project} {note}"));
+            }
+            crate::project_health::record_deploy_waiting(application, project, &entry);
+            if newly_parked {
+                crate::base_ci::wake(application);
+            }
+            false
+        }
+        DeployGateDecision::SkipRed { reason }
+        | DeployGateDecision::SkipSuperseded { reason, .. } => {
+            if let Some(runner) = application.try_state::<ManagedDeployRunner>() {
+                runner.clear_waiting_platform(project, &due.step, Some(&due.commit));
+            }
+            crate::diagnostics::record(
+                SOURCE,
+                &format!(
+                    "Project {project} skipping deploy `{}` at {}: {reason}",
+                    due.step,
+                    short_commit(&due.commit)
+                ),
+            );
+            submit_and_log_result(server, project, due, RosenDeployStatus::Skipped, &reason).await;
+            false
+        }
+    }
 }
 
 async fn finish_due(
@@ -1349,6 +1753,7 @@ mod tests {
             paths: Vec::new(),
             secrets: Vec::new(),
             platforms: Vec::new(),
+            target_platform: None,
         }
     }
 
@@ -1398,5 +1803,44 @@ mod tests {
         );
         runner.clear_running(3);
         assert!(runner.schedule_pending_retries(3).0.is_empty());
+    }
+
+    // Risk (#685): a deploy waiting on Linux CI must stay parked without marking the runner
+    // busy, watch its commit in GitHub CI polling, skip the red commit once a fix arrives,
+    // and re-enqueue automatically when GitHub CI updates.
+    #[test]
+    fn runner_holds_waiting_platform_deploy_and_rechecks_on_ci_update() {
+        let runner = ManagedDeployRunner::default();
+        let broken = "5249658aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let fix = "9999999bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let due_broken = sample_due(20, "server", broken);
+
+        assert!(runner.enqueue_many(7, vec![due_broken.clone()]));
+        assert_eq!(runner.pop_next(7, &[]), Some(due_broken.clone()));
+        let (_, newly_parked, status_changed) =
+            runner.record_waiting_platform(7, &due_broken, "linux", PlatformCommitStatus::NoResult);
+        runner.clear_running(7);
+        assert!(newly_parked);
+        assert!(status_changed);
+        assert!(runner.has_any_waiting());
+        assert!(!runner.has_active_work());
+        let (include_passed, watched) = runner.github_watch_targets(7);
+        assert!(include_passed);
+        assert!(watched.contains(broken));
+        // Duplicate delivery of the same held run must not re-enqueue while waiting.
+        assert!(!runner.enqueue_many(7, vec![due_broken.clone()]));
+
+        // A CI update wakes the held deploy for re-evaluation.
+        runner.set_github_ci_snapshot(7, Vec::new());
+        assert!(runner.schedule_waiting_recheck(7));
+        assert_eq!(runner.pop_next(7, &[]), Some(due_broken.clone()));
+        runner.clear_waiting_platform(7, "server", Some(broken));
+        runner.clear_running(7);
+        assert!(!runner.has_any_waiting());
+
+        // Fix commit arrives and queues cleanly.
+        let due_fix = sample_due(21, "server", fix);
+        assert!(runner.enqueue_many(7, vec![due_fix.clone()]));
+        assert_eq!(runner.pop_next(7, &[]), Some(due_fix));
     }
 }

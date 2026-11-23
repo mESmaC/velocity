@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use velocity_core::base_ci::{
-    self, BaseRun, CancelledJobEvidence, CheckRunInput, FailedJob, Failure, JobState,
-    RunCandidateInput, RunJob, RunState,
+    self, BaseRun, CancelledJobEvidence, CheckRunInput, FailedJob, Failure, JobPlatformOutcome,
+    JobState, RunCandidateInput, RunJob, RunState,
 };
 
 use crate::GitHubCommandError;
@@ -38,11 +38,13 @@ pub struct BaseCiWatch {
 }
 
 /// Runs on the base branch together with inspected per-run jobs, avoiding redundant GitHub
-/// requests in the same look (#584, #587).
+/// requests in the same look (#584, #587, #685).
 #[derive(Clone, Debug, Default)]
 pub struct BaseRunSnapshot {
     pub runs: Vec<BaseRun>,
     pub run_jobs: BTreeMap<u64, Vec<RunJob>>,
+    /// Per-job states and runner labels for inspected runs (used by deploy platform gating, #685).
+    pub run_job_outcomes: BTreeMap<u64, Vec<JobPlatformOutcome>>,
 }
 
 /// Cache shared across consecutive [`BaseCiWatch::runs`] polls for one project so already-completed
@@ -76,6 +78,7 @@ impl RunJobsStamp {
 struct CachedRunJobs {
     stamp: RunJobsStamp,
     jobs: Vec<RunJob>,
+    outcomes: Vec<JobPlatformOutcome>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -118,29 +121,41 @@ impl BaseCiPollCache {
         });
     }
 
-    fn completed_jobs(&self, run_id: u64, stamp: Option<&RunJobsStamp>) -> Option<Vec<RunJob>> {
+    fn completed_jobs(
+        &self,
+        run_id: u64,
+        stamp: Option<&RunJobsStamp>,
+    ) -> Option<InspectedRunJobs> {
         let stamp = stamp?;
         let cached = self.completed_run_jobs.get(&run_id)?;
-        (cached.stamp == *stamp).then(|| cached.jobs.clone())
+        (cached.stamp == *stamp).then(|| InspectedRunJobs {
+            jobs: cached.jobs.clone(),
+            outcomes: cached.outcomes.clone(),
+        })
     }
 
     fn record_completed_jobs(
         &mut self,
         run_id: u64,
         stamp: Option<&RunJobsStamp>,
-        jobs: &[RunJob],
+        inspected: &InspectedRunJobs,
     ) {
         let Some(stamp) = stamp else {
             return;
         };
         // Avoid caching if GitHub's jobs endpoint still reports a running job due to eventual
         // consistency right as a workflow run transitions to `completed`.
-        if jobs.iter().all(|job| job.state() != JobState::Running) {
+        if inspected
+            .jobs
+            .iter()
+            .all(|job| job.state() != JobState::Running)
+        {
             self.completed_run_jobs.insert(
                 run_id,
                 CachedRunJobs {
                     stamp: stamp.clone(),
-                    jobs: jobs.to_vec(),
+                    jobs: inspected.jobs.clone(),
+                    outcomes: inspected.outcomes.clone(),
                 },
             );
         }
@@ -205,6 +220,13 @@ fn is_check_run_completed(check: &CheckRunInput) -> bool {
     check.status.as_deref() == Some("completed")
 }
 
+/// Per-run jobs together with runner labels returned by one GitHub jobs inspection (#685).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct InspectedRunJobs {
+    jobs: Vec<RunJob>,
+    outcomes: Vec<JobPlatformOutcome>,
+}
+
 /// A failed run's failed steps' output, and where the whole of it was saved.
 #[derive(Clone, Debug, Default)]
 pub struct FailedLog {
@@ -229,6 +251,18 @@ impl BaseCiWatch {
         &self,
         branch: &str,
         cache: &mut BaseCiPollCache,
+    ) -> Result<BaseRunSnapshot, GitHubCommandError> {
+        self.runs_with_platform_jobs(branch, cache, false, &BTreeSet::new())
+    }
+
+    /// Like [`Self::runs`], optionally also inspecting each workflow's newest passing run
+    /// and any run for `watched_commits` so deploy platform gating sees runner labels (#685).
+    pub fn runs_with_platform_jobs(
+        &self,
+        branch: &str,
+        cache: &mut BaseCiPollCache,
+        include_newest_passed: bool,
+        watched_commits: &BTreeSet<String>,
     ) -> Result<BaseRunSnapshot, GitHubCommandError> {
         #[derive(Deserialize)]
         struct Runs {
@@ -256,7 +290,7 @@ impl BaseCiWatch {
         let mut inspect_jobs = |run, commit: &str, workflow_path: Option<&str>, has_newer| {
             self.inspect_run_jobs(run, commit, workflow_path, has_newer)
         };
-        let mut run_jobs = promote_timed_out_runs(
+        let (mut run_jobs, mut run_job_outcomes) = promote_timed_out_runs(
             &mut runs,
             &cancelled_ids,
             &workflow_paths,
@@ -268,7 +302,10 @@ impl BaseCiWatch {
             &runs,
             &workflow_paths,
             &completed_stamps,
+            include_newest_passed,
+            watched_commits,
             &mut run_jobs,
+            &mut run_job_outcomes,
             cache,
             &mut inspect_jobs,
         )?;
@@ -285,7 +322,11 @@ impl BaseCiWatch {
             || self.fetch_check_runs(branch, &tip_sha),
         )?;
         runs.extend(check_runs);
-        Ok(BaseRunSnapshot { runs, run_jobs })
+        Ok(BaseRunSnapshot {
+            runs,
+            run_jobs,
+            run_job_outcomes,
+        })
     }
 
     /// The tip's commit statuses, which is how legacy CI other than GitHub Actions reports.
@@ -371,11 +412,12 @@ impl BaseCiWatch {
         commit: &str,
         workflow_path: Option<&str>,
         has_newer_workflow_run: bool,
-    ) -> Result<Vec<RunJob>, GitHubCommandError> {
+    ) -> Result<InspectedRunJobs, GitHubCommandError> {
         let jobs = self.client.jobs(run)?;
         let timed_out_cancelled =
             self.timed_out_cancelled_indices(&jobs, commit, workflow_path, has_newer_workflow_run);
         let mut inspected = Vec::with_capacity(jobs.len());
+        let mut outcomes = Vec::with_capacity(jobs.len());
         for (index, job) in jobs.into_iter().enumerate() {
             let timed_out_cancelled = timed_out_cancelled.contains(&index);
             let state = base_ci::job_state(
@@ -383,6 +425,11 @@ impl BaseCiWatch {
                 job.conclusion.as_deref(),
                 timed_out_cancelled,
             );
+            outcomes.push(JobPlatformOutcome {
+                job: job.name.clone(),
+                state,
+                labels: job.labels.clone(),
+            });
             let entry = match state {
                 JobState::Passed => RunJob::Passed(job.name),
                 JobState::Failed => {
@@ -395,7 +442,10 @@ impl BaseCiWatch {
             };
             inspected.push(entry);
         }
-        Ok(inspected)
+        Ok(InspectedRunJobs {
+            jobs: inspected,
+            outcomes,
+        })
     }
 
     fn timed_out_cancelled_indices(
@@ -558,18 +608,23 @@ fn load_run_jobs<F>(
     completed_stamps: &BTreeMap<u64, RunJobsStamp>,
     cache: &mut BaseCiPollCache,
     fetch: &mut F,
-) -> Result<Vec<RunJob>, GitHubCommandError>
+) -> Result<InspectedRunJobs, GitHubCommandError>
 where
-    F: FnMut(u64, &str, Option<&str>, bool) -> Result<Vec<RunJob>, GitHubCommandError>,
+    F: FnMut(u64, &str, Option<&str>, bool) -> Result<InspectedRunJobs, GitHubCommandError>,
 {
     let stamp = completed_stamps.get(&run_id);
     if let Some(cached) = cache.completed_jobs(run_id, stamp) {
         return Ok(cached);
     }
-    let jobs = fetch(run_id, commit, workflow_path, has_newer_workflow_run)?;
-    cache.record_completed_jobs(run_id, stamp, &jobs);
-    Ok(jobs)
+    let inspected = fetch(run_id, commit, workflow_path, has_newer_workflow_run)?;
+    cache.record_completed_jobs(run_id, stamp, &inspected);
+    Ok(inspected)
 }
+
+type PromotedRunJobs = (
+    BTreeMap<u64, Vec<RunJob>>,
+    BTreeMap<u64, Vec<JobPlatformOutcome>>,
+);
 
 fn promote_timed_out_runs<F>(
     runs: &mut [BaseRun],
@@ -578,9 +633,9 @@ fn promote_timed_out_runs<F>(
     completed_stamps: &BTreeMap<u64, RunJobsStamp>,
     cache: &mut BaseCiPollCache,
     fetch: &mut F,
-) -> Result<BTreeMap<u64, Vec<RunJob>>, GitHubCommandError>
+) -> Result<PromotedRunJobs, GitHubCommandError>
 where
-    F: FnMut(u64, &str, Option<&str>, bool) -> Result<Vec<RunJob>, GitHubCommandError>,
+    F: FnMut(u64, &str, Option<&str>, bool) -> Result<InspectedRunJobs, GitHubCommandError>,
 {
     let inputs: Vec<RunCandidateInput<'_>> = runs
         .iter()
@@ -593,6 +648,7 @@ where
         .collect();
     let candidates = base_ci::cancelled_candidates(&inputs);
     let mut run_jobs = BTreeMap::new();
+    let mut run_job_outcomes = BTreeMap::new();
     let mut resolved_workflows: HashSet<String> = HashSet::new();
     let mut checked_per_workflow: BTreeMap<String, usize> = BTreeMap::new();
     for candidate in candidates {
@@ -609,7 +665,7 @@ where
         let Some(run) = runs.iter_mut().find(|entry| entry.run == candidate.run) else {
             continue;
         };
-        let jobs = load_run_jobs(
+        let inspected = load_run_jobs(
             run.run,
             &run.commit,
             workflow_paths.get(&run.run).map(String::as_str),
@@ -618,30 +674,43 @@ where
             cache,
             fetch,
         )?;
-        let has_failure = jobs.iter().any(|job| job.state() == JobState::Failed);
-        run_jobs.insert(run.run, jobs);
+        let has_failure = inspected
+            .jobs
+            .iter()
+            .any(|job| job.state() == JobState::Failed);
+        run_jobs.insert(run.run, inspected.jobs);
+        run_job_outcomes.insert(run.run, inspected.outcomes);
         if has_failure {
             run.state = RunState::Failed;
             resolved_workflows.insert(candidate.workflow);
         }
     }
-    Ok(run_jobs)
+    Ok((run_jobs, run_job_outcomes))
 }
 
-/// Reads jobs for each workflow's newest failed run and any newer in-progress runs so
-/// each job is decided by the newest run in which that job finished (#587).
+/// Reads jobs for each workflow's newest failed run, any newer in-progress runs, and
+/// optionally passing/watched runs for deploy platform gating (#587, #685).
+#[allow(clippy::too_many_arguments)]
 fn inspect_relevant_runs<F>(
     runs: &[BaseRun],
     workflow_paths: &BTreeMap<u64, String>,
     completed_stamps: &BTreeMap<u64, RunJobsStamp>,
+    include_newest_passed: bool,
+    watched_commits: &BTreeSet<String>,
     run_jobs: &mut BTreeMap<u64, Vec<RunJob>>,
+    run_job_outcomes: &mut BTreeMap<u64, Vec<JobPlatformOutcome>>,
     cache: &mut BaseCiPollCache,
     fetch: &mut F,
 ) -> Result<(), GitHubCommandError>
 where
-    F: FnMut(u64, &str, Option<&str>, bool) -> Result<Vec<RunJob>, GitHubCommandError>,
+    F: FnMut(u64, &str, Option<&str>, bool) -> Result<InspectedRunJobs, GitHubCommandError>,
 {
-    for run_id in base_ci::runs_to_inspect(runs, MAX_RUNNING_CHECKS_PER_WORKFLOW) {
+    for run_id in base_ci::runs_to_inspect_for_commits(
+        runs,
+        MAX_RUNNING_CHECKS_PER_WORKFLOW,
+        include_newest_passed,
+        watched_commits,
+    ) {
         if run_jobs.contains_key(&run_id) {
             continue;
         }
@@ -651,7 +720,7 @@ where
         let has_newer = runs
             .iter()
             .any(|other| other.identity() == run.identity() && other.run > run.run);
-        let jobs = load_run_jobs(
+        let inspected = load_run_jobs(
             run.run,
             &run.commit,
             workflow_paths.get(&run.run).map(String::as_str),
@@ -660,7 +729,8 @@ where
             cache,
             fetch,
         )?;
-        run_jobs.insert(run.run, jobs);
+        run_jobs.insert(run.run, inspected.jobs);
+        run_job_outcomes.insert(run.run, inspected.outcomes);
     }
     Ok(())
 }
@@ -890,10 +960,12 @@ pub(crate) fn encoded(text: &str, path: bool) -> String {
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
-    use velocity_core::base_ci::{self, CheckRunInput, FailedJob, RunJob, RunState};
+    use velocity_core::base_ci::{
+        self, CheckRunInput, FailedJob, JobPlatformOutcome, JobState, RunJob, RunState,
+    };
 
     use super::{
-        ApiCheckRun, BaseCiPollCache, CheckRunsResponse, PreparedRuns, base_run,
+        ApiCheckRun, BaseCiPollCache, CheckRunsResponse, InspectedRunJobs, PreparedRuns, base_run,
         has_running_actions_for_tip, inspect_relevant_runs, prepare_workflow_runs,
         promote_timed_out_runs, resolve_check_runs,
     };
@@ -936,6 +1008,7 @@ mod tests {
     struct PollOutcome {
         runs: Vec<base_ci::BaseRun>,
         run_jobs: BTreeMap<u64, Vec<RunJob>>,
+        run_job_outcomes: BTreeMap<u64, Vec<JobPlatformOutcome>>,
         fetched: Vec<u64>,
     }
 
@@ -943,6 +1016,27 @@ mod tests {
         raw_runs: Vec<WorkflowRun>,
         cache: &mut BaseCiPollCache,
         mut fetch: impl FnMut(u64) -> Vec<RunJob>,
+    ) -> Result<PollOutcome, crate::GitHubCommandError> {
+        run_cached_job_poll_with_options(raw_runs, cache, false, &BTreeSet::new(), |run_id| {
+            let jobs = fetch(run_id);
+            let outcomes = jobs
+                .iter()
+                .map(|job| JobPlatformOutcome {
+                    job: job.name().to_owned(),
+                    state: job.state(),
+                    labels: Vec::new(),
+                })
+                .collect();
+            InspectedRunJobs { jobs, outcomes }
+        })
+    }
+
+    fn run_cached_job_poll_with_options(
+        raw_runs: Vec<WorkflowRun>,
+        cache: &mut BaseCiPollCache,
+        include_newest_passed: bool,
+        watched_commits: &BTreeSet<String>,
+        mut fetch: impl FnMut(u64) -> InspectedRunJobs,
     ) -> Result<PollOutcome, crate::GitHubCommandError> {
         cache.reset_if_target_changed("mESmaC/collapse.sh", "main");
         let PreparedRuns {
@@ -957,7 +1051,7 @@ mod tests {
             fetched.push(run_id);
             Ok(fetch(run_id))
         };
-        let mut run_jobs = promote_timed_out_runs(
+        let (mut run_jobs, mut run_job_outcomes) = promote_timed_out_runs(
             &mut runs,
             &cancelled_ids,
             &workflow_paths,
@@ -969,13 +1063,17 @@ mod tests {
             &runs,
             &workflow_paths,
             &completed_stamps,
+            include_newest_passed,
+            watched_commits,
             &mut run_jobs,
+            &mut run_job_outcomes,
             cache,
             &mut inspect,
         )?;
         Ok(PollOutcome {
             runs,
             run_jobs,
+            run_job_outcomes,
             fetched,
         })
     }
@@ -1336,6 +1434,58 @@ mod tests {
         assert_eq!(runs[2].workflow_key, "path:.github/workflows/lint.yml");
         assert_ne!(runs[0].identity(), runs[1].identity());
         assert_ne!(runs[0].identity(), runs[2].identity());
+        Ok(())
+    }
+
+    // Risk (#685): deploy platform gating needs runner labels (`ubuntu-latest`) for passing
+    // runs and watched deploy commits, cached across steady-state polls.
+    #[test]
+    fn passed_run_platform_outcomes_are_inspected_when_requested_and_cached()
+    -> Result<(), crate::GitHubCommandError> {
+        let mut cache = BaseCiPollCache::default();
+        let passing = workflow_run(
+            501,
+            1,
+            "completed",
+            Some("success"),
+            1,
+            "2026-11-22T23:00:00Z",
+        );
+        let fetch = |_| InspectedRunJobs {
+            jobs: vec![RunJob::Passed("Server (ubuntu-latest)".to_owned())],
+            outcomes: vec![JobPlatformOutcome {
+                job: "Server (ubuntu-latest)".to_owned(),
+                state: JobState::Passed,
+                labels: vec!["ubuntu-latest".to_owned()],
+            }],
+        };
+
+        let first = run_cached_job_poll_with_options(
+            vec![passing.clone()],
+            &mut cache,
+            true,
+            &BTreeSet::new(),
+            fetch,
+        )?;
+        assert_eq!(first.fetched, vec![501]);
+        assert_eq!(
+            first.run_job_outcomes.get(&501),
+            Some(&vec![JobPlatformOutcome {
+                job: "Server (ubuntu-latest)".to_owned(),
+                state: JobState::Passed,
+                labels: vec!["ubuntu-latest".to_owned()],
+            }])
+        );
+
+        let second = run_cached_job_poll_with_options(
+            vec![passing],
+            &mut cache,
+            true,
+            &BTreeSet::new(),
+            fetch,
+        )?;
+        assert!(second.fetched.is_empty());
+        assert_eq!(second.run_job_outcomes, first.run_job_outcomes);
         Ok(())
     }
 }

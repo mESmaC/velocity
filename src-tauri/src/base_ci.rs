@@ -37,6 +37,8 @@ const FIRST_LOOK: Duration = Duration::from_secs(90);
 /// A run takes far longer than this, and a look with nothing failing is two requests a
 /// project, so a failure has its thread within minutes of the run finishing.
 const LOOK_INTERVAL: Duration = Duration::from_secs(3 * 60);
+/// Shorter polling interval while a platform-gated deploy step is waiting on GitHub CI (#685).
+const DEPLOY_WAIT_LOOK_INTERVAL: Duration = Duration::from_secs(30);
 const SOURCE: &str = "base ci";
 
 /// How base CI is observed for one Rosen project (#507, #591).
@@ -106,7 +108,12 @@ pub fn initialize(application: &AppHandle) {
                     None => last_failures.remove(&subject.project),
                 };
             }
-            let _ = receiver.recv_timeout(LOOK_INTERVAL);
+            let interval = if crate::rosen_deploy::has_waiting_deploys(&application) {
+                DEPLOY_WAIT_LOOK_INTERVAL
+            } else {
+                LOOK_INTERVAL
+            };
+            let _ = receiver.recv_timeout(interval);
         }
     });
 }
@@ -199,9 +206,13 @@ fn look_github(
     poll_cache: &mut BaseCiPollCache,
 ) -> Result<(), String> {
     let client = BaseCiWatch::new(repository).map_err(|error| error.to_string())?;
+    let (include_passed, watched_commits) =
+        crate::rosen_deploy::github_ci_watch_targets(application, subject.project);
     let snapshot = client
-        .runs(branch, poll_cache)
+        .runs_with_platform_jobs(branch, poll_cache, include_passed, &watched_commits)
         .map_err(|error| error.to_string())?;
+    let platform_runs = build_platform_runs(&snapshot);
+    crate::rosen_deploy::update_github_ci_snapshot(application, subject.project, platform_runs);
     let mut verdict = base_ci::evaluate_jobs(&snapshot.runs, &snapshot.run_jobs);
     let open = open_repairs(application, subject.project, &verdict.active_failures)?;
     populate_signatures(
@@ -232,6 +243,27 @@ fn look_github(
     result.and(resume_pending(application, subject))
 }
 
+fn build_platform_runs(
+    snapshot: &velocity_github::base_ci::BaseRunSnapshot,
+) -> Vec<velocity_core::deploy::GitHubRunPlatformSnapshot> {
+    snapshot
+        .runs
+        .iter()
+        .map(|run| velocity_core::deploy::GitHubRunPlatformSnapshot {
+            workflow_key: run.workflow_key.clone(),
+            workflow: run.workflow.clone(),
+            run: run.run,
+            commit: run.commit.clone(),
+            state: run.state,
+            jobs: snapshot
+                .run_job_outcomes
+                .get(&run.run)
+                .cloned()
+                .unwrap_or_default(),
+        })
+        .collect()
+}
+
 /// Observes Rosen per-platform post-land failures and checkpoints on Collapse or GitHub-free
 /// projects without calling GitHub Actions (#591).
 fn look_rosen(application: &AppHandle, subject: &Subject) -> Result<(), String> {
@@ -241,6 +273,7 @@ fn look_rosen(application: &AppHandle, subject: &Subject) -> Result<(), String> 
     let server = crate::rosen::observation_server(application, subject.project)?;
     let snapshot = tauri::async_runtime::block_on(post_land::base_ci_snapshot(&server))
         .map_err(|error| error.to_string())?;
+    crate::rosen_deploy::recheck_waiting(application, subject.project);
     let (verdict, view) = base_ci::evaluate_rosen_post_land(&snapshot);
     let open = open_repairs(application, subject.project, &verdict.active_failures)?;
     let plan = base_ci::plan_for_verdict(&open, &verdict);

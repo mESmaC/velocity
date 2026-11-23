@@ -1315,6 +1315,7 @@ async fn check_project(application: &AppHandle, app_data: &Path, project: &Proje
         items.push(item);
     }
     crate::rosen_deploy::retry_setup_failures(application, project.id);
+    crate::rosen_deploy::recheck_waiting(application, project.id);
     items.extend(check_deploy_health(application, project, &server, now_ms).await);
     items.extend(check_release_health(application, project, &server, now, now_ms).await);
     items.extend(collect_recent_actions(application, project.id, now, &items));
@@ -1426,6 +1427,41 @@ fn deploy_retrying_health_item(
     .with_detail(velocity_core::deploy::summarize_output(error, 180))
 }
 
+/// Records that a `[deploy.<step>]` step is held waiting on its target platform (#685).
+pub(crate) fn record_deploy_waiting(
+    application: &AppHandle,
+    project: u32,
+    waiting: &crate::rosen_deploy::WaitingPlatformDeploy,
+) {
+    upsert_health_item(application, project, deploy_waiting_health_item(waiting));
+}
+
+fn deploy_waiting_health_item(
+    waiting: &crate::rosen_deploy::WaitingPlatformDeploy,
+) -> ProjectHealthItem {
+    let (signal, action, detail) = velocity_core::deploy::format_deploy_waiting_health(
+        &waiting.due.step,
+        &waiting.target_platform,
+        &waiting.due.commit,
+        &waiting.status,
+    );
+    let severity = match waiting.status {
+        velocity_core::deploy::PlatformCommitStatus::Failed { .. } => HealthSeverity::Warning,
+        velocity_core::deploy::PlatformCommitStatus::NoResult
+        | velocity_core::deploy::PlatformCommitStatus::Pending { .. }
+        | velocity_core::deploy::PlatformCommitStatus::Green { .. } => HealthSeverity::Info,
+    };
+    ProjectHealthItem::new(
+        deploy_health_key(&waiting.due.step),
+        HealthSignalKind::Deploy,
+        severity,
+        signal,
+        action,
+        waiting.updated_at_ms,
+    )
+    .with_detail(detail)
+}
+
 /// Records that a `[deploy.<step>]` step was skipped (for example missing secrets) (#594).
 pub(crate) fn record_deploy_skipped(
     application: &AppHandle,
@@ -1436,13 +1472,22 @@ pub(crate) fn record_deploy_skipped(
 ) {
     let now_ms = unix_millis();
     let missing_secrets = reason.starts_with(velocity_core::deploy::MISSING_SECRETS_PREFIX);
-    let (signal, action) = if missing_secrets {
+    let platform_gate_skip = reason.starts_with(velocity_core::deploy::PLATFORM_GATE_SKIP_PREFIX);
+    let (severity, signal, action) = if missing_secrets {
         (
+            HealthSeverity::Warning,
             format!("Deploy `{step}` skipped: missing secrets"),
             "Set the required secrets in Settings -> Workspaces -> Deploy secrets",
         )
+    } else if platform_gate_skip {
+        (
+            HealthSeverity::Info,
+            format!("Deploy `{step}` skipped at {}", short_commit(commit)),
+            "Skipped red or superseded commit on target platform",
+        )
     } else {
         (
+            HealthSeverity::Warning,
             format!("Deploy `{step}` skipped at {}", short_commit(commit)),
             "Deploy step was skipped",
         )
@@ -1450,7 +1495,7 @@ pub(crate) fn record_deploy_skipped(
     let item = ProjectHealthItem::new(
         deploy_health_key(step),
         HealthSignalKind::Deploy,
-        HealthSeverity::Warning,
+        severity,
         signal,
         action,
         now_ms,
@@ -1602,9 +1647,17 @@ async fn check_deploy_health(
     .ok()
     .and_then(Result::ok)
     .unwrap_or_default();
-    runs.into_iter()
+    let mut items: Vec<ProjectHealthItem> = runs
+        .into_iter()
         .filter_map(|run| deploy_run_health_item(application, project, &run, now_ms))
-        .collect()
+        .collect();
+    for waiting in crate::rosen_deploy::waiting_platform_deploys(application, project.id) {
+        let key = deploy_health_key(&waiting.due.step);
+        if !items.iter().any(|item| item.key == key) {
+            items.push(deploy_waiting_health_item(&waiting));
+        }
+    }
+    items
 }
 
 fn deploy_run_health_item(
@@ -1619,6 +1672,14 @@ fn deploy_run_health_item(
         .unwrap_or(now_ms);
     match run.state {
         velocity_core::deploy::DeployRunState::Running => {
+            if let Some(waiting) = crate::rosen_deploy::waiting_platform_deploy(
+                application,
+                project.id,
+                &run.step,
+                &run.commit,
+            ) {
+                return Some(deploy_waiting_health_item(&waiting));
+            }
             if let Some(retry) = crate::rosen_deploy::pending_setup_retry(
                 application,
                 project.id,
