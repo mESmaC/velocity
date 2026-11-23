@@ -49,6 +49,9 @@ struct CachedEtag {
 }
 
 struct HttpJob {
+    project: String,
+    caller: &'static Location<'static>,
+    operation: String,
     method: Method,
     url: String,
     accept: String,
@@ -235,41 +238,75 @@ fn dispatch_with_auth_retry(
     initial_token: &str,
     request: &HttpRequest<'_>,
 ) -> Result<HttpOutcome, GitHubCommandError> {
+    dispatch_with_token_refresh(worker, initial_token, request, |stale| {
+        refresh_token(request.caller, stale)
+    })
+}
+
+fn dispatch_with_token_refresh(
+    worker: &tokio::sync::mpsc::UnboundedSender<HttpJob>,
+    initial_token: &str,
+    request: &HttpRequest<'_>,
+    refresh: impl FnOnce(&str) -> Option<String>,
+) -> Result<HttpOutcome, GitHubCommandError> {
     let outcome = dispatch_once(worker, initial_token, request)?;
-    record_outcome(
-        request.project,
-        request.caller,
-        request.operation,
-        outcome.status,
-    );
     if outcome.status != StatusCode::UNAUTHORIZED {
         return Ok(outcome);
     }
-    let Some(refreshed) = refresh_token(request.caller, initial_token) else {
+    let Some(refreshed) = refresh(initial_token) else {
         return Ok(outcome);
     };
-    let retry = dispatch_once(worker, &refreshed, request)?;
-    record_outcome(
-        request.project,
-        request.caller,
-        request.operation,
-        retry.status,
-    );
-    Ok(retry)
+    dispatch_once(worker, &refreshed, request)
 }
 
 fn record_outcome(
     project: &str,
     caller: &'static Location<'static>,
     operation: &str,
-    status: StatusCode,
+    status: Option<StatusCode>,
 ) {
-    let label = if status == StatusCode::NOT_MODIFIED {
+    let label = if status == Some(StatusCode::NOT_MODIFIED) {
         format!("{operation} (304)")
     } else {
         operation.to_owned()
     };
     crate::request_counter::record_for_project(project, caller, label);
+}
+
+/// Counts each dispatched HTTP attempt once, keeping `304` labels when headers arrive while still
+/// metering transport timeouts, body read failures, and interrupted worker tasks (#695).
+struct AttemptMeter<'a> {
+    project: &'a str,
+    caller: &'static Location<'static>,
+    operation: &'a str,
+    recorded: bool,
+}
+
+impl<'a> AttemptMeter<'a> {
+    fn new(job: &'a HttpJob) -> Self {
+        Self {
+            project: &job.project,
+            caller: job.caller,
+            operation: &job.operation,
+            recorded: false,
+        }
+    }
+
+    fn record(&mut self, status: Option<StatusCode>) {
+        if !self.recorded {
+            self.recorded = true;
+            record_outcome(self.project, self.caller, self.operation, status);
+        }
+    }
+}
+
+impl Drop for AttemptMeter<'_> {
+    fn drop(&mut self) {
+        if !self.recorded {
+            self.recorded = true;
+            record_outcome(self.project, self.caller, self.operation, None);
+        }
+    }
 }
 
 fn dispatch_once(
@@ -279,6 +316,9 @@ fn dispatch_once(
 ) -> Result<HttpOutcome, GitHubCommandError> {
     let (reply_tx, reply_rx) = mpsc::sync_channel(1);
     let job = HttpJob {
+        project: request.project.to_owned(),
+        caller: request.caller,
+        operation: request.operation.to_owned(),
         method: request.method.clone(),
         url: request.url.to_owned(),
         accept: request.accept.to_owned(),
@@ -298,34 +338,38 @@ fn dispatch_once(
 fn worker_sender() -> Option<&'static tokio::sync::mpsc::UnboundedSender<HttpJob>> {
     WORKER
         .get_or_init(|| {
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HttpJob>();
             let client = reqwest::Client::builder()
                 .timeout(REQUEST_TIMEOUT)
                 .user_agent(CLIENT_USER_AGENT)
                 .build()
                 .ok()?;
-            let started = std::thread::Builder::new()
-                .name("velocity-github-http".into())
-                .spawn(move || {
-                    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                    else {
-                        return;
-                    };
-                    runtime.block_on(async move {
-                        while let Some(job) = rx.recv().await {
-                            let client = client.clone();
-                            tokio::spawn(async move {
-                                let result = run_http_job(&client, &job).await;
-                                let _ = job.reply.send(result);
-                            });
-                        }
-                    });
-                });
-            started.ok().map(|_| tx)
+            spawn_worker(client)
         })
         .as_ref()
+}
+
+fn spawn_worker(client: reqwest::Client) -> Option<tokio::sync::mpsc::UnboundedSender<HttpJob>> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HttpJob>();
+    let started = std::thread::Builder::new()
+        .name("velocity-github-http".into())
+        .spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            runtime.block_on(async move {
+                while let Some(job) = rx.recv().await {
+                    let client = client.clone();
+                    tokio::spawn(async move {
+                        let result = run_http_job(&client, &job).await;
+                        let _ = job.reply.send(result);
+                    });
+                }
+            });
+        });
+    started.ok().map(|_| tx)
 }
 
 async fn run_http_job(
@@ -346,7 +390,9 @@ async fn run_http_job(
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.clone());
     }
+    let mut meter = AttemptMeter::new(job);
     let response = request.send().await.map_err(|error| {
+        meter.record(None);
         if error.is_timeout() {
             GitHubCommandError::TimedOut(REQUEST_TIMEOUT.as_secs())
         } else {
@@ -354,6 +400,7 @@ async fn run_http_job(
         }
     })?;
     let status = response.status();
+    meter.record(Some(status));
     let etag = response
         .headers()
         .get(ETAG)
@@ -547,5 +594,219 @@ fn http_status_error(status: StatusCode, body: &[u8]) -> GitHubCommandError {
     GitHubCommandError::Command {
         code: Some(i32::from(status.as_u16())),
         message: format!("HTTP {}: {detail}", status.as_u16()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::{Shutdown, TcpListener};
+    use std::panic::Location;
+    use std::time::Duration;
+
+    use reqwest::{Method, StatusCode};
+
+    use super::{DEFAULT_ACCEPT, HttpJob, HttpRequest, dispatch_with_token_refresh, spawn_worker};
+    use crate::gh_command::GitHubCommandError;
+
+    enum ScriptedReply {
+        Raw(&'static [u8]),
+        Stall(Duration),
+    }
+
+    fn read_request_headers(stream: &mut std::net::TcpStream) {
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+        let mut received = Vec::new();
+        let mut chunk = [0u8; 1024];
+        while !received.windows(4).any(|window| window == b"\r\n\r\n") {
+            match stream.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => received.extend_from_slice(&chunk[..count]),
+            }
+        }
+    }
+
+    fn spawn_scripted_server(
+        replies: Vec<ScriptedReply>,
+    ) -> Result<(String, std::thread::JoinHandle<()>), std::io::Error> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        let handle = std::thread::spawn(move || {
+            for reply in replies {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                read_request_headers(&mut stream);
+                match reply {
+                    ScriptedReply::Raw(bytes) => {
+                        let _ = stream.write_all(bytes);
+                        let _ = stream.flush();
+                        let _ = stream.shutdown(Shutdown::Both);
+                    }
+                    ScriptedReply::Stall(delay) => {
+                        std::thread::spawn(move || {
+                            std::thread::sleep(delay);
+                            drop(stream);
+                        });
+                    }
+                }
+            }
+        });
+        Ok((format!("http://{address}/repos/test/repo"), handle))
+    }
+
+    fn spawn_test_worker(
+        timeout: Duration,
+    ) -> Result<tokio::sync::mpsc::UnboundedSender<HttpJob>, Box<dyn std::error::Error>> {
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .no_proxy()
+            .build()?;
+        spawn_worker(client).ok_or_else(|| "failed to start test HTTP worker".into())
+    }
+
+    fn project_rate_row(project: &str) -> Option<velocity_core::performance::GhRateRow> {
+        let normalized = project.to_ascii_lowercase();
+        velocity_core::performance::snapshot()
+            .gh_projects
+            .into_iter()
+            .find(|row| row.project == normalized)
+    }
+
+    fn operation_count(operation: &str) -> u64 {
+        crate::request_counter::request_totals()
+            .into_iter()
+            .filter(|row| row.operation == operation)
+            .map(|row| row.count)
+            .sum()
+    }
+
+    // Risk (#695, SPEC.md §3.1/F15): pooled HTTPS attempts that fail after dispatch (body read
+    // error, timeout, or failed auth retry) must still be counted once against the project's
+    // per-minute rate and totals.
+    #[test]
+    fn counts_body_read_errors_timeouts_and_failed_auth_retries_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let truncated = b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\nConnection: close\r\n\r\nshort";
+        let unauthorized =
+            b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+        let (url, server) = spawn_scripted_server(vec![
+            ScriptedReply::Raw(truncated),
+            ScriptedReply::Stall(Duration::from_millis(300)),
+            ScriptedReply::Raw(unauthorized),
+            ScriptedReply::Raw(truncated),
+        ])?;
+        let worker = spawn_test_worker(Duration::from_millis(80))?;
+        let project = "issue-695/pooled-http-failures";
+        let request = |operation| HttpRequest {
+            project,
+            caller: Location::caller(),
+            method: &Method::GET,
+            url: &url,
+            accept: DEFAULT_ACCEPT,
+            etag: None,
+            body: None,
+            operation,
+        };
+
+        let body_err =
+            dispatch_with_token_refresh(&worker, "tok", &request("issue-695-body"), |_| None);
+        assert!(matches!(
+            body_err,
+            Err(GitHubCommandError::Invalid(ref msg)) if msg.contains("GitHub HTTP body read failed")
+        ));
+        let timeout_err =
+            dispatch_with_token_refresh(&worker, "tok", &request("issue-695-timeout"), |_| None);
+        assert!(matches!(timeout_err, Err(GitHubCommandError::TimedOut(_))));
+        let retry_err =
+            dispatch_with_token_refresh(&worker, "stale", &request("issue-695-retry-err"), |_| {
+                Some("fresh".into())
+            });
+        assert!(matches!(
+            retry_err,
+            Err(GitHubCommandError::Invalid(ref msg)) if msg.contains("GitHub HTTP body read failed")
+        ));
+
+        let _ = server.join();
+        assert_eq!(operation_count("issue-695-body"), 1);
+        assert_eq!(operation_count("issue-695-timeout"), 1);
+        assert_eq!(operation_count("issue-695-retry-err"), 2);
+        let row = project_rate_row(project).ok_or("missing project rate row")?;
+        assert_eq!(row.total_calls, 4);
+        assert_eq!(row.calls_last_minute, 4);
+        Ok(())
+    }
+
+    // Risk (#695, SPEC.md §3.1/F15): conditional `304` responses must keep their `(304)` label
+    // without counting completion as a second attempt.
+    #[test]
+    fn keeps_304_detail_without_double_counting() -> Result<(), Box<dyn std::error::Error>> {
+        let not_modified =
+            b"HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let unauthorized =
+            b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+        let (url, server) = spawn_scripted_server(vec![
+            ScriptedReply::Raw(not_modified),
+            ScriptedReply::Raw(unauthorized),
+            ScriptedReply::Raw(not_modified),
+        ])?;
+        let worker = spawn_test_worker(Duration::from_secs(2))?;
+        let project = "issue-695/not-modified";
+        let make_request = |operation| HttpRequest {
+            project,
+            caller: Location::caller(),
+            method: &Method::GET,
+            url: &url,
+            accept: DEFAULT_ACCEPT,
+            etag: Some("\"v1\""),
+            body: None,
+            operation,
+        };
+
+        let first =
+            dispatch_with_token_refresh(&worker, "tok", &make_request("issue-695-304"), |_| None)?;
+        assert_eq!(first.status, StatusCode::NOT_MODIFIED);
+        let retried = dispatch_with_token_refresh(
+            &worker,
+            "stale",
+            &make_request("issue-695-auth-304"),
+            |_| Some("fresh".into()),
+        )?;
+        assert_eq!(retried.status, StatusCode::NOT_MODIFIED);
+        let _ = server.join();
+
+        assert_eq!(operation_count("issue-695-304 (304)"), 1);
+        assert_eq!(operation_count("issue-695-304"), 0);
+        assert_eq!(operation_count("issue-695-auth-304"), 1);
+        assert_eq!(operation_count("issue-695-auth-304 (304)"), 1);
+        let row = project_rate_row(project).ok_or("missing project rate row")?;
+        assert_eq!(row.total_calls, 3);
+        Ok(())
+    }
+
+    // Risk (#695, SPEC.md §3.1/F15): a failed worker queue send before dispatch must add zero
+    // GitHub requests to the counter or per-project rate tracker.
+    #[test]
+    fn skips_counting_when_worker_queue_send_fails() {
+        let (stopped_tx, stopped_rx) = tokio::sync::mpsc::unbounded_channel::<HttpJob>();
+        drop(stopped_rx);
+        let project = "issue-695/stopped-worker";
+        let request = HttpRequest {
+            project,
+            caller: Location::caller(),
+            method: &Method::GET,
+            url: "http://127.0.0.1:1/repos/test/repo",
+            accept: DEFAULT_ACCEPT,
+            etag: None,
+            body: None,
+            operation: "issue-695-stopped",
+        };
+        let stopped = dispatch_with_token_refresh(&stopped_tx, "tok", &request, |_| None);
+        assert!(matches!(
+            stopped,
+            Err(GitHubCommandError::Invalid(ref msg)) if msg == "GitHub HTTP worker stopped"
+        ));
+        assert_eq!(operation_count("issue-695-stopped"), 0);
+        assert!(project_rate_row(project).is_none());
     }
 }
