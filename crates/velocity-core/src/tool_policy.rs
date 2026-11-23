@@ -115,9 +115,9 @@ pub const fn browser_attachment(role: ThreadRole, touches_ui: bool) -> BrowserAt
         }
         ThreadRole::FollowUp => {
             if touches_ui {
-                BrowserAttachment::Lazy
+                BrowserAttachment::Eager
             } else {
-                BrowserAttachment::Omitted
+                BrowserAttachment::Lazy
             }
         }
         ThreadRole::Reviewer | ThreadRole::Scout | ThreadRole::Question => {
@@ -568,6 +568,37 @@ mod tests {
         assert_eq!(
             tool_access(ThreadRole::Scout, McpToolServer::Airc, "issue_read"),
             ToolAccess::Eager
+        );
+    }
+
+    #[test]
+    fn follow_up_repairs_retain_browser_attachment() {
+        // Risk (#689): F20 requires implementation threads (including build, CI and deploy
+        // repairs on start and resume) to keep velocity-browser instead of omitting it.
+        let non_ui_repair = prompt_touches_ui(
+            "Fix build after 78db6fd3bf58",
+            "Make the project's base build again",
+        );
+        assert!(!non_ui_repair);
+        assert_eq!(
+            browser_attachment(ThreadRole::FollowUp, non_ui_repair),
+            BrowserAttachment::Lazy
+        );
+        assert_eq!(
+            browser_attachment(ThreadRole::FollowUp, true),
+            BrowserAttachment::Eager
+        );
+        // Resumed non-UI repair passes an empty prompt and its saved title.
+        assert_eq!(
+            browser_attachment(
+                ThreadRole::FollowUp,
+                prompt_touches_ui("Fix build after 78db6fd3bf58", ""),
+            ),
+            BrowserAttachment::Lazy
+        );
+        assert_eq!(
+            browser_attachment(ThreadRole::Scout, true),
+            BrowserAttachment::Omitted
         );
     }
 }

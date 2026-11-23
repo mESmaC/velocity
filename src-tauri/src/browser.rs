@@ -205,7 +205,9 @@ fn resolve_profile(application: &AppHandle, key: BrowserKey) -> Result<PathBuf, 
 }
 
 /// Attaches `velocity-browser` eagerly on UI work, lazily behind `browser_tools` on
-/// non-UI builder work, or omits it for roles that never drive a browser (#533).
+/// non-UI implementation and repair threads (stripped by ACP session setup when the
+/// harness does not support deferred discovery), or omits it for roles that never
+/// drive a browser (#533, #689).
 pub fn configure_for_prompt(
     application: &AppHandle,
     key: BrowserKey,

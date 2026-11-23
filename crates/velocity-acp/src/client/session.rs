@@ -646,7 +646,7 @@ pub fn session_servers(setup: &SessionSetup) -> Vec<McpServer> {
     let shared_servers = setup
         .shared_servers
         .iter()
-        .map(|server| apply_rosen_lazy(server, setup.lazy_tools));
+        .map(|server| apply_shared_server_lazy(server, setup.lazy_tools));
     let servers: Vec<McpServer> = airc
         .into_iter()
         .chain(graph)
@@ -668,28 +668,40 @@ pub fn session_servers(setup: &SessionSetup) -> Vec<McpServer> {
         .collect()
 }
 
-fn apply_rosen_lazy(server: &McpServer, lazy: bool) -> McpServer {
-    if !lazy {
-        return server.clone();
-    }
+const BROWSER_MCP_SWITCH: &str = "--browser-mcp";
+const BROWSER_LAZY_FLAG: &str = "--lazy";
+
+fn apply_shared_server_lazy(server: &McpServer, lazy: bool) -> McpServer {
     let McpServer::Stdio(stdio) = server else {
         return server.clone();
     };
-    if stdio.args.first().map(String::as_str) != Some(velocity_rosen::mcp_proxy::SERVER_SWITCH) {
-        return server.clone();
+    match stdio.args.first().map(String::as_str) {
+        Some(velocity_rosen::mcp_proxy::SERVER_SWITCH) if lazy => {
+            if stdio
+                .args
+                .iter()
+                .any(|arg| arg == velocity_rosen::mcp_filter::LAZY_FLAG)
+            {
+                return server.clone();
+            }
+            let mut updated = stdio.clone();
+            updated
+                .args
+                .insert(1, velocity_rosen::mcp_filter::LAZY_FLAG.to_owned());
+            McpServer::Stdio(updated)
+        }
+        // Browser servers pass `--lazy` for non-UI implementation threads; strip it when
+        // the provider harness does not support deferred tool discovery (#533, #689).
+        Some(BROWSER_MCP_SWITCH) if !lazy => {
+            if !stdio.args.iter().any(|arg| arg == BROWSER_LAZY_FLAG) {
+                return server.clone();
+            }
+            let mut updated = stdio.clone();
+            updated.args.retain(|arg| arg != BROWSER_LAZY_FLAG);
+            McpServer::Stdio(updated)
+        }
+        _ => server.clone(),
     }
-    if stdio
-        .args
-        .iter()
-        .any(|arg| arg == velocity_rosen::mcp_filter::LAZY_FLAG)
-    {
-        return server.clone();
-    }
-    let mut updated = stdio.clone();
-    updated
-        .args
-        .insert(1, velocity_rosen::mcp_filter::LAZY_FLAG.to_owned());
-    McpServer::Stdio(updated)
 }
 
 /// The servers the agent can reach: every agent speaks stdio, but HTTP and SSE servers go
@@ -1157,5 +1169,40 @@ mod tests {
                 .iter()
                 .any(|arg| arg == "--dangerously-skip-permissions")
         );
+    }
+
+    #[test]
+    fn browser_mcp_keeps_lazy_only_when_harness_supports_deferred_discovery() {
+        // Risk (#689): non-UI implementation and repair threads attach velocity-browser with
+        // `--lazy`, which must be kept when the harness supports deferred discovery and
+        // stripped otherwise so every harness still sees all F20 browser tools.
+        let make_setup = |lazy_tools| {
+            let mut setup = SessionSetup::new(PathBuf::from("."), Vec::new());
+            setup.role = velocity_core::tool_policy::ThreadRole::FollowUp;
+            setup.lazy_tools = lazy_tools;
+            setup.shared_servers.push(McpServer::Stdio(
+                agent_client_protocol::v1::schema::McpServerStdio::new(
+                    "velocity-browser",
+                    "velocity",
+                )
+                .args(vec![BROWSER_MCP_SWITCH.into(), BROWSER_LAZY_FLAG.into()]),
+            ));
+            setup
+        };
+        let browser_args = |setup: &SessionSetup| -> Vec<String> {
+            session_servers(setup)
+                .into_iter()
+                .find_map(|server| match server {
+                    McpServer::Stdio(stdio) if stdio.name == "velocity-browser" => Some(stdio.args),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+
+        assert_eq!(
+            browser_args(&make_setup(true)),
+            vec![BROWSER_MCP_SWITCH, BROWSER_LAZY_FLAG]
+        );
+        assert_eq!(browser_args(&make_setup(false)), vec![BROWSER_MCP_SWITCH]);
     }
 }
