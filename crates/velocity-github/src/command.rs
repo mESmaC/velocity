@@ -58,14 +58,30 @@ pub(crate) fn clean_toolchain_env(command: &mut Command) {
     command.env_remove(BLOCK_VCS_ENV);
 }
 
-/// `gh <arguments>`, counted against the caller like every `GitHubCommand` call (SPEC.md
-/// F6), so the request totals cover the browser, new-project and repository-list calls too.
+/// `gh <arguments>` for an account-wide operation not scoped to one repository (such as
+/// repository listing), counted against the `(global)` bucket (SPEC.md F6, #696).
 #[track_caller]
 pub(crate) fn gh(arguments: &[&str]) -> Command {
     crate::request_counter::record(
         std::panic::Location::caller(),
         crate::request_counter::operation(arguments, None),
     );
+    gh_with_arguments(arguments)
+}
+
+/// `gh <arguments>` targeting a known repository, attributed to that repository's
+/// per-project GitHub call rate rather than the `(global)` bucket (#696).
+#[track_caller]
+pub(crate) fn gh_for_project(project: &str, arguments: &[&str]) -> Command {
+    crate::request_counter::record_for_project(
+        project,
+        std::panic::Location::caller(),
+        crate::request_counter::operation(arguments, None),
+    );
+    gh_with_arguments(arguments)
+}
+
+fn gh_with_arguments(arguments: &[&str]) -> Command {
     let mut command = gh_command();
     command.args(arguments);
     // Velocity reads gh's output; prompts would block it and colour codes would
@@ -179,5 +195,27 @@ mod tests {
         assert!(!entries.contains(&shim.path().to_path_buf()));
         assert!(entries.contains(&host.path().to_path_buf()));
         Ok(())
+    }
+
+    #[test]
+    fn gh_for_project_records_calls_under_target_repository_row() {
+        // Risk (#696): repository-scoped CLI calls must increment that repository's
+        // diagnostic row instead of inflating the account-wide `(global)` bucket.
+        let project = "Issue-696-Owner/Repo-Scoped-Gh";
+        let normalized = "issue-696-owner/repo-scoped-gh";
+        let before = velocity_core::performance::snapshot()
+            .gh_projects
+            .into_iter()
+            .find(|row| row.project == normalized)
+            .map_or(0, |row| row.total_calls);
+
+        let _ = gh_for_project(project, &["repo", "view", project, "--json", "name"]);
+
+        let after = velocity_core::performance::snapshot()
+            .gh_projects
+            .into_iter()
+            .find(|row| row.project == normalized)
+            .map_or(0, |row| row.total_calls);
+        assert_eq!(after, before + 1);
     }
 }

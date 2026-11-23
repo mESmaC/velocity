@@ -551,14 +551,17 @@ impl IssueClient {
                 self.issue_url(number)
             )));
         }
-        let output = crate::command::gh(&[
-            "issue",
-            "view",
-            &number.to_string(),
-            "--repo",
+        let output = crate::command::gh_for_project(
             repository,
-            "--web",
-        ])
+            &[
+                "issue",
+                "view",
+                &number.to_string(),
+                "--repo",
+                repository,
+                "--web",
+            ],
+        )
         .output()?;
         if !output.status.success() {
             return Err(GitHubCommandError::Command {

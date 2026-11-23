@@ -66,9 +66,14 @@
     report?.store_locks.some((row) => row.breaching) ?? false,
   );
 
+  const GLOBAL_GH_PROJECT = '(global)';
+
   const peakGhRate = $derived(
     report?.gh_projects.reduce(
-      (worst, row) => Math.max(worst, row.calls_last_minute),
+      (worst, row) =>
+        row.project === GLOBAL_GH_PROJECT
+          ? worst
+          : Math.max(worst, row.calls_last_minute),
       0,
     ) ?? 0,
   );

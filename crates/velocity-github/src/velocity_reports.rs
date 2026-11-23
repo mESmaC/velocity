@@ -15,7 +15,7 @@ use velocity_core::collapse::IssueHost;
 use velocity_core::issue_dependencies::{IssueReference, declared_blockers};
 
 use crate::collapse_issues::CollapseIssueTransport;
-use crate::command::gh;
+use crate::command::gh_for_project;
 use crate::gh_command::GitHubCommandError;
 use crate::{GitHubIssue, IssueState};
 
@@ -447,13 +447,16 @@ impl ReportBackend for GitHubBackend<'_> {
 
     fn issue_comments(&self, number: u32) -> Result<Vec<String>, GitHubCommandError> {
         let endpoint = format!("repos/{}/issues/{number}/comments", self.repository);
-        let comments = run(&[
-            "api",
-            "--paginate",
-            &endpoint,
-            "--jq",
-            ".[] | .body | @json",
-        ])?;
+        let comments = run(
+            self.repository,
+            &[
+                "api",
+                "--paginate",
+                &endpoint,
+                "--jq",
+                ".[] | .body | @json",
+            ],
+        )?;
         comments
             .lines()
             .filter(|line| !line.trim().is_empty())
@@ -481,14 +484,17 @@ impl ReportBackend for GitHubBackend<'_> {
 
     fn add_comment(&self, number: u32, body: &str) -> Result<(), GitHubCommandError> {
         let endpoint = format!("repos/{}/issues/{number}/comments", self.repository);
-        run(&[
-            "api",
-            &endpoint,
-            "-f",
-            &format!("body={body}"),
-            "--jq",
-            ".id",
-        ])?;
+        run(
+            self.repository,
+            &[
+                "api",
+                &endpoint,
+                "-f",
+                &format!("body={body}"),
+                "--jq",
+                ".id",
+            ],
+        )?;
         Ok(())
     }
 }
@@ -943,10 +949,13 @@ pub fn link_declared_blockers_on(
         return link_declared_blockers_collapse(repository, issue, &blockers);
     }
     let endpoint = format!("repos/{repository}/issues/{issue}/dependencies/blocked_by");
-    let linked: HashSet<u64> = run(&["api", "--paginate", &endpoint, "--jq", ".[].id"])?
-        .lines()
-        .filter_map(|line| line.trim().parse().ok())
-        .collect();
+    let linked: HashSet<u64> = run(
+        repository,
+        &["api", "--paginate", &endpoint, "--jq", ".[].id"],
+    )?
+    .lines()
+    .filter_map(|line| line.trim().parse().ok())
+    .collect();
     let mut refused = Vec::new();
     for blocker in blockers {
         let name = blocker.relative_to(repository);
@@ -1006,30 +1015,33 @@ fn link_blocker(
     blocker: &IssueReference,
 ) -> Result<bool, GitHubCommandError> {
     // The dependency API takes the blocker's database ID, which reaches other repositories.
-    let found = run(&[
-        "api",
-        &format!(
-            "repos/{}/issues/{}",
-            blocker.repository_or(repository),
-            blocker.number()
-        ),
-        "--jq",
-        "select(.pull_request == null) | .id",
-    ])?;
+    let blocker_repository = blocker.repository_or(repository);
+    let found = run(
+        blocker_repository,
+        &[
+            "api",
+            &format!("repos/{blocker_repository}/issues/{}", blocker.number()),
+            "--jq",
+            "select(.pull_request == null) | .id",
+        ],
+    )?;
     let Ok(identifier) = found.trim().parse::<u64>() else {
         return Ok(false);
     };
     if !linked.contains(&identifier) {
-        run(&[
-            "api",
-            "--method",
-            "POST",
-            endpoint,
-            "-F",
-            &format!("issue_id={identifier}"),
-            "--jq",
-            ".id",
-        ])?;
+        run(
+            repository,
+            &[
+                "api",
+                "--method",
+                "POST",
+                endpoint,
+                "-F",
+                &format!("issue_id={identifier}"),
+                "--jq",
+                ".id",
+            ],
+        )?;
     }
     Ok(true)
 }
@@ -1301,26 +1313,29 @@ fn ensure_github_label(
     description: &str,
 ) -> Result<(), GitHubCommandError> {
     let endpoint = format!("repos/{repository}/labels/{name}");
-    if run(&["api", &endpoint, "--jq", ".name"]).is_ok() {
+    if run(repository, &["api", &endpoint, "--jq", ".name"]).is_ok() {
         return Ok(());
     }
     let create = format!("repos/{repository}/labels");
-    if let Err(error) = run(&[
-        "api",
-        "--method",
-        "POST",
-        &create,
-        "-f",
-        &format!("name={name}"),
-        "-f",
-        &format!("color={color}"),
-        "-f",
-        &format!("description={description}"),
-        "--jq",
-        ".name",
-    ]) {
+    if let Err(error) = run(
+        repository,
+        &[
+            "api",
+            "--method",
+            "POST",
+            &create,
+            "-f",
+            &format!("name={name}"),
+            "-f",
+            &format!("color={color}"),
+            "-f",
+            &format!("description={description}"),
+            "--jq",
+            ".name",
+        ],
+    ) {
         // Another process may have created the label concurrently (HTTP 422 already_exists).
-        run(&["api", &endpoint, "--jq", ".name"]).map_err(|_| error)?;
+        run(repository, &["api", &endpoint, "--jq", ".name"]).map_err(|_| error)?;
     }
     Ok(())
 }
@@ -1344,7 +1359,7 @@ fn file_issue_with_labels(
         args.push(label_arg);
     }
     args.extend(["--jq", ".number"]);
-    let number = run(&args)?;
+    let number = run(repository, &args)?;
     number
         .trim()
         .parse()
@@ -1359,13 +1374,16 @@ struct OpenIssue {
 }
 
 fn open_issues(repository: &str) -> Result<Vec<OpenIssue>, GitHubCommandError> {
-    let output = run(&[
-        "api",
-        "--paginate",
-        &format!("repos/{repository}/issues?state=open&per_page=100"),
-        "--jq",
-        ".[] | select(.pull_request == null) | {number,title,body:(.body // \"\")} | @json",
-    ])?;
+    let output = run(
+        repository,
+        &[
+            "api",
+            "--paginate",
+            &format!("repos/{repository}/issues?state=open&per_page=100"),
+            "--jq",
+            ".[] | select(.pull_request == null) | {number,title,body:(.body // \"\")} | @json",
+        ],
+    )?;
     output
         .lines()
         .map(|line| Ok(serde_json::from_str(line)?))
@@ -1373,12 +1391,15 @@ fn open_issues(repository: &str) -> Result<Vec<OpenIssue>, GitHubCommandError> {
 }
 
 fn issue_is_open(repository: &str, number: u32) -> Result<bool, GitHubCommandError> {
-    let state = run(&[
-        "api",
-        &format!("repos/{repository}/issues/{number}"),
-        "--jq",
-        ".state",
-    ])?;
+    let state = run(
+        repository,
+        &[
+            "api",
+            &format!("repos/{repository}/issues/{number}"),
+            "--jq",
+            ".state",
+        ],
+    )?;
     Ok(state.trim() == "open")
 }
 
@@ -1512,8 +1533,9 @@ fn quote_limited(text: &str, limit: usize) -> String {
         .join("\n")
 }
 
-fn run(arguments: &[&str]) -> Result<String, GitHubCommandError> {
-    let output = gh(arguments).output()?;
+#[track_caller]
+fn run(repository: &str, arguments: &[&str]) -> Result<String, GitHubCommandError> {
+    let output = gh_for_project(repository, arguments).output()?;
     if !output.status.success() {
         return Err(GitHubCommandError::Command {
             code: output.status.code(),

@@ -19,6 +19,8 @@ pub const STORE_LOCK_HOLD_BUDGET_MS: u32 = 20;
 pub const SAVE_LOCK_BUDGET_MS: u32 = 10;
 /// Budget for `gh` calls per minute per project at steady state (3 or fewer).
 pub const GH_CALLS_PER_MINUTE_BUDGET: u32 = 3;
+/// Bucket key for account-wide `gh` calls that are not scoped to one repository (#696).
+pub const GLOBAL_GH_PROJECT: &str = "(global)";
 /// Startup window before steady-state `gh` rate breaches are enforced.
 pub const GH_STARTUP_GRACE_SECONDS: u64 = 60;
 /// Source tag written to `velocity.log` when a performance budget is breached.
@@ -351,7 +353,7 @@ impl PerformanceTracker {
         entry.total_calls = entry.total_calls.saturating_add(1);
         let rate = u32::try_from(entry.timestamps.len()).unwrap_or(u32::MAX);
         entry.peak_per_minute = entry.peak_per_minute.max(rate);
-        if !steady || rate <= GH_CALLS_PER_MINUTE_BUDGET {
+        if is_global_gh_project(&key) || !steady || rate <= GH_CALLS_PER_MINUTE_BUDGET {
             return None;
         }
         entry.breaches = entry.breaches.saturating_add(1);
@@ -506,8 +508,9 @@ impl PerformanceTracker {
             .map(|(project, series)| {
                 prune_gh_window(&mut series.timestamps, now);
                 let calls_last_minute = u32::try_from(series.timestamps.len()).unwrap_or(u32::MAX);
-                let breaching = (steady_state && calls_last_minute > GH_CALLS_PER_MINUTE_BUDGET)
-                    || series.breaches > 0;
+                let breaching = !is_global_gh_project(project)
+                    && ((steady_state && calls_last_minute > GH_CALLS_PER_MINUTE_BUDGET)
+                        || series.breaches > 0);
                 GhRateRow {
                     project: project.clone(),
                     calls_last_minute,
@@ -522,12 +525,21 @@ impl PerformanceTracker {
             right
                 .breaching
                 .cmp(&left.breaching)
+                .then(
+                    is_global_gh_project(&left.project).cmp(&is_global_gh_project(&right.project)),
+                )
                 .then(right.calls_last_minute.cmp(&left.calls_last_minute))
                 .then(right.total_calls.cmp(&left.total_calls))
                 .then(left.project.cmp(&right.project))
         });
         rows
     }
+}
+
+/// Whether a normalized GitHub project key represents account-wide calls that sit outside
+/// the per-project steady-state call-rate threshold (#696).
+pub fn is_global_gh_project(project: &str) -> bool {
+    project == GLOBAL_GH_PROJECT
 }
 
 /// Formats a Rust caller location as the last two path segments plus line number.
@@ -541,7 +553,7 @@ pub fn caller_label(caller: &Location<'static>) -> String {
 pub fn normalize_github_project(origin: &str) -> String {
     let trimmed = origin.trim().trim_end_matches('/').trim_end_matches(".git");
     if trimmed.is_empty() {
-        return "(global)".to_owned();
+        return GLOBAL_GH_PROJECT.to_owned();
     }
     let candidate = if let Some((_, after)) = trimmed.split_once("github.com/") {
         after
@@ -781,5 +793,48 @@ mod tests {
         assert_eq!(snap.gh_projects[0].project, "mesmac/velocity");
         assert_eq!(snap.gh_projects[0].calls_last_minute, 4);
         assert!(snap.gh_projects[0].breaching);
+    }
+
+    #[test]
+    fn account_wide_global_gh_calls_do_not_breach_per_project_budget() {
+        // Risk (#696): account-wide gh calls such as repository listing land in `(global)`
+        // and must stay separate from the per-project steady-state call-rate threshold while
+        // repository-scoped calls continue to enforce that threshold.
+        let start = Instant::now();
+        let mut tracker = PerformanceTracker::new(start);
+        let steady = start + Duration::from_secs(GH_STARTUP_GRACE_SECONDS + 70);
+
+        for index in 0..6 {
+            assert!(
+                tracker
+                    .record_gh_call(
+                        GLOBAL_GH_PROJECT,
+                        "repository_list.rs:24",
+                        "api user/repos",
+                        steady + Duration::from_secs(index),
+                        100 + index,
+                    )
+                    .is_none()
+            );
+        }
+        assert!(
+            tracker
+                .record_gh_call(
+                    "",
+                    "http_transport.rs:429",
+                    "auth token",
+                    steady + Duration::from_secs(6),
+                    106,
+                )
+                .is_none()
+        );
+
+        let snap = tracker.snapshot(steady + Duration::from_secs(6));
+        assert_eq!(snap.total_breaches, 0);
+        assert_eq!(snap.gh_projects.len(), 1);
+        assert_eq!(snap.gh_projects[0].project, GLOBAL_GH_PROJECT);
+        assert_eq!(snap.gh_projects[0].calls_last_minute, 7);
+        assert_eq!(snap.gh_projects[0].breaches, 0);
+        assert!(!snap.gh_projects[0].breaching);
     }
 }
