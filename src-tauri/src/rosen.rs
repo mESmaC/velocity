@@ -570,6 +570,7 @@ async fn take_workspace_once(
     // Install local ignore rules and links before the first watcher can store them.
     let setup = finish_setup(application, key.0, request, &workspace.root).await;
     crate::rosen_issue::record_source(application, key, &server, &agent, &workspace.change).await?;
+    record_required_tests(application, key, &server, &workspace.change)?;
     watch_as(application, &server, &agent, &workspace.root).await?;
     crate::rosen_events::follow(application, key.0);
     let mut environment = velocity_rosen::agent_environment(&server, &agent, &workspace.change);
@@ -580,6 +581,24 @@ async fn take_workspace_once(
         root: workspace.root,
         setup,
     })
+}
+
+fn record_required_tests(
+    application: &AppHandle,
+    key: ThreadKey,
+    server: &ProjectServer,
+    change: &str,
+) -> Result<(), String> {
+    let required_tests = lock(
+        application.state::<ManagedStateStore>().inner(),
+        "persisted state",
+    )?
+    .required_tests_for_thread(key.0, key.1);
+    if required_tests.is_empty() {
+        return Ok(());
+    }
+    velocity_rosen::preflight::set_required_tests(server, change, &required_tests)
+        .map_err(|error| error.to_string())
 }
 
 async fn acquire_workspace(

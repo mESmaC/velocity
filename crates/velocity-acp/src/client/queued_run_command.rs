@@ -14,6 +14,7 @@ use agent_client_protocol::v1::schema::{
 };
 use tokio_util::sync::CancellationToken;
 use velocity_core::queued_runs::{QueuedRunPhase, QueuedRunRecord};
+use velocity_core::repair_tests::cargo_test_output_passed_at_least_one;
 use velocity_rosen::agent_run::{AgentRun, BLOCK_VCS_ENV, toolchain_path_from};
 use velocity_rosen::queued_turn::{
     DEFAULT_WAIT_TIMEOUT, HELD_ENV, QUEUE_ENV, QueueTimeoutReport, QueuedTurn, QueuedTurnError,
@@ -244,6 +245,7 @@ impl QueuedRun {
             self.record.head = head;
         }
         sink.set_running(self.record.change.clone(), self.record.head.clone());
+        let required_test_head = self.begin_required_test_tracking(worktree, launch).await;
         let outcome = self
             .execute_under_turn(
                 rosen,
@@ -255,8 +257,90 @@ impl QueuedRun {
                 &stop,
             )
             .await;
+        let outcome = self
+            .finish_required_test_tracking(worktree, launch, required_test_head, outcome)
+            .await;
         self.record.run_ms = u64::try_from(run_started.elapsed().as_millis()).unwrap_or(u64::MAX);
         drop(turn);
+        outcome
+    }
+
+    async fn begin_required_test_tracking(
+        &self,
+        worktree: &Path,
+        launch: &AgentLaunch,
+    ) -> Option<String> {
+        if !is_cargo_test_invocation(&self.command) {
+            return None;
+        }
+        let endpoint = launch.env_value("ROSEN_ENDPOINT")?;
+        let record =
+            velocity_rosen::preflight::load_required_tests_for_workspace(endpoint, worktree)
+                .await?;
+        if !record.allows_cargo_test(&self.command.arguments) {
+            return None;
+        }
+        velocity_rosen::preflight::snapshot_workspace_head(endpoint, worktree)
+            .await
+            .ok()
+            .flatten()
+            .map(|(_, head)| head)
+    }
+
+    async fn finish_required_test_tracking(
+        &mut self,
+        worktree: &Path,
+        launch: &AgentLaunch,
+        expected_head: Option<String>,
+        outcome: ExecutionOutcome,
+    ) -> ExecutionOutcome {
+        let Some(head) = expected_head else {
+            return outcome;
+        };
+        let ExecutionOutcome::Exited(status) = &outcome else {
+            return outcome;
+        };
+        if !status.success() {
+            return outcome;
+        }
+        let _ = self.output.flush();
+        let log = self.log.clone();
+        let passed_any = tokio::task::spawn_blocking(move || {
+            std::fs::read_to_string(&log)
+                .map(|text| cargo_test_output_passed_at_least_one(&text))
+                .unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false);
+        if !passed_any {
+            let reason = "Targeted repair test ran 0 tests — do not skip, delete, or rename the failing test.";
+            let _ = writeln!(&self.output, "\n{reason}");
+            return ExecutionOutcome::Failed(io::Error::other(reason));
+        }
+        if let Some(endpoint) = launch.env_value("ROSEN_ENDPOINT") {
+            match velocity_rosen::preflight::record_required_test_pass(
+                endpoint,
+                worktree,
+                &head,
+                &self.command.arguments,
+            )
+            .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    let _ = writeln!(
+                        &self.output,
+                        "\nWorkspace changed while the targeted repair test ran; re-run it before naming the change."
+                    );
+                }
+                Err(error) => {
+                    let _ = writeln!(
+                        &self.output,
+                        "\nCould not record passing targeted repair test: {error}"
+                    );
+                }
+            }
+        }
         outcome
     }
 
@@ -613,6 +697,21 @@ impl QueuedRun {
             .kill_on_drop(true);
         Ok(command)
     }
+}
+
+fn is_cargo_test_invocation(command: &RunCommand) -> bool {
+    let name = command
+        .program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let base = name
+        .strip_suffix(".exe")
+        .or_else(|| name.strip_suffix(".cmd"))
+        .or_else(|| name.strip_suffix(".bat"))
+        .unwrap_or(&name);
+    base == "cargo" && command.arguments.first().map(String::as_str) == Some("test")
 }
 
 pub(super) fn workspace_context(

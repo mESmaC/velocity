@@ -7,6 +7,7 @@ use velocity_core::base_ci::{
     BaseCi, Failure, ResolvedJob, SupersededRepair, effective_workflow_key, signatures_differ,
     workflow_matches_repair,
 };
+use velocity_core::repair_tests::TargetedTest;
 
 use crate::threads::{NewThread, ThreadError, insert_thread};
 use crate::{StateStore, StoreError};
@@ -35,6 +36,9 @@ pub struct CiRepair {
     /// Normalized error signature from the failing job's log, when available (#558).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    /// Targeted tests that must pass before the repair thread names its change (#741).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_tests: Vec<TargetedTest>,
 }
 
 impl CiRepair {
@@ -54,6 +58,18 @@ impl StateStore {
         failure: &Failure,
         thread: NewThread,
         prompt: &str,
+    ) -> Result<Option<u32>, ThreadError> {
+        self.add_ci_repair_with_tests(project, failure, thread, prompt, Vec::new())
+    }
+
+    /// Like [`Self::add_ci_repair`], persisting required same-platform repair tests (#741).
+    pub fn add_ci_repair_with_tests(
+        &mut self,
+        project: u32,
+        failure: &Failure,
+        thread: NewThread,
+        prompt: &str,
+        required_tests: Vec<TargetedTest>,
     ) -> Result<Option<u32>, ThreadError> {
         let current = self
             .project(project)
@@ -104,6 +120,7 @@ impl StateStore {
                 thread: identifier,
                 landed_commit: None,
                 signature: job.signature.clone(),
+                required_tests: required_tests.clone(),
             }));
         self.commit(next)?;
         Ok(Some(identifier))
@@ -570,6 +587,79 @@ mod tests {
             Some("workflow:11")
         );
         assert_eq!(store.close_ci_repairs(1, &["workflow:11".into()])?.len(), 1);
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    // Risk (#741): required targeted tests attached to CI and build repairs must survive
+    // save and reload so Velocity enforces the commit gate after a restart or launch retry.
+    #[test]
+    fn required_tests_on_repairs_survive_reload() -> Result<(), Box<dyn std::error::Error>> {
+        use velocity_core::repair_tests::TargetedTest;
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("velocity-repair-tests-{unique}"));
+        let mut store = StateStore::load_or_default(&directory)?;
+        store.state.projects = vec![ProjectItem::new(1, "One".into(), r"C:\project one".into())];
+        store.store_snapshot(store.state.clone())?;
+        let settings = store.settings();
+        let make_thread = |slug: &str| {
+            NewThread::new(
+                "Fix repair".into(),
+                format!("vel/{slug}"),
+                format!(r"C:\worktrees\{slug}"),
+                &settings,
+            )
+        };
+        let target = TargetedTest {
+            package: Some("velocity-threads".into()),
+            target_args: vec!["--lib".into()],
+            tests: vec![
+                "dependencies::tests::refresh_wakes_reserved_slug_build_holders_and_skips_non_thread_holders".into(),
+            ],
+        };
+        let failure = Failure {
+            workflow_key: "Rosen post-land".into(),
+            workflow: "Rosen post-land".into(),
+            run: 77,
+            commit: "a".repeat(40),
+            url: String::new(),
+            detail: String::new(),
+            jobs: vec![FailedJob {
+                job: "Windows · test".into(),
+                ..FailedJob::default()
+            }],
+        };
+        let ci_thread = store
+            .add_ci_repair_with_tests(
+                1,
+                &failure,
+                make_thread("ci"),
+                "prompt",
+                vec![target.clone()],
+            )?
+            .ok_or("expected ci repair thread")?;
+        let build_thread = store
+            .add_build_repair_with_tests(
+                1,
+                &"b".repeat(40),
+                make_thread("build"),
+                "prompt",
+                vec![target.clone()],
+            )?
+            .ok_or("expected build repair thread")?;
+
+        let reloaded = StateStore::load_or_default(&directory)?;
+        assert_eq!(
+            reloaded.required_tests_for_thread(1, ci_thread),
+            vec![target.clone()]
+        );
+        assert_eq!(
+            reloaded.required_tests_for_thread(1, build_thread),
+            vec![target]
+        );
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

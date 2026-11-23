@@ -46,6 +46,7 @@ pub mod proofs_settings;
 pub mod queued_runs;
 pub mod release;
 pub mod reopened_land;
+pub mod repair_tests;
 pub mod review_diff;
 pub mod rosen_checker;
 pub mod rosen_mirror;

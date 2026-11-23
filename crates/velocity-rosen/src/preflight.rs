@@ -18,6 +18,9 @@ use velocity_core::preflight::{
     PreflightOverlap, PreflightRecord, WorkspaceCrate, evaluate_gate, failed_non_overlap_checks,
     failed_on_overlaps, land_refusal_parts, name_refusal_message, normalize_path,
 };
+use velocity_core::repair_tests::{
+    RequiredTestsRecord, TargetedTest, required_tests_land_refusal, required_tests_name_refusal,
+};
 
 pub use rosen_client::protocol::OverlapRecord;
 
@@ -320,8 +323,8 @@ async fn submit_preflight_receipt(
     }
 }
 
-/// Verifies that `change`'s latest snapshot on `server` has a passing preflight before
-/// Velocity lands it (#560).
+/// Verifies that `change`'s latest snapshot on `server` has a passing preflight (and any
+/// required repair tests, #741) before Velocity lands it (#560).
 pub async fn verify_for_land(
     server: &ProjectServer,
     change: &str,
@@ -335,13 +338,23 @@ pub async fn verify_for_land(
     let data_dir = server.data_dir().to_path_buf();
     let change_owned = change.to_owned();
     let head_owned = head.clone();
-    let (has_receipt, stored) = tokio::task::spawn_blocking(move || {
+    let (has_receipt, stored, required_tests) = tokio::task::spawn_blocking(move || {
         let receipt = has_preflight_receipt(&data_dir, &change_owned, &head_owned)?;
         let record = load_record(Some(&data_dir), &change_owned);
-        Ok::<_, RosenError>((receipt, record))
+        let required = load_required_tests(Some(&data_dir), &change_owned);
+        Ok::<_, RosenError>((receipt, record, required))
     })
     .await
     .map_err(|error| RosenError::StatusData(error.to_string()))??;
+    if let Some(required) = required_tests {
+        let missing = required.missing_for_head(&head);
+        if let Some((reason, instructions)) = required_tests_land_refusal(change, &head, &missing) {
+            return Ok(LandPreflightGate::Refused {
+                reason,
+                instructions,
+            });
+        }
+    }
     let decision = evaluate_gate(&head, has_receipt, stored.as_ref());
     Ok(match land_refusal_parts(change, &head, &decision) {
         None => LandPreflightGate::Passed,
@@ -404,16 +417,23 @@ pub(crate) async fn verify_workspace_for_commit_with_client(
     let data_dir = local_data_dir(&status.data_dir);
     let change_owned = change.to_owned();
     let head_owned = head.clone();
-    let (has_receipt, stored) = tokio::task::spawn_blocking(move || {
+    let (has_receipt, stored, required_tests) = tokio::task::spawn_blocking(move || {
         let receipt = match data_dir.as_deref() {
             Some(dir) => has_preflight_receipt(dir, &change_owned, &head_owned)?,
             None => false,
         };
         let record = load_record(data_dir.as_deref(), &change_owned);
-        Ok::<_, RosenError>((receipt, record))
+        let required = load_required_tests(data_dir.as_deref(), &change_owned);
+        Ok::<_, RosenError>((receipt, record, required))
     })
     .await
     .map_err(|error| RosenError::StatusData(error.to_string()))??;
+    if let Some(required) = required_tests {
+        let missing = required.missing_for_head(&head);
+        if let Some(message) = required_tests_name_refusal(change, &head, &missing) {
+            return Ok(Err(message));
+        }
+    }
     let decision = evaluate_gate(&head, has_receipt, stored.as_ref());
     Ok(match name_refusal_message(change, &head, &decision) {
         None => Ok(()),
@@ -559,6 +579,290 @@ fn load_record(data_dir: Option<&Path>, change: &str) -> Option<PreflightRecord>
     let path = record_file(data_dir, change);
     let bytes = std::fs::read(path).ok()?;
     serde_json::from_slice(&bytes).ok()
+}
+
+fn required_tests_file(data_dir: Option<&Path>, change: &str) -> PathBuf {
+    let safe: String = change
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        .collect();
+    let stem = if safe.is_empty() { "unknown" } else { &safe };
+    record_store_dir(data_dir).join(format!("{stem}.required-tests.json"))
+}
+
+fn save_required_tests_record(
+    data_dir: Option<&Path>,
+    record: &RequiredTestsRecord,
+) -> Result<(), RosenError> {
+    let destination = required_tests_file(data_dir, &record.change);
+    let Some(parent) = destination.parent() else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(parent).map_err(|source| RosenError::Io {
+        action: "create preflight state folder",
+        path: parent.to_path_buf(),
+        source,
+    })?;
+    let bytes = serde_json::to_vec_pretty(record)
+        .map_err(|error| RosenError::StatusData(error.to_string()))?;
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(parent).map_err(|source| RosenError::Io {
+            action: "create temporary required-tests record in",
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    io::Write::write_all(&mut temporary, &bytes).map_err(|source| RosenError::Io {
+        action: "write required-tests record to",
+        path: destination.clone(),
+        source,
+    })?;
+    temporary
+        .persist(&destination)
+        .map_err(|error| RosenError::Io {
+            action: "persist required-tests record at",
+            path: destination,
+            source: error.error,
+        })?;
+    Ok(())
+}
+
+/// Reads the persisted required repair tests for `change`, when present (#741).
+pub fn load_required_tests(data_dir: Option<&Path>, change: &str) -> Option<RequiredTestsRecord> {
+    let path = required_tests_file(data_dir, change);
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Persists required targeted repair tests for `change` on `server` (#741).
+/// Preserves existing pass attestations when the required test set is unchanged.
+pub fn set_required_tests(
+    server: &ProjectServer,
+    change: &str,
+    tests: &[TargetedTest],
+) -> Result<(), RosenError> {
+    if tests.is_empty() {
+        return Ok(());
+    }
+    let next = RequiredTestsRecord::new(change, tests.to_vec());
+    if let Some(existing) = load_required_tests(Some(server.data_dir()), change)
+        && existing.tests == next.tests
+    {
+        return Ok(());
+    }
+    save_required_tests_record(Some(server.data_dir()), &next)
+}
+
+/// Loads the required repair tests for the Rosen change owning `workspace` (#741).
+pub async fn load_required_tests_for_workspace(
+    endpoint: &str,
+    workspace: &Path,
+) -> Option<RequiredTestsRecord> {
+    let root = WorkspaceMarker::find_root(workspace)?;
+    let marker = WorkspaceMarker::read(&root).ok()?;
+    let change = marker.change.to_string();
+    let client = crate::connection::requests(&Endpoint::new(endpoint))
+        .await
+        .ok()?;
+    let status = client.status().await.ok()?;
+    let data_dir = local_data_dir(&status.data_dir);
+    tokio::task::spawn_blocking(move || load_required_tests(data_dir.as_deref(), &change))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Synchronous wrapper around [`load_required_tests_for_workspace`] for agent shims (#741).
+pub(crate) fn load_required_tests_for_workspace_blocking(
+    endpoint: &str,
+    workspace: &Path,
+) -> Option<RequiredTestsRecord> {
+    let root = WorkspaceMarker::find_root(workspace)?;
+    let marker = WorkspaceMarker::read(&root).ok()?;
+    let change = marker.change.to_string();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    runtime.block_on(async move {
+        let client = Client::connect(&Endpoint::new(endpoint)).await.ok()?;
+        let status = client.status().await.ok()?;
+        let data_dir = local_data_dir(&status.data_dir);
+        load_required_tests(data_dir.as_deref(), &change)
+    })
+}
+
+/// Flushes local workspace edits and returns the current `(change, head)` when the workspace
+/// matches the server's head with no unreadable files (#741).
+pub async fn snapshot_workspace_head(
+    endpoint: &str,
+    workspace: &Path,
+) -> Result<Option<(String, String)>, RosenError> {
+    let Some(root) = WorkspaceMarker::find_root(workspace) else {
+        return Ok(None);
+    };
+    let marker = WorkspaceMarker::read(&root).map_err(|source| RosenError::Io {
+        action: "read the Rosen marker of",
+        path: root.clone(),
+        source,
+    })?;
+    let change = marker.change.to_string();
+    let client = crate::connection::requests(&Endpoint::new(endpoint)).await?;
+    let report = client.snapshot_workspace(&root, None).await?;
+    if !report.unreadable.is_empty() {
+        return Ok(None);
+    }
+    let shown = client.change_show(&change).await?.change;
+    if report.tree != shown.head {
+        return Ok(None);
+    }
+    Ok(Some((change, shown.head.to_string())))
+}
+
+/// Synchronous version of [`snapshot_workspace_head`] for the CLI shim (#741).
+pub(crate) fn snapshot_workspace_head_blocking(
+    endpoint: &str,
+    workspace: &Path,
+) -> Result<Option<(String, String)>, RosenError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| RosenError::StatusData(error.to_string()))?;
+    runtime.block_on(async move {
+        let Some(root) = WorkspaceMarker::find_root(workspace) else {
+            return Ok(None);
+        };
+        let marker = WorkspaceMarker::read(&root).map_err(|source| RosenError::Io {
+            action: "read the Rosen marker of",
+            path: root.clone(),
+            source,
+        })?;
+        let change = marker.change.to_string();
+        let client = Client::connect(&Endpoint::new(endpoint)).await?;
+        let report = client.snapshot_workspace(&root, None).await?;
+        if !report.unreadable.is_empty() {
+            return Ok(None);
+        }
+        let shown = client.change_show(&change).await?.change;
+        if report.tree != shown.head {
+            return Ok(None);
+        }
+        Ok(Some((change, shown.head.to_string())))
+    })
+}
+
+/// Records a passing targeted `cargo test` run against `expected_head` after confirming the
+/// workspace tree did not change while the test ran (#741).
+pub async fn record_required_test_pass(
+    endpoint: &str,
+    workspace: &Path,
+    expected_head: &str,
+    cargo_arguments: &[String],
+) -> Result<bool, RosenError> {
+    let Some(root) = WorkspaceMarker::find_root(workspace) else {
+        return Ok(false);
+    };
+    let marker = WorkspaceMarker::read(&root).map_err(|source| RosenError::Io {
+        action: "read the Rosen marker of",
+        path: root.clone(),
+        source,
+    })?;
+    let change = marker.change.to_string();
+    let client = crate::connection::requests(&Endpoint::new(endpoint)).await?;
+    let report = client.snapshot_workspace(&root, None).await?;
+    if !report.unreadable.is_empty() {
+        return Ok(false);
+    }
+    let (shown, status) = tokio::try_join!(client.change_show(&change), client.status())?;
+    let current_head = shown.change.head.to_string();
+    if report.tree != shown.change.head || current_head != expected_head {
+        return Ok(false);
+    }
+    let data_dir = local_data_dir(&status.data_dir);
+    let args = cargo_arguments.to_vec();
+    let expected = expected_head.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let Some(mut record) = load_required_tests(data_dir.as_deref(), &change) else {
+            return Ok(false);
+        };
+        if !record.record_pass_for_arguments(&expected, &args, unix_now()) {
+            return Ok(false);
+        }
+        save_required_tests_record(data_dir.as_deref(), &record)?;
+        Ok(true)
+    })
+    .await
+    .map_err(|error| RosenError::StatusData(error.to_string()))?
+}
+
+/// Synchronous version of [`record_required_test_pass`] for the CLI shim (#741).
+pub(crate) fn record_required_test_pass_blocking(
+    endpoint: &str,
+    workspace: &Path,
+    expected_head: &str,
+    cargo_arguments: &[String],
+) -> Result<bool, RosenError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| RosenError::StatusData(error.to_string()))?;
+    runtime.block_on(async move {
+        let Some(root) = WorkspaceMarker::find_root(workspace) else {
+            return Ok(false);
+        };
+        let marker = WorkspaceMarker::read(&root).map_err(|source| RosenError::Io {
+            action: "read the Rosen marker of",
+            path: root.clone(),
+            source,
+        })?;
+        let change = marker.change.to_string();
+        let client = Client::connect(&Endpoint::new(endpoint)).await?;
+        let report = client.snapshot_workspace(&root, None).await?;
+        if !report.unreadable.is_empty() {
+            return Ok(false);
+        }
+        let (shown, status) = tokio::try_join!(client.change_show(&change), client.status())?;
+        let current_head = shown.change.head.to_string();
+        if report.tree != shown.change.head || current_head != expected_head {
+            return Ok(false);
+        }
+        let data_dir = local_data_dir(&status.data_dir);
+        let Some(mut record) = load_required_tests(data_dir.as_deref(), &change) else {
+            return Ok(false);
+        };
+        if !record.record_pass_for_arguments(expected_head, cargo_arguments, unix_now()) {
+            return Ok(false);
+        }
+        save_required_tests_record(data_dir.as_deref(), &record)?;
+        Ok(true)
+    })
+}
+
+/// Records a required test target that passed during `preflight` for `snapshot.head`,
+/// verifying the change head did not move before persisting (#741).
+pub async fn record_preflight_required_test_pass(
+    snapshot: &PreflightSnapshot,
+    target: &TargetedTest,
+) -> Result<bool, RosenError> {
+    let current = snapshot.client.change_show(&snapshot.change).await?.change;
+    if current.head != snapshot.head {
+        return Ok(false);
+    }
+    let data_dir = snapshot.data_dir.clone();
+    let change = snapshot.change.clone();
+    let head = snapshot.head.to_string();
+    let target = target.clone();
+    tokio::task::spawn_blocking(move || {
+        let Some(mut record) = load_required_tests(data_dir.as_deref(), &change) else {
+            return Ok(false);
+        };
+        if !record.record_pass_for_target(&head, &target, unix_now()) {
+            return Ok(false);
+        }
+        save_required_tests_record(data_dir.as_deref(), &record)?;
+        Ok(true)
+    })
+    .await
+    .map_err(|error| RosenError::StatusData(error.to_string()))?
 }
 
 /// Checks Rosen's read-only metadata ledger for a signed preflight receipt on `(change, head)`.
@@ -886,6 +1190,35 @@ mod tests {
         )?;
         assert!(has_preflight_receipt(dir.path(), change, head)?);
         assert!(!has_preflight_receipt(dir.path(), change, other_head)?);
+        Ok(())
+    }
+
+    // Risk (#741): persisted required-test records and head-bound pass attestations must
+    // survive save/load outside the workspace so commit and land gates enforce them reliably.
+    #[test]
+    fn required_tests_record_survives_save_and_load() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let change = "qlxovkwwwxkppttrzxzyxmkulowyknot";
+        let head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let target = TargetedTest {
+            package: Some("velocity-threads".into()),
+            target_args: vec!["--lib".into()],
+            tests: vec![
+                "dependencies::tests::refresh_wakes_reserved_slug_build_holders_and_skips_non_thread_holders".into(),
+            ],
+        };
+        let mut record = RequiredTestsRecord::new(change, vec![target.clone()]);
+        save_required_tests_record(Some(dir.path()), &record)?;
+        let loaded =
+            load_required_tests(Some(dir.path()), change).ok_or("missing saved required tests")?;
+        assert_eq!(loaded, record);
+        assert!(!loaded.all_passed_for_head(head));
+
+        assert!(record.record_pass_for_target(head, &target, 77));
+        save_required_tests_record(Some(dir.path()), &record)?;
+        let reloaded = load_required_tests(Some(dir.path()), change)
+            .ok_or("missing reloaded required tests")?;
+        assert!(reloaded.all_passed_for_head(head));
         Ok(())
     }
 }

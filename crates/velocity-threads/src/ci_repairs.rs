@@ -5,6 +5,10 @@
 use std::path::Path;
 
 use velocity_core::base_ci::{self, FailedJob, Failure};
+use velocity_core::repair_tests::{
+    TargetedTest, format_required_test_commands, github_job_matches_host, merge_targeted_tests,
+    parse_cargo_test_failures_with_hung, rosen_platform_matches_host,
+};
 use velocity_core::text_budget::{SHORT_PROMPT_BYTES, preview};
 use velocity_store::{StateStore, ThreadState};
 
@@ -27,6 +31,19 @@ files, queue a type-check for the crate you change, and name the finished change
 rosen commit -m. Velocity lands it, and the workflow's next green run on the base closes this \
 failure. Keep the repair limited to this failure; do not take other work.";
 
+const SAME_PLATFORM_INSTRUCTIONS: &str = "Make this workflow pass on the base again and touch \
+nothing else. This is a confirmed failure on the landed base on this machine's OS: fix it forward \
+in your Rosen workspace. Check first that the base still has the fault: when another change \
+already fixed it, say so and end your turn. Never weaken, skip or delete the failing test or \
+lint. If the repair needs a spec decision, find its heading with graph_find and read it with \
+graph_read (source: true). Claim the files, fix the fault, and run every required test command \
+listed above through the run queue (`queue_run` with `program: \"cargo\"` and the `cargo` \
+arguments, or the `rosen run -- ...` command when falling back to the shell). If any required \
+test fails, keep working until it passes. Velocity refuses `rosen commit -m` until those tests \
+and `preflight` pass on the current snapshot. Velocity lands the named change, and the workflow's \
+next green run on the base closes this failure. Keep the repair limited to this failure; do not \
+take other work.";
+
 const ROSEN_INSTRUCTIONS: &str = "Make this Rosen post-land check pass on the base again and \
 touch nothing else. This is a confirmed per-platform failure on the landed base: fix it forward \
 in your Rosen workspace. The check ran on a platform that may differ from this machine's OS, so \
@@ -37,6 +54,19 @@ graph_find and read it with graph_read (source: true). Claim the files, queue a 
 crate you change, and name the finished change with rosen commit -m. Velocity lands it, and the \
 platform's next green post-land pass closes this failure. Keep the repair limited to this failure; \
 do not take other work.";
+
+const ROSEN_SAME_PLATFORM_INSTRUCTIONS: &str = "Make this Rosen post-land check pass on the base \
+again and touch nothing else. This is a confirmed test failure on this machine's platform: fix it \
+forward in your Rosen workspace. Check first that the base still has the fault: when another \
+change already fixed it, say so and end your turn. Never weaken, skip or delete the failing test \
+or lint. If the repair needs a spec decision, find its heading with graph_find and read it with \
+graph_read (source: true). Claim the files, fix the fault, and run every required test command \
+listed above through the run queue (`queue_run` with `program: \"cargo\"` and the `cargo` \
+arguments, or the `rosen run -- ...` command when falling back to the shell). If any required \
+test fails, keep working until it passes. Velocity refuses `rosen commit -m` until those tests \
+and `preflight` pass on the current snapshot. Velocity lands the named change, and the platform's \
+next green post-land pass closes this failure. Keep the repair limited to this failure; do not \
+take other work.";
 
 /// A CI failure with what the prompt needs beyond the jobs.
 pub struct CiFailure<'a> {
@@ -73,7 +103,8 @@ pub fn prepare_rosen_ci_repair(
     }
     let failure = report.failure;
     let preferences = store.worktree_preferences(current);
-    let prompt = rosen_ci_repair_prompt(report);
+    let required_tests = rosen_required_tests(report, std::env::consts::OS, std::env::consts::ARCH);
+    let prompt = rosen_ci_repair_prompt_with_tests(report, &required_tests);
     let title = preview(
         &format!(
             "Fix CI: {} · post-land {}",
@@ -93,14 +124,56 @@ pub fn prepare_rosen_ci_repair(
     plan.title.request = None;
     plan.thread.role = velocity_core::tool_policy::ThreadRole::FollowUp;
     let thread = store
-        .add_ci_repair(project, failure, plan.thread.clone(), &prompt)
+        .add_ci_repair_with_tests(
+            project,
+            failure,
+            plan.thread.clone(),
+            &prompt,
+            required_tests,
+        )
         .map_err(|error| error.to_string())?;
     Ok(thread.map(|thread| (plan, thread)))
 }
 
 /// Builds the opening prompt for a Rosen per-platform post-land repair thread, naming the
-/// platform, the culprit change/commit, and the failure output (#591).
+/// platform, the culprit change/commit, and the failure output (#591, #741).
 pub fn rosen_ci_repair_prompt(report: &RosenCiFailure<'_>) -> String {
+    rosen_ci_repair_prompt_for_host(report, std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// Like [`rosen_ci_repair_prompt`], evaluating same-platform test execution against
+/// `(host_os, host_arch)` (#741).
+pub fn rosen_ci_repair_prompt_for_host(
+    report: &RosenCiFailure<'_>,
+    host_os: &str,
+    host_arch: &str,
+) -> String {
+    let required = rosen_required_tests(report, host_os, host_arch);
+    rosen_ci_repair_prompt_with_tests(report, &required)
+}
+
+fn rosen_required_tests(
+    report: &RosenCiFailure<'_>,
+    host_os: &str,
+    host_arch: &str,
+) -> Vec<TargetedTest> {
+    if !report.check_kind.eq_ignore_ascii_case("test")
+        || !rosen_platform_matches_host(Some(report.platform), host_os, host_arch)
+    {
+        return Vec::new();
+    }
+    let hung = report
+        .failure
+        .jobs
+        .first()
+        .and_then(|job| job.hung_test.as_deref());
+    parse_cargo_test_failures_with_hung(report.output, hung)
+}
+
+fn rosen_ci_repair_prompt_with_tests(
+    report: &RosenCiFailure<'_>,
+    required_tests: &[TargetedTest],
+) -> String {
     let header = format!(
         "Rosen post-land check failed on the base.\n\
          Project: {}\n\
@@ -121,8 +194,17 @@ pub fn rosen_ci_repair_prompt(report: &RosenCiFailure<'_>) -> String {
     if let Some(saved) = report.saved_log {
         footer.push_str(&format!("Saved output log: {}\n", saved.display()));
     }
+    let instructions = if required_tests.is_empty() {
+        ROSEN_INSTRUCTIONS
+    } else {
+        footer.push_str(&format!(
+            "\nRequired test command(s) before `rosen commit` (queued through the run queue):\n{}\n",
+            format_required_test_commands(required_tests)
+        ));
+        ROSEN_SAME_PLATFORM_INSTRUCTIONS
+    };
     let heading = "Failing check output:\n";
-    let fixed = header.len() + heading.len() + footer.len() + ROSEN_INSTRUCTIONS.len() + 6;
+    let fixed = header.len() + heading.len() + footer.len() + instructions.len() + 6;
     let budget = SHORT_PROMPT_BYTES.saturating_sub(fixed);
     let excerpt = if report.output.trim().is_empty() {
         "(Rosen recorded no output for this failure.)".to_owned()
@@ -131,7 +213,7 @@ pub fn rosen_ci_repair_prompt(report: &RosenCiFailure<'_>) -> String {
     } else {
         failure_excerpt(report.output, budget)
     };
-    format!("{header}\n{heading}{excerpt}\n\n{footer}\n{ROSEN_INSTRUCTIONS}")
+    format!("{header}\n{heading}{excerpt}\n\n{footer}\n{instructions}")
 }
 
 /// Saves a repair for each of the failure's jobs that has none and plans its thread.
@@ -147,7 +229,9 @@ pub fn prepare_ci_repair(
     }
     let failure = report.failure;
     let preferences = store.worktree_preferences(current);
-    let prompt = ci_repair_prompt(report);
+    let required_tests =
+        github_required_tests(report, std::env::consts::OS, std::env::consts::ARCH);
+    let prompt = ci_repair_prompt_with_tests(report, &required_tests);
     let mut plan = plan_named_launch(
         current,
         &preferences,
@@ -160,7 +244,13 @@ pub fn prepare_ci_repair(
     plan.title.request = None;
     plan.thread.role = velocity_core::tool_policy::ThreadRole::FollowUp;
     let thread = store
-        .add_ci_repair(project, failure, plan.thread.clone(), &prompt)
+        .add_ci_repair_with_tests(
+            project,
+            failure,
+            plan.thread.clone(),
+            &prompt,
+            required_tests,
+        )
         .map_err(|error| error.to_string())?;
     Ok(thread.map(|thread| (plan, thread)))
 }
@@ -222,6 +312,36 @@ fn repair_slug(failure: &Failure) -> String {
 }
 
 pub fn ci_repair_prompt(report: &CiFailure<'_>) -> String {
+    ci_repair_prompt_for_host(report, std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// Like [`ci_repair_prompt`], evaluating same-OS test execution against `(host_os, host_arch)` (#741).
+pub fn ci_repair_prompt_for_host(report: &CiFailure<'_>, host_os: &str, host_arch: &str) -> String {
+    let required = github_required_tests(report, host_os, host_arch);
+    ci_repair_prompt_with_tests(report, &required)
+}
+
+fn github_required_tests(
+    report: &CiFailure<'_>,
+    host_os: &str,
+    host_arch: &str,
+) -> Vec<TargetedTest> {
+    let mut tests = Vec::new();
+    for job in &report.failure.jobs {
+        if !github_job_matches_host(job.runner.as_deref(), &job.job, host_os, host_arch) {
+            continue;
+        }
+        let log = base_ci::job_log(report.log, &job.job);
+        let hung = job
+            .hung_test
+            .clone()
+            .or_else(|| job.timed_out.then(|| base_ci::hung_test(&log)).flatten());
+        tests.extend(parse_cargo_test_failures_with_hung(&log, hung.as_deref()));
+    }
+    merge_targeted_tests(tests)
+}
+
+fn ci_repair_prompt_with_tests(report: &CiFailure<'_>, required_tests: &[TargetedTest]) -> String {
     let failure = report.failure;
     let mut header = format!(
         "GitHub CI failed on the base.\nRepository: {} · branch {}\nWorkflow: {}\nCommit: {}\nRun: {}\n",
@@ -255,6 +375,15 @@ pub fn ci_repair_prompt(report: &CiFailure<'_>) -> String {
             saved.display()
         ));
     }
+    let instructions = if required_tests.is_empty() {
+        INSTRUCTIONS
+    } else {
+        footer.push_str(&format!(
+            "\nRequired test command(s) before `rosen commit` (queued through the run queue):\n{}\n",
+            format_required_test_commands(required_tests)
+        ));
+        SAME_PLATFORM_INSTRUCTIONS
+    };
     let shown = &failure.jobs[..failure.jobs.len().min(EXCERPTED_JOBS)];
     let job_sections: Vec<(String, String)> = shown
         .iter()
@@ -269,7 +398,7 @@ pub fn ci_repair_prompt(report: &CiFailure<'_>) -> String {
         .collect();
     let fixed = header.len()
         + footer.len()
-        + INSTRUCTIONS.len()
+        + instructions.len()
         + job_sections
             .iter()
             .map(|(heading, _)| heading.len() + 3)
@@ -287,7 +416,7 @@ pub fn ci_repair_prompt(report: &CiFailure<'_>) -> String {
         };
         prompt.push_str(&format!("\n{heading}\n{excerpt}\n"));
     }
-    format!("{prompt}\n{footer}\n{INSTRUCTIONS}")
+    format!("{prompt}\n{footer}\n{instructions}")
 }
 
 fn job_heading(job: &FailedJob, hung_test: Option<&str>) -> String {
@@ -392,5 +521,107 @@ test (macos-latest)\tRun tests\t2026-11-21T20:44:35.0000000Z ##[error]The operat
         assert!(prompt.contains("Culprit commit: 520dcfc000000000000000000000000000000000"));
         assert!(prompt.contains("kqueue_watcher::sees_rename ... FAILED"));
         assert!(!prompt.contains("GitHub"));
+    }
+
+    // Risk (#741): a same-platform Rosen post-land test failure brief must include the exact
+    // targeted `cargo test` command and require passing it before `rosen commit`, while a
+    // cross-platform failure keeps the type-check-only rule.
+    #[test]
+    fn same_platform_rosen_repair_brief_requires_targeted_test_command() {
+        let output = "\
+running 15 tests
+test dependencies::tests::refresh_wakes_reserved_slug_build_holders_and_skips_non_thread_holders ... FAILED
+
+failures:
+
+---- dependencies::tests::refresh_wakes_reserved_slug_build_holders_and_skips_non_thread_holders stdout ----
+Error: Invalid(\"Claim your piece before waiting\")
+
+failures:
+    dependencies::tests::refresh_wakes_reserved_slug_build_holders_and_skips_non_thread_holders
+
+test result: FAILED. 14 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+error: test failed, to rerun pass `-p velocity-threads --lib`
+";
+        let failure = Failure {
+            workflow_key: base_ci::ROSEN_BASE_WORKFLOW.into(),
+            workflow: base_ci::ROSEN_BASE_WORKFLOW.into(),
+            run: 77,
+            commit: "456b01c10f7c0000000000000000000000000000".into(),
+            url: String::new(),
+            detail: "Culprit change: opmwpnyv".into(),
+            jobs: vec![FailedJob {
+                id: 77,
+                job: "Windows · test".into(),
+                step: Some("post-land test".into()),
+                runner: Some("Windows".into()),
+                signature: None,
+                timed_out: false,
+                hung_test: None,
+            }],
+        };
+        let report = RosenCiFailure {
+            project: "velocity",
+            failure: &failure,
+            change: "opmwpnyv",
+            platform: "Windows",
+            check_kind: "test",
+            output,
+            saved_log: None,
+        };
+        let expected = "rosen run -- cargo test -p velocity-threads --lib dependencies::tests::refresh_wakes_reserved_slug_build_holders_and_skips_non_thread_holders";
+        let same_os = rosen_ci_repair_prompt_for_host(&report, "windows", "x86_64");
+        assert!(same_os.contains(expected));
+        assert!(same_os.contains("Velocity refuses `rosen commit -m` until those tests"));
+        assert!(!same_os.contains("queue a type-check for the crate you change"));
+
+        let other_os = rosen_ci_repair_prompt_for_host(&report, "macos", "aarch64");
+        assert!(!other_os.contains(expected));
+        assert!(other_os.contains("queue a type-check for the crate you change"));
+    }
+
+    // Risk (#741): a same-OS GitHub CI test failure brief must include the targeted test
+    // command while a job from another OS keeps the type-check-only instructions.
+    #[test]
+    fn same_platform_github_ci_repair_brief_requires_targeted_test_command() {
+        let failure = Failure {
+            workflow_key: "workflow:11".into(),
+            workflow: "CI".into(),
+            run: 120,
+            commit: "456b01c10f7c0000000000000000000000000000".into(),
+            url: "https://github.com/mESmaC/velocity/actions/runs/120".into(),
+            detail: String::new(),
+            jobs: vec![FailedJob {
+                id: 808,
+                job: "test (windows-latest)".into(),
+                step: Some("Run tests".into()),
+                runner: Some("windows-latest".into()),
+                signature: None,
+                timed_out: false,
+                hung_test: None,
+            }],
+        };
+        let log = "\
+test (windows-latest)\tRun tests\t2026-11-22T20:00:00.0000000Z ---- deploy::tests::gate_blocks_red_platform stdout ----\n\
+test (windows-latest)\tRun tests\t2026-11-22T20:00:00.0000000Z failures:\n\
+test (windows-latest)\tRun tests\t2026-11-22T20:00:00.0000000Z     deploy::tests::gate_blocks_red_platform\n\
+test (windows-latest)\tRun tests\t2026-11-22T20:00:00.0000000Z test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n\
+test (windows-latest)\tRun tests\t2026-11-22T20:00:00.0000000Z error: test failed, to rerun pass `-p velocity-core --lib`";
+        let report = CiFailure {
+            repository: "mESmaC/velocity",
+            branch: "main",
+            failure: &failure,
+            log,
+            saved_log: None,
+        };
+        let expected = "rosen run -- cargo test -p velocity-core --lib deploy::tests::gate_blocks_red_platform";
+        let same_os = ci_repair_prompt_for_host(&report, "windows", "x86_64");
+        assert!(same_os.contains(expected));
+        assert!(same_os.contains("Velocity refuses `rosen commit -m` until those tests"));
+
+        let other_os = ci_repair_prompt_for_host(&report, "linux", "x86_64");
+        assert!(!other_os.contains(expected));
+        assert!(other_os.contains("queue a type-check for the crate you change"));
     }
 }

@@ -18,6 +18,7 @@ use velocity_core::preflight::{
     format_report, plan,
 };
 use velocity_core::queued_runs::{QueuedRunClass, QueuedRunPhase, QueuedRunRecord};
+use velocity_core::repair_tests::{TargetedTest, cargo_test_output_passed_at_least_one};
 use velocity_core::rosen_checker::{
     BINDINGS, BINDINGS_EXPORTER, changes_bindings, regeneration_instructions,
 };
@@ -25,7 +26,8 @@ use velocity_rosen::agent_run::{AgentRun, toolchain_path_from};
 use velocity_rosen::landing::LandRefusal;
 use velocity_rosen::light_target::{WorkspaceScope, scope_from_changed_paths};
 use velocity_rosen::preflight::{
-    PreflightSnapshot, RecordOutcome, discover_workspace_crates, inspect, record_outcome,
+    PreflightSnapshot, RecordOutcome, discover_workspace_crates, inspect, load_required_tests,
+    record_outcome, record_preflight_required_test_pass,
 };
 use velocity_rosen::queued_turn::{
     DEFAULT_WAIT_TIMEOUT, HELD_ENV, QUEUE_ENV, QueuedTurn, QueuedTurnError, QueuedTurnRequest,
@@ -267,6 +269,14 @@ impl StepRunner<'_> {
         let context = build_context(self.worktree);
         let changed = build_changed_files(self.worktree, snapshot);
         let check_plan = plan(&changed, &context);
+        let required_tests = load_required_tests(snapshot.data_dir.as_deref(), &snapshot.change);
+        let has_required_tests = required_tests
+            .as_ref()
+            .is_some_and(|record| !record.tests.is_empty());
+        let missing_tests = required_tests
+            .as_ref()
+            .map(|record| record.missing_for_head(&snapshot.head.to_string()))
+            .unwrap_or_default();
         let mut steps = Vec::new();
         let blocking_skip = record_snapshot_checks(snapshot, &mut steps);
         steps.push(check_overlaps(snapshot, self.output).await);
@@ -277,13 +287,22 @@ impl StepRunner<'_> {
         steps.push(self.check_rustfmt(&check_plan).await?);
         if let Some(reason) = blocking_skip {
             steps.extend(skipped_after_snapshot_failure(&check_plan, reason));
+            if !missing_tests.is_empty() {
+                steps.push(StepOutcome::skipped("repair tests", reason));
+            }
             return Ok(steps);
         }
         steps.extend(self.check_ui(&check_plan).await?);
         steps.extend(self.check_lockfiles(&check_plan).await?);
         steps.extend(
-            self.check_rust_and_bindings(snapshot, &context, &check_plan)
-                .await?,
+            self.check_rust_and_bindings(
+                snapshot,
+                &context,
+                &check_plan,
+                has_required_tests,
+                &missing_tests,
+            )
+            .await?,
         );
         Ok(steps)
     }
@@ -453,12 +472,22 @@ impl StepRunner<'_> {
         snapshot: &PreflightSnapshot,
         context: &PreflightContext,
         check_plan: &PreflightPlan,
+        has_required_tests: bool,
+        missing_tests: &[TargetedTest],
     ) -> Result<Vec<StepOutcome>, Cancelled> {
-        if !check_plan.needs_light_rust_turn() {
-            return Ok(vec![StepOutcome::skipped(
+        let mut outcomes = Vec::new();
+        if has_required_tests && missing_tests.is_empty() {
+            outcomes.push(StepOutcome::passed(
+                "repair tests",
+                "required repair test(s) already passed on this snapshot",
+            ));
+        }
+        if !check_plan.needs_light_rust_turn() && missing_tests.is_empty() {
+            outcomes.push(StepOutcome::skipped(
                 "Rust checks",
                 "no touched Rust crates",
-            )]);
+            ));
+            return Ok(outcomes);
         }
         let workspace_scope = light_target_scope(snapshot, context);
         let wait_started = Instant::now();
@@ -474,33 +503,40 @@ impl StepRunner<'_> {
                     self.output,
                     "\n=== rust checks (queue timeout) ===\n{report}"
                 );
-                return Ok(vec![StepOutcome::failed(
+                outcomes.push(StepOutcome::failed(
                     "Rust checks",
                     "timed out waiting for a light Rust run-queue turn",
                     Some(report.to_string()),
-                )]);
+                ));
+                return Ok(outcomes);
             }
             Err(QueuedTurnError::Io(error)) => {
                 let _ = writeln!(self.output, "\n=== rust checks (queue error) ===\n{error}");
-                return Ok(vec![StepOutcome::failed(
+                outcomes.push(StepOutcome::failed(
                     "Rust checks",
                     format!("could not acquire light Rust slot: {error}"),
                     None,
-                )]);
+                ));
+                return Ok(outcomes);
             }
         };
         let target = match &turn {
             QueuedTurn::Light { target, .. } => target.clone(),
             _ => unreachable_target(self.worktree),
         };
-        let outcomes = self.run_in_light_turn(check_plan, &target).await;
+        let light_outcomes = self
+            .run_in_light_turn(snapshot, check_plan, missing_tests, &target)
+            .await;
         drop(turn);
-        outcomes
+        outcomes.extend(light_outcomes?);
+        Ok(outcomes)
     }
 
     async fn run_in_light_turn(
         &mut self,
+        snapshot: &PreflightSnapshot,
         check_plan: &PreflightPlan,
+        missing_tests: &[TargetedTest],
         target: &Path,
     ) -> Result<Vec<StepOutcome>, Cancelled> {
         let mut outcomes = Vec::new();
@@ -513,7 +549,63 @@ impl StepRunner<'_> {
         if check_plan.check_bindings {
             outcomes.push(self.check_bindings(target, clippy_failed).await?);
         }
+        for required in missing_tests {
+            outcomes.push(
+                self.check_required_test(snapshot, target, required, clippy_failed)
+                    .await?,
+            );
+        }
         Ok(outcomes)
+    }
+
+    async fn check_required_test(
+        &mut self,
+        snapshot: &PreflightSnapshot,
+        target: &Path,
+        required: &TargetedTest,
+        clippy_failed: bool,
+    ) -> Result<StepOutcome, Cancelled> {
+        let label = required.cargo_command();
+        if clippy_failed {
+            return Ok(StepOutcome::skipped(
+                label,
+                "skipped because cargo clippy failed",
+            ));
+        }
+        let start = self.output.stream_position().unwrap_or(0);
+        let args = required.cargo_args();
+        let outcome = self.light_outcome(&label, target, &args, None).await?;
+        if outcome.status != StepStatus::Passed {
+            return Ok(outcome);
+        }
+        let log_path = self.log_path.to_owned();
+        let passed_any =
+            tokio::task::spawn_blocking(move || read_slice_passed_any(&log_path, start))
+                .await
+                .unwrap_or(false);
+        if !passed_any {
+            return Ok(StepOutcome::failed(
+                label,
+                "ran 0 tests",
+                Some(
+                    "Targeted repair test ran 0 tests — do not skip, delete, or rename the failing test."
+                        .to_owned(),
+                ),
+            ));
+        }
+        match record_preflight_required_test_pass(snapshot, required).await {
+            Ok(true) => Ok(StepOutcome::passed(label, "required repair test passed")),
+            Ok(false) => Ok(StepOutcome::failed(
+                label,
+                "workspace changed while required test ran",
+                Some("Run `preflight` again on the current workspace before naming.".to_owned()),
+            )),
+            Err(error) => Ok(StepOutcome::failed(
+                label,
+                "could not record passing repair test",
+                Some(error.to_string()),
+            )),
+        }
     }
 
     async fn check_bindings(
@@ -1063,6 +1155,20 @@ fn create_log(path: &Path) -> io::Result<File> {
         options.mode(0o600);
     }
     options.write(true).create_new(true).open(path)
+}
+
+fn read_slice_passed_any(log: &Path, start: u64) -> bool {
+    let Ok(mut file) = File::open(log) else {
+        return false;
+    };
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return false;
+    }
+    let mut text = String::new();
+    if file.read_to_string(&mut text).is_err() {
+        return false;
+    }
+    cargo_test_output_passed_at_least_one(&text)
 }
 
 fn read_excerpt(log: &Path, start: u64) -> io::Result<String> {

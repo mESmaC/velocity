@@ -1053,22 +1053,40 @@ impl QueueHost {
     ) -> Result<(AgentRun, Option<RegisteredGenerator>), String> {
         let directory = resolve_directory(&self.worktree, command.directory.as_deref());
         let at_root = is_workspace_root(&directory, &self.worktree);
-        let generated_commands =
-            if at_root && let Some(endpoint) = self.launch.env_value("ROSEN_ENDPOINT") {
-                tokio::time::timeout(BASE_CONFIG_TIMEOUT, load_base_commands(endpoint))
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .unwrap_or_default()
-            } else {
-                Default::default()
-            };
-        velocity_rosen::agent_run::policy_with_registered_generators(
+        let endpoint = self.launch.env_value("ROSEN_ENDPOINT");
+        let generated_commands = if at_root && let Some(endpoint) = endpoint {
+            tokio::time::timeout(BASE_CONFIG_TIMEOUT, load_base_commands(endpoint))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default()
+        } else {
+            Default::default()
+        };
+        let required_tests = if at_root
+            && is_cargo_test_command(command)
+            && let Some(endpoint) = endpoint
+        {
+            tokio::time::timeout(
+                BASE_CONFIG_TIMEOUT,
+                velocity_rosen::preflight::load_required_tests_for_workspace(
+                    endpoint,
+                    &self.worktree,
+                ),
+            )
+            .await
+            .ok()
+            .flatten()
+        } else {
+            None
+        };
+        velocity_rosen::agent_run::policy_with_workspace_overrides(
             &command.program,
             &command.arguments,
             session_blocks_vcs(&self.launch, &self.worktree),
             at_root,
             &generated_commands,
+            required_tests.as_ref(),
             &|key| command.env.get(key).cloned(),
         )
         .map_err(str::to_owned)
@@ -1099,6 +1117,21 @@ impl QueueHost {
         }
         Ok(cancel_reply(&record, cancelled))
     }
+}
+
+fn is_cargo_test_command(command: &RunCommand) -> bool {
+    let name = command
+        .program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let base = name
+        .strip_suffix(".exe")
+        .or_else(|| name.strip_suffix(".cmd"))
+        .or_else(|| name.strip_suffix(".bat"))
+        .unwrap_or(&name);
+    base == "cargo" && command.arguments.first().map(String::as_str) == Some("test")
 }
 
 fn counts_as_session_pending_ahead(

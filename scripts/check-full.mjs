@@ -70,7 +70,7 @@ try {
     "-D",
     "warnings",
   ]);
-  run("cargo", ["test", "--workspace", "--locked"]);
+  run("cargo", ["test", "--workspace", "--locked", "--no-fail-fast"]);
   checkBindings();
 } catch (error) {
   console.error(error);

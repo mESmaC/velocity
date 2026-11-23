@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use rosen_client::run_queue::{HELD_ENV, POLL, RunClass, RunQueue};
 use rosen_client::snapshot::WorkspaceMarker;
 use rosen_core::PathPattern;
+use velocity_core::repair_tests::{RequiredTestsRecord, cargo_test_output_passed_at_least_one};
 
 use crate::process::{background_command, hidden_command};
 use crate::queued_turn::DEFAULT_WAIT_TIMEOUT;
@@ -65,6 +66,37 @@ pub enum AgentRun {
 
 pub fn policy(program: &str, arguments: &[String]) -> Result<AgentRun, &'static str> {
     policy_with_vcs_blocked(program, arguments, vcs_blocked_in_process())
+}
+
+/// Classifies a queued or managed command against workspace-scoped required repair tests (#741)
+/// and registered `[generated.commands]` in the base's `rosen.toml` (#582), then falls back
+/// to Velocity's Rust and VCS policy.
+pub fn policy_with_workspace_overrides(
+    program: &str,
+    arguments: &[String],
+    block_vcs: bool,
+    at_workspace_root: bool,
+    generated_commands: &BTreeMap<PathPattern, String>,
+    required_tests: Option<&RequiredTestsRecord>,
+    ambient_env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(AgentRun, Option<RegisteredGenerator>), &'static str> {
+    if block_vcs && let Some(refusal) = direct_or_wrapped_vcs_refusal(program, arguments) {
+        return Err(refusal);
+    }
+    if at_workspace_root
+        && executable_name(program) == "cargo"
+        && required_tests.is_some_and(|record| record.allows_cargo_test(arguments))
+    {
+        return Ok((AgentRun::RustCheck, None));
+    }
+    policy_with_registered_generators(
+        program,
+        arguments,
+        block_vcs,
+        at_workspace_root,
+        generated_commands,
+        ambient_env,
+    )
 }
 
 /// Classifies a queued or managed command against registered `[generated.commands]` in the
@@ -448,6 +480,11 @@ fn run_direct(
     if name != "cargo" {
         return Err(io::Error::other(REFUSAL));
     }
+    if !inside_held_turn()
+        && let Some(matched) = direct_required_test(arguments)
+    {
+        return run_required_test(&rosen_program(folder)?, &[], &matched, passthrough, false);
+    }
     match direct_action(arguments, inside_held_turn()).map_err(io::Error::other)? {
         DirectAction::Held => run_held(name, arguments, passthrough),
         DirectAction::Utility => run_utility(OsStr::new(name), arguments, passthrough),
@@ -514,6 +551,15 @@ fn run_rosen(
             inside_held_turn(),
         );
     }
+    if let Some(required_test) = classified.required_test {
+        return run_required_test(
+            program,
+            &arguments[..subcommand],
+            &required_test,
+            passthrough,
+            inside_held_turn(),
+        );
+    }
     let (program_at, run) = (classified.program_at, classified.run);
     if run != AgentRun::Ordinary && inside_held_turn() {
         // `rosen run` sees the held turn and starts at once (#548).
@@ -558,10 +604,164 @@ struct ClassifiedGenerator {
     generator: RegisteredGenerator,
 }
 
+struct ClassifiedRequiredTest {
+    endpoint: String,
+    workspace_root: PathBuf,
+    arguments: Vec<String>,
+}
+
 struct ClassifiedRun {
     program_at: usize,
     run: AgentRun,
     registered: Option<ClassifiedGenerator>,
+    required_test: Option<ClassifiedRequiredTest>,
+}
+
+fn direct_required_test(arguments: &[OsString]) -> Option<ClassifiedRequiredTest> {
+    if arguments.first().and_then(|value| value.to_str()) != Some("test") {
+        return None;
+    }
+    let (endpoint, workspace_root) = run_workspace_context(&[])?;
+    let policy_args = policy_arguments(arguments);
+    let record =
+        crate::preflight::load_required_tests_for_workspace_blocking(&endpoint, &workspace_root)?;
+    record
+        .allows_cargo_test(&policy_args)
+        .then_some(ClassifiedRequiredTest {
+            endpoint,
+            workspace_root,
+            arguments: policy_args,
+        })
+}
+
+fn run_required_test(
+    rosen: &Path,
+    rosen_arguments: &[OsString],
+    matched: &ClassifiedRequiredTest,
+    passthrough: &[String],
+    held: bool,
+) -> io::Result<ExitStatus> {
+    let head_before = crate::preflight::snapshot_workspace_head_blocking(
+        &matched.endpoint,
+        &matched.workspace_root,
+    )
+    .ok()
+    .flatten()
+    .map(|(_, head)| head);
+    let (status, test_results) = if held {
+        execute_required_test_held(&matched.arguments, passthrough)?
+    } else {
+        execute_required_test_light(
+            rosen,
+            rosen_arguments,
+            &matched.workspace_root,
+            &matched.arguments,
+            passthrough,
+        )?
+    };
+    if status.success() {
+        if !cargo_test_output_passed_at_least_one(&test_results) {
+            return Err(io::Error::other(
+                "Targeted repair test ran 0 tests — do not skip, delete, or rename the failing test.",
+            ));
+        }
+        if let Some(head) = head_before {
+            let _ = crate::preflight::record_required_test_pass_blocking(
+                &matched.endpoint,
+                &matched.workspace_root,
+                &head,
+                &matched.arguments,
+            );
+        }
+    }
+    Ok(status)
+}
+
+fn execute_required_test_light(
+    rosen: &Path,
+    rosen_arguments: &[OsString],
+    workspace_root: &Path,
+    arguments: &[String],
+    passthrough: &[String],
+) -> io::Result<(ExitStatus, String)> {
+    let scope = cli_endpoint_for_run(rosen_arguments).and_then(|endpoint| {
+        crate::light_target::inspect_workspace_scope_blocking(&endpoint, workspace_root)
+    });
+    let targets = light_targets(workspace_root);
+    let turn = light_turn(&targets, workspace_root, workspace_root, scope.as_ref())?;
+    let mut command = light_command(
+        rosen,
+        rosen_arguments,
+        OsStr::new("cargo"),
+        turn.target(),
+        passthrough,
+    )?;
+    command.args(arguments);
+    run_capturing_test_results(command)
+}
+
+fn execute_required_test_held(
+    arguments: &[String],
+    passthrough: &[String],
+) -> io::Result<(ExitStatus, String)> {
+    let path = toolchain_path()?;
+    let program = real_program("cargo", &path).ok_or_else(|| {
+        io::Error::other("Could not find cargo outside Velocity's managed commands")
+    })?;
+    let mut command = background_command(program);
+    filter_environment(&mut command, passthrough);
+    command
+        .args(arguments)
+        .env("PATH", path)
+        .env_remove(BLOCK_VCS_ENV);
+    run_capturing_test_results(command)
+}
+
+fn run_capturing_test_results(mut command: Command) -> io::Result<(ExitStatus, String)> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let out_thread = std::thread::spawn(move || forward_and_collect_results(stdout, true));
+    let err_thread = std::thread::spawn(move || forward_and_collect_results(stderr, false));
+    let status = child.wait()?;
+    let mut results = out_thread.join().unwrap_or_default();
+    let err_results = err_thread.join().unwrap_or_default();
+    if !err_results.is_empty() {
+        if !results.is_empty() {
+            results.push('\n');
+        }
+        results.push_str(&err_results);
+    }
+    Ok((status, results))
+}
+
+fn forward_and_collect_results<R: io::Read>(stream: Option<R>, to_stdout: bool) -> String {
+    use io::{BufRead, Write};
+
+    let Some(stream) = stream else {
+        return String::new();
+    };
+    let mut reader = io::BufReader::new(stream);
+    let mut line = Vec::new();
+    let mut results = String::new();
+    while reader.read_until(b'\n', &mut line).unwrap_or(0) > 0 {
+        if to_stdout {
+            let _ = io::stdout().write_all(&line);
+            let _ = io::stdout().flush();
+        } else {
+            let _ = io::stderr().write_all(&line);
+            let _ = io::stderr().flush();
+        }
+        let text = String::from_utf8_lossy(&line);
+        if text.contains("test result:") {
+            results.push_str(&text);
+        }
+        line.clear();
+    }
+    results
 }
 
 fn run_registered_generator(
@@ -997,6 +1197,7 @@ fn classify_run(
                     program_at: index,
                     run: AgentRun::Ordinary,
                     registered: None,
+                    required_test: None,
                 });
             }
             _ => break,
@@ -1007,21 +1208,38 @@ fn classify_run(
             program_at: index,
             run: AgentRun::Ordinary,
             registered: None,
+            required_test: None,
         });
     };
     let policy_args = policy_arguments(&arguments[index + 1..]);
     let block_vcs = vcs_blocked_in_process();
     if let Some((endpoint, workspace_root)) = run_workspace_context(all_arguments) {
+        let required_tests = if executable_name(program) == "cargo"
+            && policy_args.first().map(String::as_str) == Some("test")
+        {
+            crate::preflight::load_required_tests_for_workspace_blocking(&endpoint, &workspace_root)
+        } else {
+            None
+        };
+        let is_required_test = required_tests
+            .as_ref()
+            .is_some_and(|record| record.allows_cargo_test(&policy_args));
         let commands =
             registered_generator::load_base_commands_blocking(&endpoint).unwrap_or_default();
-        let (run, matched) = policy_with_registered_generators(
+        let (run, matched) = policy_with_workspace_overrides(
             program,
             &policy_args,
             block_vcs,
             true,
             &commands,
+            required_tests.as_ref(),
             &|key| std::env::var(key).ok(),
         )?;
+        let required_test = is_required_test.then_some(ClassifiedRequiredTest {
+            endpoint: endpoint.clone(),
+            workspace_root: workspace_root.clone(),
+            arguments: policy_args,
+        });
         return Ok(ClassifiedRun {
             program_at: index,
             run,
@@ -1030,12 +1248,14 @@ fn classify_run(
                 workspace_root,
                 generator,
             }),
+            required_test,
         });
     }
     policy_with_vcs_blocked(program, &policy_args, block_vcs).map(|run| ClassifiedRun {
         program_at: index,
         run,
         registered: None,
+        required_test: None,
     })
 }
 
