@@ -315,6 +315,7 @@ pub async fn step_result(
         output: output.to_owned(),
         // Rosen records the checker's nick with the connection's machine (R14).
         submitter: AgentId::new(crate::checker::CHECKER).ok(),
+        durations: None,
     };
     bisection(&client, client.bisect_submit(result).await?).await
 }
@@ -398,18 +399,16 @@ fn resolve_pre_land_job(
     policy: &ProjectConfig,
 ) -> (Vec<String>, Option<PostLandJob>) {
     let mut pre_land = policy.checks.pre_land.clone();
-    let target = if pre_land.platforms.is_empty() {
-        None
+    let host = rosen_core::Platform::host();
+    let (target, checker_platform) = if pre_land.platforms.is_empty() {
+        (None, None)
     } else {
-        let Some(target) = pre_land
-            .matching_target(&rosen_core::Platform::host())
-            .cloned()
-        else {
+        let Some(target) = pre_land.matching_target(&host).cloned() else {
             return (Vec::new(), None);
         };
-        Some(target)
+        (Some(target), Some(host))
     };
-    let commands = pre_land.commands_for(target.as_ref());
+    let commands = pre_land.commands_for(checker_platform.as_ref());
     let job = (!commands.is_empty() || policy.recheck == RecheckMode::Merge).then(|| {
         let priority = if policy.recheck == RecheckMode::Merge {
             CheckPriority::Landing
@@ -423,7 +422,10 @@ fn resolve_pre_land_job(
             priority,
             check_set: pre_land,
             platform: target.map(|platform| platform.as_str().to_owned()),
+            checker_platform: checker_platform.map(|platform| platform.as_str().to_owned()),
             submitter: None,
+            offered_at_ms: None,
+            durations: None,
         }
     });
     (commands, job)
