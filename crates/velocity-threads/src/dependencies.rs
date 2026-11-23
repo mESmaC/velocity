@@ -72,6 +72,7 @@ fn description(project: &ProjectItem, wait: &DependencyWait) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use velocity_airc::{ClaimResult, waits::WaitState};
     use velocity_store::ThreadItem;
 
     fn temp_dir(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -94,21 +95,27 @@ mod tests {
         waiter_nick: &str,
         file: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        channel.join(holder_member, holder_nick)?;
+        let holder_nick = channel.join(holder_member, holder_nick)?;
         channel.join(waiter_member, waiter_nick)?;
-        channel.claim(
-            holder_member,
-            "Holder work",
-            "vel/holder",
-            vec![file.into()],
-        )?;
-        channel.claim(
-            waiter_member,
-            "Waiter work",
-            "vel/waiter",
-            vec![file.into()],
-        )?;
-        channel.begin_wait(waiter_member, holder_nick, file)?;
+        assert!(matches!(
+            channel.claim(
+                holder_member,
+                &format!("Holder work for {holder_member}"),
+                &format!("vel/{holder_nick}"),
+                vec![file.into()],
+            )?,
+            ClaimResult::Granted { .. }
+        ));
+        assert!(matches!(
+            channel.claim(
+                waiter_member,
+                &format!("Waiter work for {waiter_member}"),
+                &format!("vel/{waiter_nick}"),
+                vec![file.into()],
+            )?,
+            ClaimResult::Granted { .. }
+        ));
+        channel.begin_wait(waiter_member, &holder_nick, file)?;
         Ok(())
     }
 
@@ -117,6 +124,43 @@ mod tests {
         thread.agent_name = Some(agent_name.to_owned());
         thread.state = state;
         thread
+    }
+
+    fn assert_wait_outcomes(
+        channel: &Channel,
+        ended: &[(&str, &str, &str)],
+        parked: &[(&str, &str)],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for (waiter, _, outcome) in ended {
+            assert_eq!(
+                channel.wait_state(waiter)?,
+                WaitState::HolderEnded,
+                "{waiter}"
+            );
+            let woken = channel.wake_parked(waiter)?;
+            assert!(
+                woken
+                    .as_ref()
+                    .is_some_and(|item| item.message.contains(outcome)),
+                "{waiter}: {woken:?}"
+            );
+        }
+        for (waiter, _) in parked {
+            assert_eq!(channel.wait_state(waiter)?, WaitState::Waiting, "{waiter}");
+            assert_eq!(channel.wake_parked(waiter)?, None, "{waiter}");
+        }
+        let remaining: Vec<String> = channel
+            .dependency_waits()?
+            .into_iter()
+            .map(|wait| wait.holder)
+            .collect();
+        for (_, holder, _) in ended {
+            assert!(!remaining.iter().any(|item| item == holder), "{holder}");
+        }
+        for (_, holder) in parked {
+            assert!(remaining.iter().any(|item| item == holder), "{holder}");
+        }
+        Ok(())
     }
 
     // Risk (#678): build threads with `spec-*` or pre-fix `duty-*` agent names must wake
@@ -154,22 +198,19 @@ mod tests {
         }
 
         refresh(&channel, &project)?;
-
-        let remaining: Vec<String> = channel
-            .dependency_waits()?
-            .into_iter()
-            .map(|wait| wait.holder)
-            .collect();
-        for ended in ["spec-cleanup-50", "spec-deleted-51", "duty-cleanup-52"] {
-            assert!(!remaining.iter().any(|holder| holder == ended), "{ended}");
-        }
-        for parked in [
-            "duty-scout-1",
-            "spec-12",
-            "0123456789abcdef/spec-cleanup-50",
-        ] {
-            assert!(remaining.iter().any(|holder| holder == parked), "{parked}");
-        }
+        assert_wait_outcomes(
+            &channel,
+            &[
+                ("waiter-60", "spec-cleanup-50", "failed"),
+                ("waiter-61", "spec-deleted-51", "deleted"),
+                ("waiter-62", "duty-cleanup-52", "failed"),
+            ],
+            &[
+                ("waiter-63", "duty-scout-1"),
+                ("waiter-64", "spec-12"),
+                ("waiter-65", "0123456789abcdef/spec-cleanup-50"),
+            ],
+        )?;
 
         std::fs::remove_dir_all(data)?;
         Ok(())
