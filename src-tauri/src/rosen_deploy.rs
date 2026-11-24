@@ -1820,6 +1820,7 @@ mod tests {
         let (_, newly_parked, status_changed) =
             runner.record_waiting_platform(7, &due_broken, "linux", PlatformCommitStatus::NoResult);
         runner.clear_running(7);
+        assert!(runner.pop_next(7, &[]).is_none());
         assert!(newly_parked);
         assert!(status_changed);
         assert!(runner.has_any_waiting());
@@ -1836,6 +1837,7 @@ mod tests {
         assert_eq!(runner.pop_next(7, &[]), Some(due_broken.clone()));
         runner.clear_waiting_platform(7, "server", Some(broken));
         runner.clear_running(7);
+        assert!(runner.pop_next(7, &[]).is_none());
         assert!(!runner.has_any_waiting());
 
         // Fix commit arrives and queues cleanly.
